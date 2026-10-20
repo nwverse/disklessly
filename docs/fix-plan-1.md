@@ -451,3 +451,45 @@ cache-file poll. "Cache file exists" is not a sync point for "attached". The det
 E2E sync points are explicit postconditions polled with bounded timeouts (fetch/attach/launch 60 s, detach
 30 s): cache file ⇒ fetched only; `hdiutil info` lists `$MOUNT` ⇒ attached. No assertion is relaxed.
 No restore/F-B1 dependency in this path (launch is `mode: mount`).
+
+## CI round 3 — diagnosis
+
+Run 39447977155 (HEAD `c2f456b`), logs `/tmp/ci-logs/r3.log`, artifact
+`/tmp/ci-logs/r3art/macos-e2e-log/isenough-e2e.log` (Xcode 26.6, Swift 6.3.3, macOS 26.6.2).
+
+### Evidence
+- PASS build, PASS repo init; then `FAIL: compile Swift fixture app`. The artifact holds the compiler error:
+  `Fixture.swift:3:1: error: 'main' attribute cannot be used in a module that contains top-level code`
+  with the note `pass '-parse-as-library' to compiler invocation if this is intentional`.
+- No engine/CLI/stub code ran after that, so this is not a regression of RC1-RC3 or of the round-2 changes
+  to `Engine.launch`; it is the new B1 fixture introduced in `c2f456b`.
+
+### Root cause
+scripts/e2e.sh l.87-117 writes one file `Fixture.swift` using `@main final class Fixture` and compiles it with
+plain `swiftc "$TMP/Fixture.swift" …`. A single file given to `swiftc` without `-parse-as-library` is parsed
+in script (main.swift) mode, i.e. it counts as top-level code, and `@main` is forbidden there. This is a
+harness build bug, not a flaky test. Round-2 plan §1 named the file `Tests/Fixtures/E2EApp/main.swift`, which
+has the same problem (a file named `main.swift` is always top-level code). The plan's mistake was copied.
+
+### Exact changes (scripts/e2e.sh only)
+1. Compile line: `swiftc -parse-as-library "$TMP/Fixture.swift" -framework AppKit -o "$TMP/Applications/Fixture.app/Contents/MacOS/Fixture"`.
+   Keep `@main`. Do not name the source `main.swift`.
+2. Mark the type `@MainActor @main final class Fixture: NSObject, NSApplicationDelegate`, so
+   `NSApplication.shared` / the delegate methods are main-actor isolated. Without this, Swift 6.3 gives
+   isolation warnings, and it would be an error if anyone builds with `-swift-version 6`. Remove the unused
+   `private let app = NSApplication.shared`. Keep a strong reference to the delegate:
+   `NSApplication.delegate` is weak, but the local `delegate` in `main()` stays alive because `run()` never
+   returns, so this is fine as written.
+3. Diagnostics: on compile failure, print the compiler output instead of failing silently:
+   `… >>"$LOG" 2>&1 || { tail -30 "$LOG" >&2; fail 'compile Swift fixture app'; }`.
+   This puts the error in the job log, not only in the artifact.
+4. No other assertion changes. Downstream checks were reviewed against the new fixture and stay valid:
+   - `open -n -a` sends the document through `application(_:open:)`, so it is written as a `DOC: <path>` line.
+   - `TMP` is canonical (`pwd -P`), so the `grep -F "$TMP/docs/open-me.txt"` path match holds.
+   - The pid file allows the explicit kill before the post-quit detach wait.
+
+### Contract amendment
+Fixture build contract: the e2e fixture is a single-file AppKit app compiled with
+`swiftc -parse-as-library`. Its entry point is `@MainActor @main`. Its output paths come only from Info.plist
+keys `IsenoughE2EOutput` and `IsenoughE2EPidFile`, because LaunchServices does not pass env vars.
+`ISENOUGH_E2E_ARGV` and `ISENOUGH_E2E_PID` are harness-side names for the same paths. No F-B1 dependency.
