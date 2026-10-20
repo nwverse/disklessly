@@ -1,0 +1,113 @@
+import Foundation
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
+
+public enum IsenoughError: Error, LocalizedError, Equatable {
+    case usage(String), unsupported(String), backend(String), integrity(String), busy(String), diskImage(String), failure(String)
+    public var exitCode: Int { switch self { case .usage: 2; case .unsupported: 3; case .backend: 4; case .integrity: 5; case .diskImage: 6; case .busy: 9; case .failure: 1 } }
+    public var errorDescription: String { switch self { case .usage(let s), .unsupported(let s), .backend(let s), .integrity(let s), .busy(let s), .diskImage(let s), .failure(let s): s } }
+}
+
+public struct ImageManifest: Codable, Equatable {
+    public let schema: String
+    public var imageId: String
+    public var bundleId: String
+    public var name: String
+    public var version: String
+    public var image: Image
+    public var app: App
+    public var mode: Mode
+    public var createdAt: Date
+    public enum Mode: String, Codable { case mount, restore }
+    public struct Image: Codable, Equatable { public var file: String; public var format: String; public var sha256: String; public var size: UInt64; public var volumeName: String; public var appPathInVolume: String }
+    public struct App: Codable, Equatable { public var originalPath: String; public var executable: String; public var documentTypes: [[String: AnyCodable]]; public var urlTypes: [[String: AnyCodable]] }
+    public init(bundleId: String, name: String, version: String, image: Image, app: App, mode: Mode = .mount, createdAt: Date = Date()) {
+        self.schema = "image/1"; self.bundleId = bundleId; self.name = name; self.version = version; self.image = image; self.app = app; self.mode = mode; self.createdAt = createdAt
+        self.imageId = "\(bundleId)-\(version)-\(String(image.sha256.prefix(8)))"
+    }
+    public func validate() throws {
+        guard schema == "image/1" else { throw IsenoughError.failure("Unsupported manifest schema: \(schema)") }
+        guard image.format == "ULMO", image.sha256.count == 64, image.size > 0 else { throw IsenoughError.integrity("Invalid image metadata") }
+    }
+    public func encode() throws -> Data { let e = JSONEncoder(); e.outputFormatting = [.sortedKeys, .prettyPrinted]; e.dateEncodingStrategy = .iso8601; return try e.encode(self) }
+    public static func decode(_ data: Data) throws -> Self { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; let m = try d.decode(Self.self, from: data); try m.validate(); return m }
+}
+
+public struct AnyCodable: Codable, Equatable {
+    public let value: Any
+    public init(_ value: Any) { self.value = value }
+    public init(from decoder: Decoder) throws { let c = try decoder.singleValueContainer(); if c.decodeNil() { value = NSNull() } else if let b = try? c.decode(Bool.self) { value = b } else if let i = try? c.decode(Int64.self) { value = i } else if let d = try? c.decode(Double.self) { value = d } else if let s = try? c.decode(String.self) { value = s } else if let a = try? c.decode([AnyCodable].self) { value = a.map(\.value) } else { value = try c.decode([String: AnyCodable].self).mapValues(\.value) } }
+    public func encode(to encoder: Encoder) throws { var c = encoder.singleValueContainer(); switch value { case is NSNull: try c.encodeNil(); case let x as Bool: try c.encode(x); case let x as Int: try c.encode(x); case let x as Int64: try c.encode(x); case let x as Double: try c.encode(x); case let x as String: try c.encode(x); case let x as [Any]: try c.encode(x.map(AnyCodable.init)); case let x as [String: Any]: try c.encode(x.mapValues(AnyCodable.init)); default: throw EncodingError.invalidValue(value, .init(codingPath: encoder.codingPath, debugDescription: "Unsupported plist value")) } }
+    public static func == (lhs: AnyCodable, rhs: AnyCodable) -> Bool { String(describing: lhs.value) == String(describing: rhs.value) }
+}
+
+public enum SessionState: String, Codable, CaseIterable { case remote, downloading, verifying, cached, mounted, running, idle, detaching, backoff, stuck }
+public enum SessionEvent { case fetch, downloaded, verified, attach, open, quit, detach, detachFailed, revive, evicted }
+public struct StateMachine {
+    public static func transition(_ state: SessionState, _ event: SessionEvent) throws -> SessionState {
+        switch (state, event) {
+        case (.remote, .fetch): .downloading
+        case (.downloading, .downloaded): .verifying
+        case (.verifying, .verified): .cached
+        case (.cached, .attach): .mounted
+        case (.mounted, .open): .running
+        case (.running, .quit): .idle
+        case (.idle, .detach): .detaching
+        case (.detaching, .detach): .cached
+        case (.detaching, .detachFailed): .backoff
+        case (.backoff, .revive), (.stuck, .revive): .running
+        case (.cached, .evicted): .remote
+        default: throw IsenoughError.failure("Illegal lifecycle transition \(state) + \(event)")
+        }
+    }
+}
+
+public struct CacheEntry: Codable, Equatable { public var id: String; public var size: UInt64; public var lastUsed: Date; public var pinned: Bool; public var mounted: Bool; public init(id: String, size: UInt64, lastUsed: Date, pinned: Bool = false, mounted: Bool = false) { self.id=id; self.size=size; self.lastUsed=lastUsed; self.pinned=pinned; self.mounted=mounted } }
+public enum CachePolicy {
+    public static func evictionPlan(_ entries: [CacheEntry], quota: UInt64) -> [String] {
+        var total = entries.reduce(UInt64(0)) { $0 + $1.size }; guard total > quota else { return [] }
+        var victims: [String] = []
+        for entry in entries.filter({ !$0.pinned && !$0.mounted }).sorted(by: { $0.lastUsed < $1.lastUsed }) { victims.append(entry.id); total = total >= entry.size ? total - entry.size : 0; if total <= quota { break } }
+        return victims
+    }
+}
+
+public protocol StorageBackend {
+    func list(_ path: String) throws -> [String]
+    func stat(_ path: String) throws -> BackendStat?
+    func get(_ path: String, range: Range<UInt64>?) throws -> Data
+    func put(_ path: String, data: Data) throws
+    func delete(_ path: String) throws
+}
+public struct FileLock {
+    public let path: String
+    private var descriptor: Int32 = -1
+    public init(path: String) { self.path=path }
+    public var isLocked: Bool { descriptor >= 0 }
+    public mutating func lock() throws {
+        #if canImport(Darwin)
+        importDarwinLockUnavailable()
+        #endif
+        let fd = open(path, O_CREAT | O_RDWR, mode_t(0o600)); guard fd >= 0 else { throw IsenoughError.failure("Cannot open lock file") }
+        guard flock(fd, LOCK_EX) == 0 else { close(fd); throw IsenoughError.failure("Cannot acquire lock") }; descriptor=fd
+    }
+    public mutating func unlock() { if descriptor >= 0 { _ = flock(descriptor, LOCK_UN); _ = close(descriptor); descriptor = -1 } }
+    #if canImport(Darwin)
+    private func importDarwinLockUnavailable() {}
+    #endif
+}
+
+public struct BackendStat: Equatable { public var size: UInt64; public var modified: Date; public init(size: UInt64, modified: Date) { self.size=size; self.modified=modified } }
+public struct LocalFolderBackend: StorageBackend {
+    public let root: URL
+    public init(root: URL) throws { self.root = root.standardizedFileURL; try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true) }
+    private func url(_ path: String) throws -> URL { guard !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else { throw IsenoughError.usage("Invalid backend path") }; return root.appendingPathComponent(path) }
+    public func list(_ path: String = "") throws -> [String] { try FileManager.default.contentsOfDirectory(atPath: url(path).path).sorted() }
+    public func stat(_ path: String) throws -> BackendStat? { let u = try url(path); guard let a = try? FileManager.default.attributesOfItem(atPath: u.path), let n = a[.size] as? NSNumber else { return nil }; return BackendStat(size: n.uint64Value, modified: a[.modificationDate] as? Date ?? .distantPast) }
+    public func get(_ path: String, range: Range<UInt64>? = nil) throws -> Data { let d = try Data(contentsOf: url(path)); guard let r = range else { return d }; let lo = min(Int(r.lowerBound), d.count), hi = min(Int(r.upperBound), d.count); return d.subdata(in: lo..<max(lo, hi)) }
+    public func put(_ path: String, data: Data) throws { let u = try url(path); try FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true); try data.write(to: u, options: .atomic) }
+    public func delete(_ path: String) throws { let u = try url(path); if FileManager.default.fileExists(atPath: u.path) { try FileManager.default.removeItem(at: u) } }
+}
