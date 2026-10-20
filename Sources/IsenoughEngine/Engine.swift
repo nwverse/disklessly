@@ -139,12 +139,16 @@ public struct IsenoughEngine {
         let backend=try repo, cache=URL(fileURLWithPath:config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg"); try FileManager.default.createDirectory(at:cache.deletingLastPathComponent(),withIntermediateDirectories:true)
         if FileManager.default.fileExists(atPath:cache.path), try Hashing.sha256(cache)==manifest.image.sha256 { return cache }
         let data=try backend.get(manifest.image.file,range:nil); guard UInt64(data.count)==manifest.image.size, digest(data)==manifest.image.sha256 else { throw IsenoughError.integrity("Remote image hash or size mismatch") }
+        // Keep the fetched image byte-for-byte identical to the published artifact.
+        // The manifest hashes the remote ULMO image; converting it on download both
+        // invalidates that identity and relies on hdiutil's output-name conventions.
         let tmp=cache.appendingPathExtension("tmp"); try data.write(to:tmp,options:.atomic)
-        #if os(macOS)
-        let converted=cache.deletingPathExtension().appendingPathExtension("ulfo.dmg"); try run("/usr/bin/hdiutil",["convert",tmp.path,"-format","ULFO","-o",converted.deletingPathExtension().path]); try? FileManager.default.removeItem(at:tmp); try? FileManager.default.removeItem(at:cache); try FileManager.default.moveItem(at:converted,to:cache)
-        #else
-        try FileManager.default.moveItem(at:tmp,to:cache)
-        #endif
+        do {
+            try FileManager.default.moveItem(at:tmp,to:cache)
+        } catch {
+            try? FileManager.default.removeItem(at:tmp)
+            throw IsenoughError.failure("Could not install verified image at cache path \\(cache.path): \\(error.localizedDescription)")
+        }
         return cache
     }
     private func digest(_ data:Data)->String { let u=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try? data.write(to:u); defer{try? FileManager.default.removeItem(at:u)}; return (try? Hashing.sha256(u)) ?? "" }

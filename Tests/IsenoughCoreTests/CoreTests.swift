@@ -22,6 +22,24 @@ final class CoreTests: XCTestCase {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); defer{try? FileManager.default.removeItem(at:root)}
         let b=try LocalFolderBackend(root:root); try b.put("sub/file",data:Data("abcdef".utf8)); XCTAssertEqual(try b.get("sub/file",range:1..<4),Data("bcd".utf8)); XCTAssertEqual(try b.list("sub"),["file"]); XCTAssertThrowsError(try b.get("../escape",range:nil))
     }
+    func testPrefetchCachesPublishedImageBytesWithoutReencoding() throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer{try? FileManager.default.removeItem(at:root)}
+        let repo=root.appendingPathComponent("repo"), cache=root.appendingPathComponent("cache")
+        let config=RuntimeConfig(repoPath:repo.path,cacheDir:cache.path,stateDir:root.appendingPathComponent("state").path,mountRoot:root.appendingPathComponent("mounts").path,stubDir:root.appendingPathComponent("apps").path)
+        let engine=IsenoughEngine(config:config)
+        try engine.initialize()
+        let bytes=Data("published disk image bytes".utf8)
+        let imageURL=root.appendingPathComponent("source.dmg")
+        try bytes.write(to:imageURL)
+        let sha=try Hashing.sha256(imageURL)
+        let image=ImageManifest.Image(file:"images/test.dmg",format:"ULMO",sha256:sha,size:UInt64(bytes.count),volumeName:"Test",appPathInVolume:"Test.app")
+        let manifest=ImageManifest(bundleId:"com.test.app",name:"Test",version:"1",image:image,app:.init(originalPath:"/Applications/Test.app",executable:"Test",documentTypes:[],urlTypes:[]))
+        try LocalFolderBackend(root:repo).put(image.file,data:bytes)
+        let fetched=try engine.prefetch(manifest)
+        XCTAssertEqual(try Data(contentsOf:fetched),bytes)
+        XCTAssertEqual(fetched.path,cache.appendingPathComponent("images/\(manifest.imageId).dmg").path)
+    }
     func testStubInfoAndArgumentForwarding() {
         let p=StubGenerator.infoPlist(source:["CFBundleIdentifier":"com.a","SUFeedURL":"x","CFBundleDocumentTypes":[["x":1]]],appId:"com.a")
         XCTAssertEqual(p["CFBundleIdentifier"] as? String,"com.a.256stub"); XCTAssertEqual(p["LSUIElement"] as? Bool,true); XCTAssertNil(p["SUFeedURL"]); XCTAssertEqual(StubGenerator.forwardArguments(["a b","https://x/y"]),["a b","https://x/y"])
