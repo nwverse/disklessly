@@ -8,7 +8,7 @@ func usage() -> Never {
     Usage: isenough [--json] [--config PATH] [--state-dir PATH] <command>
       init [--backend local|icloud] [--root DIR] [--cache-dir DIR]
       pack APP.app [--mode mount|restore] [--no-stub] [--keep-original] [--stub-dir DIR]
-      list [--json] | status [APP] [--json] | prefetch APP | launch APP [--doc PATH] [--url URL] [--no-wait]
+      list [--json] | status [APP] [--json] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
       pin APP | unpin APP | evict APP | gc | restore APP | unpack APP | stub rebuild APP
       hooks list|enable|disable APP | doctor | version | serve [--port PORT]
     Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
@@ -21,6 +21,7 @@ while let first=args.first, first.hasPrefix("--") {
     if first=="--json" { json=true; args.removeFirst() }
     else if first=="--config", args.count>1 { configPath=args[1]; args.removeFirst(2) }
     else if first=="--state-dir", args.count>1 { setenv("ISENOUGH_STATE_DIR",args[1],1); args.removeFirst(2) }
+    else if first.hasPrefix("--") { fputs("isenough: Unknown option: \(first)\n",stderr); exit(2) }
     else { break }
 }
 let env=ProcessInfo.processInfo.environment
@@ -46,9 +47,8 @@ do {
     case "status": emit(engine.status())
     case "prefetch": guard let n=args.first else { throw IsenoughError.usage("prefetch requires app") }; let m=try find(n); emit(["ok":true,"path":try engine.prefetch(m).path])
     case "launch", "restore":
-        guard let n=args.first else { throw IsenoughError.usage("launch requires app") }; args.removeFirst(); var docs:[String]=[], urls:[String]=[], wait=true
-        while !args.isEmpty { let a=args.removeFirst(); if a=="--doc", !args.isEmpty { docs.append(args.removeFirst()) } else if a=="--url", !args.isEmpty { urls.append(args.removeFirst()) } else if a=="--no-wait" { wait=false } }
-        try engine.launch(find(n),documents:docs,urls:urls,wait:wait); emit(["ok":true])
+        let parsed=try LaunchArguments.parse(args)
+        try engine.launch(find(parsed.app),documents:parsed.documents,urls:parsed.urls,arguments:parsed.arguments,wait:parsed.wait); emit(["ok":true])
     case "pin", "unpin": guard let n=args.first else { throw IsenoughError.usage("\(command) requires app") }; let m=try find(n); var s=StateStore(config.stateDir).read(); var apps=s["apps"] as? [String:[String:Any]] ?? [:]; var item=apps[m.bundleId] ?? [:]; item["imageId"]=m.imageId; item["pinned"]=command=="pin"; apps[m.bundleId]=item; s["apps"]=apps; try StateStore(config.stateDir).write(s); if command=="pin" { _=try engine.prefetch(m) }; emit(["ok":true,"pinned":command=="pin"])
     case "evict": guard let n=args.first else { throw IsenoughError.usage("evict requires app") }; let m=try find(n); let p=URL(fileURLWithPath:config.cacheDir).appendingPathComponent("images/\(m.imageId).dmg"); try? FileManager.default.removeItem(at:p); emit(["ok":true])
     case "gc": emit(["ok":true,"removed":[] as [String]])
@@ -58,9 +58,9 @@ do {
     case "serve": emit(["ok":false,"message":"HTTP server not yet available; use the static management UI" ])
     case "daemon": emit(["ok":false,"message":"Daemon management is not implemented in MVP build"])
     case "detach", "unpack", "trust", "resolve": throw IsenoughError.unsupported("\(command) is not available in this MVP build")
-    default: throw IsenoughError.usage("Unknown command: \(command)")
+    default: throw IsenoughError.usage(command.hasPrefix("--") ? "Unknown option: \(command)" : "Unknown command: \(command)")
     }
-} catch let e as IsenoughError { if json { emit(["ok":false,"error":["code":e.exitCode,"message":e.errorDescription]]) } else { fputs("isenough: \(e.errorDescription)\n",stderr) }; exit(Int32(e.exitCode)) } catch {
+} catch let e as IsenoughError { if json { emit(["ok":false,"error":["code":e.exitCode,"message":e.errorDescription]]) } else { fputs("isenough: \(e.errorDescription ?? String(describing:e))\n",stderr) }; exit(Int32(e.exitCode)) } catch {
     let nsError = error as NSError
     fputs("isenough: \(error.localizedDescription) [\(nsError.domain) \(nsError.code)]\n", stderr)
     if !nsError.userInfo.isEmpty { fputs("details: \(nsError.userInfo)\n", stderr) }

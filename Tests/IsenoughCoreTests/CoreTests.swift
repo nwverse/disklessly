@@ -1,6 +1,7 @@
 import XCTest
 @testable import IsenoughCore
 @testable import IsenoughEngine
+import IsenoughStubSupport
 
 final class CoreTests: XCTestCase {
     func testManifestRoundTripAndFormatVersioning() throws {
@@ -42,7 +43,7 @@ final class CoreTests: XCTestCase {
     }
     func testStubInfoAndArgumentForwarding() {
         let p=StubGenerator.infoPlist(source:["CFBundleIdentifier":"com.a","SUFeedURL":"x","CFBundleDocumentTypes":[["x":1]]],appId:"com.a")
-        XCTAssertEqual(p["CFBundleIdentifier"] as? String,"com.a.256stub"); XCTAssertEqual(p["LSUIElement"] as? Bool,true); XCTAssertNil(p["SUFeedURL"]); XCTAssertEqual(StubGenerator.forwardArguments(["a b","https://x/y"]),["a b","https://x/y"])
+        XCTAssertEqual(p["CFBundleIdentifier"] as? String,"com.a.256stub"); XCTAssertEqual(p["LSUIElement"] as? Bool,true); XCTAssertNil(p["SUFeedURL"]); 
     }
     func testStubPathComparisonNormalizesRedundantSeparators() {
         XCTAssertTrue(StubGenerator.pathsReferToSameLocation("/var/folders/ab/app/Test.app", "/var/folders//ab/app/Test.app"))
@@ -53,4 +54,30 @@ final class CoreTests: XCTestCase {
         let path=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
         var lock=FileLock(path:path); try lock.lock(); XCTAssertTrue(lock.isLocked); lock.unlock(); XCTAssertFalse(lock.isLocked)
     }
+    func testStubArgvClassificationAndLaunchRoundTrip() throws {
+        let cwd=URL(fileURLWithPath:"/w")
+        let built=try StubArgv.build(appId:"com.a",rawArguments:["--doc","/a b/\"$ü.txt","https://h/p?q=1","file:///y%20z.txt","rel.txt","--arg","$ \"🙂"],cwd:cwd)
+        XCTAssertEqual(Array(built.prefix(2)),["launch","com.a"])
+        let parsed=try LaunchArguments.parse(Array(built.dropFirst()))
+        XCTAssertEqual(parsed.documents,["/a b/\"$ü.txt","/y z.txt","/w/rel.txt"])
+        XCTAssertEqual(parsed.urls,["https://h/p?q=1"])
+        XCTAssertEqual(parsed.arguments,["$ \"🙂"])
+        XCTAssertThrowsError(try StubArgv.build(appId:"com.a",rawArguments:["--doc"],cwd:cwd))
+    }
+    func testLaunchParserRejectsMalformedOptions() {
+        for args in [["app","--bogus"],["app","--doc"],["--doc","x"]] { XCTAssertThrowsError(try LaunchArguments.parse(args)) }
+    }
+    func testCachePathNaming() {
+        let p=CachePaths(cacheDir:"/c",mountRoot:"/m")
+        XCTAssertEqual(p.image("id").path,"/c/images/id.dmg")
+        XCTAssertEqual(p.partial("id").path,"/c/partial/id.dmg.part")
+        XCTAssertEqual(p.mount("id").path,"/m/id")
+    }
+    func testLauncherLookupPriorityAndSelfRejection() throws {
+        let cli=URL(fileURLWithPath:"/bin/isenough")
+        let found=try StubGenerator.locateLauncher(cliExecutable:cli,environment:["ISENOUGH_STUB_BINARY":"/custom/stub"],isExecutable:{$0 == "/custom/stub"})
+        XCTAssertEqual(found.path,"/custom/stub")
+        XCTAssertThrowsError(try StubGenerator.locateLauncher(cliExecutable:cli,environment:[:],isExecutable:{$0 == "/bin/isenough"}))
+    }
+
 }

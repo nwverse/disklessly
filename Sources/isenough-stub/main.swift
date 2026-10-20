@@ -1,51 +1,23 @@
 import Foundation
+import IsenoughStubSupport
 #if os(macOS)
 import AppKit
-
+import Darwin
 @main struct StubLauncher {
     static func main() {
-        let bundle = Bundle.main
-        let resource = bundle.bundleURL.appendingPathComponent("Contents/Resources/manifest.json")
-        guard let data = try? Data(contentsOf: resource),
-              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let bundleId = obj["bundleId"] as? String, !bundleId.isEmpty else {
-            fputs("isenough-stub: could not read a valid app manifest\n", stderr)
-            exit(1)
-        }
-
-        guard let cli = resolveCLI(in: ProcessInfo.processInfo.environment["PATH"] ?? "") else {
-            fputs("isenough-stub: isenough CLI was not found on PATH\n", stderr)
-            exit(1)
-        }
-
-        // Process.arguments excludes argv[0]. Put the command and app identifier
-        // first; documents and URLs are options belonging to the launch command.
-        let forwarded = Array(CommandLine.arguments.dropFirst())
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: cli)
-        process.arguments = ["launch", bundleId] + forwarded
+        let root=Bundle.main.bundleURL.appendingPathComponent("Contents/Resources")
         do {
-            try process.run()
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                fputs("isenough-stub: launch exited with status \(process.terminationStatus)\n", stderr)
-                exit(process.terminationStatus)
-            }
+            let manifest=try JSONSerialization.jsonObject(with:Data(contentsOf:root.appendingPathComponent("manifest.json"))) as! [String:Any]
+            let info=(try? JSONSerialization.jsonObject(with:Data(contentsOf:root.appendingPathComponent("stub.json")))) as? [String:Any] ?? [:]
+            guard let appId=manifest["bundleId"] as? String else { throw StubArgvError.cliNotFound }
+            let env=ProcessInfo.processInfo.environment
+            let cli=try StubArgv.resolveCLI(environment:env,stubInfo:info,path:env["PATH"] ?? "",home:NSHomeDirectory(),isExecutable:{ FileManager.default.isExecutableFile(atPath:$0) })
+            let argv=try StubArgv.build(appId:appId,rawArguments:Array(CommandLine.arguments.dropFirst()))
+            let p=Process(); p.executableURL=cli; p.arguments=argv
+            try p.run(); p.waitUntilExit(); exit(p.terminationStatus)
         } catch {
-            fputs("isenough-stub: could not start \(cli): \(error.localizedDescription)\n", stderr)
-            exit(1)
+            fputs("isenough-stub: \(error); argv=\(CommandLine.arguments)\n",stderr); exit(2)
         }
-    }
-
-    private static func resolveCLI(in path: String) -> String? {
-        for directory in path.split(separator: ":", omittingEmptySubsequences: false) {
-            let candidate = URL(fileURLWithPath: String(directory.isEmpty ? "." : directory))
-                .appendingPathComponent("isenough").standardizedFileURL
-            if FileManager.default.isExecutableFile(atPath: candidate.path) {
-                return candidate.path
-            }
-        }
-        return nil
     }
 }
 #else

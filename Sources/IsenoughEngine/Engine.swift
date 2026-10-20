@@ -45,7 +45,16 @@ public enum StubGenerator {
         for key in ["SUFeedURL","SUPublicEDKey","ElectronDefaultApp"] { p.removeValue(forKey:key) }
         return p
     }
-    public static func forwardArguments(_ arguments: [String]) -> [String] { arguments }
+    public static func stubInfo(manifest: ImageManifest, cliPath: String) -> [String:Any] { ["schema":"stub/1", "appId":manifest.bundleId, "imageId":manifest.imageId, "isenoughPath":cliPath, "stubVersion":1] }
+
+    public static func locateLauncher(cliExecutable: URL, environment: [String:String], isExecutable: (String)->Bool) throws -> URL {
+        let cli=cliExecutable.resolvingSymlinksInPath().standardizedFileURL
+        let candidates=[environment["ISENOUGH_STUB_BINARY"], cli.deletingLastPathComponent().appendingPathComponent("isenough-stub").path].compactMap{$0}
+        guard let path=candidates.first(where:isExecutable) else { throw IsenoughError.failure("isenough-stub launcher binary not found next to \(cli.path)") }
+        let found=URL(fileURLWithPath:path).resolvingSymlinksInPath().standardizedFileURL
+        guard found.path != cli.path else { throw IsenoughError.failure("Refusing to use CLI as isenough-stub launcher") }
+        return found
+    }
 
     /// Compare filesystem paths lexically after collapsing redundant separators and dot components.
     /// URL equality is stricter than filesystem path equivalence (notably for `//`).
@@ -73,15 +82,17 @@ public struct IsenoughEngine {
         guard let info=NSDictionary(contentsOf:plistURL) as? [String:Any], let bid=info["CFBundleIdentifier"] as? String else { throw IsenoughError.usage("Not a valid .app bundle") }
         let name=info["CFBundleName"] as? String ?? app.deletingPathExtension().lastPathComponent, version=info["CFBundleShortVersionString"] as? String ?? "0"
         let selected=mode ?? ((FileManager.default.fileExists(atPath:app.appendingPathComponent("Contents/_MASReceipt/receipt").path) ? .restore : .mount))
-        let id="\(bid)-\(version)-\(UUID().uuidString.prefix(8).lowercased())", filename="\(id).dmg", staging=URL(fileURLWithPath:config.cacheDir).appendingPathComponent("pack-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at:staging,withIntermediateDirectories:true); defer { try? FileManager.default.removeItem(at:staging) }
-        let dmg=staging.appendingPathComponent(filename)
-        try run("/usr/bin/hdiutil",["create","-quiet","-srcfolder",app.path,"-format","ULMO","-volname",name,"-o",dmg.deletingPathExtension().path])
+        let staging=URL(fileURLWithPath:config.cacheDir).appendingPathComponent("pack-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at:staging.appendingPathComponent("src"),withIntermediateDirectories:true); defer { try? FileManager.default.removeItem(at:staging) }
+        let stagedApp=staging.appendingPathComponent("src").appendingPathComponent(app.lastPathComponent)
+        try run("/usr/bin/ditto",[app.path,stagedApp.path])
+        let dmg=staging.appendingPathComponent("image.dmg")
+        try run("/usr/bin/hdiutil",["create","-quiet","-srcfolder",staging.appendingPathComponent("src").path,"-format","ULMO","-volname",name,"-o",dmg.deletingPathExtension().path])
         let sha=try Hashing.sha256(dmg), attrs=try FileManager.default.attributesOfItem(atPath:dmg.path), size=(attrs[.size] as? NSNumber)?.uint64Value ?? 0
-        let image=ImageManifest.Image(file:"images/\(filename)",format:"ULMO",sha256:sha,size:size,volumeName:name,appPathInVolume:app.lastPathComponent)
+        let image=ImageManifest.Image(file:"",format:"ULMO",sha256:sha,size:size,volumeName:name,appPathInVolume:app.lastPathComponent)
         let facts=ImageManifest.App(originalPath:app.path,executable:info["CFBundleExecutable"] as? String ?? "",documentTypes:(info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },urlTypes:(info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) })
-        let manifest=ImageManifest(bundleId:bid,name:name,version:version,image:image,app:facts,mode:selected); try manifest.validate()
-        let backend=try repo; try backend.put(image.file,data:Data(contentsOf:dmg)); try backend.put("manifests/\(id).json",data:manifest.encode())
+        var manifest=ImageManifest(bundleId:bid,name:name,version:version,image:image,app:facts,mode:selected); manifest.image.file="images/\(manifest.imageId).dmg"; try manifest.validate()
+        let backend=try repo; try backend.put(manifest.image.file,data:Data(contentsOf:dmg)); try backend.put("manifests/\(manifest.imageId).json",data:manifest.encode())
         if !noStub { try installStub(info:info, manifest:manifest, path:app.path, keepOriginal:keepOriginal) }
         return manifest
         #endif
@@ -98,10 +109,12 @@ public struct IsenoughEngine {
         guard (StubGenerator.infoPlist(source:info,appId:manifest.bundleId) as NSDictionary).write(to:plistPath,atomically:true) else {
             throw IsenoughError.failure("Could not write generated stub Info.plist at \(plistPath.path)")
         }
-        let executable=Bundle.main.executableURL ?? URL(fileURLWithPath:CommandLine.arguments[0])
+        let cli=Bundle.main.executableURL ?? URL(fileURLWithPath:CommandLine.arguments[0])
+        let launcher=try StubGenerator.locateLauncher(cliExecutable:cli,environment:ProcessInfo.processInfo.environment,isExecutable:{ FileManager.default.isExecutableFile(atPath:$0) })
         let stubExecutable=temp.appendingPathComponent("Contents/MacOS/isenough-stub")
-        try FileManager.default.copyItem(at:executable,to:stubExecutable)
+        try FileManager.default.copyItem(at:launcher,to:stubExecutable)
         try manifest.encode().write(to:temp.appendingPathComponent("Contents/Resources/manifest.json"))
+        try JSONSerialization.data(withJSONObject:StubGenerator.stubInfo(manifest:manifest,cliPath:cli.resolvingSymlinksInPath().path),options:[.prettyPrinted,.sortedKeys]).write(to:temp.appendingPathComponent("Contents/Resources/stub.json"))
         // Sign only the outer app bundle. --deep recursively re-signs the copied
         // Swift executable, which can fail on newer macOS codesign implementations
         // when replacing its existing ad-hoc signature.
@@ -136,23 +149,25 @@ public struct IsenoughEngine {
     public func list() throws -> [ImageManifest] { let b=try repo; return try b.list("manifests").filter{$0.hasSuffix(".json")}.compactMap { try? ImageManifest.decode(b.get("manifests/\($0)",range:nil)) } }
     public func status() -> [String:Any] { let state=StateStore(config.stateDir).read(); return ["backend":config.backend,"repoPath":config.repoPath,"cacheDir":config.cacheDir,"apps":state["apps"] ?? [:],"cache":state["cache"] ?? [:]] }
     public func prefetch(_ manifest:ImageManifest) throws -> URL {
-        let backend=try repo, cache=URL(fileURLWithPath:config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg"); try FileManager.default.createDirectory(at:cache.deletingLastPathComponent(),withIntermediateDirectories:true)
+        let backend=try repo, paths=CachePaths(cacheDir:config.cacheDir,mountRoot:config.mountRoot), cache=paths.image(manifest.imageId); try FileManager.default.createDirectory(at:cache.deletingLastPathComponent(),withIntermediateDirectories:true)
         if FileManager.default.fileExists(atPath:cache.path), try Hashing.sha256(cache)==manifest.image.sha256 { return cache }
         let data=try backend.get(manifest.image.file,range:nil); guard UInt64(data.count)==manifest.image.size, digest(data)==manifest.image.sha256 else { throw IsenoughError.integrity("Remote image hash or size mismatch") }
         // Keep the fetched image byte-for-byte identical to the published artifact.
         // The manifest hashes the remote ULMO image; converting it on download both
         // invalidates that identity and relies on hdiutil's output-name conventions.
-        let tmp=cache.appendingPathExtension("tmp"); try data.write(to:tmp,options:.atomic)
+        let partial=paths.partial(manifest.imageId); try FileManager.default.createDirectory(at:partial.deletingLastPathComponent(),withIntermediateDirectories:true); try? FileManager.default.removeItem(at:partial); try data.write(to:partial,options:.atomic)
         do {
-            try FileManager.default.moveItem(at:tmp,to:cache)
+            if FileManager.default.fileExists(atPath:cache.path) { try FileManager.default.removeItem(at:cache) }
+            try FileManager.default.moveItem(at:partial,to:cache)
         } catch {
-            try? FileManager.default.removeItem(at:tmp)
-            throw IsenoughError.failure("Could not install verified image at cache path \\(cache.path): \\(error.localizedDescription)")
+            try? FileManager.default.removeItem(at:partial)
+            throw IsenoughError.failure("Could not install verified image at cache path \(cache.path): \(error.localizedDescription)")
         }
         return cache
     }
     private func digest(_ data:Data)->String { let u=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try? data.write(to:u); defer{try? FileManager.default.removeItem(at:u)}; return (try? Hashing.sha256(u)) ?? "" }
-    public func launch(_ manifest:ImageManifest, documents:[String]=[], urls:[String]=[], wait:Bool=true) throws {
+    public func launch(_ manifest:ImageManifest, documents:[String]=[], urls:[String]=[], arguments:[String]=[], wait:Bool=true) throws {
+        guard manifest.mode == .mount else { throw IsenoughError.unsupported("restore mode is disabled until durable restore recovery is implemented") }
         let image=try prefetch(manifest)
         #if !os(macOS)
         throw IsenoughError.unsupported("launch requires macOS hdiutil and Launch Services")
@@ -160,7 +175,8 @@ public struct IsenoughEngine {
         let mount=URL(fileURLWithPath:config.mountRoot).appendingPathComponent(manifest.imageId); try FileManager.default.createDirectory(at:mount.deletingLastPathComponent(),withIntermediateDirectories:true)
         try run("/usr/bin/hdiutil",["attach","-readonly","-nobrowse","-noautoopen","-mountpoint",mount.path,image.path])
         let app=mount.appendingPathComponent(manifest.image.appPathInVolume)
-        var args=["-a",app.path]; args += documents; args += urls
+        var args=["-n","-a",app.path]; args += documents; args += urls
+        if !arguments.isEmpty { args.append("--args"); args += arguments }
         try run("/usr/bin/open",args)
         if wait { while true { Thread.sleep(forTimeInterval:2); let p=Process(); p.executableURL=URL(fileURLWithPath:"/usr/bin/pgrep"); p.arguments=["-f",app.appendingPathComponent("Contents/MacOS/"+manifest.app.executable).path]; try? p.run(); p.waitUntilExit(); if p.terminationStatus != 0 { break } }; Thread.sleep(forTimeInterval:Double(config.detachDelaySeconds)); try? run("/usr/bin/hdiutil",["detach",mount.path]) }
         #endif

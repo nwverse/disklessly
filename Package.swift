@@ -12,9 +12,10 @@ let package = Package(
     ],
     targets: [
         .target(name: "IsenoughCore"),
+        .target(name: "IsenoughStubSupport"),
         .target(name: "IsenoughEngine", dependencies: ["IsenoughCore"]),
         .executableTarget(name: "isenough", dependencies: ["IsenoughCore", "IsenoughEngine"], resources: [.copy("web")]),
-        .executableTarget(name: "isenough-stub"),
-        .testTarget(name: "IsenoughCoreTests", dependencies: ["IsenoughCore", "IsenoughEngine"]),
+        .executableTarget(name: "isenough-stub", dependencies: ["IsenoughStubSupport"]),
+        .testTarget(name: "IsenoughCoreTests", dependencies: ["IsenoughCore", "IsenoughEngine", "IsenoughStubSupport"]),
     ]
 )
