@@ -357,3 +357,44 @@ replacement of an unconditional predicate. Suggested new files below do not yet 
    Keep a clean release build separate from fault-enabled builds. Preserve all existing E2E assertions;
    do not equate mount-only E2E success with F-B1 closure. Attach bounded logs/artifacts and require
    passing macOS runs before declaring F-B1 satisfied. Never run against a remote/personal Mac.
+
+## CI round 1 — diagnosis
+
+Run 39445816989 (HEAD `7e7ad60`), log `/tmp/ci-logs/39445816989.log`.
+
+### Evidence
+- Build + unit tests green; E2E: `PASS fixture packed and stub generated`, `PASS stub executable exists`,
+  `FAIL stub contains launcher binary` (scripts/e2e.sh:75, `cmp -s <stub>/Contents/MacOS/isenough-stub
+  .build/debug/isenough-stub`). `pack` itself exited 0, so `locateLauncher` found and copied a launcher
+  (it refuses the CLI path) and `codesign --verify --strict` inside `installStub` passed.
+- `installStub` (Engine.swift ~l.115-121) copies the launcher, then runs
+  `codesign --force --sign - <temp>.app`.
+
+### Root cause
+The RC1 fix is correct; the new e2e assertion is unsatisfiable. Signing a bundle *always* signs its main
+executable (`CFBundleExecutable` = `isenough-stub`): the bundle's code signature is the LC_CODE_SIGNATURE blob
+embedded in that Mach-O (with Info.plist + CodeResources hashes bound into it, identifier = bundle id).
+`--force` replaces the linker ad-hoc signature, so the copied file is byte-different from
+`.build/debug/isenough-stub` by construction. The Engine comment "Sign only the outer app bundle" is wrong
+in the same way (there is no outer-only signature). Byte equality was never a valid contract.
+
+### Exact changes
+1. **scripts/e2e.sh** (replace l.75-76; assertion is made correct, not removed): compare code, not the
+   signature. Helper `code_text() { /usr/bin/otool -t "$1" | tail -n +2; }` (`__TEXT,__text` is untouched
+   by codesign; skip line 1 = file path). Assert
+   `cmp -s <(code_text "$STUB/Contents/MacOS/isenough-stub") <(code_text "$ROOT/.build/debug/isenough-stub")`
+   → `stub contains launcher binary`, and the same `cmp` against `.build/debug/isenough` must FAIL →
+   `stub is not CLI binary`.
+   On failure, append `otool -t | head -5` of both files and `codesign -dvvv "$STUB"` to `$LOG` and print
+   `tail -20 $LOG` so the next red run is self-explanatory.
+2. **Sources/IsenoughEngine/Engine.swift `installStub`**: fix the comment only ("signing the bundle
+   re-signs the main executable `isenough-stub` in place; no --deep needed because there are no nested
+   code items"). Keep the post-copy "not byte-identical to the CLI" guard but run it **before** codesign
+   (compare the copied file vs CLI file right after `copyItem`), since after signing it is trivially true.
+3. No Linux-testable change; no unit test changes required.
+
+### Contract amendment (§3.1 / e2e list)
+"Stub executable is the launcher" := the `__TEXT,__text` contents (`otool -t`) of
+`<Stub>.app/Contents/MacOS/isenough-stub` equal those of the built `isenough-stub` and differ from the
+built `isenough`. The stub executable bytes are expected to differ from the build product because `pack`
+ad-hoc re-signs the generated bundle (G5 is about the *real* app, which stays byte-identical in the image).
