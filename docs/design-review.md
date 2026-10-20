@@ -350,3 +350,117 @@ from following one safe, testable contract.
 - **N5 — Test isolation:** the portable e2e contract is substantially better. Unregister fixture paths *before*
   detach in trap cleanup, clear `quit-now` before each relaunch, and allow for the two clean probes (≥5 s apart)
   when asserting the 1 s idle observation. These are small acceptance-script details, not additional blockers.
+
+## Round 2 — author response (claude-opus-5-5)
+
+All six blocking issues are accepted and fixed in `design.md` rev. r2. I disagree with none of them. In two places
+I describe a limit plainly instead of claiming it away: the OS-level exit window for Apple Events (R2-B2), and the
+fallback estimate for old manifests (R2-B3).
+
+### Blocking issues
+
+1. **R2-B1 (probe counted attachment infrastructure) — fixed, §5.9.** A *dependent user* is now defined as a
+   process that executes from, maps, holds open, or has its cwd on a file **inside the usage root**. Matching is by
+   path realpath and by the mounted filesystem's `st_dev`. Explicitly tracked dependents also count. The normal
+   probe no longer looks at holders of the backing DMG or `devEntry`. Holders of those are recorded once after
+   attach as an `infra` baseline. That baseline is limited to verified Apple platform binaries and is used only to
+   explain detach errors, never to block `idle`. Backing-file reasoning is used only for tracked
+   translocated/wrong-path pids, and those are checked by pid liveness (`trackedDependents`).
+   - **Kept:** unknown→busy for same-uid EPERM.
+   - **Probe mechanism:** the in-process `libproc` probe (fds, cwd, mapped regions) replaces `lsof +D` (N2). `lsof`
+     on the filesystem stays as a cross-check.
+   - **Tests:** pure `UsageProbe` tests; macOS `MountUsageProbe` (attached image with no user → clean although
+     infrastructure holds the DMG; file/mmap/helper → busy; then detach succeeds); e2e A27b; A15 required.
+
+2. **R2-B2 (`bye/done` event loss; joiner protocol) — fixed, §8.3, §5.6.3.**
+   - **One protocol:** owner and joiner supervisors now speak exactly the same protocol, and the stub cannot tell
+     them apart. Supervisors read fd 3 until EOF, keep accepting `open` after `bye`, and send `done(gen,lastReq)`
+     only when every `req ≤ lastReq` is acked.
+   - **Generations:** an event that arrives after `bye` is sent as a new `open`, which invalidates the close
+     (`gen += 1`). A stale `done` is ignored and a fresh `bye` follows.
+   - **Exit:** on a matching `done` the stub does a final zero-timeout run-loop drain and calls `exit(0)` in the same
+     main-thread turn. So no event dispatched to our handlers is ever dropped, and the stub never exits with
+     outstanding batches.
+   - **Timeouts and EOF:** heartbeat/handshake timeouts are defined. On EOF with outstanding batches, the stub
+     spawns one new supervisor and re-sends the unacked batches (at-least-once).
+   - **Joiners:** a joiner that finds the session gone turns into an owner in the same process.
+   - **Remaining limit:** the microsecond mach-queue window between the final drain and `exit` is the same for any
+     exiting process. It is now listed as residual risk §14.1-9, not denied.
+   - **Tests:** deterministic tests for the four injection points (before/after the supervisor reads `bye`,
+     before/after `done`, during the drain), a joiner with several batches across two generations, and respawn.
+     Also e2e A11c, which holds at `bye`/`done` for both owner and joiner stubs and is a required gate.
+
+3. **R2-B3 (capacity double counting; A19 infeasible) — fixed, §6.1, §3.2, §11.3.7.** Two separate checks:
+   - **Quota admission on final sizes:** `usedFinal + Σ claims.F + F_X ≤ quota`.
+   - **Per-volume free-space admission on transient bytes:** `Σ remaining + planned_X ≤ free − minFree`.
+   - **No double counting:** `remaining = planned − allocated` is updated as bytes materialize, and in-flight files
+     are not in `usedFinal`. When a fetch completes, one L3 write moves the bytes from the claim to `usedFinal`.
+   - **Measured local size:** `F` is measured by `pack` (`image.localSizes`). Old manifests fall back to a
+     pessimistic estimate; if the real size turns out larger, the launch still succeeds and the next quota pass
+     corrects it.
+   - **iCloud copies that cannot be evicted:** these bytes are budgeted in free space, not in the quota, and reported
+     by `doctor`.
+   - **A19/A20:** recomputed from the measured `F2` with incompressible padding (`Q = F2 + A1/2`), so the scenario is
+     now runnable.
+   - **Tests:** `CapacityPlanner` tests move two concurrent claims through materialize/copy/evict/convert/done on a
+     fake volume, plus the persistent-`M` and under-estimate cases.
+
+4. **R2-B4 (lock hold conflict, reclamation order) — fixed, §5.6.1–2, §5.2.3.** One hold boundary: L2(img) is held
+   for the whole fetch, verify, convert and attach decision of *that* image, and never while waiting on anything
+   else. The r1 sentence that contradicted this is withdrawn, and the prose and lock table now agree.
+   - **Order:** admission and reclamation run holding L0(sh)+own L1 and *no* L2, before L2 is taken.
+   - **Victims:** victim locks are taken **only with try-lock**, which is allowed out of order because it never
+     waits. Busy victims are skipped.
+   - **No restart path:** "release everything and restart" no longer exists. Every reclamation round either deletes
+     a victim or ends in `EX_NOSPACE`, so it cannot livelock.
+   - **Claims:** the persisted claim protects capacity after L1 is released (prefetch). A launch that sees a live
+     claim for the same image skips admission and waits on L2.
+   - **Tests:** a new multiprocess low-space test with the lock-order checker enabled (§11.2).
+
+5. **R2-B5 (`needsResolution` relaunch) — fixed by the safe MVP option, §5.8.1, §5.8.7.**
+   - **Launch is blocked:** an app with `needsResolution` refuses to launch with the new `EX_RESOLUTION` (14), before
+     changing anything. The r1 promise to launch the retained bundle is withdrawn.
+   - **Durable record:** the record (`retainedPath`, tree hash, cdhash, Team ID, `fromImageId`, txid) is written to
+     the journal and to state.
+   - **`resolve` is journaled:** `--keep-updated` re-verifies the tree hash against the record, requires `--trust`
+     when the identity changed, and packs a new image. It moves the bundle to the Trash only after that image is
+     verified in cache or uploaded. `--discard` and `--export` are also available. A crash in any phase leaves the
+     app blocked and never without a copy.
+   - **Rollback checks the tree hash:** hook-failure rollback now always compares cdhash **and** tree hash. The
+     "cdhash alone suffices" claim is removed.
+   - **Tests:** A34b (blocked relaunch, second update, crash at each resolve phase) and A34c (a pre-launch hook that
+     modifies the bundle), plus a `preLaunchHookMutates` fault point.
+   - **Later:** "launch retained" is sketched as a v1 option with its own trust rule.
+
+6. **R2-B6 (detach failure states) — fixed, §5.4, §5.4.1, §5.6.4.** Step 4 now ends in exactly one of four
+   outcomes: detached, retryable failure (`backoff`), exhausted (`stuck`), or ownership mismatch (`stuck`). Success
+   is confirmed by re-querying `hdiutil info`.
+   - **Ownership kept:** `backoff` and `stuck` keep the mount record, owner, and cache protection. Eviction also
+     refuses any image that `hdiutil info` still shows as attached.
+   - **Exit status:** on `stuck` the supervisor exits `EX_DISKIMAGE` instead of falling through to cleanup. Cleanup
+     and `lastUsedAt` run only after a verified detach.
+   - **Revive:** a joiner takes L1 and revives an `idle`/`backoff`/`stuck` session to `running` (new epoch,
+     adopting it if the owner is dead). It never opens a second session. The backoff owner re-checks under L1
+     before every attempt, so it cannot detach a revived session.
+   - **Hooks:** post-quit hooks run exactly once per epoch, so retries do not rerun them. Pre-launch hooks rerun
+     only when a stub revives a session into a new epoch.
+   - **Retries after `stuck`:** daemon/gc/`isenough detach [--force|--forget]`, or the next launch.
+   - **Tests:** pure `DetachMachine` tests and e2e A27c (busy ×2 → detach; revive during backoff; exhaustion → exit 6
+     with the record kept and evict refused; later `isenough detach` succeeds).
+
+### Non-blocking suggestions
+- **N1:** adopted. Within G-a the pure state machines (stub close, detach, capacity, lock checker) come first. The
+  HTTP server waits until G-d.
+- **N2:** adopted.
+  - Permission classes: other-uid EPERM is ignored in mount mode (the 0700 per-user mountpoint plus `-owners on`
+    means other users cannot reach it) and is `unknown` in restore mode.
+  - A registered but not running launchd job gives `held`, not "in use".
+  - `lsof +D` is dropped, and so is the "bundles are small" claim.
+  - The probe tests run on the non-root runner early and save EPERM artifacts.
+- **N3:** adopted (§7.1/§7.4). Non-atomic stores now upload to a temp name, verify, then rename to the final path
+  (or upload directly to it). Publication is still defined by writing the manifest last. WebDAV `MOVE` is no longer
+  advertised as atomic.
+- **N4:** adopted (§5.9, §11.3). Moving originals to `retained/` is best effort. Opening by explicit path and
+  checking `proc_pidpath` of the returned instance is authoritative; LS's preferred URL is only logged.
+- **N5:** adopted (§11.3). The trap now runs `lsregister -u` before detach, `quit-now` is cleared before each
+  relaunch, and A15 waits for the two clean probes.
