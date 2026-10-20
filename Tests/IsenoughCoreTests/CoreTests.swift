@@ -26,6 +26,11 @@ final class CoreTests: XCTestCase {
         let p=StubGenerator.infoPlist(source:["CFBundleIdentifier":"com.a","SUFeedURL":"x","CFBundleDocumentTypes":[["x":1]]],appId:"com.a")
         XCTAssertEqual(p["CFBundleIdentifier"] as? String,"com.a.256stub"); XCTAssertEqual(p["LSUIElement"] as? Bool,true); XCTAssertNil(p["SUFeedURL"]); XCTAssertEqual(StubGenerator.forwardArguments(["a b","https://x/y"]),["a b","https://x/y"])
     }
+    func testStubPathComparisonNormalizesRedundantSeparators() {
+        XCTAssertTrue(StubGenerator.pathsReferToSameLocation("/var/folders/ab/app/Test.app", "/var/folders//ab/app/Test.app"))
+        XCTAssertTrue(StubGenerator.pathsReferToSameLocation("/tmp/./Test.app", "/tmp/Test.app"))
+        XCTAssertFalse(StubGenerator.pathsReferToSameLocation("/tmp/Test.app", "/Applications/Test.app"))
+    }
     func testFileLockSerializes() throws {
         let path=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).path
         var lock=FileLock(path:path); try lock.lock(); XCTAssertTrue(lock.isLocked); lock.unlock(); XCTAssertFalse(lock.isLocked)

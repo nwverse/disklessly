@@ -46,6 +46,12 @@ public enum StubGenerator {
         return p
     }
     public static func forwardArguments(_ arguments: [String]) -> [String] { arguments }
+
+    /// Compare filesystem paths lexically after collapsing redundant separators and dot components.
+    /// URL equality is stricter than filesystem path equivalence (notably for `//`).
+    public static func pathsReferToSameLocation(_ lhs: String, _ rhs: String) -> Bool {
+        (lhs as NSString).standardizingPath == (rhs as NSString).standardizingPath
+    }
 }
 
 public struct IsenoughEngine {
@@ -83,7 +89,7 @@ public struct IsenoughEngine {
     #if os(macOS)
     private func installStub(info:[String:Any],manifest:ImageManifest,path:String,keepOriginal:Bool) throws {
         let source=URL(fileURLWithPath:path).standardizedFileURL
-        let dest=URL(fileURLWithPath:config.stubDir).appendingPathComponent(source.lastPathComponent)
+        let dest=URL(fileURLWithPath:config.stubDir).standardizedFileURL.appendingPathComponent(source.lastPathComponent)
         let temp=dest.deletingLastPathComponent().appendingPathComponent(".isenough-\(UUID().uuidString).app")
         let backup=dest.deletingLastPathComponent().appendingPathComponent(".isenough-original-\(UUID().uuidString).app")
         try FileManager.default.createDirectory(at:temp.appendingPathComponent("Contents/MacOS"),withIntermediateDirectories:true)
@@ -101,7 +107,7 @@ public struct IsenoughEngine {
         // when replacing its existing ad-hoc signature.
         try run("/usr/bin/codesign",["--force","--sign","-",temp.path])
         try run("/usr/bin/codesign",["--verify","--strict",temp.path])
-        guard source == dest else { throw IsenoughError.unsupported("Stub must replace the app at its original path (source: \(source.path), destination: \(dest.path))") }
+        guard StubGenerator.pathsReferToSameLocation(source.path, dest.path) else { throw IsenoughError.unsupported("Stub must replace the app at its original path (source: \(source.path), destination: \(dest.path))") }
         do {
             try FileManager.default.moveItem(at:source,to:backup)
         } catch {
