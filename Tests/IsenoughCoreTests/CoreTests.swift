@@ -19,6 +19,17 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(try StateMachine.transition(.remote,.fetch),.downloading)
         XCTAssertThrowsError(try StateMachine.transition(.remote,.detach))
     }
+    func testStateStoreRunningToCachedTransition() throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let store=StateStore(root.path), now=Date(timeIntervalSince1970:1_700_000_000)
+        try store.setAppState(bundleId:"com.test.app",imageId:"image-1",state:"running",mountPoint:"/mnt/image-1",lastUsed:now)
+        try store.setAppState(bundleId:"com.test.app",imageId:"image-1",state:"cached",lastUsed:now.addingTimeInterval(1))
+        let result=store.read(), apps=result["apps"] as! [String:[String:Any]]
+        XCTAssertEqual(apps["com.test.app"]?["state"] as? String,"cached")
+        XCTAssertNil(apps["com.test.app"]?["mountPoint"])
+        XCTAssertNotNil(apps["com.test.app"]?["lastUsed"])
+    }
     func testLocalBackendRangeAndTraversal() throws {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); defer{try? FileManager.default.removeItem(at:root)}
         let b=try LocalFolderBackend(root:root); try b.put("sub/file",data:Data("abcdef".utf8)); XCTAssertEqual(try b.get("sub/file",range:1..<4),Data("bcd".utf8)); XCTAssertEqual(try b.list("sub"),["file"]); XCTAssertThrowsError(try b.get("../escape",range:nil))

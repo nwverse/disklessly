@@ -37,6 +37,16 @@ public struct StateStore {
     public init(_ path: String) { dir=URL(fileURLWithPath:path); try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories:true) }
     public func read() -> [String: Any] { (try? JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("state.json")))) as? [String:Any] ?? ["schema":"state/1", "apps":[:], "cache":[:]] }
     public func write(_ object: [String:Any]) throws { let d=try JSONSerialization.data(withJSONObject:object, options:[.prettyPrinted,.sortedKeys]); try d.write(to:dir.appendingPathComponent("state.json"),options:.atomic) }
+    public func setAppState(bundleId: String, imageId: String, state: String, mountPoint: String? = nil, lastUsed: Date = Date()) throws {
+        var object=read(), apps=object["apps"] as? [String:[String:Any]] ?? [:]
+        var app: [String:Any] = ["imageId":imageId,"state":state,"lastUsed":ISO8601DateFormatter().string(from:lastUsed)]
+        if let mountPoint { app["mountPoint"]=mountPoint }
+        apps[bundleId]=app; object["apps"]=apps
+        var cache=object["cache"] as? [String:[String:Any]] ?? [:]
+        var entry=cache[imageId] ?? [:]; entry["lastUsed"]=ISO8601DateFormatter().string(from:lastUsed); cache[imageId]=entry
+        object["cache"]=cache
+        try write(object)
+    }
 }
 
 public enum StubGenerator {
@@ -174,13 +184,32 @@ public struct IsenoughEngine {
         #if !os(macOS)
         throw IsenoughError.unsupported("launch requires macOS hdiutil and Launch Services")
         #else
-        let mount=URL(fileURLWithPath:config.mountRoot).appendingPathComponent(manifest.imageId); try FileManager.default.createDirectory(at:mount.deletingLastPathComponent(),withIntermediateDirectories:true)
+        let rawMount=URL(fileURLWithPath:config.mountRoot).appendingPathComponent(manifest.imageId)
+        try FileManager.default.createDirectory(at:rawMount,withIntermediateDirectories:true)
+        let mount=rawMount.resolvingSymlinksInPath().standardizedFileURL
         try run("/usr/bin/hdiutil",["attach","-readonly","-nobrowse","-noautoopen","-mountpoint",mount.path,image.path])
+        let state=StateStore(config.stateDir)
+        try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"running",mountPoint:mount.path)
         let app=mount.appendingPathComponent(manifest.image.appPathInVolume)
         var args=["-n","-a",app.path]; args += documents; args += urls
         if !arguments.isEmpty { args.append("--args"); args += arguments }
         try run("/usr/bin/open",args)
-        if wait { while true { Thread.sleep(forTimeInterval:2); let p=Process(); p.executableURL=URL(fileURLWithPath:"/usr/bin/pgrep"); p.arguments=["-f",app.appendingPathComponent("Contents/MacOS/"+manifest.app.executable).path]; try? p.run(); p.waitUntilExit(); if p.terminationStatus != 0 { break } }; Thread.sleep(forTimeInterval:Double(config.detachDelaySeconds)); try? run("/usr/bin/hdiutil",["detach",mount.path]) }
+        if wait {
+            while true {
+                Thread.sleep(forTimeInterval:0.5)
+                let p=Process(); p.executableURL=URL(fileURLWithPath:"/usr/bin/pgrep"); p.arguments=["-f",app.appendingPathComponent("Contents/MacOS/"+manifest.app.executable).path]
+                try? p.run(); p.waitUntilExit(); if p.terminationStatus != 0 { break }
+            }
+            Thread.sleep(forTimeInterval:Double(config.detachDelaySeconds))
+            do {
+                try run("/usr/bin/hdiutil",["detach",mount.path])
+                try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"cached")
+            } catch {
+                try? state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"backoff",mountPoint:mount.path)
+                FileHandle.standardError.write(Data("isenough: detach failed: \\(error)\\n".utf8))
+                throw error
+            }
+        }
         #endif
     }
     #if os(macOS)

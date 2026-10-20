@@ -22,7 +22,20 @@ fail() { printf 'FAIL: %s\n' "$1" | tee -a "$LOG" >&2; exit 1; }
 pass() { printf 'PASS: %s\n' "$1" | tee -a "$LOG"; }
 assert_file() { [[ -f "$1" ]] || fail "$2 (missing: $1)"; pass "$2"; }
 assert_contains() { grep -Fq -- "$2" "$1" || fail "$3 (expected '$2' in $1)"; pass "$3"; }
-code_text() { /usr/bin/otool -t "$1" | tail -n +2; }
+code_text() { /usr/bin/otool -t "$1" | tail -n +2 2>/dev/null; }
+wait_for() {
+  local t=$1 msg=$2; shift 2
+  local n=$((t*5))
+  until "$@"; do
+    ((n--)) || { tail -20 "$LOG" >&2; fail "$msg (timeout ${t}s)"; }
+    sleep 0.2
+  done
+}
+is_attached() {
+  kill -0 "$APP_PID" 2>/dev/null || fail 'stub exited before attach'
+  /usr/bin/hdiutil info >"$TMP/hdiutil-info" 2>>"$LOG" && grep -Fq "$MOUNT" "$TMP/hdiutil-info"
+}
+is_detached() { ! /sbin/mount | grep -Fq "$MOUNT"; }
 stub_code_diagnostics() {
   {
     echo 'Stub code-section diagnostics:'
@@ -56,7 +69,7 @@ mkdir -p "$TMP/Applications/Fixture.app/Contents/MacOS" "$TMP/docs"
 run_cli init --backend local
 pass 'isolated local-folder repository initialized'
 
-cat > "$TMP/Applications/Fixture.app/Contents/Info.plist" <<'PLIST'
+cat > "$TMP/Applications/Fixture.app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
@@ -66,15 +79,42 @@ cat > "$TMP/Applications/Fixture.app/Contents/Info.plist" <<'PLIST'
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
+<key>IsenoughE2EOutput</key><string>$TMP/received-argv</string>
+<key>IsenoughE2EPidFile</key><string>$TMP/fixture.pid</string>
+<key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeExtensions</key><array><string>txt</string></array><key>CFBundleTypeRole</key><string>Viewer</string></dict></array>
 </dict></plist>
 PLIST
-cat > "$TMP/Applications/Fixture.app/Contents/MacOS/Fixture" <<'APP'
-#!/bin/bash
-set -eu
-printf '%s\n' "$@" > "${ISENOUGH_E2E_ARGV:?}"
-exec /bin/sleep 600
+cat > "$TMP/Fixture.swift" <<'APP'
+import AppKit
+
+@main
+final class Fixture: NSObject, NSApplicationDelegate {
+    private let app = NSApplication.shared
+    private let output = Bundle.main.object(forInfoDictionaryKey: "IsenoughE2EOutput") as! String
+    private let pidFile = Bundle.main.object(forInfoDictionaryKey: "IsenoughE2EPidFile") as! String
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        record(CommandLine.arguments.dropFirst().map { "ARG: \($0)" })
+        try? "\(ProcessInfo.processInfo.processIdentifier)".write(toFile: pidFile, atomically: true, encoding: .utf8)
+    }
+
+    func application(_ sender: NSApplication, open urls: [URL]) {
+        record(urls.map { "DOC: \($0.path)" })
+    }
+
+    private func record(_ lines: [String]) {
+        let existing = (try? String(contentsOfFile: output, encoding: .utf8)) ?? ""
+        try? (existing + lines.joined(separator: "\n") + "\n").write(toFile: output, atomically: true, encoding: .utf8)
+    }
+
+    static func main() {
+        let delegate = Fixture()
+        NSApplication.shared.delegate = delegate
+        NSApplication.shared.run()
+    }
+}
 APP
-chmod +x "$TMP/Applications/Fixture.app/Contents/MacOS/Fixture"
+swiftc "$TMP/Fixture.swift" -framework AppKit -o "$TMP/Applications/Fixture.app/Contents/MacOS/Fixture" >>"$LOG" 2>&1 || fail 'compile Swift fixture app'
 printf 'fixture document\n' > "$TMP/docs/open-me.txt"
 export ISENOUGH_E2E_ARGV="$TMP/received-argv"
 export ISENOUGH_E2E_PID="$TMP/fixture.pid"
@@ -106,18 +146,18 @@ CACHE_IMAGE="$ISENOUGH_CACHE_DIR/images/$IMAGE_ID.dmg"
 # Launch using the installed stub, not a direct engine call: its pre-launch path is under test.
 PATH="$ROOT/.build/debug:$PATH" "$STUB/Contents/MacOS/isenough-stub" --doc "$TMP/docs/open-me.txt" >>"$LOG" 2>&1 &
 APP_PID=$!
-for _ in $(seq 1 300); do [[ -f "$CACHE_IMAGE" ]] && break; kill -0 "$APP_PID" 2>/dev/null || fail 'stub exited before cache fetch'; sleep 0.2; done
+wait_for 60 'pre-launch fetched image to isolated cache' test -f "$CACHE_IMAGE"
 assert_file "$CACHE_IMAGE" 'pre-launch fetched image to isolated cache'
 REMOTE_SHA="$(shasum -a 256 "$REMOTE_IMAGE" | awk '{print $1}')"
 CACHE_SHA="$(shasum -a 256 "$CACHE_IMAGE" | awk '{print $1}')"
 [[ "$REMOTE_SHA" == "$CACHE_SHA" ]] || fail 'cached image sha256 matches remote manifest image'
 pass 'cached image sha256 verified'
 MOUNT="$MOUNT_ROOT/$IMAGE_ID"
-/usr/bin/hdiutil info >"$TMP/hdiutil-info" 2>>"$LOG" || fail 'hdiutil info after launch'
-grep -Fq "$MOUNT" "$TMP/hdiutil-info" || fail 'image attached at expected mount point' 
+wait_for 60 'image attached at expected mount point' is_attached
 mount_line="$(/sbin/mount | grep -F "$MOUNT" || true)"
 [[ -n "$mount_line" ]] || fail 'expected mount point is mounted'
 case "$mount_line" in *read-only*|*rdonly*) pass 'image is attached read-only' ;; *) fail 'image mount is read-only' ;; esac
+wait_for 60 'fixture process launched and recorded arguments' grep -Fq -- "$TMP/docs/open-me.txt" "$ISENOUGH_E2E_ARGV"
 assert_file "$ISENOUGH_E2E_ARGV" 'fixture process launched and recorded arguments'
 assert_contains "$ISENOUGH_E2E_ARGV" "$TMP/docs/open-me.txt" 'document argument forwarded to real app'
 
@@ -126,13 +166,13 @@ if [[ -f "$ISENOUGH_E2E_PID" ]]; then kill "$(cat "$ISENOUGH_E2E_PID")" 2>/dev/n
 kill "$APP_PID" 2>/dev/null || true
 wait "$APP_PID" 2>/dev/null || true
 APP_PID=""
-sleep 3
-if /sbin/mount | grep -Fq "$MOUNT"; then fail 'post-quit hook detached mount after configured delay'; fi
+wait_for 30 'post-quit hook detached mount after configured delay' is_detached
 pass 'post-quit hook detached image after delay'
 STATE="$ISENOUGH_STATE_DIR/state.json"
 assert_file "$STATE" 'lifecycle state persisted after quit'
 assert_contains "$STATE" 'lastUsed' 'LRU timestamp updated'
-assert_contains "$STATE" 'cached' 'lifecycle state returned to cached/idle'
+[[ "$(/usr/bin/plutil -extract "apps.io.github.s546126.256isenough.e2efixture.state" raw -o - "$STATE" 2>/dev/null)" == cached ]] || fail 'lifecycle state returned to cached/idle'
+pass 'lifecycle state returned to cached/idle'
 
 # A subsequent launch must reuse cache; then intentionally corrupt cache and reject it.
 BEFORE="$(stat -f '%m' "$CACHE_IMAGE")"
