@@ -29,7 +29,7 @@ This document is the implementation spec. Sources: [research.md](research.md), [
 dataless DMG, no `cp -c` zero-copy cache, ULMO remote, stub must forward documents and URLs, Pake = tray window +
 HTTP to a daemon, sessions tiering starts with pi JSONL only).
 
-Naming: product **256isenough**; CLI **`isenough`** (the name "wupan" was rejected by the user — never use it); stub launcher **`isenough-stub`**; Swift modules `Isenough*`.
+Naming: product **256isenough**; CLI **`isenough`** (the earlier working name was rejected by the user — never use it; see AGENTS.md); stub launcher **`isenough-stub`**; Swift modules `Isenough*`.
 Reverse-DNS prefix `io.github.s546126.256isenough`.
 
 ---
