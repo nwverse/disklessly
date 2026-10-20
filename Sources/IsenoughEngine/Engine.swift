@@ -201,6 +201,7 @@ public struct IsenoughEngine {
                 try? p.run(); p.waitUntilExit(); if p.terminationStatus != 0 { break }
             }
             Thread.sleep(forTimeInterval:Double(config.detachDelaySeconds))
+            try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"detaching",mountPoint:mount.path)
             do {
                 try run("/usr/bin/hdiutil",["detach",mount.path])
                 try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"cached")

@@ -27,7 +27,11 @@ wait_for() {
   local t=$1 msg=$2; shift 2
   local n=$((t*5))
   until "$@"; do
-    ((n--)) || { tail -20 "$LOG" >&2; fail "$msg (timeout ${t}s)"; }
+    ((n--)) || {
+      if [[ -n "${WAIT_TIMEOUT_HANDLER:-}" ]]; then "$WAIT_TIMEOUT_HANDLER"; fi
+      tail -20 "$LOG" >&2
+      fail "$msg (timeout ${t}s)"
+    }
     sleep 0.2
   done
 }
@@ -47,6 +51,11 @@ stub_code_diagnostics() {
   tail -20 "$LOG" >&2
 }
 run_cli() { "$ROOT/.build/debug/isenough" "$@" >>"$LOG" 2>&1; }
+app_state() {
+  /usr/bin/osascript -l JavaScript -e 'function run(a){var s=$.NSString.stringWithContentsOfFileEncodingError(a[0],4,null);if(!s)return "";var o=JSON.parse(s.js);return ((o.apps||{})[a[1]]||{}).state||""}' "$STATE" "$FIXTURE_BUNDLE_ID" 2>>"$LOG"
+}
+state_is_cached() { [[ "$(app_state)" == cached ]]; }
+log_state() { cat "$STATE" >>"$LOG"; }
 
 {
   echo "E2E started $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
@@ -65,6 +74,7 @@ export ISENOUGH_STATE_DIR="$TMP/state"
 export ISENOUGH_MOUNT_ROOT="$MOUNT_ROOT"
 export ISENOUGH_STUB_DIR="$TMP/Applications"
 export ISENOUGH_DETACH_DELAY=1
+FIXTURE_BUNDLE_ID=io.github.s546126.256isenough.e2efixture
 mkdir -p "$TMP/Applications/Fixture.app/Contents/MacOS" "$TMP/docs"
 run_cli init --backend local
 pass 'isolated local-folder repository initialized'
@@ -73,7 +83,7 @@ cat > "$TMP/Applications/Fixture.app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>io.github.s546126.256isenough.e2efixture</string>
+<key>CFBundleIdentifier</key><string>$FIXTURE_BUNDLE_ID</string>
 <key>CFBundleName</key><string>Fixture</string>
 <key>CFBundleExecutable</key><string>Fixture</string>
 <key>CFBundlePackageType</key><string>APPL</string>
@@ -170,7 +180,7 @@ pass 'post-quit hook detached image after delay'
 STATE="$ISENOUGH_STATE_DIR/state.json"
 assert_file "$STATE" 'lifecycle state persisted after quit'
 assert_contains "$STATE" 'lastUsed' 'LRU timestamp updated'
-[[ "$(/usr/bin/plutil -extract "apps.io.github.s546126.256isenough.e2efixture.state" raw -o - "$STATE" 2>/dev/null)" == cached ]] || fail 'lifecycle state returned to cached/idle'
+WAIT_TIMEOUT_HANDLER=log_state wait_for 10 'lifecycle state returned to cached/idle' state_is_cached
 pass 'lifecycle state returned to cached/idle'
 
 # A subsequent launch must reuse cache; then intentionally corrupt cache and reject it.
