@@ -493,3 +493,54 @@ Fixture build contract: the e2e fixture is a single-file AppKit app compiled wit
 `swiftc -parse-as-library`. Its entry point is `@MainActor @main`. Its output paths come only from Info.plist
 keys `IsenoughE2EOutput` and `IsenoughE2EPidFile`, because LaunchServices does not pass env vars.
 `ISENOUGH_E2E_ARGV` and `ISENOUGH_E2E_PID` are harness-side names for the same paths. No F-B1 dependency.
+
+## CI round 4 — diagnosis
+
+Run 39449244178 (HEAD `6ba40b7`), log `/tmp/ci-logs/r4.log`.
+
+### Evidence
+- Every check up to `PASS: LRU timestamp updated` passed: stub, cache fetch, sha256, read-only attach, doc
+  forwarding, post-quit detach, state.json exists and contains `lastUsed`. RC1-RC3 and round 3 are verified.
+- The first failure is scripts/e2e.sh l.173:
+  `plutil -extract "apps.io.github.s546126.256isenough.e2efixture.state" raw -o - "$STATE" 2>/dev/null`.
+  It returned something other than `cached`, and `2>/dev/null` hid the plutil error.
+- The engine writes `apps[<bundleId>].state = "cached"` (`StateStore.setAppState`, called from
+  `Engine.launch` right after a successful `hdiutil detach`). The other two code paths would have written
+  `backoff` and made the detach check fail. Neither happened, so the detach succeeded.
+
+### Root cause (harness bug, not an engine bug)
+1. plutil keypaths split on every `.`, and there is no escape syntax. The key `io.github.s546126.256isenough.e2efixture`
+   becomes the path apps→io→github→s546126→256isenough→e2efixture→state. That path does not exist, so
+   plutil exits non-zero with empty output. The assertion can never pass for a reverse-DNS bundle id,
+   whatever the engine writes. The earlier plutil reads (`imageId`, `image.file`) work only because they
+   have no dotted keys.
+2. There is also a latent race. `Engine.launch` runs `hdiutil detach` first and then `setAppState("cached")`. The harness
+   moves on as soon as `is_detached` is true, so it can read state.json before it has been rewritten
+   (it still says `running`). This is less likely to have caused this run, but the next run could fail
+   on it.
+
+### Exact changes
+1. scripts/e2e.sh: replace the l.173 plutil keypath with a reader that treats the bundle id as one
+   key. Use JXA, which ships with every macOS and needs no python/jq:
+   ```bash
+   app_state() { /usr/bin/osascript -l JavaScript -e 'function run(a){var s=$.NSString.stringWithContentsOfFileEncodingError(a[0],4,null);if(!s)return "";var o=JSON.parse(s.js);return ((o.apps||{})[a[1]]||{}).state||""}' "$STATE" "$FIXTURE_BUNDLE_ID" 2>>"$LOG"; }
+   state_is_cached() { [[ "$(app_state)" == cached ]]; }
+   wait_for 10 'lifecycle state returned to cached/idle' state_is_cached
+   pass 'lifecycle state returned to cached/idle'
+   ```
+   Define `FIXTURE_BUNDLE_ID=io.github.s546126.256isenough.e2efixture` once and use it in the Info.plist
+   heredoc (l.76) too. On failure, write the state file to the log: `cat "$STATE" >>"$LOG"`.
+   The assertion keeps its name and its meaning (`state == cached`). Only the reader changes and the race
+   gets a bounded wait.
+2. scripts/e2e.sh, audit: no other `plutil -extract` keypath in the script may contain a bundle id or any
+   other dotted key. Any later reads under `apps.`/`cache.` must use `app_state` or a similar JXA helper.
+3. Engine, optional hardening (same round, small): in `Engine.launch` (Sources/IsenoughEngine/Engine.swift
+   ~l.204), call `state.setAppState(..., state:"detaching", mountPoint:mount.path)` before
+   `hdiutil detach`. The state then goes running→detaching→cached, which matches the `SessionState`
+   enum. The "cached" write stays after a successful detach and "backoff" stays on failure. No other behaviour changes.
+   No F-B1 (restore WAL) work.
+
+### Contract amendment
+state.json readers must index `apps` and `cache` by the full bundleId or imageId as a single key. Dotted
+keypath tools (`plutil -extract`, `defaults read` keypaths) are not allowed for these maps. The state write
+after detach has a bounded delay, so harness checks of post-quit state must poll for up to 10s, not read once.
