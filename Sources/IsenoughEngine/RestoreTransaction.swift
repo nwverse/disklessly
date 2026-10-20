@@ -153,31 +153,39 @@ enum ProcessRunner {
         let args = [exe, "--state-dir", stateDir, "hook", "watch", "--app", appId]
         let cArgs: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) } + [nil]
         defer { cArgs.forEach { free($0) } }
+        // POSIX_SPAWN_SETSID is 0x80 on glibc and 0x0400 on Darwin. The constant is
+        // not always imported, and the Darwin value must not be confused with
+        // POSIX_SPAWN_START_SUSPENDED (0x80), which would freeze the watcher.
+        // Darwin's posix_spawnattr_t is already a pointer, so the spawn calls take
+        // UnsafePointer<posix_spawnattr_t?>. Linux's is a struct.
+        var pid: pid_t = 0
+        let rc: Int32
+        #if os(macOS)
+        var attr: posix_spawnattr_t?
+        guard posix_spawnattr_init(&attr) == 0 else { throw IsenoughError.failure("posix_spawnattr_init failed") }
+        defer { posix_spawnattr_destroy(&attr) }
+        guard posix_spawnattr_setflags(&attr, 0x0400) == 0 else {
+            throw IsenoughError.failure("posix_spawnattr_setflags failed")
+        }
+        rc = cArgs.withUnsafeBufferPointer { buffer in
+            guard let base = buffer.baseAddress else { return EINVAL }
+            return posix_spawn(&pid, exe, nil, &attr, UnsafeMutablePointer(mutating: base), environ)
+        }
+        #else
         let attr = UnsafeMutablePointer<posix_spawnattr_t>.allocate(capacity: 1)
         defer {
             posix_spawnattr_destroy(attr)
             attr.deallocate()
         }
         guard posix_spawnattr_init(attr) == 0 else { throw IsenoughError.failure("posix_spawnattr_init failed") }
-        // POSIX_SPAWN_SETSID is 0x80 on glibc and 0x0400 on Darwin. The constant is
-        // not always imported, and the Darwin value must not be confused with
-        // POSIX_SPAWN_START_SUSPENDED (0x80), which would freeze the watcher.
-        let setSid: Int16
-        #if os(Linux)
-        setSid = 0x80
-        #elseif os(macOS)
-        setSid = 0x0400
-        #else
-        setSid = 0
-        #endif
-        guard posix_spawnattr_setflags(attr, setSid) == 0 else {
+        guard posix_spawnattr_setflags(attr, 0x80) == 0 else {
             throw IsenoughError.failure("posix_spawnattr_setflags failed")
         }
-        var pid: pid_t = 0
-        let rc: Int32 = cArgs.withUnsafeBufferPointer { buffer in
+        rc = cArgs.withUnsafeBufferPointer { buffer in
             guard let base = buffer.baseAddress else { return EINVAL }
             return posix_spawn(&pid, exe, nil, attr, UnsafeMutablePointer(mutating: base), environ)
         }
+        #endif
         guard rc == 0, pid > 0 else { throw IsenoughError.failure("could not spawn hook watch (errno \(rc))") }
         return ProcessOwner(pid: pid, start: ProcessStart.ticks(for: pid))
     }

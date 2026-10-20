@@ -12,10 +12,17 @@ MOUNT_ROOT="$TMP/mounts"
 APP_PID=""
 
 cleanup() {
+  local status=$?
   if [[ -f "${ISENOUGH_E2E_PID:-}" ]]; then kill "$(cat "$ISENOUGH_E2E_PID")" 2>/dev/null || true; fi
   if [[ -n "${APP_PID:-}" ]]; then kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi
   if [[ -n "${HELPER:-}" ]]; then kill "$HELPER" 2>/dev/null || true; wait "$HELPER" 2>/dev/null || true; fi
   if [[ -f "${BUSY_PID:-}" ]]; then kill -9 "$(cat "$BUSY_PID")" 2>/dev/null || true; fi
+  if [[ "$status" -ne 0 && -f "${LOG:-}" ]]; then
+    local kept="/tmp/isenough-e2e.log"
+    if [[ "$LOG" != "$kept" ]]; then cp "$LOG" "$kept" 2>/dev/null || true; fi
+    printf 'e2e failed (exit %s). Full log: %s\n' "$status" "$kept" >&2
+    tail -80 "$LOG" >&2 || true
+  fi
   rm -rf "$TMP"
 }
 trap cleanup EXIT INT TERM
@@ -60,11 +67,11 @@ state_is_cached() { [[ "$(app_state)" == cached ]]; }
 log_state() { cat "$STATE" >>"$LOG"; }
 
 {
-  echo "E2E started $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  sw_vers
-  xcodebuild -version
-  swift --version
-} >>"$LOG" 2>&1
+  echo "E2E started $(date -u '+%Y-%m-%dT%H:%M:%SZ')" || true
+  sw_vers || true
+  xcodebuild -version || true
+  swift --version || true
+} >>"$LOG" 2>&1 || true
 
 cd "$ROOT"
 swift build -c debug >>"$LOG" 2>&1 || fail 'swift build -c debug'
