@@ -464,3 +464,129 @@ fallback estimate for old manifests (R2-B3).
   checking `proc_pidpath` of the returned instance is authoritative; LS's preferred URL is only logged.
 - **N5:** adopted (§11.3). The trap now runs `lsregister -u` before detach, `quit-now` is cleared before each
   relaunch, and A15 waits for the two clean probes.
+
+## Round 3 — reviewer (gpt-6.1-sol)
+
+**Verdict: CHANGES REQUESTED.** Reviewed `033039a` on `feat/mvp`, including all of `research.md`,
+`research-luna.md`, `research-cursor.md`, `design.md` rev. r2, and both previous reviews/author responses.
+This is a document review on Linux; no macOS runtime behavior was experimentally verified.
+
+### Authoritative corrections checklist
+
+1. **FileManager instead of brctl:** satisfied (§7.2); asynchronous download/upload completion is explicit.
+2. **Never attach dataless repo images:** satisfied (§5.2/§7.2): materialize/current check, independent copy,
+   SHA-256 verification, conversion, then attach only the verified local image.
+3. **No clone/evict zero-copy assumption:** satisfied (§6.2); streamed independent cache copy is mandatory.
+4. **Remote ULMO; local ULFO/UDRO:** satisfied, including conversion-cost justification and negative tests.
+5. **Playpen lifecycle precedent; document/URL forwarding:** correctly distinguished from AppPorts. Native
+   AppKit/NSWorkspace forwarding is specified, but contradictory joiner shutdown instructions remain (R3-B1).
+6. **Pake tray/window + localhost HTTP + GPL-3.0:** satisfied (§2/§10/§12/§14), including pairing, cookie/SSE
+   authentication, separate CLI Bearer authentication, and corresponding-source obligations.
+7. **Session roadmap starts with closed pi JSONL; excludes credentials and SQLite:** satisfied (§13), not MVP.
+
+### Previous-round disposition
+
+R2-B1's backing-image self-dependency is fixed. R2-B3's quota/transient double counting and infeasible LRU
+scenario are fixed. R2-B4's lock hold contradiction and reclamation order are fixed, but the prefetch claim
+handoff has a remaining race (R3-B3). R2-B5's unresolved-launch promise is correctly replaced by a hard block;
+its acceptance fixture still cannot exercise the promised successful resolution (R3-B6). R2-B6's mounted-session
+backoff/stuck branches now preserve ownership and cache protection. R2-B2's generation protocol is substantially
+improved in §8.3, but §5.6.3 still instructs a joiner to exit before that protocol completes (R3-B1).
+Restore-mode recovery and the revised probe's permission policy need explicit executable contracts (R3-B2/B4).
+
+### Blocking issues
+
+1. **R3-B1 — Joiners still have two incompatible shutdown rules** (§5.6.3 step 3 versus §8.3).
+   §8.3 correctly requires both owner and joiner to keep reading after `bye`, accept later generations, and never
+   close first; a joiner exits only on EOF after acknowledgements. §5.6.3 instead explicitly says, "After `bye`
+   the joiner sends `done` and exits." Following that rule can terminate the transport with a late `open` already
+   queued after `bye`, invoking crash/respawn behavior during an ordinary successful close. It also prevents the
+   specified single-connection, multi-generation joiner tests from following one contract.
+   **Required:** remove the exit-on-`done` instruction everywhere (including abbreviated diagrams where relevant);
+   make EOF-after-drain the one joiner exit condition, with §8.3 authoritative. Keep the deterministic test where
+   `open(gen+1)` follows `bye(gen)` on a live-session joiner's connection, and assert that this same joiner accepts
+   and acknowledges it without respawn. The protocol-level race fix is otherwise sound; the acknowledged residual
+   OS termination window is not an additional blocker.
+
+2. **R3-B2 — The restore usage probe can never become clean on an ordinary non-root Mac** (§5.9 passes 1–3).
+   The probe enumerates *every* PID and treats any root/other-user EPERM as `unknown` in restore mode, indefinitely
+   blocking cleanup. A non-root process cannot inspect the fds/mapped regions of all system/root processes;
+   ordinary unrelated protected system processes therefore suffice to strand even the simple A31 restore fixture.
+   Merely logging this as a permission limitation does not make temporary restore implementable. The mount-mode
+   claim that 0700 excludes other users also does not exclude root; root access must not be justified by DAC alone.
+   **Required:** define a realistic supported inspection boundary and a justified treatment of unrelated protected
+   platform processes, separately from relevant app/helper users. Preserve unknown→busy for genuinely unresolved
+   potential dependents; do not blanket-ignore arbitrary inaccessible helpers. If complete proof is unavailable
+   under the no-privilege constraint, state the supported assumptions/restrictions and fail unsupported preflight
+   rather than promise temporary cleanup that can never occur. Run the real non-root probe against the normal
+   macOS process population and require both an idle mounted fixture and an idle restored fixture to become clean,
+   while a relevant unreadable holder remains conservatively blocked.
+
+3. **R3-B3 — A live prefetch claim does not establish who owns the fetch lock/work** (§5.2.3b–c, §5.6.2, §6.1).
+   Prefetch writes its claim under L1, releases L1, and only then takes L2. A launch can take L1 in that gap, see
+   the live claim, skip admission, and acquire L2 *before* prefetch. The text assumes it will wait and find a complete
+   image, but that ordering is not guaranteed. The launch then performs the fetch using capacity owned by the
+   prefetch PID. If prefetch dies, dead-owner reaping can release that capacity while the launch still writes,
+   allowing another image to be admitted without the required reservation. L2 serializes bytes, not claim ownership.
+   **Required:** make claim publication and worker/lock ownership a coherent handoff. For example, prefetch can
+   acquire L2 while still holding L1 and release L1 only after it owns both the claim and L2; alternatively specify
+   an atomic ownership-transfer/re-admission protocol. Every actual writer must have a live claim owned by that
+   writer, and reapers must not free an active writer's reservation. Add deterministic multiprocess tests pausing
+   prefetch between claim publication and L2 acquisition, launching concurrently, and killing prefetch at that point;
+   verify accounting and completion with a third different-app admission.
+
+4. **R3-B4 — Restore orphan recovery still requires an attachment that restore deliberately removed**
+   (§3.5 `restored`, §5.8.2 `active`, §5.6.4, §9). Restore-in detaches the image before launching and records the
+   active session in `restored`/its open journal. Recovery of that `active` journal points to §5.6.4, whose adopter
+   must verify an attached `devEntry`, cache image and `mnt/<imageId>` before adoption. Those do not exist for an
+   active restored app. §9's mount reconciliation/drop-if-not-attached rule is likewise not a restore recovery
+   algorithm. Thus killing the supervisor after restore launch leaves no specified way for gc/another supervisor
+   to adopt the live restored session, watch its helpers, and eventually restore the parked stub safely.
+   **Required:** add a separate restore-session adoption branch, elected under L1, based on the durable journal,
+   destination/staging identities, owner pid/start, and mode-specific usage probe—not an attached-image check.
+   Specify active-and-busy, active-and-clean, and partially swapped outcomes, including ownership publication and
+   exactly when recovery waits versus runs restore-out. Add a required real macOS test: launch restored fixture,
+   kill its supervisor while app/helper remains alive, run two recovery callers, verify one adopter and no early
+   swap, then quit all users and verify stub reinstatement, hooks policy and journal closure.
+
+5. **R3-B5 — Successful restore cleanup is not connected to a terminal session state** (§5.4 steps 4–7).
+   Step 4 defines `detached/backoff/stuck` outcomes for mount mode. Its restore alternative runs restore-out,
+   but assigns no outcome. Step 5 is expressly "only after outcome detached" and removes only a mount/session
+   record; it does not specify removing `state.restored[appId]`. §5.8.3 closes the journal without specifying this
+   state cleanup either. Implementing these literally can leave a restored-session reference to a deleted journal,
+   and a subsequent launch/evict/recovery sees a stale active session. This is distinct from safe bundle retention,
+   which is now properly specified.
+   **Required:** define restore-out success as an explicit terminal outcome, atomically retire the restored/session
+   references after durable swap completion, update LRU consistently, and retain a recoverable journal until that
+   state publication is durable. Busy/unknown/held and `needsResolution` outcomes must remain distinguishable.
+   Extend restore fault tests across the journal-close/state-retirement boundary and assert a second launch,
+   status, evict and repeated recovery all see the correct terminal state.
+
+6. **R3-B6 — The required update-resolution acceptance gate uses an invalid update fixture** (§11.3 A34/A34b,
+   §5.8.7). A34 merely writes a file into the signed bundle. That can invalidate its resource seal without changing
+   its executable's cdhash; cdhash is not a hash of the live bundle tree. A34b nevertheless expects a changed
+   cdhash and successful `resolve --keep-updated --trust`, while resolve correctly requires a valid code signature.
+   Trust approval cannot repair an invalid signature, and the engine must not re-sign real apps. The required
+   green acceptance sequence is therefore not supplied by the stated fixture.
+   **Required:** separate two tests: (a) an invalid bundle mutation is retained, keep-updated is refused without
+   deleting it, and export/discard remains available; (b) a genuine simulated update replaces the fixture with a
+   newly valid, test-harness-signed bundle having a changed cdhash, so explicit ad-hoc trust approval and successful
+   resolution can be tested. Re-signing belongs only to fixture construction, never the engine. Keep tree-hash-only
+   hook mutation coverage as a separate rollback test.
+
+### Non-blocking suggestions
+
+- **N1 — Scope:** the required sections and abstraction seams are present, and G-a…G-d remain a useful sequence.
+  The MVP is nevertheless substantial; prioritize the real non-root usage probe and both lifecycle modes before
+  implementing the HTTP server. Deferring optional features is preferable to weakening required safety gates.
+- **N2 — Diagram drift:** §5.7 still describes argv document forwarding and an events FIFO, while §8.3 mandates
+  socketpair NDJSON and no document argv. Update the diagram to avoid reviving the obsolete implementation.
+- **N3 — Claims and macOS details:** validate the `libproc` fd-info calls against the actual SDK (fd-specific vnode
+  information uses `proc_pidfdinfo`), handle process-exit races separately from EPERM, and preserve diagnostics.
+  Do not require a nonempty userspace infrastructure baseline on OS versions using an in-kernel image path.
+- **N4 — Portable test hooks:** A11c's environment-variable hold switch must reach an LS-launched stub explicitly
+  (e.g. isolated fixture resource/test config); an environment variable exported by the script is not generally
+  inherited through Launch Services. Keep hook configuration isolated and unavailable in release builds.
+- **N5 — Distribution/phase 2:** the Pake license discussion, trust anchor, quarantine refusal, best-effort LS
+  cleanup and backend publication rules are appropriate. Treat TCC/default-handler continuity as compatibility
+  observations, not guarantees; test actual iCloud APIs manually on supported releases after the fake-backend CI.
