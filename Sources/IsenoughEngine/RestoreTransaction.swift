@@ -87,20 +87,81 @@ public struct RestoreServices {
     }
 }
 
+struct ProcessRow: Equatable {
+    var pid: Int32
+    var ppid: Int32
+    var command: String
+}
+
 enum ProcessProbe {
+    /// A process is using the restored bundle when its command names the destination or staging path.
+    /// The launching stub and the `isenough` CLI are not users: the stub's own executable lives inside
+    /// the destination, and on macOS that path is spelled both `/var/...` and `/private/var/...`.
     static func usage(roots: [String]) -> UsageClass {
-        let text = ProcessRunner.capture("/bin/ps", ["-ax", "-o", "pid=,command="])
-        let selfPid = String(getpid())
-        for line in text.split(separator: "\n") {
-            let raw = String(line)
-            let trimmed = raw.trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix(selfPid + " ") || trimmed == selfPid { continue }
-            if raw.contains("hook watch") || raw.contains("/isenough ") { continue }
-            for root in roots where root.count > 1 && raw.contains(root) {
-                return .busy
-            }
+        let text = ProcessRunner.capture("/bin/ps", ["-ax", "-o", "pid=,ppid=,command="])
+        return usage(rows: parse(text), roots: roots, selfPid: getpid())
+    }
+
+    static func usage(rows: [ProcessRow], roots: [String], selfPid: Int32) -> UsageClass {
+        let skip = ancestorPIDs(selfPid: selfPid, rows: rows)
+        let needles = pathNeedles(roots)
+        for row in rows {
+            if skip.contains(row.pid) || isOwnTool(row.command) { continue }
+            if needles.contains(where: { row.command.contains($0) }) { return .busy }
         }
         return .clean
+    }
+
+    static func parse(_ text: String) -> [ProcessRow] {
+        var rows: [ProcessRow] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            let raw = String(line).trimmingCharacters(in: .whitespaces)
+            let parts = raw.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard parts.count >= 2, let pid = Int32(parts[0]), let ppid = Int32(parts[1]) else { continue }
+            rows.append(ProcessRow(pid: pid, ppid: ppid, command: parts.count == 3 ? String(parts[2]) : ""))
+        }
+        return rows
+    }
+
+    /// `/var` and `/private/var` (also `/tmp` and `/etc`) name the same file on macOS.
+    static func pathNeedles(_ roots: [String]) -> [String] {
+        var needles: [String] = []
+        func add(_ path: String) {
+            guard path.count > 1, !needles.contains(path) else { return }
+            needles.append(path)
+        }
+        for root in roots {
+            add(root)
+            let resolved = URL(fileURLWithPath: root).resolvingSymlinksInPath().standardizedFileURL.path
+            add(resolved)
+            for path in [root, resolved] {
+                if path.hasPrefix("/private/var/") || path.hasPrefix("/private/tmp/") || path.hasPrefix("/private/etc/") {
+                    add(String(path.dropFirst("/private".count)))
+                } else if path.hasPrefix("/var/") || path.hasPrefix("/tmp/") || path.hasPrefix("/etc/") {
+                    add("/private" + path)
+                }
+            }
+        }
+        return needles
+    }
+
+    static func isOwnTool(_ command: String) -> Bool {
+        if command.contains("hook watch") { return true }
+        let token = command.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? ""
+        let base = (token as NSString).lastPathComponent
+        return base == "isenough" || base == "isenough-stub"
+    }
+
+    static func ancestorPIDs(selfPid: Int32, rows: [ProcessRow]) -> Set<Int32> {
+        let parent = Dictionary(rows.map { ($0.pid, $0.ppid) }, uniquingKeysWith: { _, latest in latest })
+        var skip: Set<Int32> = [selfPid]
+        var pid = selfPid
+        var guardCount = 0
+        while let next = parent[pid], next > 1, skip.insert(next).inserted, guardCount < 64 {
+            pid = next
+            guardCount += 1
+        }
+        return skip
     }
 }
 

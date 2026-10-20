@@ -222,6 +222,27 @@ final class RestoreTrace {
 }
 
 final class RestoreTransactionTests: XCTestCase {
+    func testProbeIgnoresLaunchingStubAcrossPrivateVar() {
+        let root = "/var/folders/ab/T/isenough-e2e.x/Applications/Restore.app"
+        let privateRoot = "/private" + root
+        let stub = privateRoot + "/Contents/MacOS/isenough-stub"
+        let app = privateRoot + "/Contents/MacOS/Restore"
+        let launching = [
+            ProcessRow(pid: 10, ppid: 1, command: "bash scripts/e2e.sh"),
+            ProcessRow(pid: 20, ppid: 10, command: stub),
+            ProcessRow(pid: 30, ppid: 20, command: "/opt/debug/isenough launch io.example.restore"),
+        ]
+        XCTAssertEqual(ProcessProbe.usage(rows: launching, roots: [root], selfPid: 30), .clean)
+        let running = launching + [ProcessRow(pid: 40, ppid: 1, command: app)]
+        XCTAssertEqual(ProcessProbe.usage(rows: running, roots: [root], selfPid: 30), .busy)
+        let helper = launching + [ProcessRow(pid: 41, ppid: 10, command: "tail -f \(root)/Contents/Info.plist")]
+        XCTAssertEqual(ProcessProbe.usage(rows: helper, roots: [root], selfPid: 30), .busy)
+        let symlinkShown = launching + [ProcessRow(pid: 42, ppid: 1, command: root + "/Contents/MacOS/Restore")]
+        XCTAssertEqual(ProcessProbe.usage(rows: symlinkShown, roots: [privateRoot], selfPid: 30), .busy)
+        let watcher = launching + [ProcessRow(pid: 43, ppid: 1, command: "/opt/debug/isenough --state-dir /s hook watch --app io.example.restore")]
+        XCTAssertEqual(ProcessProbe.usage(rows: watcher, roots: [root], selfPid: 30), .clean)
+    }
+
     private let phases = RestorePhase.allCases.map(\.rawValue)
     private let edges = ["beforeJournal", "afterJournal", "afterMutation"]
 
