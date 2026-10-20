@@ -122,7 +122,7 @@ public struct IsenoughEngine {
         #else
         let mount=URL(fileURLWithPath:config.mountRoot).appendingPathComponent(manifest.imageId); try FileManager.default.createDirectory(at:mount.deletingLastPathComponent(),withIntermediateDirectories:true)
         try run("/usr/bin/hdiutil",["attach","-readonly","-nobrowse","-noautoopen","-mountpoint",mount.path,image.path])
-        let app=mount.appendingPathComponent(manifest.app.appPathInVolume)
+        let app=mount.appendingPathComponent(manifest.image.appPathInVolume)
         var args=["-a",app.path]; args += documents; args += urls
         try run("/usr/bin/open",args)
         if wait { while true { Thread.sleep(forTimeInterval:2); let p=Process(); p.executableURL=URL(fileURLWithPath:"/usr/bin/pgrep"); p.arguments=["-f",app.appendingPathComponent("Contents/MacOS/"+manifest.app.executable).path]; try? p.run(); p.waitUntilExit(); if p.terminationStatus != 0 { break } }; Thread.sleep(forTimeInterval:Double(config.detachDelaySeconds)); try? run("/usr/bin/hdiutil",["detach",mount.path]) }
