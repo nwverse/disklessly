@@ -590,3 +590,103 @@ Restore-mode recovery and the revised probe's permission policy need explicit ex
 - **N5 — Distribution/phase 2:** the Pake license discussion, trust anchor, quarantine refusal, best-effort LS
   cleanup and backend publication rules are appropriate. Treat TCC/default-handler continuity as compatibility
   observations, not guarantees; test actual iCloud APIs manually on supported releases after the fake-backend CI.
+
+## Round 3 — author response (claude-opus-5-5)
+
+All six blocking issues are accepted and resolved in `docs/design.md` rev. r3. All non-blocking suggestions
+(N1–N5) are adopted.
+
+### Blocking issues
+
+1. **R3-B1 — joiner shutdown.** Accepted. §5.6.3 step 3 now says the opposite of r2: `bye` does not end a joiner. It
+   answers `done(g, r)`, keeps reading, and accepts and acks later generations. Its **only** exit condition is EOF
+   on fd 3 after every batch it received has been acked. §8.3 is named as the authoritative source, and its
+   supervisor-rules paragraph repeats the rule. The §5.7 diagram no longer shows `done` → exit for the supervisor.
+   It shows the stub's final drain → `exit` → EOF, and a note gives the owner/joiner EOF behaviour (N2, below).
+   New deterministic `StubProtocol` test: `open(gen+1)` arrives on a live-session joiner's connection after its
+   `done(gen)`. The same joiner pid acks it, there is no respawn, and the joiner exits only after EOF. A11c now
+   asserts the same pid on real processes.
+2. **R3-B2 — restore probe on a non-root Mac.** Accepted. §5.9 pass 3 is rewritten as a *supported inspection
+   boundary*:
+   - Pass 1 (`proc_pidpath`) covers every uid, root included. Per-fd, cwd and region info is used only for our
+     own uid, with `proc_pidfdinfo` named correctly (N3).
+   - A process that exits during the probe (`ESRCH`, or its start time changed) is skipped. It is handled
+     separately from `EPERM` (N3).
+   - Each uninspectable pid falls into one class: **own** → unknown; **related** → unknown; **platform**
+     (Apple-anchored, sealed system volume) → ignored; **unrelated** (valid signature, other Team ID) → ignored;
+     **unverifiable signature** → unknown. "Related" means one of: executes from the root; listed in the new
+     `manifest.app.related` (declared helpers and launchd labels); same Team ID; or listed in a user
+     `relatedExecutables` config entry.
+   - **Mount mode** no longer argues from DAC. The 0700 argument is withdrawn. The completeness proof is the
+     kernel's: a non-forced unmount fails `EBUSY` for any holder of any uid, and that failure maps to `backoff`.
+   - **Restore mode** states assumption A-R and its documented restriction.
+   - Unsupported preflight: `pack` classifies apps with `KeepAlive`/`RunAtLoad` embedded daemons as
+     `unsupported`. restore-in refuses (`EX_UNSUPPORTED`) if a related uninspectable process is already running.
+   - New required §11.2 test runs the real non-root probe against the runner's full process population:
+     - an idle mounted fixture and an idle restored fixture both become clean;
+     - a harness-started root `relatedExecutables` helper holding a file stays `unknown` and blocks cleanup;
+     - a platform root holder is caught by the kernel unmount gate;
+     - the exit-race and classifier cases are covered.
+3. **R3-B3 — prefetch claim handoff.** Accepted, using the option you proposed.
+   - Prefetch now takes L2(img) **while still holding L1** (legal order) and releases L1 only after it owns both
+     the claim and L2 (§5.6.2).
+   - Invariant (§5.2.3c, §6.1): the only writer of an image holds L2 **and** owns a live claim. Claims are never
+     transferred. A launch that waited for a failed or dead prefetch re-admits under its own pid while holding L1.
+   - Reaping a dead claim requires L2 plus a dead-owner check under L3, so an active writer's reservation can
+     never be freed.
+   - Tests: a pure interleaving model (§6.1 e) and real multiprocess tests (§11.2). The real tests hold prefetch
+     at claim publication, kill it after it takes L2, and run a third-app admission that must not get the
+     reservation early.
+4. **R3-B4 — restore orphan adoption.** Accepted. §5.6.4 now has two separate branches.
+   - (a) Mount sessions: the attachment check, unchanged.
+   - (b) Restore sessions: driven by the open restore journal, not by an attached image. The adopter checks that
+     `destId`/`stubId` (inode identities, new in §3.5) or bundle id + cdhash match the expected layout, checks the
+     owner pid/start, and runs the restore-mode probe.
+   - A phase × probe table gives the action for each case: rollback before `installed`; adopt-and-wait when busy
+     at `installed`/`active`; restore-out only after two clean probes under the current owner; forward
+     continuation for partially swapped restore-out phases.
+   - Single-adopter election rewrites the journal owner first (WAL rule), then the state mirror. Short-lived
+     adopters such as `gc` hand ownership to a detached `isenough hook watch` process (new internal command).
+   - §9 restore recovery no longer uses the attachment check.
+   - The table is a pure function, `RestoreRecovery.decide`. It is enumerated exhaustively with the invariant
+     "no rename of dest unless the probe was clean twice under the current owner".
+   - New required A33b: kill the supervisor while the app and its helper live, run two concurrent `gc`. Expected:
+     one adopter, no early swap, a joining document delivered once; after quit, the stub is reinstated, hooks ran
+     once and the journal is closed. A variant kills at `installed`.
+5. **R3-B5 — restore-out terminal outcome.** Accepted.
+   - §5.4 step 4 now lists restore outcomes: **waiting(busy|unknown|held)** (non-terminal, joinable) and
+     **restoredOut / restoredOutRetained** (terminal). Step 5 is now explicitly mount-only.
+   - §5.8.3 adds a `retired` phase before `closed`. In one durable L3 write it:
+     - removes `state.restored[appId]`;
+     - sets `needsResolution` if the bundle was retained;
+     - sets `lastOutcome` (`restoredOut`, `restoredOutRetained`, or `rolledBack` for hook rollback);
+     - updates `lastUsedAt` and the per-app state.
+   - The journal is removed only after that write, so every crash point is recoverable.
+   - A `restored` entry whose journal is missing is retired only if the stub is verifiably back in place.
+     Otherwise `doctor` reports it.
+   - The views now agree: launch, status, evict and recovery all read the same terminal state.
+   - New fault points: `disposed:after`, `retired:before/after`, `closed:before`. After each, a second launch,
+     status, evict and repeated `gc` must show the same terminal state (A31, A33).
+6. **R3-B6 — update fixture.** Accepted. Split into separate tests:
+   - (a) **A34 `restore_invalid_mutation`**: an in-place write breaks the seal and the cdhash is unchanged. The
+     bundle is retained. `--keep-updated` is refused with or without `--trust` (`EX_INTEGRITY`, strict static
+     validation, §5.8.7); `--trust` cannot override an invalid signature. Export (and discard) stay available.
+   - (b) **A34d `restore_signed_update`** (required): the *test harness* replaces the bundle with a v1.1 fixture
+     that it ad-hoc signs itself, so the cdhash really changes. The test covers refusal without `--trust`,
+     success with `--trust`, Trash-only-after-verify, crash per resolve phase, and a later discard.
+   - The engine never re-signs apps; a log grep asserts this.
+   - A34c remains the tree-hash-only (cdhash-equal) rollback test.
+
+### Non-blocking suggestions
+- **N1:** adopted. The G-a/G-b priority note in §12.1 says the real non-root probe is the first macOS-runner
+  deliverable, and both lifecycle modes come before any server work.
+- **N2:** adopted. §5.7 now shows the socketpair NDJSON `--control-fd 3` spawn, documents only in `open`
+  messages, the joiner branch, and EOF-based exit. Argv documents and the FIFO are removed.
+- **N3:** adopted. `proc_pidfdinfo` is named; `ESRCH`/exit races are separate from `EPERM`; diagnostics are kept
+  in `details.uninspectable`. The `infra` baseline may be empty (§5.9 pass 6, §11.2).
+- **N4:** adopted. Test hold points and faults no longer come from environment variables. They come from a
+  `test-hooks.json` resource in the *test* stub bundle and from `testHooks`/`faults` keys in the isolated
+  `$E2E_DIR` config. They are compiled only with `-D ISENOUGH_TEST_HOOKS`, and CI checks that release binaries
+  do not contain them.
+- **N5:** adopted. New §14.1 risk 13 treats TCC, default handlers and Dock pins as compatibility observations.
+  Real iCloud API behaviour is tested manually (G-c) after the fake-backend CI.

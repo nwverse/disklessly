@@ -1,4 +1,4 @@
-# 256isenough — Design (v1 draft rev. r2, 2026-10-22)
+# 256isenough — Design (v1 draft rev. r3, 2026-10-23)
 
 > Revision r1 addressed design-review round 1 (B1–B7, N1–N7): hard classifier/format constraints (§1.5, §3.6),
 > write-ahead swap journal (§5.8), lock/reservation table (§5.6, §6), mode-specific process ownership (§5.9),
@@ -10,6 +10,13 @@
 > local image size measured at pack time (§6.1); one lock hold boundary with try-lock-only victim reclamation
 > (§5.6); unresolved updated bundles block launch until `resolve` (§5.8.7); explicit detach outcome branches with
 > preserved mount ownership and joinable backoff/stuck sessions (§5.4).
+>
+> Revision r3 addresses round 3 (R3-B1…B6, N1–N5): one joiner exit rule (EOF after drain, §8.3 authoritative,
+> §5.6.3); a supported process-inspection boundary with platform/related/unrelated classes, the kernel unmount
+> check as final mount gate and an unsupported-preflight for temporary restore (§5.9); prefetch acquires L2 before
+> releasing L1 and every writer owns its own live claim (§5.2.3, §5.6.2, §6.1); a restore-specific adoption branch
+> and single-adopter handoff (§5.6.4); `restoredOut` terminal outcome with journaled state retirement (§5.4, §5.8.3);
+> invalid-mutation vs. genuinely re-signed update fixtures (§11.3 A34/A34d).
 
 > 中文摘要：每个冷门 App 打成只读压缩 DMG（远端 ULMO），放在可插拔后端（MVP = iCloud Drive / 本地目录）；
 > `/Applications` 里放一个独立 bundle id、可签名的轻量 Stub。点击 Stub → **pre-launch hook**（拉取到本地缓存、
@@ -78,6 +85,7 @@ Reverse-DNS prefix `io.github.s546126.256isenough`.
 | Mac App Store app (`Contents/_MASReceipt/receipt`) | **restore** (hard, never mount) | MAS apps |
 | App with privileged helper / login item / bundled launchd plists (`Contents/Library/LaunchServices/*`, `Contents/Library/LaunchDaemons|LaunchAgents/*`, `Contents/Library/LoginItems/*`, `SMPrivilegedExecutables`) | **restore** (hard) | Docker-like tools, some backup tools |
 | App declaring it must live in `/Applications` (configurable deny-list of bundle ids) | **restore** | Office components, Adobe CC |
+| App bundling a `KeepAlive`/`RunAtLoad` LaunchDaemon/Agent plist (persistent helper) | **unsupported** (R3-B2: cleanup could never be proven safe without privilege; keep it installed normally) | always-on sync/VPN daemons |
 | System extensions (`Contents/Library/SystemExtensions`), kexts (`Contents/Library/Extensions/*.kext`), network extensions (`NSExtensionPointIdentifier` = `com.apple.networkextension.*`), DriverKit | **unsupported** | VPNs, drivers |
 | Apple system apps (`/System/...`, `com.apple.*` except allow-list), Xcode (`com.apple.dt.Xcode`) | **unsupported** | — |
 | Currently running app, app without `CFBundleIdentifier`/`CFBundleExecutable`, invalid signature | **refused** (`--force` only for invalid signature, recorded as warning; never changes the mode) | — |
@@ -90,7 +98,10 @@ the first `unsupported` hit wins, otherwise any `restore` hit wins, otherwise `m
 
 1. `unsupported` if: path under `/System`; bundle id in `policy.unsupportedBundleIds` (default `com.apple.dt.Xcode`);
    has `Contents/Library/SystemExtensions/*`, `Contents/Library/Extensions/*.kext`, DriverKit `.dext`, or an appex
-   whose `NSExtensionPointIdentifier` starts with `com.apple.networkextension`.
+   whose `NSExtensionPointIdentifier` starts with `com.apple.networkextension`; or (R3-B2) an embedded
+   LaunchDaemon/LaunchAgent plist (`Contents/Library/LaunchDaemons|LaunchAgents/*.plist`) with `KeepAlive` or
+   `RunAtLoad` true (reason `persistentRelatedHelper`: a permanently running helper of another uid could never
+   be proven idle, so temporary restore would never clean up, §5.9 pass 3).
 2. `restore` if: `_MASReceipt/receipt` exists; `SMPrivilegedExecutables` in Info.plist; any file under
    `Contents/Library/LaunchServices`, `Contents/Library/LaunchDaemons`, `Contents/Library/LaunchAgents`,
    `Contents/Library/LoginItems`; bundle id in `policy.restoreBundleIds`.
@@ -275,7 +286,8 @@ the same major and ignore unknown keys; a higher major is refused with exit code
     "documentTypes": [ { "CFBundleTypeName": "Blender File", "CFBundleTypeRole": "Editor",
                          "LSItemContentTypes": ["org.blender.blend"], "CFBundleTypeIconFile": "blender_file.icns" } ],
     "urlTypes": [ { "CFBundleURLName": "Blender URL", "CFBundleURLSchemes": ["blender"] } ],
-    "exportedTypes": [], "importedTypes": []
+    "exportedTypes": [], "importedTypes": [],
+    "related": []
   },
   "signing": {
     "teamId": "68UA947AUU", "authority": "Developer ID Application: Blender Foundation (68UA947AUU)",
@@ -302,6 +314,9 @@ immutable repo files are never migrated in place. Manifests used by a successful
 (it converts its staging ULMO to ULFO and UDRO in staging, records `totalFileAllocatedSize`, deletes them). It is
 the size charged against the cache quota (§6.1). Manifests without it (older packs) fall back to the pessimistic
 estimate of §6.1, replaced by the measured value in local state after the first fetch.
+`app.related` (r3, R3-B2) lists the executable paths/launchd labels of helpers the bundle declares (privileged
+helpers, embedded LaunchServices/LaunchDaemons/LaunchAgents/LoginItems); restore-mode probes treat uninspectable
+processes matching it as potential dependents (§5.9 pass 3). Empty for typical mount-mode apps.
 
 ### 3.3 Catalog index (`catalog/manifest.json`)
 ```json
@@ -372,8 +387,16 @@ JSON file (not SQLite) is chosen: small (≤ few hundred apps), human-debuggable
 running periods of one attachment (incremented by a revive, §5.4.1); `postQuitRanForEpoch` makes post-quit hooks run
 exactly once per epoch. `trackedDependents` lists exceptional dependents (§5.9). `claims` replace r1's
 `reservations` (§6.1): one per in-flight fetch/extract (or pack/restore staging), owner-identified, reaped when the owner is dead.
-`restored` holds restore-mode sessions: `{ bundleId: { "journal": "journals/<txid>.json", "sessionId", "since" } }`;
-the authoritative swap state lives in the write-ahead journal (§5.8), not here. `needsResolution` (per app) is set
+`restored` holds restore-mode sessions (r3, R3-B4/B5): `{ appId: { "journal": "journals/<txid>.json", "txid",
+"sessionId", "since", "owner": {pid,start}, "phase": "running"|"idle"|"waiting"|"restoringOut", "waitReason":
+null|"busy"|"unknown"|"held", "epoch", "postQuitRanForEpoch", "detachAfter", "leases": [ … ], "dest": "/Applications/Foo.app",
+"destId": {"dev","ino"}, "staging": "/Applications/.256isenough-staging/<txid>", "stubId": {"dev","ino"} } }` — a
+mirror of the session part of the open restore journal; the authoritative swap state **and owner** live in the
+write-ahead journal (§5.8; the journal is written first, the mirror second, and recovery repairs the mirror from the
+journal). `destId`/`stubId` are the inode identities of the installed real bundle and the parked stub recorded at
+`installed`/`stubParked`; together with cdhash they identify "our" restored layout without any attached image.
+The entry is removed only by restore-out's `retired` phase (§5.8.3). Per app, `lastOutcome` records the last
+terminal session outcome (`detached` | `restoredOut` | `restoredOutRetained`, with `at`) for `status`/GUI. `needsResolution` (per app) is set
 when a restored/updated bundle was retained and awaits a user decision (§5.8.7):
 `{ "retainedPath": "retained/<appId>/<ts>-Foo.app", "treeHash": "sha256:…", "cdhash": "…", "teamId": "…",
 "fromImageId": "…", "txid": "…", "since": "…" }` — the durable identity snapshot of the retained bundle. While it
@@ -424,6 +447,7 @@ Global flags: `--config <path>` (env `ISENOUGH_CONFIG`), `--state-dir <path>` (e
 | `status [<app>]` | Detailed state machine state, mounts, leases, cache entry, backend availability. |
 | `launch <app> [--doc <path>]... [--url <url>]... [--no-wait] [--background]` | Run full lifecycle in foreground (= what the stub triggers). `--no-wait`: return after the app is running (detaches supervisor). |
 | `hook launch --app <appId> --control-fd <n> [--stub <path>]` | Internal: entry point used by the stub (same as `launch`; requests/acks over the control socket, §8.3). |
+| `hook watch --app <appId>` | Internal (r3): detached watcher spawned by a short-lived adopter; owns an adopted mount or restore session until its terminal outcome (§5.6.4). |
 | `resolve <app> --keep-updated [--trust]\|--discard\|--export <dir>` | Resolve a retained/updated bundle (journaled, §5.8.7). Required before the app can launch again. |
 | `detach <app> [--force\|--forget]` | Retry detaching a `backoff`/`stuck` session now (adopting it if its owner is dead, §5.4); `--force` = one `hdiutil detach -force` after a clean usage probe; `--forget` = drop a record whose attachment is not ours (ownership mismatch). |
 | `serve pair` | Print a one-time pairing code for the GUI (§10.1). |
@@ -487,9 +511,10 @@ remote ──fetch──▶ downloading ──complete──▶ verifying ──
 
 ### 5.2 Pre-launch hook (supervisor, in order)
 1. **Lock**: `L0(sh)` then `L1 = flock(locks/app/<appId>.lock, LOCK_EX)` (§5.6). Run per-app recovery first (roll forward/back any open
-   journal for this app, §5.8; adopt a dead owner's session, §5.6). If `needsResolution` is set → `EX_RESOLUTION`
-   (§5.8.7; nothing is changed). If a session exists and its owner is alive → **join-session path** (§5.6.3), which
-   also revives a session in `backoff`/`stuck` (§5.4.1), and return.
+   journal for this app, §5.8; adopt a dead owner's session — mount or restore branch, §5.6.4). If a session exists
+   (`mounts` record, or `restored[appId]` with its open journal) and its owner is alive → **join-session path**
+   (§5.6.3), which also revives a session in `backoff`/`stuck`/`waiting` (§5.4.1), and return. Else if
+   `needsResolution` is set → `EX_RESOLUTION` (§5.8.7; nothing is changed).
 2. **Resolve image**: `state.apps[appId].imageId` (pinned version), else catalog `latest`. Read manifest.
 3. **Ensure cached.** Lock boundary (R2-B4, one rule, §5.6.1): admission runs holding **L1 only**; then L2(img) is
    taken (blocking, in order) and held through fetch, verify, convert **and** step 4's attach decision.
@@ -497,9 +522,17 @@ remote ──fetch──▶ downloading ──complete──▶ verifying ──
       re-hash if `verifiedAt` older than 30 days or mtime changed) and go to step 4.
    b. Else **admission** (§6.1, holding L1 only): quota admission of the final local size + free-space admission of
       the remaining transient bytes, with try-lock-only victim reclamation; persists a **claim** for this image
-      (owner pid+start). If another live claim already exists for the same imageId (a prefetch), we skip admission and
-      simply wait for L2; the progress window shows "waiting for prefetch". Failure → `EX_NOSPACE` (nothing changed).
-   c. Take L2(img). Re-check: if another process completed the image meanwhile → drop our claim, go to step 4.
+      owned by this process (pid+start). Failure → `EX_NOSPACE` (nothing changed). If a claim for the same imageId
+      already exists: owner alive → it is a prefetch that, by the handoff rule (R3-B3, §5.6.2), **already holds
+      L2(img)** and is the writer; we publish no claim, wait for L2 (progress window: "waiting for prefetch") and
+      go to c. Owner dead → the claim is reaped in c (after we own L2), never before.
+   c. Take L2(img) (blocking; legal order L1 → L2). Re-check under L3: (i) cache entry complete → drop our claim if
+      any, go to step 4. (ii) a claim of a **dead** owner exists → we hold L2, so no writer exists: reap it (its
+      `.part` becomes our resume prefix or a leftover). (iii) if we own no live claim now (we waited for a prefetch
+      that failed or died) → release L2, still holding L1 (so no other process can publish a claim for this
+      app's images), run admission b. for ourselves, re-take L2, and re-check. **Invariant: the only process that
+      writes `.part`/`.tmp`/`images/` of an image holds L2(img) and owns a live claim for it** (writer = claim
+      owner); a writer deletes or converts its claim under L3 *before* releasing L2.
       **Fetch** (`Fetcher`): backend-specific ensure-local (iCloud: start download + wait until `.current` and
       allocated size ≥ logical size) then copy remote → `cache/partial/<imageId>.dmg.part` streaming with sha256
       computed during copy (`get(range:)` with resume from `.part` size for range-capable backends). The claim's
@@ -526,7 +559,8 @@ remote ──fetch──▶ downloading ──complete──▶ verifying ──
    `EX_INTEGRITY`.
    **Restore mode** instead: run the journaled **restore-in** transaction (§5.8.2): it extracts the app from the
    mounted image into a same-volume staging dir, parks the stub *next to it* (same volume), swaps, verifies, and
-   detaches the image. The restore session's usage root is the restored path (§5.9).
+   detaches the image. The restore session's usage root is the restored path (§5.9). The session is published
+   in the journal (`active`, owner) and mirrored in `state.restored[appId]` (§3.5) before the app is opened.
 5. **User pre-launch hooks** (§5.5). Non-zero exit / timeout → **full rollback** of everything this supervisor did,
    in reverse order: restore mode → journaled restore-out (§5.8.3) **including its `inspected` phase** — cdhash *and*
    tree hash are compared even though the app never ran, because a pre-launch hook may have modified the restored
@@ -590,10 +624,19 @@ sleeping. `epoch`/`postQuitRanForEpoch` (§3.5) make post-quit hooks run once pe
      through to step 5. The record now has a dead owner and is retried by recovery (§5.6.4): daemon every
      `stuckRetrySeconds`, `gc`, `isenough detach <app>`, or the next launch (which revives it instead, §5.4.1).
      Recovery of a stuck session performs only step 2's probe and step 4 (no hooks: same epoch).
-   Restore mode: run the journaled **restore-out** transaction (§5.8.3) under L1, which inspects for changes before
-   any removal and retains changed bundles; while the usage root is busy it stays `active` (never forced).
-5. **Cleanup — only after outcome detached**: under L3 remove the mount record (and session), remove the empty
-   mountpoint dir, `lastUsedAt = now` for app and cache entry; device-file write queued (best effort, no lock).
+   **Restore mode** (R3-B5): run the journaled **restore-out** transaction (§5.8.3) under L1, which inspects for
+   changes before any removal and retains changed bundles. Outcomes, each written under L3 before L1 is released:
+   - **waiting(busy|unknown|held)** (re-probe not clean) → journal stays `active`, `restored[appId].phase =
+     waiting`, `waitReason` set; release L1; probe with backoff (to 5 min, indefinitely; never forced) and retry
+     from step 2. Joinable (a joiner revives it like §5.4.1, using the restored path; no pre-launch re-run within
+     the same epoch rule).
+   - **restoredOut** / **restoredOutRetained** (terminal) → reached only through restore-out's `retired` phase,
+     which in one L3 write removes `state.restored[appId]`, sets `lastOutcome`, `lastUsedAt` and (if retained)
+     `needsResolution`; then `closed`. Continue with step 6 (step 5 is mount-only; its LRU update is part of
+     `retired`).
+5. **Cleanup (mount mode) — only after outcome detached**: under L3 remove the mount record (and session), set
+   `lastOutcome = detached`, remove the empty mountpoint dir, `lastUsedAt = now` for app and cache entry;
+   device-file write queued (best effort, no lock).
    `launchCount` is incremented when a supervisor *opens* the app (owner launch or revive), never on forwards.
 6. **Release L1**, then run the quota pass (§6.2; try-locks only, §5.6.2). It never evicts what we just used unless
    that alone exceeds the quota.
@@ -672,7 +715,7 @@ old version of the same app) is covered since we already hold its L1; its L2 is 
 | launch / `hook launch` (owner) | L1(app) → admission + reclamation (try-locks only) → L2(img) blocking: fetch/verify/convert/attach → release L2 → user pre-launch hooks + open under L1 → release L1 while running | claim persisted before the first byte (§6.1); cache-file check and attach under the same L2 hold |
 | join / revive (second supervisor) | L1(app) | §5.6.3, §5.4.1 |
 | post-quit / detach / `isenough detach` | L1(app) per attempt (L3 inside for state writes); quota pass after releasing L1 (try-locks only) | §5.4 |
-| `prefetch`, `pin` | L1(app) → admission + claim → release L1 → L2(img) blocking for fetch/convert | the claim protects capacity after L1 is released; a concurrent launch sees the live claim, skips admission, and blocks on L2, then finds the file cached |
+| `prefetch`, `pin` | L1(app) → admission + claim (L3) → **L2(img) blocking while still holding L1** → release L1 → fetch/verify/convert under L2 → completion (claim → cache entry, L3) → release L2 | R3-B3 handoff: claim publication and writer ownership happen in one L1 hold, so whoever later takes L1 and sees a live claim knows its owner already holds L2 and is the writer; a launch never writes under another process's claim (§5.2.3b–c) |
 | `evict <app>` | L1(app) → L2(img) (blocking, in order) | refuse if session/mount/claim/restored/`needsResolution` (`EX_BUSY`) |
 | `gc` / quota pass / reclamation | plan under L3 snapshot → per victim: try-lock L1(victim) → try-lock L2(img) → re-check predicate under L3 → delete → state under L3 | holds at most its own app's L1 (admission) or nothing (gc); skips busy victims |
 | `unpack`, `restore --permanent`, `stub rebuild`, `resolve` | L1(app) (+ L2 for attach/extract) | journaled (§5.8) |
@@ -691,20 +734,56 @@ unchanged. Per batch, holding L1 only for the critical section:
    process: it continues with §5.2 step 2 (fetch/attach/open) for this and all further batches. `detaching` is
    never observed (it exists only under L1; a joiner simply blocks on L1 until post-quit hooks/detach attempt end).
 2. Release L1, ack the batch. Further batches from the same stub repeat 1–2.
-3. After `bye` the joiner sends `done` and exits; it never touches the session's ownership otherwise, so a
-   joiner exiting (or being cancelled/killed) cannot affect the session. Cancel aborts only its undelivered batches.
+3. **Exit rule (R3-B1; §8.3 is authoritative).** `bye(g, r)` does **not** end a joiner: it answers `done(g, r)`
+   once every `req ≤ r` is acked and keeps reading fd 3, accepting and acking any later `open` (generation g+1, …)
+   by repeating 1–2. The **only** joiner exit condition is EOF on fd 3 (the stub closed after a matching `done`
+   and its final drain, or the stub died) **after** every batch received so far has been acked (drained). The
+   joiner never closes fd 3 first and never exits on `done`. It never touches the session's ownership, so a
+   joiner exiting (or being cancelled/killed) cannot affect the session; a killed joiner only loses unacked
+   batches, which the stub re-sends via one respawned supervisor (§8.3). Cancel aborts only its undelivered
+   batches. (A joiner that *became an owner* in step 1 follows the owner rule: it keeps running after EOF.)
 The owner always re-reads the session after acquiring L1 (§5.4 step 2), so the handoff is synchronized by the lock.
 
 #### 5.6.4 Recovery and adoption (one adopter)
-Recovery for an app runs only while holding L1(app). The adopter re-reads the session under L3; if the recorded
-owner (pid+start time) is alive → not orphaned, stop. Otherwise it atomically rewrites `owner` to itself (under L3,
-still holding L1) and becomes the watcher/post-quit runner. Any other caller then sees a live owner. Image
-ownership is verified before adoption: the attached `devEntry` must map to our cache image path (`hdiutil info`)
-*and* its mountpoint must be our `mnt/<imageId>`; an attachment of the same image path mounted elsewhere is reported
-but never detached (N4). Open journals (§5.8) are completed before session adoption. An adopted session continues
-where its phase says: `running`/`idle` → watch (§5.3); `backoff`/`stuck`/crashed `detaching` → §5.4 step 2 then a
-detach attempt (no hooks if `postQuitRanForEpoch == epoch`). An adopter that ends in `stuck` again exits
-`EX_DISKIMAGE` (CLI) or reschedules (daemon); the record is never dropped while the image is attached.
+Recovery for an app runs only while holding L1(app); it first replays open **non-session** journals (pack,
+unpack, resolve, rollbacks), then dispatches on the session's **mode** — mount sessions (a) are recognized by an
+attachment, restore sessions (b) by their journal; the two checks are never mixed (R3-B4).
+
+**Election (both modes).** Under L1 the caller re-reads the owner (mount: `state.mounts[img].owner`; restore: the
+open restore journal's `owner`, mirrored in `state.restored[appId]`). Owner (pid+start) alive → not orphaned,
+stop. Otherwise the caller becomes the **single adopter**: it rewrites the owner (restore: journal first, WAL rule,
+then mirror; mount: under L3) and only then acts. Any later caller sees a live owner. A short-lived adopter
+(`gc`, CLI command, stub-less recovery) that must keep watching does not watch itself: still under L1 it spawns a
+detached `isenough hook watch --app <id>` (setsid), records **the child's** (pid, start) as owner, and releases
+L1; if the child dies, it is just another dead owner. The daemon adopts in-process.
+
+**(a) Mount sessions.** Image ownership is verified before adoption: the attached `devEntry` must map to our cache
+image path (`hdiutil info`) *and* its mountpoint must be our `mnt/<imageId>`; an attachment of the same image path
+mounted elsewhere is reported but never detached (N4). An adopted session continues where its phase says:
+`running`/`idle` → watch (§5.3); `backoff`/`stuck`/crashed `detaching` → §5.4 step 2 then a detach attempt (no hooks
+if `postQuitRanForEpoch == epoch`). An adopter that ends in `stuck` again exits `EX_DISKIMAGE` (CLI) or reschedules
+(daemon); the record is never dropped while the image is attached.
+
+**(b) Restore sessions (R3-B4).** Input: the open restore journal (`kind` restore-in/restore-out), its paths,
+`destId`/`stubId`, `owner`, `epoch`. No attached image is expected (restore-in detached it). Layout check first:
+`<dest>` is our real bundle (`(dev,ino) == destId`, else bundle id + cdhash == manifest) and
+`staging/<txid>/stub.app` is our stub (bundle id `*.256stub`); a mismatch (user moved things) → no swap at all,
+`doctor` reports, app refused `EX_BUSY` until `doctor --fix`/manual action. Then by journal phase:
+
+| Journal phase at crash | Usage probe of `<dest>` + staging (§5.9, restore mode) | Action of the adopter |
+|---|---|---|
+| `prepared`/`extracted`/`stubParked` (app never installed) | not needed | roll back per §5.8.2 (stub stays/returns at `<dest>`), outcome `rolledBack` via `retired`/`closed` |
+| `installed` (owner died before `active`; app possibly launched by LS from `<dest>`) | busy/unknown/held | promote to `active` with self as owner (`epoch` 1, `postQuitRanForEpoch` 0; pre-launch hooks are not re-run because the app is already running; post-quit hooks run once at the end), then watch |
+| `installed` | clean twice | rollback = journaled restore-out (inspect → stub back → dispose → `retired` with `rolledBack`) |
+| `active` (`restored.phase` running/idle/waiting) | busy/unknown/held | adopt; `phase = waiting`, `waitReason`; watch with probe backoff (§5.3); **no swap** |
+| `active` | clean twice | adopt, then the normal post-quit path: wait `detachAfter` (set to now + delay if null), post-quit hooks if `postQuitRanForEpoch < epoch`, restore-out (§5.8.3), terminal outcome |
+| restore-out `quiesced`/`inspected` | re-probe | busy → back to `active` + `waiting` (nothing was moved yet); clean → continue restore-out forward |
+| restore-out `appMoved`/`stubBack`/`disposed`/`retired` | staging only (`app.old` must be clean before `disposed` deletes it) | continue forward; busy staging → stay in that phase with `waitReason`, retry later |
+
+**Exactly when recovery waits vs. runs restore-out:** it swaps only from a journal state whose usage probe was
+clean twice under L1 by the current owner; any busy/unknown/held result keeps the restored bundle in place.
+Joiners (stub launched while `restored[appId]` has a live owner) follow §5.6.3 with the restored path as the
+target; revive of a `waiting` session follows §5.4.1 (new epoch if hooks of the previous epoch ran).
 
 #### 5.6.5 Other notes
 - **Two Macs**: no shared mutable files except catalog (derived, last-writer-wins safe) and each own device file.
@@ -724,11 +803,13 @@ sequenceDiagram
     participant A as Real App
     U->>S: click / open doc / URL (oapp, odoc, GURL)
     S->>S: collect events ≤300 ms, show progress window
-    S->>V: posix_spawn(setsid) hook launch --app id --doc… --url… (progress via events fifo)
+    S->>V: posix_spawn(setsid) hook launch --app id --control-fd 3 (socketpair NDJSON, no documents on argv)
+    S->>V: open(req=1, documents, urls) after 300 ms coalescing
     V->>V: flock app lock; check live session
-    alt session already running
-        V->>A: NSWorkspace.open(urls, withApplicationAt)
-        V-->>S: done
+    alt session already running (V is a joiner)
+        V->>A: NSWorkspace.open(urls, withApplicationAt) on verified instance
+        V-->>S: ack(req=1) + ready
+        Note over S,V: same bye/done generations as below; joiner exits only on EOF after drain (§8.3)
     else not cached
         V->>B: ensureLocal (startDownloadingUbiquitousItem, poll .current)
         B-->>V: local & complete
@@ -747,7 +828,9 @@ sequenceDiagram
     V-->>S: ack(req) (gen 2 delivered)
     V-->>S: done(gen=1, lastReq) — gen mismatch, S keeps running
     S->>V: bye(gen=2)
-    V-->>S: done(gen=2) → S exits
+    V-->>S: done(gen=2)
+    S->>S: final drain, exit(0) → fd 3 EOF
+    Note over V: owner: EOF = "client gone", session continues; joiner: EOF after drain → exit
     U->>A: uses app … quits
     A-->>V: didTerminate / NOTE_EXIT
     loop every 5 s
@@ -780,7 +863,8 @@ Every operation that moves an `.app` bundle (pack's final install, restore-in, r
   cdhash == expected") and skips if already done; recovery re-runs the current phase, then continues forward or
   rolls back as the table says. Rollback is itself a sequence of journaled phases.
 - **Preflight before any change (N5).** Parent directory writable by the user, destination not root-owned/SIP,
-  enough space on the destination volume for the extracted app (+10 %), no running process of the bundle id. If
+  enough space on the destination volume for the extracted app (+10 %), no running process of the bundle id, and
+  (restore-in, R3-B2) no running *related* process that the probe cannot inspect (§5.9 pass 3). If
   `/Applications/Foo.app` is not user-writable (e.g. root-owned MAS install), we **refuse before changing anything**
   (`EX_UNSUPPORTED`, message tells the user to move it via Finder, which asks for admin auth, and retry). No helper.
 - **Never delete the only copy.** A bundle is deleted only if (a) it is the stub (regenerable from the manifest), or
@@ -802,17 +886,30 @@ Every operation that moves an `.app` bundle (pack's final install, restore-in, r
 | `extracted` | `ditto <mnt>/<app> staging/app.new`; verify cdhash + tree hash == manifest; detach image | if `app.new` unverified → delete it, rollback |
 | `stubParked` | `rename(<dest>, staging/stub.app)` | if `<dest>` missing and `stub.app` present → continue/rollback by renaming back |
 | `installed` | `rename(staging/app.new, <dest>)`; `fsync` parent; `lsregister -f <dest>` | forward: launch path; rollback: run restore-out |
-| `active` | session recorded, journal stays open for the session lifetime | adoption (§5.6.4) |
+| `active` | journal gets `owner`, `destId`, `stubId`, `epoch`; then the `state.restored[appId]` mirror is written (§3.5); journal stays open for the session lifetime | **restore adoption** (§5.6.4b) — never the mount-adoption path; no attached image is expected or required |
 
 #### 5.8.3 restore-out (post-quit, hook-failure rollback, recovery)
 | Phase | Effect | Recovery |
 |---|---|---|
-| `quiesced` | usage root clean twice (§5.9) — else stay `active` and keep waiting/retrying (never forced) | re-probe |
-| `inspected` | compute cdhash + tree hash of `<dest>`; record `changed: bool` in journal | recompute |
+| `quiesced` | usage root clean twice (§5.9) and `detachAfter` elapsed — else the journal stays `active` with `waitReason` and the owner keeps waiting/retrying (never forced) | re-probe (clean twice) before moving on; busy → back to `active`, waiting |
+| `inspected` | compute cdhash + tree hash of `<dest>`; record `changed: bool` (+ identity snapshot) in journal | re-probe clean once, then recompute |
 | `appMoved` | `rename(<dest>, staging/app.old)` | if `<dest>` empty and `app.old` present → continue |
 | `stubBack` | `rename(staging/stub.app, <dest>)`; `lsregister -f`; `lsregister -u` old real path | continue |
-| `disposed` | unchanged → delete `app.old` (rule "never delete only copy" satisfied); changed → move to `retained/`, set `needsResolution`, event `app.updated` | continue |
-| `closed` | remove staging + journal | — |
+| `disposed` | unchanged → delete `app.old` (rule "never delete only copy" satisfied); changed → move to `retained/`, journal records `needsResolution` snapshot, event `app.updated` | continue |
+| `retired` | (R3-B5) **one** L3 write: delete `state.restored[appId]`; `apps[id].needsResolution` = snapshot if changed; `apps[id].lastOutcome = restoredOut` / `restoredOutRetained` (or `rolledBack` for a hook/launch-failure rollback); `lastUsedAt = now` for app and cache entry (not for `rolledBack`); per-app `state` = `cached` (image still cached) / `remote` / `needsResolution`; `state.json` atomic rename + `fsync` | re-apply (idempotent: every field is assigned, not incremented) |
+| `closed` | only after `retired` is durable: remove staging, then the journal | remove leftovers |
+
+**Terminal outcome (R3-B5).** A restore session ends only through `retired`: outcome `restoredOut` (stub back,
+identical copy deleted) or `restoredOutRetained` (stub back, changed bundle retained, app blocked until `resolve`).
+`waiting(busy|unknown|held)` is **not** terminal: `state.restored[appId]` stays with `phase = waiting` and its
+`waitReason`, and the journal stays `active`. Because the journal is closed only after the state write is durable,
+every crash point has a recoverable journal: before `retired` → replay forward; during/after `retired` → re-apply
+and close. Conversely a `state.restored` entry whose journal file is missing (stale mirror, e.g. manual deletion)
+is retired by recovery only if `<dest>` holds our stub (stub bundle id + `stubId`/regenerated stub) and no staging
+exists; otherwise it is reported by `doctor` and the app is refused (`EX_BUSY`) — never guessed.
+**Consumers see one truth:** `launch` with `restored[appId]` present → join/adopt path (§5.2 step 1); absent and
+`needsResolution` set → `EX_RESOLUTION`; `status` shows `restored`/`waiting(reason)`/`lastOutcome`; `evict`/`unpack`
+refuse while `restored[appId]` or an open journal exists; recovery is a no-op after `closed`.
 
 If the stub copy in staging is missing/corrupt at `stubBack`, a new stub is built from the manifest first (stubs
 are always regenerable). `inspected` always compares cdhash **and** tree hash (also on hook-failure rollback where
@@ -838,6 +935,12 @@ of a child runner), run recovery, and assert the invariant: exactly one of {stub
 lost (each original/updated bundle exists at dest, in staging, or in `retained/`), journals closed, and recovery is
 idempotent (running it twice is a no-op). The fault set includes `resolve` phases, and a `preLaunchHookMutates` fault (a hook writes into the restored
 bundle and exits non-zero): rollback must retain the bundle (tree hash differs) and set `needsResolution`.
+r3 additions: the `retired` phase (fault before/after the state write, and between state write and journal
+removal) — after recovery `state.restored` is empty, `lastOutcome` is set exactly once, the journal is closed and a
+fourth recovery run is a no-op (R3-B5); and the restore-adoption table of §5.6.4b is a pure function
+`RestoreRecovery.decide(journalPhase, layout, probe, ownerAlive) -> action`, enumerated exhaustively (every phase ×
+{busy, unknown, held, clean} × {owner alive, dead} × {layout ok, mismatch}) with the invariant "no rename of `<dest>`
+unless the probe was clean twice under the current owner" (R3-B4).
 
 #### 5.8.7 Retained updated bundles: block, then resolve (R2-B5)
 **MVP decision: an app with `needsResolution` cannot be launched** (safe option from the review). Rationale:
@@ -852,7 +955,10 @@ second restore source; the retained bundle is evidence the user must decide on, 
   runs from the retained bundle, and the stub is back at the destination.
 - **`resolve --keep-updated [--trust]`** (journal kind `resolve`, under L1): `verified` (recompute tree hash of
   `retainedPath`; must equal the record, else `EX_INTEGRITY` and nothing changes — the user must re-inspect;
-  check code signature validity; if its Team ID differs from `trusted.teamId`, or for ad-hoc apps whenever cdhash
+  check code signature validity with `SecStaticCodeCheckValidity(kSecCSCheckAllArchitectures | kSecCSStrictValidate)`
+  — an invalid signature (e.g. an in-place file write that broke the resource seal) → `EX_INTEGRITY`, nothing
+  changes, and `--trust` cannot override it; only `--export`/`--discard` remain (R3-B6). The engine never re-signs
+  an app bundle; if its Team ID differs from `trusted.teamId`, or for ad-hoc apps whenever cdhash
   changed, require `--trust`, i.e. explicit trust approval as in `isenough trust`) → `packed` (normal pack
   pipeline from the retained bundle into a **new** image + manifest + catalog; upload confirmed per §7.2) →
   `switched` (`apps[id].imageId` = new image, `trusted` updated, stub rebuilt if its Info.plist changed) →
@@ -890,12 +996,50 @@ implementation in-process via `libproc` (no recursive scans):
    by device: vnode `vst_dev` == the mounted filesystem's `st_dev` (catches renamed/unlinked files). This replaces
    r1's `lsof +D` (no assumption that bundles are small). `lsof -Fpn -- <mnt>` (filesystem selector) is run every
    30 s as a cross-check in mount mode; a disagreement is logged and the union counts.
-3. Permission classes (N2): EPERM for a pid of **another user** or a root-owned process → that pid is listed in
-   `details.uninspectable`. In mount mode with `-owners on` and a per-user mountpoint under our cache dir (mode
-   0700), other users cannot open files there, so other-user EPERMs do **not** make the result `unknown`; EPERM for a
-   pid of *our own* uid → `unknown` (genuinely uninspectable app process; treated as busy, unchanged). In restore
-   mode (bundle in a world-readable `/Applications`) other-user/root EPERMs → `unknown` (we cannot rule them out);
-   `doctor` explains this case separately from live users.
+3. **Supported inspection boundary (R3-B2, replaces r2's permission classes).** Facts the design relies on
+   (validated by the CI probe artifact, §11.2): as a non-root user, `proc_listallpids` and `proc_pidpath` work for
+   *every* pid (this is what `ps` uses), so pass 1 covers all users including root; per-fd/cwd/region information
+   (`proc_pidinfo(PROC_PIDLISTFDS)`, `proc_pidfdinfo(pid, fd, PROC_PIDFDVNODEPATHINFO)`,
+   `PROC_PIDVNODEPATHINFO`, `PROC_PIDREGIONPATHINFO`) is available only for our own uid. Errors are split (N3):
+   `ESRCH` / pid gone / start time changed → the process exited, skip it (it is re-listed next probe); `EPERM` →
+   *uninspectable*; anything else → `unknown(probeError)`. Every uninspectable pid is classified once per
+   (pid, start), with the reason kept in `details.uninspectable[{pid, uid, path, class}]` for `status`/`doctor`:
+   - **own** — our uid: never expected to be EPERM; if it is → `unknown` (≡ busy, unchanged).
+   - **related** — another uid (root or other user) and any of: executable under the usage root (already busy by
+     pass 1); executable path in the app's **related set** = helper paths declared by the bundle and recorded at
+     pack in `manifest.app.related` (`SMPrivilegedExecutables` labels → `/Library/PrivilegedHelperTools/<label>`,
+     `Contents/Library/LaunchServices/*`, embedded LaunchDaemons/Agents `Program`/`ProgramArguments[0]`, login
+     items) plus user-added `apps.<id>.relatedExecutables` (config); a `system/`-domain launchd job whose label is
+     in that set; or a non-nil signing Team ID (from `SecStaticCodeCreateWithPath` on its executable — static
+     check of the on-disk file, which needs no access to the process) equal to the app's Team ID. A related
+     uninspectable process → `unknown` (≡ busy): it could genuinely depend on the bundle and we cannot see its fds.
+   - **platform** — another uid, not related, executable on the sealed system volume (`/System`, `/usr`, `/bin`,
+     `/sbin`, `/Library/Apple`) and `SecStaticCode` validates it against the Apple anchor (platform binary) →
+     **ignored**, listed only.
+   - **unrelated** — another uid, not related, not platform, valid static signature with a different (or nil)
+     Team ID → **ignored**, listed only. If its signature cannot be read/validated at all → `unknown` (we cannot
+     establish that it is unrelated).
+   **Why platform/unrelated may be ignored — per mode, not by DAC:**
+   *Mount mode:* the probe only decides *when to attempt* a detach; the completeness proof is the kernel's: a
+   non-forced `hdiutil detach` (unmount without `MNT_FORCE`) fails `EBUSY` while *any* process of any uid —
+   including root — has a file open, mapped, executing or as cwd on the volume; that yields `backoff` (§5.4), never
+   data loss. r2's "0700 excludes other users" argument is withdrawn (it never excluded root). `-force` detach
+   (opt-in, default off) is additionally refused while any related or `unknown` pid exists.
+   *Restore mode:* there is no kernel gate (renames succeed with open files), so the restriction is explicit.
+   Supported assumption **A-R**: the only processes that can *depend* on a restored bundle (execute or map code
+   from it, keep it as cwd, or need it to stay in place) are own-uid processes (fully inspected), processes
+   executing from it (pass 1, all uids), and the app's related set (declared helpers, same Team ID, configured
+   extras). Apple platform daemons and unrelated third-party daemons only *read* bundles transiently (Spotlight,
+   `syspolicyd`/XProtect assessment, Time Machine, backup/antivirus scanners); for them restore-out is harmless
+   because it moves the bundle by `rename` (an open descriptor stays valid), deletes `app.old` only after
+   cdhash+tree-hash inspection proves an identical copy exists, and otherwise retains it. Out of scope (documented
+   restriction): another *logged-in user* opening files inside our restored bundle with a non-platform tool of a
+   different team (not observable without privilege). **Unsupported-preflight:** temporary restore is refused
+   rather than promised when cleanup could never become clean: (i) `pack` classifies a restore-mode app whose
+   embedded daemon/helper plist has `KeepAlive` or `RunAtLoad` true as **`unsupported`** with reason
+   `persistentRelatedHelper` ("keep this app installed normally; temporary restore cannot detect when its root
+   helper stops using it"), and (ii) restore-in's preflight (§5.8.1) refuses with `EX_UNSUPPORTED` (before any
+   change) if a related uninspectable process is already running.
 4. launchd (restore mode only): `launchctl print gui/$UID` entries whose program path is under the root: with a
    running pid → busy (also caught by pass 1); registered but **not running** → `held(registered: <label>)`. A held
    restore session is not cleaned up (removing the bundle would break the registration) but is reported as
@@ -907,7 +1051,8 @@ implementation in-process via `libproc` (no recursive scans):
 6. **Infrastructure baseline** (diagnostic and for the detach error path): right after a successful attach and
    before opening the app, the supervisor records the holders of the backing image and `devEntry`
    (`lsof -Fpn -- <imagePath> <devEntry>`) as `mount.infra = [{pid,start,path}]`, accepting only Apple platform
-   binaries under `/System` or `/usr/libexec` (verified with `SecCode` platform-binary check). When a detach fails
+   binaries under `/System` or `/usr/libexec` (verified with `SecCode` platform-binary check). The set may be
+   **empty** (OS versions with an in-kernel disk-image path, N3); nothing requires it to be non-empty. When a detach fails
    busy, holders outside `infra` are reported in `detach.lastError` to explain the failure. They never block `idle`.
 `unknown` ≡ busy: cleanup waits and retries (backoff to 5 min, indefinitely), state shows `waiting(unknown)` and
 `doctor` explains which probe failed. Restored bundles are **never** removed while busy/unknown/held; there is no
@@ -974,7 +1119,12 @@ already allocated are already reflected by the OS free-space value, so they are 
 (bytes move from claim to `usedFinal`). If the measured `F` exceeds `quotaBytes` admitted, the quota pass after the
 session evicts others (never the just-used image unless it alone exceeds quota); the launch is not failed.
 Failure/cancel: delete `.part`/`.tmp` (or keep a resumable `.part` as an unclaimed leftover), delete the claim.
-Dead owners' claims are reaped (and their files become leftovers for gc). Restore/unpack claim the extracted size
+**Claim ownership (R3-B3).** A claim is owned by exactly the process that writes its files: writer = claim owner,
+and the writer holds L2(img) from before its first byte until after the claim is converted or deleted (§5.2.3c,
+§5.6.2). There is no claim transfer: a launch that waited for a failed/dead prefetch re-admits under its own
+identity. **Reaping** a dead owner's claim requires holding (or try-locking) L2(img) and re-checking under L3 that
+the owner (pid+start) is dead; since a live writer always holds L2 and owns its claim, a reaper can never free
+the reservation of an active writer. Reaped claims' files become leftovers for gc. Restore/unpack claim the extracted size
 on the destination volume (free-space check only); pack claims `unpackedSize` (staging) + image sizes.
 **ENOSPC** despite admission (other programs consumed space): as failure, `EX_NOSPACE`; never a half-converted image in
 `images/`.
@@ -985,7 +1135,11 @@ advanced stage by stage (materialize, copy, evict-repo, convert, done) with a fa
 decremented by actual allocations: at every interleaving step `free − Σ remaining ≥ minFree` holds, no byte is counted
 both in `usedFinal` and a claim, and both complete when `free ≥ minFree + planned1 + planned2`, while exactly one is
 admitted when only one fits. (c) Persistent `M`: with `canEvict == false` the second admission sees the first's
-`M` in `free`, not in the quota. (d) Measured `F` > estimate → completion succeeds, quota pass evicts.
+`M` in `free`, not in the quota. (d) Measured `F` > estimate → completion succeeds, quota pass evicts. (e) Claim
+handoff (R3-B3), pure model with an explicit scheduler: prefetch paused between claim publication and L2 acquisition
+is impossible by construction (both inside one L1 hold) — the model checker enumerates interleavings of
+{prefetch, launch, reaper, third-app admission} and asserts writer = live-claim owner at every step. Real
+multiprocess variants are in §11.2.
 
 ### 6.2 Eviction, pins, versions, iCloud interaction
 - **Eviction algorithm** (`planEviction`, pure, deterministic for tests):
@@ -1178,8 +1332,9 @@ Start from the original Info.plist, then:
   later via `open(urls, withApplicationAt:)` on the verified instance); each is acked after NSWorkspace's completion
   handler returns. On `bye(g, r)` it sends `done(g, r)` once every `req ≤ r` has been acked (never earlier). It never
   closes fd 3 first. An **owner** keeps running after EOF (session continues, "client gone"); a **joiner** exits on
-  EOF once all received batches are acked (a joiner killed early only loses batches it never acked — the stub sees
-  EOF with them outstanding, below).
+  EOF once all received batches are acked — this is its **only** exit condition; it never exits on `bye`/`done`
+  (R3-B1, §5.6.3 defers to this paragraph). A joiner killed early only loses batches it never acked — the stub sees
+  EOF with them outstanding, below.
 - **Stub closing algorithm (lossless at the protocol level).** State: `maxSent`, `acked` set, `gen`. After `ready`
   and a 500 ms quiet period with `outstanding == 0`, it sends `bye(gen, maxSent)`. Any Apple Event that AppKit
   dispatches *after* that (whether before or after the supervisor read `bye`, and before `done` arrives) is sent as
@@ -1212,7 +1367,9 @@ Start from the original Info.plist, then:
   (1) after `bye` sent but before the supervisor reads it, (2) after the supervisor read `bye` but before `done` is
   written, (3) after `done` is written but before the stub reads it, (4) during the final drain; in all cases the
   batch is acked before exit, the stale `done` is ignored and a second `bye` generation completes. Plus: joiner
-  receiving 3 batches across 2 generations; supervisor EOF with 2 outstanding → respawn re-sends them; `done` timeout
+  receiving 3 batches across 2 generations; **`open(gen+1)` arriving on a live-session joiner's connection after it
+  sent `done(gen)`** → the same joiner process acks it (no respawn, no EOF observed by the stub) and exits only
+  after the stub's EOF (R3-B1); supervisor EOF with 2 outstanding → respawn re-sends them; `done` timeout
   with nothing outstanding → exit; owner continues after EOF. A macOS integration test drives the real stub binary
   with a fake supervisor and real Apple Events (`NSAppleEventDescriptor` sent via `AESendMessage`) timed around `bye`.
 - **Cancel** (progress panel button): stub sends `{"type":"cancel"}`. An owner that has not yet launched the app
@@ -1263,7 +1420,7 @@ Start from the original Info.plist, then:
 | Real app fails to launch | `openApplication` error, or identity mismatch (§5.2.6) | Roll back as for a hook failure (§5.2.5: detach / journaled restore-out), `EX_LAUNCH`, alert with error. |
 | Real app crashes | pid exits; crash report check | Treated as quit (`ISENOUGH_EXIT_STATUS=crash`), normal delayed detach. Event logged. |
 | Detach busy | hdiutil exit 16 / "Resource busy" / devEntry still present | `backoff` (mount record + ownership kept, joinable) → `stuck` after `detachRetryMaxSeconds`: supervisor exits 6, notification, retried by daemon/gc/`isenough detach`/next launch (revive); never `-force` unless configured (§5.4). |
-| Supervisor / engine crash | dead owner (pid+start) with session record | **Recovery** at every supervisor start, `gc`, daemon start, per app under L1 (§5.6.4): first complete open journals (§5.8), then reconcile `state.mounts` with `hdiutil info -plist`: (a) attached with our image path *and* our mountpoint but not in state → adopt; (b) in state but not attached → drop record; (c) dead owner → single adopter elected under L1+L3: watch if busy/unknown else post-quit. Same image attached elsewhere → report only. `status` is read-only and never recovers. |
+| Supervisor / engine crash | dead owner (pid+start) with session record | **Recovery** at every supervisor start, `gc`, daemon start, per app under L1 (§5.6.4): first replay non-session journals (§5.8), then dispatch by mode (§5.6.4). Mount: reconcile `state.mounts` with `hdiutil info -plist`: (a) attached with our image path *and* our mountpoint but not in state → adopt; (b) in state but not attached → drop record; (c) dead owner → single adopter elected under L1+L3: watch if busy/unknown else post-quit. Same image attached elsewhere → report only. **Restore** (R3-B4): never uses the attachment check — driven by the open restore journal, `destId`/`stubId`, owner and the restore-mode probe (§5.6.4b table): busy → adopt and wait; clean → restore-out → `retired`. `status` is read-only and never recovers. |
 | Corrupt `state.json` | JSON decode error | Move to `state.json.corrupt-<ts>`, rebuild from cache dir listing + `hdiutil info` + stubs found via `mdfind kMDItemCFBundleIdentifier == '*.256stub'` and `/Applications` scan. |
 | Offline, image cached | backend `.unavailable` | Launch works (no backend access needed on cache hit: manifest is cached in `cache/manifests/`). Device-file update deferred. |
 | Offline, not cached | `.unavailable` | Fail fast (≤ 5 s probe) `EX_BACKEND`: alert "Blender is not available offline. Pin apps to keep them offline." |
@@ -1372,10 +1529,23 @@ Two credentials, one per client type; neither is ever placed in a URL.
 - `MacAppInspector` on the fixture app (bundle id, doc/URL types, codesign info, ad-hoc kind).
 - `CodeSigner` + `StubBuilder`: produced stub passes `codesign --verify --strict` and `plutil -lint`.
 - `MountUsageProbe` (early in G-a, non-root runner, N2): attached image with no user → `clean` although the backing
-  DMG is held by disk-image infrastructure (and the recorded `infra` set is non-empty); spawn a process from the mount
+  DMG is held by disk-image infrastructure (the recorded `infra` set may be empty, N3); spawn a process from the mount
   → busy; after exit → clean; a process (not under the mount) holding only a data file on the mount → busy; an mmap
-  only → busy; a helper surviving its parent → busy; then detach succeeds. Records which system pids give EPERM on
-  the runner (artifact) to validate the permission classes of §5.9.
+  only → busy; a helper surviving its parent → busy; then detach succeeds. Records which pids give EPERM on
+  the runner and their class (artifact) to validate the inspection boundary of §5.9 pass 3.
+- **Real non-root probe vs. the normal process population (R3-B2, required, G-a/G-b).** The probe runs as the
+  runner's ordinary user with the runner's full root/system process population present (no filtering of the
+  environment). (1) An idle mounted fixture → `clean` (two passes) although dozens of root pids return EPERM
+  (asserted: `details.uninspectable` non-empty, all `platform`/`unrelated`). (2) An idle restored fixture → `clean`
+  and restore-out runs. (3) A **relevant unreadable holder**: the test harness (only the harness uses the runner's
+  passwordless `sudo`; the engine never does) starts `sudo $E2E_DIR/helpers/E2ERootHelper`, configured as
+  `relatedExecutables` of the restored fixture, which opens a file inside the restored bundle → probe `unknown`,
+  bundle stays in place, `status` shows `waiting(unknown: related pid … uninspectable)`; after the helper exits →
+  clean → restore-out. (4) Mount-mode kernel gate: `sudo /bin/cat <mnt>/…/file` (platform, ignored by the probe)
+  holding the file → the detach attempt fails busy → `backoff`, mount kept; after it exits → detached.
+  (5) Error split: a pid that exits between listing and inspection is reported `exited`, not `unknown`.
+  (6) Classifier: fixture with a `KeepAlive` embedded LaunchDaemon plist → `unsupported`, reason
+  `persistentRelatedHelper`.
 - **Multiprocess lock tests** (real processes via `isenough` built binary): launch vs `evict` vs `prefetch` vs `gc`
   started together (random order, 50 iterations) → no attach of a missing file, no deleted mounted image, no
   corrupt `.part`; two `gc` processes recovering one dead owner → exactly one adopter; two different-app fetches
@@ -1385,6 +1555,16 @@ Two credentials, one per client type; neither is ever placed in a URL.
   (wants app1's L1/L2), `launch app2`, `prefetch app3` and `gc`. Each run ends within a timeout (no deadlock/livelock);
   app2 either launches after evicting app1, or exits `8` only if app1 was mounted/claimed at that time (logged
   reason `victim busy`); never an attach of a deleted file; no checker violation.
+- **Prefetch/launch claim handoff (R3-B3)**, real processes, test-build hold points (`--test-hold <point>` read
+  from the isolated test config, compiled out of release builds, N4): (1) `prefetch app1` held at `claimPublished`
+  (after the claim write, before L2) while `launch app1` starts → the launch blocks on L1 (the hold is inside the
+  L1 hold), never writes; release → prefetch becomes writer, launch waits on L2 and finds the image cached.
+  (2) prefetch held at `l2Acquired`, launch started (blocks on L2), then `kill -9` prefetch → launch takes L2,
+  reaps the dead claim, re-admits under its own pid, resumes from the `.part`, completes; at every sampled moment
+  `state.claims` has exactly one claim for app1 whose owner is the process holding L2 (checked via a test-only
+  `isenough debug locks` that reports flock holders). (3) During (2) a third-app `prefetch app3` sized so it fits
+  only if app1's reservation were freed early → it is refused `EX_NOSPACE` (or waits for app1's completion,
+  then succeeds), never admitted while app1's writer runs without a claim. 20 iterations each.
 - **Journal fault tests on real APFS**: child process `kill -9` at each fault point, then recovery (§5.8.6).
 
 ### 11.3 End-to-end: `scripts/e2e.sh`
@@ -1441,10 +1621,15 @@ Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non
    - A11b `doc_during_fetch`: with the fake-dataless backend delay at 5 s, `open -a <stub> doc2.txt` and, 1 s later,
      `open -a <stub> doc3.txt` (arrives during fetch), and a third doc right after `ready` → all three `open` events
      present exactly once.
-   - A11c `doc_during_close` (R2-B2): test builds honour `ISENOUGH_STUB_TEST_HOLD=bye|done` which makes the stub (or
-     the supervisor) pause 1 s right after sending `bye` / before sending `done`; during the pause the script runs
-     `open -a <stub> docN.txt`; repeated for both hold points and for an owner and a joiner stub → every `open` event
-     is present exactly once and every stub exits 0.
+   - A11c `doc_during_close` (R2-B2, R3-B1, N4): the hold switch reaches LS-launched processes explicitly, not via
+     the script's environment (LS does not inherit it): test builds of the stub read `Resources/test-hooks.json`
+     inside the *test* stub bundle (written by the e2e stub builder before signing) and the supervisor reads
+     `testHooks` from the isolated `$E2E_DIR` config; both readers are compiled only with `-D ISENOUGH_TEST_HOOKS`
+     and absent from release builds (a CI step greps the release binaries for the symbol). Value `hold: bye|done`
+     pauses 1 s right after sending `bye` / before sending `done`; during the pause the script runs
+     `open -a <stub> docN.txt`; repeated for both hold points and for an owner and a joiner stub → every `open`
+     event is present exactly once and every stub exits 0; for the joiner case the supervisor log shows the late
+     batch acked by the **same** joiner pid (no respawn) and that joiner's exit only after EOF.
    - A12 `second_launch_no_remount` (**required**): `open -a <stub> "isenough-e2e://hello?x=1"` → `open` event with that URL appears
      within 10 s; still exactly one attachment of the image in `hdiutil info`; same app pid.
    - A13 `prelaunch_hook_ran`: a local hook `hooks/io.github.s546126.e2eapp/pre-launch` (installed before step 4)
@@ -1491,7 +1676,7 @@ Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non
      attach <app>`): the probe reports `clean` while `lsof <imagePath>` shows the infrastructure holder; an mmap of a
      file on the mount by a `/usr/bin/python3` one-liner → busy; after it exits → clean.
    - A27c `busy_detach_backoff` (R2-B6): with `detachRetryMaxSeconds: 30`, a test-only fault
-     `ISENOUGH_FAULT=detach:busy:<n>` makes the first n detach attempts fail as busy (hdiutil is still called for real
+     `faults: ["detach:busy:<n>"]` in the isolated `$E2E_DIR` config (test builds only, N4) makes the first n detach attempts fail as busy (hdiutil is still called for real
      on attempt n+1). n=2 → `status` shows `backoff` with attempt counts, then detached; post-quit hook file shows
      exactly one run. During the 2nd backoff interval, open the stub with a document → session revived (same
      devEntry, epoch 2, document delivered once), no second attach; quitting again runs post-quit hooks once more.
@@ -1506,22 +1691,45 @@ Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non
    - A30 `mas_forces_restore`: `pack --mode mount` exits 3; `pack` (auto) → mode `restore`.
    - A31 `restore_swap`: launch via the stub with a document → the real bundle is at the stub path while running
      (cdhash = manifest), the stub is in `.256isenough-staging/<txid>/`, document event logged; after quit the stub is
-     back, staging/journal gone.
+     back, staging/journal gone, and (R3-B5) `state.restored` has no entry, `lastOutcome == restoredOut`,
+     `lastUsedAt` updated, `status` → `cached`; a second launch works normally (new txid); `evict app` then succeeds.
+     This runs with the runner's normal root/system process population (R3-B2: the probe must become clean).
    - A32 `restore_helper_waits`: helper outliving the app keeps the restored bundle in place until it exits.
-   - A33 `restore_fault_recovery`: for each fault point (env `ISENOUGH_FAULT=<phase>:<before|after>`, test builds only),
-     run a launch that `kill -9`s itself there, then `isenough gc`; assert the §5.8.6 invariant.
-   - A34 `restore_update_retained`: the fixture writes a file into its own bundle during the session (simulated
-     self-update) → after quit the bundle is in `retained/`, `status` shows `needsResolution` with its tree hash,
-     nothing deleted.
-   - A34b `unresolved_blocks_launch` (R2-B5): opening the stub (with a document) → exit/alert `EX_RESOLUTION` (14),
-     destination still holds the stub, retained bundle untouched; `resolve --keep-updated` without `--trust` on an
-     ad-hoc fixture → refused (cdhash changed); `resolve --keep-updated --trust` → new image packed and verified,
-     retained bundle moved to the Trash only after that, app launches from the new image (manifest tree hash = the
-     retained one). Then a second simulated update + `resolve --discard` → Trash, launch uses the previous image.
-     A crash (`ISENOUGH_FAULT=resolve:<phase>:after`) at each resolve phase + `gc` → app still blocked or resolved,
-     never without a copy.
+   - A33 `restore_fault_recovery`: for each fault point (test-only `faults` key in the isolated `$E2E_DIR` config,
+     not an environment variable, N4), run a launch that `kill -9`s itself there, then `isenough gc`; assert the
+     §5.8.6 invariant. The set includes restore-out `disposed:after`, `retired:before`, `retired:after` and
+     `closed:before` (R3-B5): after each, `gc` twice, then assert a second launch, `status`, `evict` and a third
+     `gc` all see the same terminal state (`restored` empty, journal closed, `lastOutcome` set, stub at dest).
+   - A33b `restore_supervisor_killed` (R3-B4, required): launch the restored fixture with its helper; `kill -9` the
+     supervisor while app and helper are alive; run two `isenough gc` concurrently → exactly one `adopt` event
+     (`mode: restore`), the journal owner is the spawned `hook watch` process, no swap while app/helper live
+     (real bundle still at dest, stub still parked). Opening the stub with a document now joins (document delivered
+     once). Quit the app, then end the helper → within the probe interval + `detachDelaySeconds` the stub is
+     reinstated, post-quit hooks ran exactly once (hooks policy), `restored` empty, journal closed, `lastOutcome
+     == restoredOut`. Variant: kill at journal phase `installed` (before `active`) with the app running → adopted,
+     not rolled back while busy.
+   - A34 `restore_invalid_mutation` (R3-B6 a): the fixture writes a file into its own bundle during the session —
+     this breaks the resource seal but does **not** change the executable's cdhash. After quit: bundle in
+     `retained/`, `needsResolution` with the new tree hash (cdhash unchanged), nothing deleted. `resolve
+     --keep-updated` and `--keep-updated --trust` → both refused `EX_INTEGRITY` ("retained bundle has an invalid
+     code signature; export or discard it") and the retained bundle is untouched; `resolve --export
+     $E2E_DIR/exported` → bundle moved there, app unblocked, launch uses the previous image.
+   - A34b `unresolved_blocks_launch` (R2-B5): while A34's or A34d's record is set, opening the stub (with a
+     document) → exit/alert `EX_RESOLUTION` (14), destination still holds the stub, retained bundle untouched.
+   - A34d `restore_signed_update` (R3-B6 b, required): a genuine simulated update. During the session the
+     **test harness** (never the engine) replaces the restored bundle at `<dest>` with `E2EApp` v1.1 built by
+     `scripts/make-fixture-app.sh --version 1.1` and ad-hoc signed by the harness (`codesign --sign -`), so it has
+     a valid signature and a different cdhash (asserted before quit with `codesign -dvvv`). After quit: retained,
+     `needsResolution.cdhash` == the new cdhash. `resolve --keep-updated` without `--trust` → refused (ad-hoc and
+     cdhash changed); `--keep-updated --trust` → new image packed + verified, `trusted.cdhash` updated, retained
+     bundle moved to the Trash only after that, app launches from the new image (manifest tree hash/cdhash = the
+     retained ones, version 1.1). A crash (`faults: resolve:<phase>:after`) at each resolve phase + `gc` → app still
+     blocked or resolved, never without a copy. Then a second harness-built update (v1.2) + `resolve --discard` →
+     Trash, launch uses the v1.1 image. The engine's code path never calls `codesign --sign` on apps (asserted by
+     grepping the engine's command log).
    - A34c `prelaunch_hook_mutation`: a pre-launch hook writes into the restored bundle and exits 1 → `EX_HOOK`,
-     bundle retained (tree hash differs), stub back at the destination.
+     bundle retained (tree hash differs, cdhash equal: tree-hash-only change, rollback coverage), stub back at
+     the destination, `lastOutcome == rolledBack`, `needsResolution` set.
 13. **Unpack**: `isenough unpack app1 --to $E2E_DIR/restored`.
    - A35 `unpack_ok`: restored app `codesign --verify --strict` ok and cdhash + tree hash equal manifest; stub removed.
 14. **GUI auth smoke (daemon, no Pake)**: `isenough serve --port <free>`; with `curl`: unauthenticated `/api/apps` → 401;
@@ -1531,7 +1739,7 @@ Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non
 
 **Required gates.** A11/A11c (document via LS → stub → app, including events during the close handshake), A12 (URL
 via LS → stub → live session), A15/A27b (detach despite attachment infrastructure), A19/A20 (capacity), A27c
-(backoff/stuck), A31–A34c (restore swap, recovery, resolution) are required: there is no CLI/argv substitute that can turn them green. The stub is always launched
+(backoff/stuck), A31–A34d (restore swap, recovery/adoption, resolution) and the §11.2 real non-root probe test are required: there is no CLI/argv substitute that can turn them green. The stub is always launched
 through Launch Services (`open -a <stub> <doc>`, `open -a <stub> <url>`), and the app event log must show
 Apple-Event delivery (`application(_:open:)`), not argv. If LS/`open` is unavailable on a runner, the script exits `2`
 (inconclusive → CI red) after collecting artifacts. A10 additionally asserts, via `proc_pidpath` of the returned
@@ -1561,7 +1769,9 @@ extra diagnostic, not a substitute.
 - **Implementation gates (N1)** — each gate must be green on macOS CI before the next starts:
   G-a safe local mount lifecycle (local backend, cache, claims, locks, stub protocol, A1–A29). Within G-a, the
   pure state machines (stub close protocol, detach outcomes, capacity planner, lock checker) are built and tested
-  first; the HTTP server is not started before G-d (N1);
+  first; the HTTP server is not started before G-d (N1). r3 priority (N1): the real non-root usage probe (§11.2) is
+  the first macOS-runner deliverable of G-a, and both lifecycle modes (G-a mount, G-b restore incl. adoption)
+  precede any server work; optional features are deferred before any safety gate is weakened;
   G-b safe restore (journal, fault injection, A30–A35); G-c iCloud materialization/upload (`icloud` backend, manual
   checklist on the user's Mac); G-d authenticated daemon + Pake GUI (§10.1, step 14). Shared repo hooks, `gc
   --remote`, and multi-Mac UX are deferred to v2 (local hooks stay MVP).
@@ -1657,6 +1867,13 @@ cache, manifest, hooks), different object type.
    (it only inspects files on the mounted volume), names are only used for diagnostics (§5.9).
 11. **GPL-3.0 (Pake)**: our engine is not linked with Pake; distributing the Pake-built app means distributing a GPL
    program (source offer for the wrapper). Self-use: no issue.
+12. **Restore-mode inspection boundary (R3-B2)**: without privilege we cannot see fds of other-uid processes; temporary
+   restore relies on assumption A-R (§5.9 pass 3) and refuses apps with persistent root helpers. If a real app
+   breaks A-R (an unrelated-team root daemon that loads code from the restored bundle), the user must mark it in
+   `relatedExecutables` or keep the app installed. Mount mode does not depend on A-R (kernel unmount gate).
+13. **TCC / default handlers / Dock pins** across the stub swap are compatibility observations collected by the
+   manual checklist (§8.5, N5), not guarantees; actual iCloud API behavior is tested manually on supported releases
+   after the fake-backend CI is green (G-c).
 
 ### 14.2 Open questions
 1. Project license for our own code (MIT/Apache-2.0 suggested; compatible with distributing a separate GPL Pake shell)?
