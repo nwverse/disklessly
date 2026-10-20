@@ -87,9 +87,8 @@ PLIST
 cat > "$TMP/Fixture.swift" <<'APP'
 import AppKit
 
-@main
+@MainActor @main
 final class Fixture: NSObject, NSApplicationDelegate {
-    private let app = NSApplication.shared
     private let output = Bundle.main.object(forInfoDictionaryKey: "IsenoughE2EOutput") as! String
     private let pidFile = Bundle.main.object(forInfoDictionaryKey: "IsenoughE2EPidFile") as! String
 
@@ -114,7 +113,7 @@ final class Fixture: NSObject, NSApplicationDelegate {
     }
 }
 APP
-swiftc "$TMP/Fixture.swift" -framework AppKit -o "$TMP/Applications/Fixture.app/Contents/MacOS/Fixture" >>"$LOG" 2>&1 || fail 'compile Swift fixture app'
+swiftc -parse-as-library "$TMP/Fixture.swift" -framework AppKit -o "$TMP/Applications/Fixture.app/Contents/MacOS/Fixture" >>"$LOG" 2>&1 || { tail -30 "$LOG" >&2; fail 'compile Swift fixture app'; }
 printf 'fixture document\n' > "$TMP/docs/open-me.txt"
 export ISENOUGH_E2E_ARGV="$TMP/received-argv"
 export ISENOUGH_E2E_PID="$TMP/fixture.pid"
