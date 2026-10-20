@@ -94,8 +94,10 @@ final class CoreTests: XCTestCase {
     /// The previous placeholder asserted that restore launch threw
     /// "restore mode is disabled until durable restore recovery is implemented".
     /// Recovery now exists, so this test requires the journaled transaction instead:
-    /// detach happens before `active`, and mount-mode launch still refuses on Linux
-    /// without creating a restore journal or a mount session.
+    /// detach happens before `active`, and a mount-mode launch does not create a
+    /// restore journal or a mount session. Linux still throws the unsupported
+    /// hdiutil message. macOS reaches `hdiutil attach` and fails because the
+    /// fixture is not a disk image.
     func testRestoreModeRunsJournalDetachesBeforeActiveAndSkipsMountRecovery() throws {
         let world = try RestoreWorld()
         defer { world.cleanup() }
@@ -117,7 +119,14 @@ final class CoreTests: XCTestCase {
         var mountManifest = world.manifest
         mountManifest.mode = .mount
         XCTAssertThrowsError(try world.engine.launch(mountManifest)) { error in
+            #if os(Linux)
             XCTAssertEqual((error as? IsenoughError)?.errorDescription, "launch requires macOS hdiutil and Launch Services")
+            #else
+            guard case IsenoughError.diskImage(let message) = error else {
+                return XCTFail("expected diskImage, got \(error)")
+            }
+            XCTAssertTrue(message.contains("image not recognized"), message)
+            #endif
         }
         XCTAssertTrue(world.journals().isEmpty)
     }

@@ -275,10 +275,25 @@ final class RestoreTransactionTests: XCTestCase {
         let sidecar = real.appendingPathComponent("Contents/._Info.plist")
         try Data("provenance-unique".utf8).write(to: sidecar)
         let withSidecar = try BundleHasher.treeHash(of: real)
-        XCTAssertNotEqual(withSidecar, linked)
+        if withSidecar != linked {
+            // A listed AppleDouble file is part of the tree and must be deleted before hashing.
+            BundleHasher.removeMetadataSidecars(real)
+            XCTAssertFalse(fm.fileExists(atPath: sidecar.path))
+            XCTAssertEqual(try BundleHasher.treeHash(of: real), linked)
+        } else {
+            // macOS can store this name as an AppleDouble/xattr that directory listings hide.
+            // The hash stays equal because the walk never sees those bytes.
+            let names = try fm.subpathsOfDirectory(atPath: real.path)
+            XCTAssertFalse(names.contains { URL(fileURLWithPath: $0).lastPathComponent.hasPrefix("._") }, names.joined(separator: ","))
+            BundleHasher.removeMetadataSidecars(real)
+            XCTAssertEqual(try BundleHasher.treeHash(of: real), linked)
+        }
+        let visible = real.appendingPathComponent("Contents/visible-extra.txt")
+        try Data("visible".utf8).write(to: visible)
+        XCTAssertNotEqual(try BundleHasher.treeHash(of: real), linked)
         BundleHasher.removeMetadataSidecars(real)
-        XCTAssertFalse(fm.fileExists(atPath: sidecar.path))
-        XCTAssertEqual(try BundleHasher.treeHash(of: real), linked)
+        XCTAssertTrue(fm.fileExists(atPath: visible.path))
+        XCTAssertNotEqual(try BundleHasher.treeHash(of: real), linked)
     }
 
     func testMismatchedExtractionDetachesRollsBackAndLeavesNoMount() throws {
@@ -550,6 +565,11 @@ final class RestoreTransactionTests: XCTestCase {
         world.disarm()
         try Data("edited".utf8).write(to: world.dest.appendingPathComponent("Contents/MacOS/Foo"))
         try world.assertTerminalStub()
+        // The text fixture is not a signed Mach-O. macOS `codesign --verify --strict` fails
+        // before the cdhash check; force a valid signature so both platforms still require
+        // EX_USAGE when the cdhash changed and `--trust` was not passed.
+        world.trace.signatureValid = { _ in true }
+        world.engine.restore.services.signatureValid = { _ in true }
         XCTAssertThrowsError(try world.engine.resolve(world.manifest, keepUpdated: true, trust: false, export: nil, discard: false)) { error in
             XCTAssertEqual((error as? IsenoughError)?.exitCode, 2)
         }
