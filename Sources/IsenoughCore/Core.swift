@@ -22,8 +22,14 @@ public struct ImageManifest: Codable, Equatable {
     public var mode: Mode
     public var createdAt: Date
     public enum Mode: String, Codable { case mount, restore }
-    public struct Image: Codable, Equatable { public var file: String; public var format: String; public var sha256: String; public var size: UInt64; public var volumeName: String; public var appPathInVolume: String }
-    public struct App: Codable, Equatable { public var originalPath: String; public var executable: String; public var documentTypes: [[String: AnyCodable]]; public var urlTypes: [[String: AnyCodable]] }
+    public struct Image: Codable, Equatable {
+        public var file: String; public var format: String; public var sha256: String; public var size: UInt64; public var volumeName: String; public var appPathInVolume: String
+        public init(file: String, format: String, sha256: String, size: UInt64, volumeName: String, appPathInVolume: String) { self.file=file; self.format=format; self.sha256=sha256; self.size=size; self.volumeName=volumeName; self.appPathInVolume=appPathInVolume }
+    }
+    public struct App: Codable, Equatable {
+        public var originalPath: String; public var executable: String; public var documentTypes: [[String: AnyCodable]]; public var urlTypes: [[String: AnyCodable]]
+        public init(originalPath: String, executable: String, documentTypes: [[String: AnyCodable]], urlTypes: [[String: AnyCodable]]) { self.originalPath=originalPath; self.executable=executable; self.documentTypes=documentTypes; self.urlTypes=urlTypes }
+    }
     public init(bundleId: String, name: String, version: String, image: Image, app: App, mode: Mode = .mount, createdAt: Date = Date()) {
         self.schema = "image/1"; self.bundleId = bundleId; self.name = name; self.version = version; self.image = image; self.app = app; self.mode = mode; self.createdAt = createdAt
         self.imageId = "\(bundleId)-\(version)-\(String(image.sha256.prefix(8)))"
