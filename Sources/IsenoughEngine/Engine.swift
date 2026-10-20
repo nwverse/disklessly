@@ -113,11 +113,13 @@ public struct IsenoughEngine {
         let launcher=try StubGenerator.locateLauncher(cliExecutable:cli,environment:ProcessInfo.processInfo.environment,isExecutable:{ FileManager.default.isExecutableFile(atPath:$0) })
         let stubExecutable=temp.appendingPathComponent("Contents/MacOS/isenough-stub")
         try FileManager.default.copyItem(at:launcher,to:stubExecutable)
+        guard try Data(contentsOf:stubExecutable) != Data(contentsOf:cli) else {
+            throw IsenoughError.failure("Refusing to install CLI binary as isenough-stub launcher")
+        }
         try manifest.encode().write(to:temp.appendingPathComponent("Contents/Resources/manifest.json"))
         try JSONSerialization.data(withJSONObject:StubGenerator.stubInfo(manifest:manifest,cliPath:cli.resolvingSymlinksInPath().path),options:[.prettyPrinted,.sortedKeys]).write(to:temp.appendingPathComponent("Contents/Resources/stub.json"))
-        // Sign only the outer app bundle. --deep recursively re-signs the copied
-        // Swift executable, which can fail on newer macOS codesign implementations
-        // when replacing its existing ad-hoc signature.
+        // Signing the bundle re-signs its main executable isenough-stub in place.
+        // No --deep is needed because there are no nested code items.
         try run("/usr/bin/codesign",["--force","--sign","-",temp.path])
         try run("/usr/bin/codesign",["--verify","--strict",temp.path])
         guard StubGenerator.pathsReferToSameLocation(source.path, dest.path) else { throw IsenoughError.unsupported("Stub must replace the app at its original path (source: \(source.path), destination: \(dest.path))") }

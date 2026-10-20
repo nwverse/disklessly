@@ -22,6 +22,17 @@ fail() { printf 'FAIL: %s\n' "$1" | tee -a "$LOG" >&2; exit 1; }
 pass() { printf 'PASS: %s\n' "$1" | tee -a "$LOG"; }
 assert_file() { [[ -f "$1" ]] || fail "$2 (missing: $1)"; pass "$2"; }
 assert_contains() { grep -Fq -- "$2" "$1" || fail "$3 (expected '$2' in $1)"; pass "$3"; }
+code_text() { /usr/bin/otool -t "$1" | tail -n +2; }
+stub_code_diagnostics() {
+  {
+    echo 'Stub code-section diagnostics:'
+    /usr/bin/otool -t "$STUB/Contents/MacOS/isenough-stub" 2>&1 | head -5 || true
+    /usr/bin/otool -t "$ROOT/.build/debug/isenough-stub" 2>&1 | head -5 || true
+    /usr/bin/otool -t "$ROOT/.build/debug/isenough" 2>&1 | head -5 || true
+    /usr/bin/codesign -dvvv "$STUB" 2>&1 || true
+  } >> "$LOG"
+  tail -20 "$LOG" >&2
+}
 run_cli() { "$ROOT/.build/debug/isenough" "$@" >>"$LOG" 2>&1; }
 
 {
@@ -72,8 +83,10 @@ run_cli pack "$TMP/Applications/Fixture.app" --keep-original --stub-dir "$TMP/Ap
 pass 'fixture packed and stub generated'
 STUB="$TMP/Applications/Fixture.app"
 assert_file "$STUB/Contents/MacOS/isenough-stub" 'stub executable exists'
-cmp -s "$STUB/Contents/MacOS/isenough-stub" "$ROOT/.build/debug/isenough-stub" || fail 'stub contains launcher binary'
-! cmp -s "$STUB/Contents/MacOS/isenough-stub" "$ROOT/.build/debug/isenough" || fail 'stub is not CLI binary'
+if ! cmp -s <(code_text "$STUB/Contents/MacOS/isenough-stub") <(code_text "$ROOT/.build/debug/isenough-stub"); then stub_code_diagnostics; fail 'stub contains launcher binary'; fi
+pass 'stub contains launcher binary'
+if cmp -s <(code_text "$STUB/Contents/MacOS/isenough-stub") <(code_text "$ROOT/.build/debug/isenough"); then stub_code_diagnostics; fail 'stub is not CLI binary'; fi
+pass 'stub is not CLI binary'
 assert_file "$STUB/Contents/Resources/stub.json" 'stub CLI metadata exists' 
 /usr/bin/codesign --verify --strict "$STUB" >>"$LOG" 2>&1 || fail 'codesign --verify --strict generated stub'
 pass 'generated stub passes codesign verification'
