@@ -235,3 +235,118 @@ All seven blocking issues are accepted; `docs/design.md` is revised (rev. r1). S
 No issue was rejected. One judgement call: for B4 I chose **rejecting** quarantined apps rather than tracking
 translocated paths. Translocation paths are opaque and their lifetime is not documented, so tracking them safely
 costs more than the MVP is worth. Users can clear quarantine themselves after Gatekeeper approval.
+
+## Round 2 — reviewer (gpt-6.1-sol)
+
+**Verdict: CHANGES REQUESTED.** Reviewed `32980d9` on `feat/mvp`, reading all three research documents,
+`design.md` rev. r1, and the round-1 review/response. This is a design review on Linux; no macOS runtime tests
+were run. Most round-1 changes are substantive, but the remaining contradictions below prevent implementation
+from following one safe, testable contract.
+
+### Authoritative corrections checklist
+
+1. **FileManager instead of brctl:** satisfied (§7.2); download/upload completion is asynchronous.
+2. **Materialize → independent copy → SHA-256 → attach:** satisfied (§5.2/§7.2); repo DMGs are never attached.
+3. **No iCloud clone/evict zero-copy assumption:** satisfied (§6.2); cache bytes are independently copied.
+4. **Remote ULMO, local ULFO/UDRO with conversion justification:** satisfied, including negative config tests.
+   Round-1 B1 is fixed; MAS→restore and unsupported classes also cannot be overridden.
+5. **Playpen lifecycle precedent, not AppPorts' immediate exit/URL loss:** correctly distinguished. Native
+   document/URL forwarding is specified, but its shutdown protocol still loses events (R2-B2).
+6. **Pake tray/window, localhost HTTP, GPL-3.0:** satisfied. Round-1 B6's unreadable-cookie/Bearer bootstrap is
+   fixed by pairing, cookie-authenticated UI/SSE, and separate CLI Bearer authentication.
+7. **Session roadmap starts with closed pi JSONL, excludes credentials/SQLite:** satisfied (§13); not MVP.
+
+### Blocking issues
+
+1. **R2-B1 — The usage probe counts the image's own attachment as app use** (§5.9, lines 744–754).
+   The unconditional backing-image/device `lsof` pass treats any holder as busy. A normally attached image has
+   disk-image infrastructure holding its backing DMG open (the research explicitly describes
+   `diskimages-helper` reading/mapping it). That holder cannot disappear *before* detach. Thus an ordinary app
+   quitting need never reach `idle`, and A15/A17 cannot pass. This is not a reason to weaken unknown→busy for
+   genuinely uninspectable app processes.
+   **Required:** distinguish attachment infrastructure from dependent app/helper/file users. Define a narrow,
+   verified exclusion for the exact attachment's infrastructure, or use backing-file checks only for an explicitly
+   tracked exceptional/translocated dependency. Do not exclude arbitrary same-named processes. Test an attached
+   image with no app (probe clean), an app/helper/data-file holder (busy), and detach after those users exit.
+
+2. **R2-B2 — `bye/done` still has an event-loss window, and joiners have a different protocol** (§8.3/§5.6.3).
+   After the stub sends `bye`, a new Apple Event can arrive while it waits for `done`. The new `open` necessarily
+   follows `bye` on the ordered socket; it cannot be "sent first" retroactively. The supervisor only accepts until
+   `bye`, and the stub terminates on `done`, despite the new outstanding request. Keeping the run loop alive does
+   not make macOS re-deliver an event already dispatched to that process. Separately, §5.6.3's joiner acks and exits
+   immediately, while §8.3 requires `ready` then a `bye/done` exchange and treats EOF as supervisor failure.
+   **Required:** specify one owner/joiner client protocol. A batch arriving after `bye` must be explicitly handed
+   to a new joiner/connection and acknowledged before termination (or use another concrete lossless closing
+   strategy); never terminate with outstanding batches. Define handshake timeout/error behavior. Add deterministic
+   tests injecting an event after `bye` is sent, before/after its receipt, and before `done`, including a live-session
+   joiner receiving several batches. Quiet-period tests alone do not cover this race. Round-1 B5 remains open.
+
+3. **R2-B3 — Capacity math contradicts both its accounting and the required LRU acceptance test** (§6.1/§11.3.7).
+   `used` already includes allocated partials, while every live reservation continues to reserve the *whole* peak;
+   `free` likewise already decreased by those allocated bytes. Adding full reservations again double-counts work
+   in progress. More decisively, the quota is charged `M+C+L`, but A19 chooses `Q` from final cache sizes only.
+   A padded, incompressible app2 can have `C ≈ A2` and estimated `L ≥ 2C`, so its cold fetch cannot fit in
+   `Q = A2 + A1/2` even with app1 evicted. The promised successful launch and pin scenario are not executable
+   under the specified reservation algorithm.
+   **Required:** separate final cache-quota admission from transient per-volume free-space reservations, or define
+   an equally consistent explicit policy. Reserve only *remaining* incremental allocations as bytes materialize;
+   avoid counting completed images in both `used` and reservations. Budget retained iCloud bytes accurately when
+   eviction is unavailable. Align A19/A20 with that policy and add tests advancing two concurrent fetches through
+   materialization/copy/conversion, not just testing reservation creation on an empty cache. Round-1 B7 is partly
+   fixed (LS/restore gates and exit-status expectations), but its quota acceptance gate remains broken.
+
+4. **R2-B4 — The lock specification is internally incompatible during fetch and space reclamation**
+   (§5.2.3/§5.6.1–2/§6.1). L2 is held throughout fetch/convert/attach in both the pre-launch steps and lock table,
+   yet §5.6.1 forbids holding it during download and backend writes. Capacity admission happens *after* taking
+   L1+L2 and calls a gc pass that needs other L1 locks, violating the declared order. The generic instruction to
+   release everything and restart does not specify how the active partial/reservation remains protected, or how a
+   space-making restart avoids reacquiring the same locks and failing the same order again. This leaves round-1
+   B3 without one implementable algorithm.
+   **Required:** choose a single lock hold boundary for slow fetches and explicitly place admission/victim cleanup
+   relative to it. If releasing locks, persist a claim that other fetchers/evictors honor, and revalidate on reacquire;
+   alternatively perform reclamation before taking image locks with a defined retry path. Reconcile prose and
+   tables. Add a multiprocess low-space test that actually requires evicting another app while launching, with the
+   lock-order checker enabled; the operation must succeed or return EX_NOSPACE without deadlock/restart livelock.
+
+5. **R2-B5 — `needsResolution` relaunch has no valid restore transaction** (§3.5/§5.8.1–3).
+   Changed bundles are safely retained before deletion now: this fixes the main round-1 B2 data-loss issue.
+   However, the unresolved stub is promised to restore/launch that retained bundle instead of the image, while
+   `restore-in` unconditionally verifies its cdhash+tree hash against the *old image manifest*. A genuinely updated
+   bundle fails this check. There is also no recorded retained-source path/expected identity transaction contract
+   for selecting it, crash recovery, subsequent changes, and eventual cleanup. Implementers must either reject
+   the promised launch or bypass the verifier without a specified replacement trust rule.
+   **Required:** either block unresolved launches with a clear resolution-required error (safe MVP), or fully define
+   a retained-source transaction with durable source path, verified snapshot identity, trust approval when needed,
+   and no deletion until archival/resolution. Test relaunch after A34, a second update, and crash during that
+   relaunch. Include local pre-launch hooks modifying the restored bundle before failing: rollback must compare
+   the tree hash, not rely on §5.2.5's claim that cdhash alone suffices because nothing was launched.
+
+6. **R2-B6 — Failed detach and detach-backoff relaunch have no coherent terminal state** (§5.4/§5.6.3).
+   §5.4 marks `detaching`, releases L1 between retries, and says a relaunch wins. §5.6.3 instead makes `detaching`
+   unjoinable and assumes acquiring L1 means the session is gone; during backoff it is still present. At retry
+   exhaustion the spec says mark `stuck`, but then its unconditional step 6 removes the mount/session and step 8
+   exits success, with no requirement that detach actually succeeded. Losing this record would also defeat cache
+   eviction protection for a still-attached image.
+   **Required:** explicitly branch on successful detach, retryable failure, and stuck. Preserve ownership/session
+   and cache protection on failure; return/report the failure rather than falling through successful cleanup.
+   Define how a joiner cancels backoff and safely returns a detaching/stuck-but-attached session to running, or
+   waits without opening another session. Specify whether post-quit hooks rerun. Test busy detach across multiple
+   retries, relaunch during a released-lock interval, exhaustion, and later successful recovery.
+
+### Non-blocking suggestions
+
+- **N1 — Scope and sequencing:** the G-a…G-d staging is useful. Resolve the above state-machine contradictions
+  before building the HTTP server; defer optional infrastructure rather than dilute required hooks/forwarding.
+- **N2 — Probe permissions:** exercise real non-root `libproc`/`lsof` behavior on the macOS runner early. Other-user
+  processes, permission errors and persistent registered login items may intentionally keep restore sessions open
+  indefinitely; diagnostics should distinguish these from live app users. Avoid assuming a registered launchd
+  program is necessarily running, or describing arbitrary bundles as small for recursive `lsof +D`.
+- **N3 — Backend phase 2:** the range/redirect/containment/collision additions improve the abstraction. Clarify how
+  a non-atomic store promotes a temporary object to the path in `image.file` and publishes a complete manifest;
+  do not advertise WebDAV MOVE as universally atomic. This is not a blocker for the two MVP folder backends.
+- **N4 — macOS claims:** preserving the real signature, refusing quarantine, best-effort LS cleanup, and manual
+  TCC/default-handler checks are appropriate. Moving a kept original to `retained/` does not itself guarantee LS
+  forgets it; explicit-path launches plus returned-instance checks, not LS's preferred URL alone, are authoritative.
+- **N5 — Test isolation:** the portable e2e contract is substantially better. Unregister fixture paths *before*
+  detach in trap cleanup, clear `quit-now` before each relaunch, and allow for the two clean probes (≥5 s apart)
+  when asserting the 1 s idle observation. These are small acceptance-script details, not additional blockers.
