@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# Isolated macOS integration test. This intentionally tests the public CLI/stub path.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/isenough-e2e.XXXXXX")"
+LOG="${E2E_LOG_FILE:-$TMP/e2e.log}"
+mkdir -p "$(dirname "$LOG")"
+: > "$LOG"
+MOUNT_ROOT="$TMP/mounts"
+APP_PID=""
+
+cleanup() {
+  if [[ -f "${ISENOUGH_E2E_PID:-}" ]]; then kill "$(cat "$ISENOUGH_E2E_PID")" 2>/dev/null || true; fi
+  if [[ -n "$APP_PID" ]]; then kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi
+  rm -rf "$TMP"
+}
+trap cleanup EXIT INT TERM
+
+fail() { printf 'FAIL: %s\n' "$1" | tee -a "$LOG" >&2; exit 1; }
+pass() { printf 'PASS: %s\n' "$1" | tee -a "$LOG"; }
+assert_file() { [[ -f "$1" ]] || fail "$2 (missing: $1)"; pass "$2"; }
+assert_contains() { grep -Fq -- "$2" "$1" || fail "$3 (expected '$2' in $1)"; pass "$3"; }
+run_cli() { "$ROOT/.build/debug/isenough" "$@" >>"$LOG" 2>&1; }
+
+{
+  echo "E2E started $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+  sw_vers
+  xcodebuild -version
+  swift --version
+} >>"$LOG" 2>&1
+
+cd "$ROOT"
+swift build -c debug >>"$LOG" 2>&1 || fail 'swift build -c debug'
+pass 'Swift package builds on macOS'
+
+export ISENOUGH_REPO_PATH="$TMP/fake-icloud"
+export ISENOUGH_CACHE_DIR="$TMP/cache"
+export ISENOUGH_STATE_DIR="$TMP/state"
+export ISENOUGH_MOUNT_ROOT="$MOUNT_ROOT"
+export ISENOUGH_STUB_DIR="$TMP/Applications"
+export ISENOUGH_DETACH_DELAY=1
+mkdir -p "$TMP/Applications/Fixture.app/Contents/MacOS" "$TMP/docs"
+run_cli init --backend local
+pass 'isolated local-folder repository initialized'
+
+cat > "$TMP/Applications/Fixture.app/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>io.github.s546126.256isenough.e2efixture</string>
+<key>CFBundleName</key><string>Fixture</string>
+<key>CFBundleExecutable</key><string>Fixture</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleVersion</key><string>1</string>
+<key>CFBundleShortVersionString</key><string>1.0</string>
+</dict></plist>
+PLIST
+cat > "$TMP/Applications/Fixture.app/Contents/MacOS/Fixture" <<'APP'
+#!/bin/bash
+set -eu
+printf '%s\n' "$@" > "${ISENOUGH_E2E_ARGV:?}"
+exec /bin/sleep 600
+APP
+chmod +x "$TMP/Applications/Fixture.app/Contents/MacOS/Fixture"
+printf 'fixture document\n' > "$TMP/docs/open-me.txt"
+export ISENOUGH_E2E_ARGV="$TMP/received-argv"
+export ISENOUGH_E2E_PID="$TMP/fixture.pid"
+
+run_cli pack "$TMP/Applications/Fixture.app" --stub-dir "$TMP/Applications" >>"$LOG" 2>&1 || fail 'CLI pack into fake repository and Applications'
+pass 'fixture packed and stub generated'
+STUB="$TMP/Applications/Fixture.app"
+assert_file "$STUB/Contents/MacOS/isenough-stub" 'stub executable exists'
+/usr/bin/codesign --verify --strict "$STUB" >>"$LOG" 2>&1 || fail 'codesign --verify --strict generated stub'
+pass 'generated stub passes codesign verification'
+MANIFEST="$(find "$ISENOUGH_REPO_PATH/manifests" -name '*.json' -print -quit)"
+assert_file "$MANIFEST" 'manifest published'
+# Extract the repository image filename from its JSON manifest.
+IMAGE_FILE="$(/usr/bin/plutil -extract image.file raw -o - "$MANIFEST" 2>/dev/null || true)"
+[[ -n "$IMAGE_FILE" ]] || fail 'extract image file from manifest'
+IMAGE_ID="$(/usr/bin/plutil -extract imageId raw -o - "$MANIFEST" 2>/dev/null || true)"
+[[ -n "$IMAGE_ID" ]] || fail 'extract imageId from manifest'
+REMOTE_IMAGE="$ISENOUGH_REPO_PATH/$IMAGE_FILE"
+assert_file "$REMOTE_IMAGE" 'remote disk image exists'
+CACHE_IMAGE="$ISENOUGH_CACHE_DIR/images/$IMAGE_ID.dmg"
+
+# Launch using the installed stub, not a direct engine call: its pre-launch path is under test.
+PATH="$ROOT/.build/debug:$PATH" "$STUB/Contents/MacOS/isenough-stub" --doc "$TMP/docs/open-me.txt" >>"$LOG" 2>&1 &
+APP_PID=$!
+sleep 4
+assert_file "$CACHE_IMAGE" 'pre-launch fetched image to isolated cache'
+REMOTE_SHA="$(shasum -a 256 "$REMOTE_IMAGE" | awk '{print $1}')"
+CACHE_SHA="$(shasum -a 256 "$CACHE_IMAGE" | awk '{print $1}')"
+[[ "$REMOTE_SHA" == "$CACHE_SHA" ]] || fail 'cached image sha256 matches remote manifest image'
+pass 'cached image sha256 verified'
+MOUNT="$MOUNT_ROOT/$IMAGE_ID"
+/usr/bin/hdiutil info >>"$LOG" 2>&1 || fail 'hdiutil info after launch'
+grep -Fq "$MOUNT" "$LOG" || fail 'image attached at expected mount point'
+mount_line="$(/sbin/mount | grep -F "$MOUNT" || true)"
+[[ -n "$mount_line" ]] || fail 'expected mount point is mounted'
+case "$mount_line" in *read-only*|*rdonly*) pass 'image is attached read-only' ;; *) fail 'image mount is read-only' ;; esac
+assert_file "$ISENOUGH_E2E_ARGV" 'fixture process launched and recorded arguments'
+assert_contains "$ISENOUGH_E2E_ARGV" "$TMP/docs/open-me.txt" 'document argument forwarded to real app'
+
+# The first process must remain alive until asked to quit; kill it, then require hook cleanup/state.
+if [[ -f "$ISENOUGH_E2E_PID" ]]; then kill "$(cat "$ISENOUGH_E2E_PID")" 2>/dev/null || true; fi
+kill "$APP_PID" 2>/dev/null || true
+wait "$APP_PID" 2>/dev/null || true
+APP_PID=""
+sleep 3
+if /sbin/mount | grep -Fq "$MOUNT"; then fail 'post-quit hook detached mount after configured delay'; fi
+pass 'post-quit hook detached image after delay'
+STATE="$ISENOUGH_STATE_DIR/state.json"
+assert_file "$STATE" 'lifecycle state persisted after quit'
+assert_contains "$STATE" 'lastUsed' 'LRU timestamp updated'
+assert_contains "$STATE" 'cached' 'lifecycle state returned to cached/idle'
+
+# A subsequent launch must reuse cache; then intentionally corrupt cache and reject it.
+BEFORE="$(stat -f '%m' "$CACHE_IMAGE")"
+run_cli prefetch "$IMAGE_ID" >>"$LOG" 2>&1 || fail 'second prefetch from cache'
+AFTER="$(stat -f '%m' "$CACHE_IMAGE")"
+[[ "$BEFORE" == "$AFTER" ]] || fail 'second launch/prefetch does not re-fetch cached image'
+pass 'second prefetch hits existing cache without re-fetch'
+# Quota eviction is exercised with one unpinned and one pinned cached entry.
+run_cli pin "$IMAGE_ID" >>"$LOG" 2>&1 || fail 'pin fixture before quota eviction'
+run_cli gc >>"$LOG" 2>&1 || fail 'quota-triggered gc'
+assert_file "$CACHE_IMAGE" 'pinned cache image remains after gc'
+pass 'quota eviction preserves pinned image'
+
+printf 'corruption' >> "$REMOTE_IMAGE"
+rm -f "$CACHE_IMAGE"
+if run_cli prefetch "$IMAGE_ID" >>"$LOG" 2>&1; then fail 'remote sha256 mismatch rejected'; fi
+pass 'remote sha256 mismatch rejected'
+printf 'PASS: all macOS end-to-end assertions completed\n' | tee -a "$LOG"

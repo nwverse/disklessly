@@ -86,7 +86,9 @@ export ISENOUGH_DETACH_DELAY=0
 ```
 
 This does **not** yet provide a safe end-to-end stub->quit->detach automation cycle: non-interactive long-lived
-watching and fixture hold controls are deferred. `scripts/e2e.sh` is intentionally not included per task instructions.
+watching and fixture hold controls are deferred. The macOS harness is intended to expose these gaps rather than
+make production use safe. Run it on any Mac with `bash scripts/e2e.sh`; it builds a fixture app and uses only
+isolated temporary repository/cache/state/mount/Applications directories.
 
 ## Limitations
 
