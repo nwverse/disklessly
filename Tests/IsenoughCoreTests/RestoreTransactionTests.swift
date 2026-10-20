@@ -251,6 +251,26 @@ final class RestoreTransactionTests: XCTestCase {
         XCTAssertEqual(ProcessProbe.usage(rows: watcher, roots: [root], selfPid: 30), .clean)
     }
 
+    /// Same URL listing `BundleHasher` uses. `subpathsOfDirectory` is not a substitute:
+    /// on macOS it can name an AppleDouble file that `contentsOfDirectory` hides.
+    private func hasherListing(_ directory: URL) throws -> [String] {
+        let fm = FileManager.default
+        var names: [String] = []
+        func walk(_ dir: URL) throws {
+            let children = try fm.contentsOfDirectory(at: dir, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [])
+            for child in children {
+                names.append(child.lastPathComponent)
+                if DurableIO.isSymlink(child) { continue }
+                var isDir: ObjCBool = false
+                if fm.fileExists(atPath: child.path, isDirectory: &isDir), isDir.boolValue {
+                    try walk(child)
+                }
+            }
+        }
+        try walk(directory)
+        return names
+    }
+
     func testTreeHashIgnoresPrivateVarSpellingAndSidecarsAreRemovedBeforeHashing() throws {
         XCTAssertEqual(
             BundleHasher.relativePath("/private/var/folders/ab/T/e/Restore.app/Contents/Info.plist", root: "/var/folders/ab/T/e/Restore.app"),
@@ -281,10 +301,12 @@ final class RestoreTransactionTests: XCTestCase {
             XCTAssertFalse(fm.fileExists(atPath: sidecar.path))
             XCTAssertEqual(try BundleHasher.treeHash(of: real), linked)
         } else {
-            // macOS can store this name as an AppleDouble/xattr that directory listings hide.
-            // The hash stays equal because the walk never sees those bytes.
-            let names = try fm.subpathsOfDirectory(atPath: real.path)
-            XCTAssertFalse(names.contains { URL(fileURLWithPath: $0).lastPathComponent.hasPrefix("._") }, names.joined(separator: ","))
+            // macOS can hide this AppleDouble name from contentsOfDirectory, which is the
+            // listing the hasher uses, while subpathsOfDirectory still prints it. The hash
+            // stays equal because that walk never sees the bytes. A sidecar the hasher
+            // itself lists must change the hash.
+            let seen = try hasherListing(real.resolvingSymlinksInPath())
+            XCTAssertFalse(seen.contains { $0.hasPrefix("._") }, seen.joined(separator: ","))
             BundleHasher.removeMetadataSidecars(real)
             XCTAssertEqual(try BundleHasher.treeHash(of: real), linked)
         }
