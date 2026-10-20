@@ -4,6 +4,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/isenough-e2e.XXXXXX")"
+TMP="$(cd "$TMP" && pwd -P)"
 LOG="${E2E_LOG_FILE:-$TMP/e2e.log}"
 mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
@@ -71,6 +72,9 @@ run_cli pack "$TMP/Applications/Fixture.app" --keep-original --stub-dir "$TMP/Ap
 pass 'fixture packed and stub generated'
 STUB="$TMP/Applications/Fixture.app"
 assert_file "$STUB/Contents/MacOS/isenough-stub" 'stub executable exists'
+cmp -s "$STUB/Contents/MacOS/isenough-stub" "$ROOT/.build/debug/isenough-stub" || fail 'stub contains launcher binary'
+! cmp -s "$STUB/Contents/MacOS/isenough-stub" "$ROOT/.build/debug/isenough" || fail 'stub is not CLI binary'
+assert_file "$STUB/Contents/Resources/stub.json" 'stub CLI metadata exists' 
 /usr/bin/codesign --verify --strict "$STUB" >>"$LOG" 2>&1 || fail 'codesign --verify --strict generated stub'
 pass 'generated stub passes codesign verification'
 MANIFEST="$(find "$ISENOUGH_REPO_PATH/manifests" -name '*.json' -print -quit)"
@@ -80,6 +84,8 @@ IMAGE_FILE="$(/usr/bin/plutil -extract image.file raw -o - "$MANIFEST" 2>/dev/nu
 [[ -n "$IMAGE_FILE" ]] || fail 'extract image file from manifest'
 IMAGE_ID="$(/usr/bin/plutil -extract imageId raw -o - "$MANIFEST" 2>/dev/null || true)"
 [[ -n "$IMAGE_ID" ]] || fail 'extract imageId from manifest'
+[[ "$IMAGE_FILE" == "images/$IMAGE_ID.dmg" ]] || fail 'image path is based on imageId'
+[[ "$(basename "$MANIFEST")" == "$IMAGE_ID.json" ]] || fail 'manifest path is based on imageId'
 REMOTE_IMAGE="$ISENOUGH_REPO_PATH/$IMAGE_FILE"
 assert_file "$REMOTE_IMAGE" 'remote disk image exists'
 CACHE_IMAGE="$ISENOUGH_CACHE_DIR/images/$IMAGE_ID.dmg"
@@ -87,15 +93,15 @@ CACHE_IMAGE="$ISENOUGH_CACHE_DIR/images/$IMAGE_ID.dmg"
 # Launch using the installed stub, not a direct engine call: its pre-launch path is under test.
 PATH="$ROOT/.build/debug:$PATH" "$STUB/Contents/MacOS/isenough-stub" --doc "$TMP/docs/open-me.txt" >>"$LOG" 2>&1 &
 APP_PID=$!
-sleep 4
+for _ in $(seq 1 300); do [[ -f "$CACHE_IMAGE" ]] && break; kill -0 "$APP_PID" 2>/dev/null || fail 'stub exited before cache fetch'; sleep 0.2; done
 assert_file "$CACHE_IMAGE" 'pre-launch fetched image to isolated cache'
 REMOTE_SHA="$(shasum -a 256 "$REMOTE_IMAGE" | awk '{print $1}')"
 CACHE_SHA="$(shasum -a 256 "$CACHE_IMAGE" | awk '{print $1}')"
 [[ "$REMOTE_SHA" == "$CACHE_SHA" ]] || fail 'cached image sha256 matches remote manifest image'
 pass 'cached image sha256 verified'
 MOUNT="$MOUNT_ROOT/$IMAGE_ID"
-/usr/bin/hdiutil info >>"$LOG" 2>&1 || fail 'hdiutil info after launch'
-grep -Fq "$MOUNT" "$LOG" || fail 'image attached at expected mount point'
+/usr/bin/hdiutil info >"$TMP/hdiutil-info" 2>>"$LOG" || fail 'hdiutil info after launch'
+grep -Fq "$MOUNT" "$TMP/hdiutil-info" || fail 'image attached at expected mount point' 
 mount_line="$(/sbin/mount | grep -F "$MOUNT" || true)"
 [[ -n "$mount_line" ]] || fail 'expected mount point is mounted'
 case "$mount_line" in *read-only*|*rdonly*) pass 'image is attached read-only' ;; *) fail 'image mount is read-only' ;; esac

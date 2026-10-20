@@ -29,6 +29,9 @@ jobs:
         env:
           E2E_LOG_FILE: ${{ runner.temp }}/isenough-e2e.log
         run: bash scripts/e2e.sh
+      - name: Print bounded E2E log on failure
+        if: failure()
+        run: tail -200 "${{ runner.temp }}/isenough-e2e.log" || true
       - name: Upload E2E log on failure
         if: failure()
         uses: actions/upload-artifact@v4

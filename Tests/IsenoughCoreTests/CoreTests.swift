@@ -80,4 +80,17 @@ final class CoreTests: XCTestCase {
         XCTAssertThrowsError(try StubGenerator.locateLauncher(cliExecutable:cli,environment:[:],isExecutable:{$0 == "/bin/isenough"}))
     }
 
+    func testRestoreModeIsExplicitlyRefusedUntilRecoveryExists() throws {
+        let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at:root) }
+        let bytes=Data("restore fixture".utf8), source=root.appendingPathComponent("image.dmg"); try bytes.write(to:source)
+        let sha=try Hashing.sha256(source)
+        let image=ImageManifest.Image(file:"images/a.dmg",format:"ULMO",sha256:sha,size:UInt64(bytes.count),volumeName:"A",appPathInVolume:"A.app")
+        let manifest=ImageManifest(bundleId:"com.test.a",name:"A",version:"1",image:image,app:.init(originalPath:"/A.app",executable:"A",documentTypes:[],urlTypes:[]),mode:.restore)
+        let config=RuntimeConfig(repoPath:root.appendingPathComponent("repo").path,cacheDir:root.appendingPathComponent("cache").path,stateDir:root.appendingPathComponent("state").path,mountRoot:root.appendingPathComponent("mount").path,stubDir:root.appendingPathComponent("apps").path)
+        XCTAssertThrowsError(try IsenoughEngine(config:config).launch(manifest)) { error in
+            XCTAssertEqual((error as? IsenoughError)?.errorDescription,"restore mode is disabled until durable restore recovery is implemented")
+        }
+    }
+
 }
