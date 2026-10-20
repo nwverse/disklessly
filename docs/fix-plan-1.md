@@ -400,3 +400,54 @@ in the same way (there is no outer-only signature). Byte equality was never a va
 `<Stub>.app/Contents/MacOS/isenough-stub` equal those of the built `isenough-stub` and differ from the
 built `isenough`. The stub executable bytes are expected to differ from the build product because `pack`
 ad-hoc re-signs the generated bundle (G5 is about the *real* app, which stays byte-identical in the image).
+
+## CI round 2 — diagnosis
+
+Run 39446984273 (HEAD `814cbbc`), logs `/tmp/ci-logs/39446984273.log`, artifact
+`/tmp/ci-logs/art-39446984273/macos-e2e-log/isenough-e2e.log`.
+
+### Evidence
+- All of RC1-RC3 now PASS: stub = launcher (code-section compare), codesign ok, manifest/image named by
+  `imageId`, stub pre-launch fetched the image to the isolated cache, sha256 equal to remote.
+- `PASS cached image sha256 verified` at 15:18:08.338, `FAIL image attached at expected mount point` at
+  15:18:08.361 — **23 ms later**. The log has no stub/CLI error line: the stub was still running (it is killed
+  by `cleanup` on `fail`), i.e. nothing failed inside the engine.
+- `Engine.launch` order: `prefetch` (writes `partial`, then `moveItem` → cache path) → `hdiutil attach`
+  → `open`. The cache file therefore appears *before* the attach is even started; attaching a ULMO image
+  takes ~0.5-2 s on the runner. MOUNT is canonical (`TMP` via `pwd -P`, B6 done), so it is not a path mismatch.
+
+### Root cause
+Harness race, not an engine bug: scripts/e2e.sh l.115-117 samples `hdiutil info` once, immediately after the
+cache-file poll. "Cache file exists" is not a sync point for "attached". The deterministic `wait_for` from §4
+(B3) was never implemented; only the cache poll was. The same missing piece will hit the next assertions:
+- B1: fixture is still the bash script reading `$ISENOUGH_E2E_ARGV`; LS (`open -n -a`) does not pass env and
+  delivers docs via `odoc` → the script dies on `:?`, no argv file.
+- B2: `launch` never writes `state.json` (`running`/`cached`, `lastUsed`) → state assertions fail.
+- B3: post-quit `sleep 3` vs 2 s pgrep poll + `ISENOUGH_DETACH_DELAY=1` + detach → flaky.
+
+### Exact changes
+1. **scripts/e2e.sh**
+   - Add `wait_for() { local t=$1 msg=$2; shift 2; local n=$((t*5)); until "$@"; do ((n--)) || { tail -20 "$LOG" >&2; fail "$msg (timeout ${t}s)"; }; sleep 0.2; done; }`.
+   - Replace the one-shot mount check with
+     `wait_for 60 'image attached at expected mount point' is_attached` where
+     `is_attached() { /usr/bin/hdiutil info >"$TMP/hdiutil-info" 2>>"$LOG" && grep -Fq "$MOUNT" "$TMP/hdiutil-info"; }`;
+     inside the predicate also `kill -0 "$APP_PID"` → if the stub died, `fail 'stub exited before attach'`
+     (its stderr is in `$LOG`). Assertion names/meaning unchanged.
+   - Fixture (B1): `Tests/Fixtures/E2EApp/main.swift` (AppKit, ~40 lines) compiled with `swiftc` into
+     `Fixture.app/Contents/MacOS/Fixture`; writes argv + `application(_:open:)` paths to Info.plist key
+     `IsenoughE2EOutput` and its pid to `IsenoughE2EPidFile` (values baked into Info.plist by the script).
+     `wait_for 60 'fixture process launched and recorded arguments' grep -Fq -- "$TMP/docs/open-me.txt" "$ISENOUGH_E2E_ARGV"`.
+   - B3: replace `sleep 3` with `wait_for 30 'post-quit hook detached mount after configured delay' not_mounted`.
+   - State (B2): assert `"state" : "cached"` via `plutil -extract "apps.<bundleId>.state" raw`, not substring.
+   - Silence the harmless `tail: stdout: Broken pipe` (`code_text … 2>/dev/null`).
+2. **Sources/IsenoughEngine/Engine.swift `launch`** (B2): after attach, `StateStore.write` apps[bundleId] =
+   `{imageId, state:"running", mountPoint, lastUsed}` and cache[imageId].lastUsed; after detach
+   `state:"cached"`, `lastUsed`, remove `mountPoint`; detach failure → `state:"backoff"` + stderr (no `try?`).
+   Create the mount directory itself (`createDirectory(at:mount)`) and resolve symlinks before attach.
+   Wait loop poll 0.5 s (was 2 s). Keep `StateStore` writes atomic (`.atomic`).
+3. **Tests**: `StateStore` round-trip unit test for running→cached transition helper (Linux-runnable).
+
+### Contract amendment
+E2E sync points are explicit postconditions polled with bounded timeouts (fetch/attach/launch 60 s, detach
+30 s): cache file ⇒ fetched only; `hdiutil info` lists `$MOUNT` ⇒ attached. No assertion is relaxed.
+No restore/F-B1 dependency in this path (launch is `mode: mount`).
