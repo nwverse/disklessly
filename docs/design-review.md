@@ -690,3 +690,78 @@ All six blocking issues are accepted and resolved in `docs/design.md` rev. r3. A
   do not contain them.
 - **N5:** adopted. New §14.1 risk 13 treats TCC, default handlers and Dock pins as compatibility observations.
   Real iCloud API behaviour is tested manually (G-c) after the fake-backend CI.
+
+## Final check — reviewer (gpt-6.1-sol)
+
+**Verdict: NOT APPROVED — one remaining blocking issue, deferred to implementation.** Reviewed `e99b40c`
+(`design.md` rev. r3) on `feat/mvp`, reading the complete design and preceding reviews/responses. This is a
+final document check on Linux, not evidence of a macOS build or passing runtime gates. No further design-review
+round is requested; the remaining blocker below must be closed during implementation before G-b can pass.
+
+### Previous blocking issues: final disposition
+
+- **R3-B1 — resolved.** §5.6.3 and authoritative §8.3 now agree: a joiner continues accepting batches after
+  `done` and exits only on EOF after drain. The same-pid, later-generation regression is explicit.
+- **R3-B2 — resolved at the design-contract level, subject to the required macOS gate.** §5.9 states a supported
+  inspection boundary, preserves unknown→busy for relevant unreadable processes, uses the kernel unmount gate
+  for mount mode, and declares restore assumption A-R and unsupported preflight. §11.2 requires idle mount and
+  restore fixtures to become clean under the real non-root process population, plus an unreadable related holder
+  that blocks cleanup. These are unverified assumptions, not demonstrated macOS facts. If the gate fails, narrow
+  supported classes or refuse temporary restore; do not silently ignore unresolved dependents.
+- **R3-B3 — resolved.** Prefetch holds L1 until it owns L2, every writer owns its claim, and dead-claim reaping
+  requires L2. A failed-prefetch waiter re-admits under its own identity; the interleaving tests cover the handoff.
+- **R3-B4 — partially resolved; still blocking.** Mode-specific adoption and single-owner handoff are now defined,
+  but the unconditional layout check contradicts the phase table and updated-bundle retention; see F-B1.
+- **R3-B5 — terminal-state contract resolved.** §5.8.3 now retires `state.restored`, publishes the outcome/LRU and
+  retains the journal until that state is durable. The fault points and consumer assertions are appropriate.
+  Executing recovery at those boundaries still depends on fixing F-B1; the prose alone does not close G-b.
+- **R3-B6 — resolved.** A34 tests invalid mutation/refusal without deletion; A34d uses a genuinely valid,
+  harness-signed update and explicit ad-hoc trust approval. A34c separately covers tree-hash-only hook rollback.
+
+Earlier B1–B7 and R2-B1–B6 otherwise retain their previously recorded fixes: hard classification/format rules,
+independent verified iCloud cache copies, lifecycle hooks, native document/URL forwarding, split capacity
+accounting, ordered locks, protected backoff/stuck attachments, blocked unresolved launches, authenticated Pake
+pairing/SSE, and mandatory macOS acceptance gates. No old bypass or argv-only substitute is acceptable.
+
+### Remaining blocking issue — deferred to implementation
+
+**F-B1 / R3-B4 — Restore recovery must validate the layout for the actual WAL phase, not require the active
+layout before dispatch (§5.6.4b, §5.8.1–3).** The current precondition requires both the real app at `<dest>` and
+`staging/stub.app` before consulting the phase table. Several normal, recoverable states violate it:
+
+- `prepared`/`extracted`: `<dest>` still holds the stub; `stubParked`: `<dest>` may be absent.
+- `appMoved`: the real app is in `staging/app.old`; `stubBack`/`disposed`/`retired`: `<dest>` holds the stub,
+  and the parked-stub path no longer exists. Consequently a crash after `retired` cannot reach the promised
+  idempotent re-application/closure through this recovery branch.
+- An updater can atomically replace the restored bundle: both the directory inode and cdhash then differ from
+  the original manifest. This is not necessarily a user moving things. The current check refuses adoption before
+  the engine can watch the updated app and retain it under `needsResolution` (the B2/R2-B5 safety contract).
+
+**Required implementation closure:** make layout validation part of `RestoreRecovery.decide`, phase by phase,
+including both pre-effect and post-effect layouts because the WAL phase is written *before* each mutation.
+Use the parked/installed stub identity, journal paths and expected source/destination roles to establish custody;
+never authorize deletion of an updated bundle merely by accepting its bundle id. A replacement at the controlled
+restore destination must be conservatively watched and retained when unarchived; genuinely ambiguous layouts
+must remain blocked without loss, with an explicit repair path. Test all rename/state-retirement boundaries,
+an updater replacing the bundle followed by supervisor death, two competing adopters, and repeated recovery.
+Recovery must finish safe recognized layouts rather than strand every partial swap behind `doctor --fix`.
+
+### Implementation/user decisions carried forward (not additional blockers)
+
+- §11.1's `UsageProbe` row still repeats r2's blanket other-uid EPERM policy. Replace that stale test expectation
+  with §5.9's own/related/platform/unrelated/unverifiable matrix; §5.9 is the intended contract.
+- A33b must identify the parked stub explicitly if testing a join during restore: the original installation path
+  contains the **real** app at that time. Opening that path directly does not prove a stub→joiner handoff.
+- Build a test-hook-enabled e2e variant explicitly (A11c/A33 require it); also build/check a clean release variant.
+  A root `/bin/cat` holder needs blocked output or another harness barrier so it does not finish before detach.
+  A27b must permit the documented empty infrastructure baseline instead of requiring a userspace holder.
+- Validate `proc_pidpath`/libproc availability on actual supported releases; do not assume a universal PID-path
+  guarantee from `ps`. Preserve unknown diagnostics. A-R and exclusions for persistent helpers must be visible
+  to users before opting into temporary restore; incompatible apps must stay installed or use permanent restore.
+- Signing identity, target macOS releases, quota defaults, licensing and initial compatibility apps remain user
+  choices in §14.2. TCC/default-handler continuity and real iCloud behavior remain compatibility/manual gates,
+  not guarantees. Keep G-a/G-b ahead of HTTP/GUI work.
+
+**Final handoff:** design review is complete, but approval is withheld for F-B1. It is explicitly **deferred to
+implementation**, not waived or declared resolved by the author response. The implementer must close it with
+phase-aware recovery and passing macOS fault/adoption tests before treating temporary restore as MVP-ready.
