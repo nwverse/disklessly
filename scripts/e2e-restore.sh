@@ -237,6 +237,7 @@ PY
 )"
 [[ "$RESTORE_OUTCOME" == "restoredOut" ]] || fail "A31 lastOutcome is '$RESTORE_OUTCOME'"
 pass 'A31 restore launch returns the stub and records restoredOut'
+assert_no_isenough_mounts 'after A31'
 
 PHASES=(prepared extracted stubParked installed active quiesced inspected appMoved stubBack disposed retired closed)
 EDGES=(beforeJournal afterJournal afterMutation)
@@ -345,8 +346,10 @@ wait_for 60 'restore-out retained the update and returned the stub' update_was_r
 RECORD="$(app_record "$BUSY_BUNDLE")"
 RETAINED="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["needsResolution"]["retainedPath"])' "$RECORD")"
 STATE_CD="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["needsResolution"]["cdhash"])' "$RECORD")"
-SIGN_CD="$(/usr/bin/codesign -dvvv "$RETAINED" 2>&1 | awk -F= '/^CDHash=/{print tolower($2); exit}')"
+SIGN_CD="$(/usr/bin/codesign -dvvv "$RETAINED/Contents/MacOS/Restore" 2>&1 | awk -F= '/^CDHash=/{print tolower($2); exit}')"
+BUNDLE_CD="$(/usr/bin/codesign -dvvv "$RETAINED" 2>&1 | awk -F= '/^CDHash=/{print tolower($2); exit}')"
 [[ -n "$SIGN_CD" && "$SIGN_CD" == "$STATE_CD" ]] || fail "retained cdhash '$STATE_CD' != codesign '$SIGN_CD'"
+[[ -n "$BUNDLE_CD" && "$BUNDLE_CD" == "$SIGN_CD" ]] || fail "bundle CDHash '$BUNDLE_CD' != executable '$SIGN_CD'"
 OUTCOME="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["lastOutcome"]["name"])' "$RECORD")"
 [[ "$OUTCOME" == "restoredOutRetained" ]] || fail "updated app outcome is '$OUTCOME'"
 set +e
@@ -364,3 +367,4 @@ pass 'release build answers version without a fault-enabled product'
 
 # The mount-mode fixture image was corrupted above; leave the restore apps'
 # journals closed so the final PASS line is the last assertion of e2e.sh.
+assert_no_isenough_mounts 'after restore e2e'

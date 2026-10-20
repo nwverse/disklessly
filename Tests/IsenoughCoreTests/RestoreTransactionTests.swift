@@ -74,6 +74,12 @@ final class RestoreWorld {
                 let source = mount.appendingPathComponent(appPath)
                 if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
                 try fm.copyItem(at: source, to: dest)
+                if trace.plantSidecar {
+                    try Data("provenance-\(UUID().uuidString)".utf8).write(to: dest.appendingPathComponent("Contents/._Info.plist"))
+                }
+                if trace.corruptExtraction {
+                    try Data("tampered\n".utf8).write(to: dest.appendingPathComponent("Contents/tamper.txt"))
+                }
             },
             detach: { mount in
                 trace.detached.append(mount)
@@ -215,6 +221,8 @@ final class RestoreTrace {
     var opened: [String] = []
     var attached: [URL] = []
     var detached: [URL] = []
+    var plantSidecar = false
+    var corruptExtraction = false
     var hooks: [String] = []
     var sleeps = 0
     var now = Date(timeIntervalSince1970: 1_700_000_000)
@@ -241,6 +249,64 @@ final class RestoreTransactionTests: XCTestCase {
         XCTAssertEqual(ProcessProbe.usage(rows: symlinkShown, roots: [privateRoot], selfPid: 30), .busy)
         let watcher = launching + [ProcessRow(pid: 43, ppid: 1, command: "/opt/debug/isenough --state-dir /s hook watch --app io.example.restore")]
         XCTAssertEqual(ProcessProbe.usage(rows: watcher, roots: [root], selfPid: 30), .clean)
+    }
+
+    func testTreeHashIgnoresPrivateVarSpellingAndSidecarsAreRemovedBeforeHashing() throws {
+        XCTAssertEqual(
+            BundleHasher.relativePath("/private/var/folders/ab/T/e/Restore.app/Contents/Info.plist", root: "/var/folders/ab/T/e/Restore.app"),
+            "Contents/Info.plist"
+        )
+        XCTAssertEqual(
+            BundleHasher.relativePath("/var/folders/ab/T/e/Restore.app/Contents/MacOS/Restore", root: "/private/var/folders/ab/T/e/Restore.app"),
+            "Contents/MacOS/Restore"
+        )
+        XCTAssertNil(BundleHasher.relativePath("/etc/passwd", root: "/var/folders/ab/T/e/Restore.app"))
+
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("isenough-hash-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        let real = root.appendingPathComponent("real/Restore.app")
+        try RestoreWorld.writeBundle(real, bundleID: "com.example.hash", executable: "Restore", body: "binary", extra: "marker")
+        let link = root.appendingPathComponent("link/Restore.app")
+        try fm.createDirectory(at: link.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: link, withDestinationURL: real)
+        let linked = try BundleHasher.treeHash(of: link)
+        XCTAssertEqual(try BundleHasher.treeHash(of: real), linked)
+        let sidecar = real.appendingPathComponent("Contents/._Info.plist")
+        try Data("provenance-unique".utf8).write(to: sidecar)
+        let withSidecar = try BundleHasher.treeHash(of: real)
+        XCTAssertNotEqual(withSidecar, linked)
+        BundleHasher.removeMetadataSidecars(real)
+        XCTAssertFalse(fm.fileExists(atPath: sidecar.path))
+        XCTAssertEqual(try BundleHasher.treeHash(of: real), linked)
+    }
+
+    func testMismatchedExtractionDetachesRollsBackAndLeavesNoMount() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        world.trace.corruptExtraction = true
+        XCTAssertThrowsError(try world.launch(wait: true)) { error in
+            guard case IsenoughError.integrity(let message) = error else {
+                return XCTFail("expected integrity, got \(error) \(world.debugDump())")
+            }
+            XCTAssertTrue(message.hasPrefix("extracted bundle does not match manifest cdhash and tree hash"), message)
+        }
+        XCTAssertFalse(world.trace.attached.isEmpty, world.debugDump())
+        XCTAssertEqual(world.trace.attached.count, world.trace.detached.count, world.debugDump())
+        XCTAssertTrue(world.journals().isEmpty, world.debugDump())
+        XCTAssertEqual(world.bundleID(at: world.dest), world.stubBundleID, world.debugDump())
+        XCTAssertEqual(world.outcomeName, "rolledBack", world.debugDump())
+        let left = (try? FileManager.default.contentsOfDirectory(atPath: world.root.appendingPathComponent("mounts").path)) ?? []
+        XCTAssertTrue(left.isEmpty, "mounts left behind: \(left)")
+    }
+
+    func testAppleDoubleSidecarIsStrippedBeforeTheManifestHash() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        world.trace.plantSidecar = true
+        try world.launch(wait: true)
+        XCTAssertEqual(world.outcomeName, "restoredOut", world.debugDump())
+        XCTAssertEqual(world.trace.attached.count, world.trace.detached.count, world.debugDump())
     }
 
     private let phases = RestorePhase.allCases.map(\.rawValue)

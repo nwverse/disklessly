@@ -613,31 +613,52 @@ public final class RestoreCoordinator {
         try JournalStore.save(journal, stateDir: config.stateDir)
         let mounted = try services.attach(URL(fileURLWithPath: journal.imagePath), mountPoint)
         events.append("attach")
-        try faults.hit("extracted", "beforeJournal")
-        journal.phase = .extracted
-        journal.mountPath = mounted.path
-        try JournalStore.save(journal, stateDir: config.stateDir)
-        try faults.hit("extracted", "afterJournal")
         let staging = URL(fileURLWithPath: journal.staging)
-        try Data(journal.txid.utf8).write(to: staging.appendingPathComponent(".extracting"))
         let appNew = staging.appendingPathComponent("app.new")
-        try services.extract(mounted, manifest.image.appPathInVolume, appNew)
-        events.append("extract")
-        let cdhash = try services.cdhash(appNew)
-        let tree = try services.treeHash(appNew)
-        guard cdhash == journal.manifestCdhash, tree == journal.manifestTreeHash else {
-            throw IsenoughError.integrity("extracted bundle does not match manifest cdhash and tree hash")
+        do {
+            try faults.hit("extracted", "beforeJournal")
+            journal.phase = .extracted
+            journal.mountPath = mounted.path
+            try JournalStore.save(journal, stateDir: config.stateDir)
+            try faults.hit("extracted", "afterJournal")
+            try Data(journal.txid.utf8).write(to: staging.appendingPathComponent(".extracting"))
+            try services.extract(mounted, manifest.image.appPathInVolume, appNew)
+            events.append("extract")
+            BundleHasher.removeMetadataSidecars(appNew)
+            let cdhash = try services.cdhash(appNew)
+            let tree = try services.treeHash(appNew)
+            guard cdhash == journal.manifestCdhash, tree == journal.manifestTreeHash else {
+                throw IsenoughError.integrity("extracted bundle does not match manifest cdhash and tree hash (cdhash \(cdhash) vs \(journal.manifestCdhash), tree \(tree) vs \(journal.manifestTreeHash))")
+            }
+            try Data("\(cdhash) \(tree)".utf8).write(to: staging.appendingPathComponent(".extracted-ok"))
+            try services.detach(mounted)
+            events.append("detach")
+            journal.detachedImage = true
+            journal.mountPath = nil
+            try JournalStore.save(journal, stateDir: config.stateDir)
+            try? fm.removeItem(at: mountPoint)
+            try DurableIO.syncItem(staging)
+            try faults.hit("extracted", "afterMutation")
+            events.append("extracted")
+        } catch {
+            if !journal.detachedImage {
+                do {
+                    try services.detach(mounted)
+                    journal.detachedImage = true
+                    journal.mountPath = nil
+                    try? JournalStore.save(journal, stateDir: config.stateDir)
+                    events.append("detach")
+                } catch {
+                    events.append("detachFailed")
+                }
+            }
+            if case IsenoughError.integrity = error {
+                let layout = observe(journal)
+                try? rollbackFiles(&journal, layout: layout)
+                try? retire(&journal, forced: "rolledBack")
+            }
+            throw error
         }
-        try Data("\(cdhash) \(tree)".utf8).write(to: staging.appendingPathComponent(".extracted-ok"))
-        try services.detach(mounted)
-        events.append("detach")
-        journal.detachedImage = true
-        journal.mountPath = nil
-        try JournalStore.save(journal, stateDir: config.stateDir)
-        try? fm.removeItem(at: mountPoint)
-        try DurableIO.syncItem(staging)
-        try faults.hit("extracted", "afterMutation")
-        events.append("extracted")
     }
 
     private func phaseStubParked(_ journal: inout RestoreJournal) throws {
@@ -1181,11 +1202,15 @@ public final class RestoreCoordinator {
 
     private func detachLeftover(_ journal: inout RestoreJournal) {
         guard !journal.detachedImage, let mount = journal.mountPath else { return }
-        try? services.detach(URL(fileURLWithPath: mount))
-        journal.detachedImage = true
-        journal.mountPath = nil
-        try? JournalStore.save(journal, stateDir: config.stateDir)
-        events.append("detach")
+        do {
+            try services.detach(URL(fileURLWithPath: mount))
+            journal.detachedImage = true
+            journal.mountPath = nil
+            try? JournalStore.save(journal, stateDir: config.stateDir)
+            events.append("detach")
+        } catch {
+            events.append("detachFailed")
+        }
     }
 
     private func moveBundle(_ from: URL, _ to: URL) throws {

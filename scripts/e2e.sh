@@ -23,11 +23,58 @@ cleanup() {
     printf 'e2e failed (exit %s). Full log: %s\n' "$status" "$kept" >&2
     tail -80 "$LOG" >&2 || true
   fi
+  force_detach_isenough_mounts
   rm -rf "$TMP"
 }
 trap cleanup EXIT INT TERM
 
-fail() { printf 'FAIL: %s\n' "$1" | tee -a "$LOG" >&2; exit 1; }
+fail() {
+  if isenough_mounts_present; then
+    /usr/bin/hdiutil info >>"$LOG" 2>&1 || true
+    printf 'FAIL: %s (isenough mount still attached under %s)\n' "$1" "${MOUNT_ROOT:-$TMP}" | tee -a "$LOG" >&2
+  else
+    printf 'FAIL: %s\n' "$1" | tee -a "$LOG" >&2
+  fi
+  exit 1
+}
+force_detach_isenough_mounts() {
+  local token info line path mp alt
+  token="$(basename "${TMP:-}")"
+  [[ -n "$token" ]] || return 0
+  if [[ -d "${MOUNT_ROOT:-}" ]]; then
+    for mp in "$MOUNT_ROOT"/*; do
+      [[ -e "$mp" ]] || continue
+      /usr/bin/hdiutil detach -force "$mp" >>"${LOG:-/dev/null}" 2>&1 || true
+      case "$mp" in
+        /private/*)
+          alt="/${mp#/private/}"
+          /usr/bin/hdiutil detach -force "$alt" >>"${LOG:-/dev/null}" 2>&1 || true
+          ;;
+      esac
+    done
+  fi
+  info="$(/usr/bin/hdiutil info 2>/dev/null || true)"
+  while IFS= read -r line; do
+    path="$(printf '%s' "$line" | sed 's/^[[:space:]]*//')"
+    case "$path" in
+      /*"$token"*) /usr/bin/hdiutil detach -force "$path" >>"${LOG:-/dev/null}" 2>&1 || true ;;
+    esac
+  done <<< "$info"
+}
+isenough_mounts_present() {
+  local token info
+  token="$(basename "${TMP:-}")"
+  [[ -n "$token" ]] || return 1
+  info="$(/usr/bin/hdiutil info 2>/dev/null || true)"
+  printf '%s\n' "$info" | grep -F "$token" >/dev/null
+}
+assert_no_isenough_mounts() {
+  if isenough_mounts_present; then
+    /usr/bin/hdiutil info >>"$LOG" 2>&1 || true
+    fail "no isenough mount should remain ($1)"
+  fi
+  pass "no isenough mount left behind ($1)"
+}
 pass() { printf 'PASS: %s\n' "$1" | tee -a "$LOG"; }
 assert_file() { [[ -f "$1" ]] || fail "$2 (missing: $1)"; pass "$2"; }
 assert_contains() { grep -Fq -- "$2" "$1" || fail "$3 (expected '$2' in $1)"; pass "$3"; }

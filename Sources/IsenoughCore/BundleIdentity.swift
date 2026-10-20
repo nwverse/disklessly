@@ -190,23 +190,28 @@ public enum BundleFacts {
 /// Tree hash: sha256 over sorted relative paths, type, mode, symlink target, and file bytes.
 public enum BundleHasher {
     public static func treeHash(of root: URL) throws -> String {
-        let fm = FileManager.default
-        guard let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey, .fileSizeKey], options: []) else {
-            throw IsenoughError.failure("cannot enumerate \(root.path)")
-        }
+        let start = root.resolvingSymlinksInPath()
         var files: [URL] = []
-        while let item = enumerator.nextObject() as? URL { files.append(item) }
-        files.sort { $0.path < $1.path }
+        try collect(start, &files)
+        var entries: [(relative: String, url: URL)] = []
+        entries.reserveCapacity(files.count)
+        for url in files {
+            guard let relative = relativePath(url.path, root: start.path) else {
+                throw IsenoughError.failure("cannot relativize \(url.path) under \(start.path)")
+            }
+            guard !relative.isEmpty, !relative.split(separator: "/").contains(".."), !relative.hasPrefix("/") else { continue }
+            entries.append((relative, url))
+        }
+        entries.sort { $0.relative < $1.relative }
         var blob = Data()
         func append(_ string: String) { blob.append(Data(string.utf8)) }
-        let rootPath = root.resolvingSymlinksInPath().standardizedFileURL.path
-        for url in files {
-            let relative = relativePath(url.path, root: root.path)
-            guard !relative.isEmpty, !relative.split(separator: "/").contains("..") else { continue }
-            var isLink = false
-            if let values = try? url.resourceValues(forKeys: [.isSymbolicLinkKey]) { isLink = values.isSymbolicLink == true }
+        let fm = FileManager.default
+        for entry in entries {
+            let url = entry.url
+            let relative = entry.relative
+            let isLink = DurableIO.isSymlink(url)
             var isDir: ObjCBool = false
-            _ = fm.fileExists(atPath: url.path, isDirectory: &isDir)
+            if !isLink { _ = fm.fileExists(atPath: url.path, isDirectory: &isDir) }
             let mode = fileMode(url)
             if isLink {
                 let target = (try? fm.destinationOfSymbolicLink(atPath: url.path)) ?? ""
@@ -221,9 +226,45 @@ public enum BundleHasher {
                 blob.append(bytes)
                 append("\n")
             }
-            _ = rootPath
         }
         return SHA256Digest.hex(blob)
+    }
+
+    /// Drop AppleDouble sidecars and `__MACOSX` directories left by a disk-image round trip.
+    /// Their bytes can include a per-copy `com.apple.provenance` value, so they must not
+    /// be part of the tree that is hashed or installed. Real bundle files stay.
+    public static func removeMetadataSidecars(_ root: URL) {
+        var files: [URL] = []
+        guard (try? collect(root.resolvingSymlinksInPath(), &files)) != nil else { return }
+        files.sort { $0.path.count > $1.path.count }
+        let fm = FileManager.default
+        for url in files {
+            let name = url.lastPathComponent
+            if name.hasPrefix("._") || name == "__MACOSX" {
+                try? fm.removeItem(at: url)
+            }
+        }
+    }
+
+    /// `FileManager.enumerator(at:)` can skip the contents of a package root (a `.app`).
+    /// A direct listing always includes them, so a staged `Restore.app` and an extracted
+    /// copy are hashed as the same tree.
+    private static func collect(_ directory: URL, _ files: inout [URL]) throws {
+        let fm = FileManager.default
+        let children: [URL]
+        do {
+            children = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [])
+        } catch {
+            throw IsenoughError.failure("cannot enumerate \(directory.path)")
+        }
+        for child in children {
+            files.append(child)
+            if DurableIO.isSymlink(child) { continue }
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: child.path, isDirectory: &isDir), isDir.boolValue {
+                try collect(child, &files)
+            }
+        }
     }
 
     public static func executableDigest(of root: URL) throws -> String {
@@ -260,30 +301,82 @@ public enum BundleHasher {
     }
 
     #if os(macOS)
+    /// The bundle cdhash is the code directory stored in the main Mach-O. Reading that
+    /// executable, not the bundle directory, keeps pack and extract on the same value:
+    /// `codesign` rejects a directory whose name is not a bundle extension, and restore
+    /// stages the copy at `app.new`. A printed `CDHash=` is used even when the exit
+    /// status is non-zero; `--verify` is what checks the seal.
     private static func codesignCDHash(_ root: URL) -> String? {
+        if let info = BundleFacts.readInfo(root) {
+            let name = info["CFBundleExecutable"] as? String ?? ""
+            if !name.isEmpty {
+                let exe = root.appendingPathComponent("Contents/MacOS/\(name)")
+                if FileManager.default.fileExists(atPath: exe.path), let hash = codesignDisplay(exe) {
+                    return hash
+                }
+            }
+        }
+        return codesignDisplay(root)
+    }
+
+    private static func codesignDisplay(_ url: URL) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        process.arguments = ["-dvvv", root.path]
+        process.arguments = ["-dvvv", url.path]
         let pipe = Pipe()
         process.standardOutput = Pipe()
         process.standardError = pipe
         do { try process.run() } catch { return nil }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        guard process.terminationStatus == 0, let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let text = String(data: data, encoding: .utf8) else { return nil }
         for line in text.split(separator: "\n") where line.hasPrefix("CDHash=") {
-            let value = line.dropFirst("CDHash=".count).trimmingCharacters(in: .whitespaces)
-            if !value.isEmpty { return String(value) }
+            let value = line.dropFirst("CDHash=".count).split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init) ?? ""
+            if !value.isEmpty { return value }
         }
         return nil
     }
     #endif
 
-    private static func relativePath(_ path: String, root: String) -> String {
-        if path == root { return "" }
-        let prefix = root.hasSuffix("/") ? root : root + "/"
-        guard path.hasPrefix(prefix) else { return path }
-        return String(path.dropFirst(prefix.count))
+    /// Relative path of `path` under `root`, after `/var` and `/private/var` (also `/tmp` and `/etc`) are treated as the same location.
+    static func relativePath(_ path: String, root: String) -> String? {
+        let paths = pathForms(path)
+        let roots = pathForms(root)
+        for rootForm in roots {
+            let prefix = rootForm.hasSuffix("/") ? rootForm : rootForm + "/"
+            for pathForm in paths {
+                if pathForm == rootForm { return "" }
+                if pathForm.hasPrefix(prefix) {
+                    return String(pathForm.dropFirst(prefix.count))
+                }
+            }
+        }
+        return nil
+    }
+
+    static func pathForms(_ path: String) -> [String] {
+        var forms: [String] = []
+        func add(_ value: String) {
+            var trimmed = value
+            if trimmed.count > 1, trimmed.hasSuffix("/") { trimmed.removeLast() }
+            if !forms.contains(trimmed) { forms.append(trimmed) }
+        }
+        add(path)
+        let url = URL(fileURLWithPath: path)
+        add(url.standardizedFileURL.path)
+        add(url.resolvingSymlinksInPath().path)
+        let pairs = [("/private/var", "/var"), ("/private/tmp", "/tmp"), ("/private/etc", "/etc")]
+        let seed = forms
+        for form in seed {
+            for (long, short) in pairs {
+                if form == long || form.hasPrefix(long + "/") {
+                    add(short + String(form.dropFirst(long.count)))
+                } else if form == short || form.hasPrefix(short + "/") {
+                    add(long + String(form.dropFirst(short.count)))
+                }
+            }
+        }
+        return forms
     }
 
     private static func fileMode(_ url: URL) -> String {

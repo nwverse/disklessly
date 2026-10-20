@@ -116,8 +116,21 @@ public struct IsenoughEngine {
         try run("/usr/bin/hdiutil",["create","-quiet","-srcfolder",staging.appendingPathComponent("src").path,"-format","ULMO","-volname",name,"-o",dmg.deletingPathExtension().path])
         let sha=try Hashing.sha256(dmg), attrs=try FileManager.default.attributesOfItem(atPath:dmg.path), size=(attrs[.size] as? NSNumber)?.uint64Value ?? 0
         let image=ImageManifest.Image(file:"",format:"ULMO",sha256:sha,size:size,volumeName:name,appPathInVolume:app.lastPathComponent)
-        let treeHash=try BundleHasher.treeHash(of: stagedApp)
-        let cdhash=try BundleHasher.cdhash(of: stagedApp)
+        // Hash the ditto restore will verify, not the pre-image staged app. hdiutil
+        // can change modes and materialize AppleDouble files; the manifest has to
+        // describe that tree.
+        let mount=staging.appendingPathComponent("mount")
+        try FileManager.default.createDirectory(at:mount,withIntermediateDirectories:true)
+        try run("/usr/bin/hdiutil",["attach","-readonly","-nobrowse","-noautoopen","-mountpoint",mount.path,dmg.path])
+        var detachedPackMount=false
+        defer { if !detachedPackMount { try? run("/usr/bin/hdiutil",["detach","-force",mount.path]) } }
+        let checked=staging.appendingPathComponent("checked-\(app.lastPathComponent)")
+        try run("/usr/bin/ditto",[mount.appendingPathComponent(app.lastPathComponent).path,checked.path])
+        BundleHasher.removeMetadataSidecars(checked)
+        let treeHash=try BundleHasher.treeHash(of: checked)
+        let cdhash=try BundleHasher.cdhash(of: checked)
+        try run("/usr/bin/hdiutil",["detach",mount.path])
+        detachedPackMount=true
         let facts=ImageManifest.App(originalPath:app.path,executable:info["CFBundleExecutable"] as? String ?? "",documentTypes:(info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },urlTypes:(info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },cdhash:cdhash,treeHash:treeHash)
         var manifest=ImageManifest(bundleId:bid,name:name,version:version,image:image,app:facts,mode:selected); manifest.image.file="images/\(manifest.imageId).dmg"; try manifest.validate()
         let backend=try repo; try backend.put(manifest.image.file,data:Data(contentsOf:dmg)); try backend.put("manifests/\(manifest.imageId).json",data:manifest.encode())
