@@ -1,0 +1,272 @@
+# Fix plan 1 — stub argv contract + cache path contract (macOS E2E red on PR #2)
+
+Status: diagnosis only (no code changed in this step). Branch `feat/mvp`, HEAD at diagnosis `0a21c4c`.
+
+## 1. Symptoms & evidence
+
+Every macOS E2E run on `feat/mvp` since `b28a030` failed. Grouped by first failing assertion:
+
+| Runs (head) | First failure |
+|---|---|
+| 39409648927, 39409766011 (`b28a030`, `f451956`) | build error `ImageManifest.App has no member 'appPathInVolume'` (fixed by `1d298da`) |
+| 39409905209 … 39411299054 (`1d298da` … `ef06d1b`) | `FAIL: CLI pack into fake repository and Applications` (codesign `--deep`, path `//` compare; fixed by `11b7b99`, `6d075ba`) |
+| 39411681853, 39411687126 (`6d075ba`), 39412171255, 39412179689 (`800965f`), 39412524894, 39412530041 (`0a21c4c`) | **identical**: `Unknown command: --doc` → `FAIL: pre-launch fetched image to isolated cache` |
+
+Key lines from the e2e log artifact (`macos-e2e-log`) of https://github.com/s546126/256isenough/actions/runs/39412530041:
+
+```
+PASS: remote disk image exists
+isenough: Optional("Unknown command: --doc")
+FAIL: pre-launch fetched image to isolated cache (missing: /var/folders/n6/.../isenough-e2e.cYNcpt/cache/images/io.github.s546126.256isenough.e2efixture-1.0-e50999b0.dmg)
+```
+
+The same pair occurs in runs 39412524894, 39412179689 and 39411687126 (see
+https://github.com/s546126/256isenough/actions/runs/39412179689, …/39411687126). The "DMG missing from cache"
+failure and the "Unknown command: --doc" failure are **not two alternating bugs**: they are one failure. The
+error is printed by the CLI, and the cache assertion fails *because* launch (and therefore prefetch) never ran.
+The step-level log only shows the `FAIL:` line (stderr of the stub goes to the log file), which is why fix rounds
+alternated between "fix the stub argv" (`800965f`) and "fix the cache file" (`0a21c4c`). Neither touched the
+real defect, so the output did not change at all between `6d075ba`, `800965f` and `0a21c4c`.
+
+Note also `Optional("…")` in the message: `IsenoughError.errorDescription` is `String?` and is interpolated
+unwrapped in `Sources/isenough/main.swift` (cosmetic, but misleading in logs).
+
+## 2. Root cause(s)
+
+### RC1 (primary, blocks everything): the "stub" executable is a copy of the CLI
+`Engine.installStub` (Sources/IsenoughEngine/Engine.swift:101-103):
+```swift
+let executable=Bundle.main.executableURL ?? URL(fileURLWithPath:CommandLine.arguments[0])
+let stubExecutable=temp.appendingPathComponent("Contents/MacOS/isenough-stub")
+try FileManager.default.copyItem(at:executable,to:stubExecutable)
+```
+`installStub` runs inside the `isenough` CLI process, so `Bundle.main.executableURL` is
+`.build/debug/isenough`. The generated `Fixture.app/Contents/MacOS/isenough-stub` **is the CLI binary**. The
+e2e runs `"$STUB/Contents/MacOS/isenough-stub" --doc "$TMP/docs/open-me.txt"`, i.e. the CLI with argv
+`["--doc", path]`. The CLI's global-flag loop (`main.swift:73-78`) breaks on the unknown `--doc`, then takes it
+as the command → `default: throw .usage("Unknown command: --doc")`, exit 2. `Sources/isenough-stub/main.swift`
+is never executed; commit `800965f` changed dead code. All e2e checks pass up to here because `codesign` and
+`assert_file` only check that *some* executable named `isenough-stub` exists.
+
+### RC2 (secondary): cache-miss assertion is a consequence, not a cause
+`prefetch` writes `<cacheDir>/images/<manifest.imageId>.dmg`, exactly the path e2e asserts
+(`$ISENOUGH_CACHE_DIR/images/$IMAGE_ID.dmg`). The path contract already matches; it was simply never reached.
+`0a21c4c` (drop ULFO conversion) did not change the observable result.
+
+### RC3 (latent, naming): remote image name ≠ imageId
+`pack` names the remote file and manifest with a **UUID** suffix
+(`id="\(bid)-\(version)-\(UUID…prefix(8))"`, Engine.swift:76) while `ImageManifest.imageId` is
+`<bundleId>-<version>-<sha8>` (Core.swift:35). So `images/<bid>-1.0-<uuid8>.dmg` and
+`manifests/<bid>-1.0-<uuid8>.json` contain a manifest whose `imageId` is `<bid>-1.0-<sha8>`. Design §3.1 says
+`images/<bundleId>-<version>-<sha8>.dmg`. Fetch works (it reads `image.file`), but every name derived from the
+file name (evict, gc, manifest lookup) disagrees with names derived from `imageId`.
+
+### Next blockers once RC1 is fixed (will turn the run red again later in the same script)
+- **B1 doc delivery**: `launch` runs `open -a <app> <docs…>`. Launch Services delivers documents as an `odoc`
+  Apple event, not argv, and LS-launched apps do not inherit the caller's environment. The bash fixture
+  (`printf '%s\n' "$@" > "${ISENOUGH_E2E_ARGV:?}"`) gets neither the env var nor the document → it exits, and
+  `fixture process launched and recorded arguments` fails.
+- **B2 no lifecycle state**: `launch` never writes `state.json`; `lastUsed` / `cached` assertions must fail.
+- **B3 timing**: post-quit detach takes ≥ 2 s poll + 1 s delay + `hdiutil detach`; e2e checks after a fixed
+  `sleep 3` → flaky. (A bounded poll is a wait, not a loosening.)
+- **B4 cache install**: `moveItem(tmp → cache)` fails if a stale/corrupt file is already at the cache path;
+  the error string uses `\\(…)` so it prints literally `\(cache.path)`.
+- **B5 parser leniency**: `launch` silently ignores unknown options and a trailing `--doc` without value;
+  this hid RC1-type mistakes. It must reject them with `EX_USAGE`.
+- **B6 path canonicalisation**: `mktemp -d "${TMPDIR}/…"` yields `/var/folders/…/T//isenough-e2e.X` (double
+  slash, `/var` → `/private/var` symlink). `hdiutil info` and `/sbin/mount` report the realpath
+  `/private/var/folders/…/T/isenough-e2e.X/mounts/<imageId>`, so `grep -F "$MOUNT"` with the raw path can never
+  match, even when attach works.
+- **B7 volume layout**: `hdiutil create -srcfolder <X.app>` — whether the volume root holds `X.app` or its
+  `Contents/` is not something we should depend on. `appPathInVolume` must be guaranteed by packing from a staging
+  folder that *contains* `X.app` (design §4 `pack`: "via staging folder").
+
+## 3. Exact interface contract
+
+### 3.1 Binaries
+| Binary | SwiftPM product | Installed where | Who writes it |
+|---|---|---|---|
+| CLI | `isenough` | `.build/<cfg>/isenough` (CI), `~/.local/bin/isenough` (user) | build |
+| Launcher | `isenough-stub` | `.build/<cfg>/isenough-stub`; copied into `<Stub>.app/Contents/MacOS/isenough-stub` | `pack` / `installStub` |
+
+`installStub` copies the **launcher** binary, never the running CLI. Launcher lookup order
+(pure function `StubGenerator.locateLauncher(cliExecutable:environment:isExecutable:)`):
+1. `$ISENOUGH_STUB_BINARY` if set (must exist, else `EX_USAGE`);
+2. `<dirname(realpath(cli executable))>/isenough-stub` (SwiftPM side-by-side, Homebrew/`~/.local/bin` installs);
+3. otherwise `EX_FAILURE "isenough-stub launcher binary not found next to <cli>"`.
+Sanity: refuse (`EX_FAILURE`) if the resolved launcher realpath equals the CLI realpath.
+
+### 3.2 Stub bundle resources
+- `Contents/Resources/manifest.json` — the image manifest (existing; `bundleId`, `imageId`).
+- `Contents/Resources/stub.json` (new, design §8.1):
+  `{"schema":"stub/1","appId":"<bundleId>","imageId":"<imageId>","isenoughPath":"<realpath of CLI>","stubVersion":1}`.
+
+CLI lookup in the stub (`StubArgv.resolveCLI`), first executable hit wins:
+`$ISENOUGH_CLI` → `stub.json.isenoughPath` → each `$PATH` entry + `/isenough` → `~/.local/bin/isenough`,
+`/usr/local/bin/isenough`, `/opt/homebrew/bin/isenough`. (LS-launched stubs get a minimal PATH, so `PATH` alone
+is not sufficient in production; in CI both stub.json and PATH point to `.build/debug/isenough`.)
+
+### 3.3 Stub → CLI argv (MVP, argv-based; the §8.3 control-fd protocol is a later milestone)
+The stub execs the CLI directly via `Process`/`posix_spawn` with an argv **array** (no shell → no quoting or
+escaping layer; spaces, quotes, `$`, unicode pass through byte-for-byte):
+```
+argv[0] = <cli path>
+argv[1] = "launch"
+argv[2] = <appId>                    # manifest bundleId, e.g. io.github.s546126.256isenough.e2efixture
+then, in original order, one pair per item:
+  "--doc" <absolute file path>
+  "--url" <url string>
+  "--arg" <opaque argument>          # forwarded to the real app via `open --args`
+```
+Example (e2e): stub invoked as `isenough-stub --doc "/private/var/…/docs/open me.txt"` execs
+`["/…/.build/debug/isenough","launch","io.github.s546126.256isenough.e2efixture","--doc","/private/var/…/docs/open me.txt"]`.
+
+Stub raw-argv classification (pure `StubArgv.build(appId:rawArguments:cwd:) throws -> [String]`):
+- explicit `--doc X` / `--url X` / `--arg X` pairs pass through (missing value → stub exits 2 with message);
+- `--` ends option parsing; everything after is classified like bare tokens;
+- drop LS/AppKit noise: tokens starting with `-psn_`; `-NS*` / `-Apple*` flags together with their value;
+- bare token with a URL scheme (`^[A-Za-z][A-Za-z0-9+.-]*:` and not starting with `/`) → `--url`
+  (`file://` URLs are converted to their path and become `--doc`);
+- any other bare token → `--doc <absolute path>` (relative paths resolved against cwd, standardized);
+- documents vs URLs are therefore always disambiguated by the flag, never by the CLI guessing.
+The stub never prepends its own flags before `launch`; global CLI flags are not used by the stub.
+The stub waits for the CLI and exits with the CLI's exit status (0 on success).
+
+### 3.4 CLI grammar that must accept it (`launch` / `restore`)
+```
+isenough [--json] [--config PATH] [--state-dir PATH] launch <app> [--doc PATH]... [--url URL]... [--arg ARG]... [--no-wait]
+```
+- `<app>` must be the first token after `launch`; a token starting with `--` there → `EX_USAGE "launch requires app"`.
+- options may repeat and interleave; order of docs/urls is preserved.
+- unknown option, or `--doc`/`--url`/`--arg` without value → `EX_USAGE` (exit 2) — no silent ignore.
+- top level: unknown global flag (e.g. `--doc` as first token) → `EX_USAGE "Unknown option: --doc"`, not
+  "Unknown command". Error text printed unwrapped (`e.errorDescription ?? "\(e)"`), no `Optional(…)`.
+Implemented as a pure function `LaunchArguments.parse(_ args:[String]) throws -> LaunchArguments`
+(`app`, `documents`, `urls`, `arguments`, `wait`) in IsenoughEngine so it is Linux-testable; the inverse
+`LaunchArguments.argv` is used by the stub builder tests for round-trip.
+
+Delivery to the real app (engine `launch`, macOS):
+`/usr/bin/open -n -a <mnt>/<appPathInVolume> [<doc>…] [<url>…] [--args <arg>…]` — documents/URLs go through
+Launch Services (`odoc`/`GURL`), not the app's argv. LS does **not** propagate the caller's environment.
+
+### 3.5 Environment variables
+| Var | Read by | Meaning |
+|---|---|---|
+| `ISENOUGH_REPO_PATH`, `ISENOUGH_CACHE_DIR`, `ISENOUGH_STATE_DIR`, `ISENOUGH_MOUNT_ROOT`, `ISENOUGH_STUB_DIR`, `ISENOUGH_CONFIG` | CLI (`RuntimeConfig.environment()`) | existing overrides (unchanged) |
+| `ISENOUGH_DETACH_DELAY` | CLI | seconds between app quit and detach (e2e: 1) |
+| `ISENOUGH_STUB_BINARY` (new) | CLI `pack` / `installStub` | explicit launcher binary to copy into stubs |
+| `ISENOUGH_CLI` (new) | stub | explicit CLI path (highest priority) |
+The stub passes its environment through unchanged (`Process` inherits it), so e2e's `ISENOUGH_*` reach the CLI.
+The *real app* does not see them (LS launch) — see §4 e2e fixture.
+
+### 3.6 Cache / repo layout and names (`<id>` = `ImageManifest.imageId` = `<bundleId>-<version>-<sha8>`)
+`sha8` = first 8 hex chars of the sha256 of the published ULMO image. One id is used for every name:
+
+| Item | Exact path | Writer | Readers |
+|---|---|---|---|
+| remote image | `<repo>/images/<id>.dmg` (= `manifest.image.file`, relative `images/<id>.dmg`) | `pack` | `prefetch`, e2e (`REMOTE_IMAGE` from `image.file`) |
+| manifest | `<repo>/manifests/<id>.json` | `pack` | `list`/`find`, e2e |
+| pack staging | `<cacheDir>/pack-<uuid>/src/<App>.app` + `<cacheDir>/pack-<uuid>/image.dmg` | `pack` (deleted on exit) | `pack` |
+| partial download | `<cacheDir>/partial/<id>.dmg.part` | `prefetch` | `prefetch` (deleted on failure) |
+| published cache image | `<cacheDir>/images/<id>.dmg`, byte-identical to remote (ULMO, sha == manifest) | `prefetch` (rename from `.part`) | `launch`/attach, `evict`, `pin`, e2e `CACHE_IMAGE` |
+| mount point | `realpath(<mountRoot>)/<id>` (default mountRoot `<cacheDir>/mnt`) | `launch` (`hdiutil attach -mountpoint`) | `launch` (pgrep, detach), state, e2e `MOUNT` |
+| real app in volume | `<mount>/<appPathInVolume>` (= original `<App>.app` name) | `pack` (staging layout) | `launch` |
+| state | `<stateDir>/state.json`: `apps[<bundleId>] = {imageId, state, lastUsed, pinned, mountPoint?}` | `launch`, `pin` | `status`, e2e |
+`pack` order: hdiutil create → sha256 → derive `<id>` → `put images/<id>.dmg` → `put manifests/<id>.json`
+→ stub. MVP deviation from §5.2e (recorded): no ULFO conversion; cache keeps the verified ULMO bytes, which
+is what the e2e sha assertion requires.
+
+## 4. Files & precise changes
+
+**Sources/IsenoughEngine/Engine.swift**
+- `StubGenerator`: add `locateLauncher(cliExecutable:environment:isExecutable:) throws -> URL` (§3.1) and
+  `stubInfo(manifest:cliPath:) -> [String:Any]` (stub.json). Replace `forwardArguments` identity with real logic
+  or delete it (tests updated).
+- New pure `LaunchArguments` (struct + `parse` + `argv`) per §3.4.
+- `installStub`: copy `locateLauncher(...)` result (not `Bundle.main.executableURL`); write `stub.json`
+  with `isenoughPath` = CLI realpath; after copy assert the copied file is not byte-identical to the CLI.
+- `pack`: stage `<App>.app` into `pack-<uuid>/src/` (`ditto`), `hdiutil create -srcfolder src -format ULMO`
+  to `pack-<uuid>/image.dmg`; compute sha; build manifest; name remote/manifest from `manifest.imageId`
+  (removes UUID-based `id`, RC3).
+- `prefetch`: stream to `partial/<id>.dmg.part`, verify size+sha256 of the part file (not via a second temp
+  copy), `removeItem` existing invalid cache file, then rename; fix `\\(` interpolation (B4).
+- `launch`: canonicalize `mountRoot` (`resolvingSymlinksInPath` after createDirectory); attach with
+  `-plist` and record mount; open with `/usr/bin/open -n -a <app> docs… urls… [--args …]`; write state
+  (`state:"running"`, `lastUsed`) before waiting, and after detach `state:"cached"`, `lastUsed`, no mountPoint
+  (B2). Wait loop: `pgrep -f` with the canonical executable path. Detach failure → `state:"backoff"` + stderr
+  message (no `try?` swallow).
+
+**Sources/isenough/main.swift**
+- Global-flag loop: unknown `--x` before the command → `EX_USAGE "Unknown option: --x"`.
+- `launch`/`restore`: use `LaunchArguments.parse`; pass `arguments` through.
+- Error printing: `e.errorDescription ?? String(describing:e)` (no `Optional(...)`).
+- usage text: add `--arg`.
+
+**Sources/isenough-stub/main.swift**
+- Move argv building/CLI resolution into a small pure helper compiled into the stub (keep the stub
+  dependency-free: put `StubArgv` in a new tiny target `IsenoughStubSupport` with no deps, used by both
+  `isenough-stub` and the tests; Package.swift adds it). Stub: read manifest + stub.json, `StubArgv.build`,
+  `StubArgv.resolveCLI`, exec, propagate exit status, log the exact argv to stderr on failure.
+
+**Package.swift**: add target `IsenoughStubSupport`; `isenough-stub` depends on it; test target depends on it.
+
+**scripts/e2e.sh** (assertions only tightened or made deterministic; none removed)
+- Fixture app: replace the bash executable with a ~40-line AppKit Swift fixture compiled by `swiftc` in the
+  script (`Tests/Fixtures/E2EApp/main.swift`). It implements `application(_:open:)` and
+  `applicationDidFinishLaunching`, and appends argv + every opened URL path to the file named by Info.plist key
+  `IsenoughE2EOutput` and writes its pid to `IsenoughE2EPidFile` (baked at fixture-creation time, because LS
+  does not pass env, design §11 E2E). Wait for it with a bounded poll after receiving the first `odoc`.
+- Canonicalize `TMP` right after `mktemp`: `TMP="$(cd "$TMP" && pwd -P)"` (removes `//` and `/var` symlink, B6).
+- New assertion after pack: stub executable is the launcher, not the CLI:
+  `cmp -s "$STUB/Contents/MacOS/isenough-stub" "$ROOT/.build/debug/isenough-stub"` and
+  `! cmp -s … "$ROOT/.build/debug/isenough"`; `stub.json` exists with `isenoughPath`.
+- New assertion: image naming — `IMAGE_FILE == "images/$IMAGE_ID.dmg"` and manifest file is `manifests/$IMAGE_ID.json`.
+- Replace fixed `sleep 4` / `sleep 3` with `wait_for <timeout> <predicate>` (poll 0.2 s, timeout 60 s for
+  fetch/attach/launch, 30 s for detach); on timeout fail with the same message plus `tail -20` of the log.
+  Also fail fast if the stub process exits non-zero before the cache file appears (print its stderr).
+- Mount check: `hdiutil info` output captured to its own file and grepped (not the whole log, which already
+  contains `$MOUNT` from earlier commands → false positive); compare with canonical `MOUNT`.
+- Assert `state.json` contains `"state" : "cached"` for the bundle id (not just the substring `cached`, which
+  also matches the cache dir path `…/cache/…`).
+
+**.github/workflows/macos-e2e.yml**
+- On failure also `cat` the e2e log (bounded, `tail -200`) into the step output so the cause is visible
+  without downloading the artifact; keep the artifact upload.
+- `swift build` builds both products (already); e2e builds `-c debug` → `.build/debug/isenough-stub` exists.
+
+## 5. Unit tests to add (Tests/IsenoughCoreTests, Linux-runnable via `docker run --rm -v "$PWD":/src -w /src swift:6.1 swift test`)
+1. `testStubArgvBuildsLaunchCommand`: `StubArgv.build(appId:"com.a", raw:["--doc","/a b/c.txt"])` ==
+   `["launch","com.a","--doc","/a b/c.txt"]` (first two tokens fixed, order preserved).
+2. `testStubArgvClassifiesBareTokens`: `["/x.txt","https://h/p?q=1","file:///y%20z.txt","rel.txt","-psn_0_123",
+   "-NSDocumentRevisionsDebugMode","YES"]` with cwd `/w` → docs `/x.txt`,`/y z.txt`,`/w/rel.txt`; url
+   `https://h/p?q=1`; psn/NS noise dropped.
+3. `testStubArgvRejectsDanglingFlag`: `["--doc"]` throws.
+4. `testLaunchArgumentsRoundTrip`: for several inputs (spaces, quotes, `$`, unicode, leading `-` in a doc
+   path after `--doc`) `LaunchArguments.parse(Array(StubArgv.build(...).dropFirst()))` reproduces documents,
+   urls, arguments exactly.
+5. `testLaunchArgumentsRejectsUnknownAndMissing`: `["app","--bogus"]`, `["app","--doc"]`, `["--doc","x"]`
+   → `IsenoughError.usage`.
+6. `testCLITopLevelUnknownOptionIsUsageError` (via the pure global-flag parser extracted from main.swift).
+7. `testLocateLauncherPrefersEnvThenSibling`: injected `isExecutable` closure; env override wins; sibling of CLI
+   realpath next; equal-to-CLI → throws; none → throws.
+8. `testImageNamingUsesImageId`: manifest built from sha `"ab"*32` → `imageId == "<bid>-<ver>-abababab"`,
+   `image.file == "images/\(imageId).dmg"`, and helpers `CachePaths(config).image(id)`, `.partial(id)`,
+   `.mount(id)` return `<cache>/images/<id>.dmg`, `<cache>/partial/<id>.dmg.part`, `<mountRoot>/<id>`.
+   (Requires `pack` to compute sha before building names — `ImageManifest.Image.file` set from `imageId`.)
+9. `testPrefetchReplacesStaleCacheFile`: LocalFolderBackend fixture; pre-create a wrong-content cache file →
+   prefetch succeeds, bytes equal remote; partial file removed.
+10. `testPrefetchRejectsCorruptRemote`: append bytes to remote → `.integrity`, no cache file, no partial left.
+Keep `testPrefetchCachesPublishedImageBytesWithoutReencoding`.
+
+## 6. Verification plan
+1. Local (Linux, Docker): `swift build` + `swift test` all green (stub/macOS code compiled out where `#if os`).
+2. Push to `feat/mvp`; macOS E2E must pass **every** existing assertion in order, unchanged in meaning:
+   build → init → pack+stub → stub executable exists → codesign verify → manifest → remote image →
+   **pre-launch fetched image to isolated cache** → cached sha256 == remote → attached at expected mount point →
+   mounted read-only → fixture launched and recorded arguments → document forwarded to real app → post-quit
+   detach after delay → state persisted → `lastUsed` → state back to `cached` → second prefetch no re-fetch →
+   pin + gc keeps pinned image → corrupt remote rejected → `PASS: all macOS end-to-end assertions completed`.
+   Plus the new ones (§4): stub binary is the launcher; image/manifest names use `imageId`.
+3. Nothing loosened: no assertion removed, no `|| true` added to assertions, fixed sleeps become bounded waits
+   with explicit timeouts that still fail the run.
+4. Regression guard for RC1: the e2e `cmp` check and unit test 7 fail if the CLI is ever copied as the stub again.
