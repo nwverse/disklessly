@@ -8,7 +8,7 @@ import Darwin
 public enum IsenoughError: Error, LocalizedError, Equatable {
     case usage(String), unsupported(String), backend(String), integrity(String), busy(String), diskImage(String), failure(String)
     public var exitCode: Int { switch self { case .usage: 2; case .unsupported: 3; case .backend: 4; case .integrity: 5; case .diskImage: 6; case .busy: 9; case .failure: 1 } }
-    public var errorDescription: String { switch self { case .usage(let s), .unsupported(let s), .backend(let s), .integrity(let s), .busy(let s), .diskImage(let s), .failure(let s): s } }
+    public var errorDescription: String? { switch self { case .usage(let s), .unsupported(let s), .backend(let s), .integrity(let s), .busy(let s), .diskImage(let s), .failure(let s): s } }
 }
 
 public struct ImageManifest: Codable, Equatable {

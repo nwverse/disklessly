@@ -60,4 +60,9 @@ do {
     case "detach", "unpack", "trust", "resolve": throw IsenoughError.unsupported("\(command) is not available in this MVP build")
     default: throw IsenoughError.usage("Unknown command: \(command)")
     }
-} catch let e as IsenoughError { if json { emit(["ok":false,"error":["code":e.exitCode,"message":e.localizedDescription]]) } else { fputs("isenough: \(e.localizedDescription)\n",stderr) }; exit(Int32(e.exitCode)) } catch { fputs("isenough: \(error.localizedDescription)\n",stderr); exit(1) }
+} catch let e as IsenoughError { if json { emit(["ok":false,"error":["code":e.exitCode,"message":e.errorDescription]]) } else { fputs("isenough: \(e.errorDescription)\n",stderr) }; exit(Int32(e.exitCode)) } catch {
+    let nsError = error as NSError
+    fputs("isenough: \(error.localizedDescription) [\(nsError.domain) \(nsError.code)]\n", stderr)
+    if !nsError.userInfo.isEmpty { fputs("details: \(nsError.userInfo)\n", stderr) }
+    exit(1)
+}
