@@ -67,7 +67,7 @@ printf 'fixture document\n' > "$TMP/docs/open-me.txt"
 export ISENOUGH_E2E_ARGV="$TMP/received-argv"
 export ISENOUGH_E2E_PID="$TMP/fixture.pid"
 
-run_cli pack "$TMP/Applications/Fixture.app" --stub-dir "$TMP/Applications" >>"$LOG" 2>&1 || fail 'CLI pack into fake repository and Applications'
+run_cli pack "$TMP/Applications/Fixture.app" --keep-original --stub-dir "$TMP/Applications" >>"$LOG" 2>&1 || fail 'CLI pack into fake repository and Applications'
 pass 'fixture packed and stub generated'
 STUB="$TMP/Applications/Fixture.app"
 assert_file "$STUB/Contents/MacOS/isenough-stub" 'stub executable exists'
