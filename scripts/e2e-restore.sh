@@ -128,6 +128,7 @@ import AppKit
 @MainActor @main
 final class RestoreApp: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
+        if "ISENOUGH_FIXTURE_BUILD".isEmpty { NSApp.terminate(nil) }
         let hold = Bundle.main.object(forInfoDictionaryKey: "IsenoughHoldFile") as? String ?? ""
         let pidFile = Bundle.main.object(forInfoDictionaryKey: "IsenoughE2EPidFile") as? String ?? ""
         if !pidFile.isEmpty {
@@ -154,7 +155,17 @@ final class RestoreApp: NSObject, NSApplicationDelegate {
     }
 }
 APP
-  swiftc -parse-as-library "$TMP/RestoreApp.swift" -framework AppKit -o "$TMP/restore-bin" >>"$LOG" 2>&1 || fail 'compile restore fixture'
+  compile_restore_bin v1 "$TMP/restore-bin"
+}
+
+compile_restore_bin() {
+  local tag="$1" out="$2"
+  sed "s/ISENOUGH_FIXTURE_BUILD/isenough-fixture-${tag}/" "$TMP/RestoreApp.swift" > "$TMP/RestoreApp.${tag}.swift"
+  swiftc -parse-as-library "$TMP/RestoreApp.${tag}.swift" -framework AppKit -o "$out" >>"$LOG" 2>&1 || fail "compile restore fixture ${tag}"
+}
+
+cdhash_of() {
+  /usr/bin/codesign -dvvv "$1" 2>&1 | awk -F= '/^CDHash=/{print tolower($2); exit}'
 }
 
 make_app() {
@@ -318,10 +329,17 @@ watcher_dead() { ! kill -0 "$NEW_OWNER" 2>/dev/null; }
 wait_for 10 'killed watcher has exited' watcher_dead
 mv "$BUSY_APP" "$TMP/aside-running.app"
 make_app "$BUSY_APP" "$BUSY_BUNDLE" "RestoreBusy" "$BUSY_HOLD" "$BUSY_PID" "v1.1-updated"
-# A resource change is not enough if cdhash were only the main executable.
-# Extend the executable and re-sign so the code directory hash cannot match.
-printf 'updated\n' >> "$BUSY_APP/Contents/MacOS/Restore"
+# A resource change is not enough if cdhash is only the main executable.
+# Swap in another valid Mach-O and re-sign. Appending bytes is not a Mach-O:
+# macOS 27 codesign then fails with "main executable failed strict validation".
+compile_restore_bin v1.1-updated "$TMP/restore-bin-v11"
+cp "$TMP/restore-bin-v11" "$BUSY_APP/Contents/MacOS/Restore"
+chmod 755 "$BUSY_APP/Contents/MacOS/Restore"
 /usr/bin/codesign --force --sign - "$BUSY_APP" >>"$LOG" 2>&1 || fail 'codesign updated busy app'
+/usr/bin/codesign --verify --strict "$BUSY_APP" >>"$LOG" 2>&1 || fail 'codesign --verify --strict updated busy app'
+V1_CD="$(cdhash_of "$TMP/aside-running.app")"
+V11_CD="$(cdhash_of "$BUSY_APP")"
+[[ -n "$V1_CD" && -n "$V11_CD" && "$V1_CD" != "$V11_CD" ]] || fail "v1.1 cdhash '$V11_CD' did not change from '$V1_CD'"
 # The helper still names the destination path, so the replacement stays busy.
 run_cli gc || fail 'gc while updated bundle is busy'
 [[ "$(bundle_id_of "$BUSY_APP")" == "$BUSY_BUNDLE" ]] || fail 'busy gc restored the stub over the updated bundle'
@@ -346,8 +364,8 @@ wait_for 60 'restore-out retained the update and returned the stub' update_was_r
 RECORD="$(app_record "$BUSY_BUNDLE")"
 RETAINED="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["needsResolution"]["retainedPath"])' "$RECORD")"
 STATE_CD="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["needsResolution"]["cdhash"])' "$RECORD")"
-SIGN_CD="$(/usr/bin/codesign -dvvv "$RETAINED/Contents/MacOS/Restore" 2>&1 | awk -F= '/^CDHash=/{print tolower($2); exit}')"
-BUNDLE_CD="$(/usr/bin/codesign -dvvv "$RETAINED" 2>&1 | awk -F= '/^CDHash=/{print tolower($2); exit}')"
+SIGN_CD="$(cdhash_of "$RETAINED/Contents/MacOS/Restore")"
+BUNDLE_CD="$(cdhash_of "$RETAINED")"
 [[ -n "$SIGN_CD" && "$SIGN_CD" == "$STATE_CD" ]] || fail "retained cdhash '$STATE_CD' != codesign '$SIGN_CD'"
 [[ -n "$BUNDLE_CD" && "$BUNDLE_CD" == "$SIGN_CD" ]] || fail "bundle CDHash '$BUNDLE_CD' != executable '$SIGN_CD'"
 OUTCOME="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["lastOutcome"]["name"])' "$RECORD")"
