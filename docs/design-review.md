@@ -140,3 +140,98 @@ This is a document review on Linux; no macOS runtime claims were experimentally 
   Dock pins survive replacement with a different bundle ID. Include a manual compatibility checklist for default
   document handlers, URL schemes, Dock pins and TCC. The Pake licensing discussion correctly identifies GPL-3.0;
   retain notices and provide the exact corresponding wrapper source/build instructions before distribution.
+
+## Round 1 — author response (claude-opus-5-5)
+
+All seven blocking issues are accepted; `docs/design.md` is revised (rev. r1). Section references point to the new text.
+
+### Blocking issues
+
+- **B1 — accepted.** §1.5 rule 4: overrides only go one way. `--mode restore` can upgrade `mount` to `restore`;
+  nothing can downgrade. MAS receipt, helper, login item and launchd-plist hits are always `restore`, and rule-1
+  hits are always `unsupported`. `--mode mount` is now just an assertion: it fails with `EX_UNSUPPORTED` when it
+  does not match the classifier. `--force` never changes the mode, and config has no mount allow-list. §3.6: the
+  remote format is always ULMO. `pack --format` and `pack.remoteFormat` are removed. `cache.localFormat` accepts
+  only ULFO (default) or UDRO, and a manifest whose format is not ULMO is refused. The conversion cost is
+  justified in §3.6 and §5.2.3e. Negative tests are listed in §11.1 (Classifier row) and checked by e2e A30.
+- **B2 — accepted.** New §5.8 adds a write-ahead journal for every bundle move: pack install, restore-in,
+  restore-out, unpack, `restore --permanent` and stub rebuild. The journal is written and fsynced before each
+  effect. Staging is on the same volume (`<dest-parent>/.256isenough-staging/<txid>`), so the in-home `parked/`
+  directory is gone. Phases are idempotent, and each phase has a table entry for forward or rollback recovery.
+  Restore-out checks cdhash and a new tree hash (`app.treeHash`) **before** any removal. A bundle is deleted
+  only if it matches a cached or uploaded image. Otherwise it goes to `retained/` and gets `needsResolution`.
+  Supervisors never prompt; the user decides with `wupan resolve`. A hook failure or an identity failure now
+  fully rolls back, journaled (§5.2.5/6). Permission preflight refuses non-writable destinations before changing
+  anything (N5). Fault-injection tests cover every journal and mutation point plus hook failure and self-update
+  (§5.8.6, §11.2, e2e A33/A34).
+- **B3 — accepted.** §5.6 is rewritten:
+  - Four locks: global shared, app, image and state.
+  - A fixed global order (L0 → L1 by appId → L2 by imageId → L3). Lower locks are never acquired late.
+  - A per-command lock table covering launch, join, post-quit, prefetch, pin, evict, gc, unpack, restore, pack,
+    recovery and serve.
+  - Cache check and attach now happen under one image-lock hold.
+  - gc runs only after the app lock is released and uses non-blocking try-locks.
+  - Exactly one adopter is elected under L1+L3 using owner (pid, start time).
+  
+  New §6.1 adds atomic capacity reservations stored in `state.json` with peak budgeting
+  (materialization + copy + local image). Dead owners' reservations are reaped. Multiprocess tests are in §11.2
+  and e2e A21–A23.
+- **B4 — accepted.** New §5.9 defines usage roots per mode. Restore mode watches the restored bundle, not the
+  detached mountpoint. The probe adds open-file/mapped-file checks, a backing-image check and a launchd check.
+  Any probe failure counts as `unknown`, which is treated as busy. Restore cleanup waits indefinitely and has no
+  force option. Quarantined bundles are **rejected** in MVP, with a manual recovery instruction (we do not track
+  translocation). Every NSRunningApplication returned by NSWorkspace is checked against the intended bundle path
+  and the executable root. Already-running instances from other paths are refused. Kept originals move to
+  `retained/`. Tests: §11.2 probe tests and e2e A26–A29, A32.
+- **B5 — accepted.** §8.3 adds a bidirectional socketpair protocol with these parts:
+  - Request IDs, plus a per-batch ack/error sent only after NSWorkspace's completion handler returns.
+  - Queueing before `ready`.
+  - A drain sequence (quiet period → `bye` → `done`). The run loop stops only after `done`, so later events
+    relaunch the stub, which then joins the session.
+  
+  Joining a session is synchronized under the app lock (§5.6.3): the joiner cancels the timer, sets
+  `joinPending` and adds its lease itself, and the owner re-reads the session after taking the lock (§5.4).
+  SIGPIPE is ignored, EPIPE or EOF marks the client as gone, and progress writes stop. Cancel is a message, not
+  a signal; a joiner's cancel never affects the session. Tests: §11.1 StubProtocol and e2e A11b, A22, A24.
+- **B6 — accepted.** New §10.1 defines two credentials:
+  - The CLI uses a Bearer token from a 0600 file.
+  - The Pake UI pairs once with a one-time code (`wupan serve pair`) and then gets an HttpOnly session cookie
+    plus a CSRF token, which it can re-fetch with `GET /api/session`. SSE is authenticated by the cookie.
+  
+  Allowed Host values and serialized Origins are listed separately. The doc also specifies the
+  401/403/421 responses, rotation and revocation, and server-side session hashes that survive restarts. No token
+  appears in URLs, and the shell never reads the daemon's token file. Cookie persistence in Pake's WKWebView is
+  an explicit assumption checked by the Pake startup job; if it fails, the fallback is to re-pair. Tests: §11.1
+  API row, e2e step 14, and the manual `gui.yml` Pake startup check.
+- **B7 — accepted.** §11.3 changes:
+  - LS document and URL delivery (A11/A12, with the fixture logging `via:"appleEvent"`) and restore
+    swap/recovery (A30–A33) are required gates. An unavailable environment exits `2` (inconclusive), which CI
+    treats as a failure; the skip fallback is removed.
+  - A16 now expects `WUPAN_EXIT_STATUS=unknown|crash`, with no numeric status.
+  - The LRU and pin fixtures compute the quota from measured allocated sizes. A20 asserts one deterministic
+    outcome (pinned app1 kept, app2 evicted, `launch app2` → `EX_NOSPACE`).
+  - A10 also checks that LS resolved the mounted path (preserved originals are in `retained/`).
+  - Diagnostics are collected before cleanup, and the CI artifact upload runs `always()`.
+
+### Non-blocking suggestions
+
+- **N1 adopted:** MVP implementation gates G-a…G-d (§12.1). Shared repo hooks and `gc --remote` are deferred to v2.
+- **N2 adopted:** §7.1 adds a publication rule for non-atomic stores (manifest = publication), ETag/size checks
+  on resume, `200` vs `206` handling, credential stripping on cross-host redirects, symlink containment, and
+  `<sha8>` collision extension that never overwrites.
+- **N3 adopted:** §6.1 adds peak budgeting, bounded convert/ENOSPC cleanup, and a note that the Trash frees no
+  space until emptied.
+- **N4 adopted:** logout detach is not assumed, `lsof` is documented as a filesystem selector, probe failures
+  count as unknown, and device/mountpoint ownership is verified before reuse, adoption or detach.
+- **N5 adopted:** no claim that TCC is universally preserved or that attach runs Gatekeeper. Destination
+  permissions are preflighted. Stub `LSMinimumSystemVersion` is now 13.0.
+- **N6 adopted:** `trust` and `resolve` are in the MVP command list. Schemas now include `trusted`,
+  `reservations`, journals, `treeHash` and leases. The doc defines plist Date/Data → JSON, the migration
+  policy, the manifest cache and icon regeneration. Hook documents and URLs are passed as a JSON file
+  (`WUPAN_ARGS_FILE`).
+- **N7 adopted:** `lsregister` is treated as best-effort, a manual compatibility checklist is added, and GPL
+  notice and corresponding-source obligations are covered for Pake distribution.
+
+No issue was rejected. One judgement call: for B4 I chose **rejecting** quarantined apps rather than tracking
+translocated paths. Translocation paths are opaque and their lifetime is not documented, so tracking them safely
+costs more than the MVP is worth. Users can clear quarantine themselves after Gatekeeper approval.
