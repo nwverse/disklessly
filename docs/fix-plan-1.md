@@ -270,3 +270,90 @@ Keep `testPrefetchCachesPublishedImageBytesWithoutReencoding`.
 3. Nothing loosened: no assertion removed, no `|| true` added to assertions, fixed sleeps become bounded waits
    with explicit timeouts that still fail the run.
 4. Regression guard for RC1: the e2e `cmp` check and unit test 7 fail if the CLI is ever copied as the stub again.
+
+## F-B1 fix items (from sol review)
+
+Review baseline: `4ee74a3`; verdict **NOT SATISFIED**. See `docs/fb1-review.md` for all twelve
+phase layouts and current file:line evidence. This is missing implementation, not a one-line
+replacement of an unconditional predicate. Suggested new files below do not yet exist.
+
+1. **Implement durable restore WAL and a real mode branch.** In `Sources/IsenoughCore/RestoreJournal.swift`
+   (new), model restore-in/out phases, transaction paths, stub/destination identity, owner pid+start,
+   inspection/retention snapshot and terminal outcome/time. In
+   `Sources/IsenoughEngine/RestoreTransaction.swift` (new), implement restore-in/out with same-volume
+   staging, journal-before-effect, file/directory fsync and idempotent phase replay; journal rollback too.
+   Change `IsenoughEngine.launch` in `Engine.swift` to dispatch on manifest mode instead of mounting every
+   app. Do not advertise safe temporary restore while that branch is absent; refuse it explicitly until
+   implemented. Add Linux temporary-directory/fake-platform tests proving restore mode invokes the
+   transaction and detaches the extraction image before active, never the mount-session recovery path.
+
+2. **Put layout validation inside a pure per-phase decision function.** Add
+   `Sources/IsenoughCore/RestoreRecovery.swift`: `RestoreRecovery.decide(phase, layout, probe, ownerAlive)`.
+   Accept both sides of each WAL mutation as enumerated in `docs/fb1-review.md`, including incomplete
+   owned extraction, absent destination before install, parked vs installed stub, moved app, already
+   disposed/retained app, and retired/partially closed cleanup. Verify recorded paths/parent custody,
+   stub identities and source/destination roles; reject symlink/path escapes, duplicates, wrong bundles,
+   unexplained missing copies or ambiguous layouts without moving/deleting evidence. No global
+   active-layout prerequisite or manifest-cdhash prerequisite for watching a replacement. Explicitly
+   recognize/rebuild missing or corrupt regenerable stubs without overwriting an unknown destination.
+   Wire decisions to the new engine runner; add Linux table tests for every phase × owner alive/dead ×
+   busy/unknown/held/clean × each valid pre/post layout and invalid layout. Assert no effect on rejection,
+   live-owner no-op and no destination rename without the applicable clean-twice gate under L1.
+
+3. **Implement single-owner recovery and restore-specific waiting.** Add an engine recovery coordinator
+   (e.g. `Sources/IsenoughEngine/RecoveryCoordinator.swift`) using `FileLock` for L1 and pid+start checks.
+   Under L1, re-read journal, elect only for a dead owner and publish journal owner before mirror;
+   short-lived callers that must wait spawn/record one detached `hook watch` child before unlocking.
+   Wire startup/launch/`gc` and `hook watch` in `Sources/isenough/main.swift`; keep status read-only.
+   Validate installed pre-effect rollback separately from post-effect adoption, active delay/hooks,
+   quiesced/inspected re-probe and appMoved-or-later staging usage. Busy/unknown/held must wait without
+   destructive action; never require an attached image. Add Linux fake-clock/probe tests for clean-twice,
+   owner change, new usage between phases and hook epochs, plus multiprocess two-adopter/dead-child tests.
+
+4. **Preserve atomic updater replacements and make deletion independently safe.** Extend
+   `ImageManifest.App` in `Sources/IsenoughCore/Core.swift` and pack in `Engine.swift` with cdhash and tree
+   hash; add `BundleHasher` and injectable archive/identity verification. A changed inode or cdhash at
+   the controlled destination with established stub/path custody must be watched conservatively, not
+   rejected as moved and not treated as deletable merely because bundle id matches. Re-inspect before
+   disposal; delete only after matching cdhash AND tree hash and proving a verified cached/uploaded
+   source. Otherwise retain the bundle (including cross-volume fallback to preserved staging), journal
+   its identity/location, then set `needsResolution`. Block launches until explicit resolution and
+   diagnose truly ambiguous layouts with a concrete repair path, not a generic success from `doctor`.
+   Add Linux fake-verifier tests for atomic inode+signature replacement followed by owner death,
+   tree-only hook mutation, corrupt/missing archive, repeated retain replay and tampered path identity;
+   assert no updated/only copy is lost.
+
+5. **Make `retired`/`closed` and mirror reconciliation durable and idempotent.** Extend `StateStore` and
+   the restore runner: one L3 write removes `state.restored[appId]`, assigns terminal outcome, resolution
+   snapshot, app/cache LRU time where appropriate and final app state. Persist journaled values so
+   replay does not invent a later outcome/time; fsync before closing. Close only after durable retirement,
+   never remove retained staging evidence. Reconcile a missing-journal mirror only with the verified
+   installed stub and no staging; otherwise block/diagnose. Ensure launch/status/evict/unpack/resolve
+   consume the same restored/journal/resolution truth. Linux tests must cover before/after retirement
+   state write, state-write-to-journal-removal window, partially removed staging, absent journal mirror
+   variants and at least three repeated recoveries with identical final state and no repeated hooks.
+
+6. **Add the full Linux fault matrix, not just decision-table assertions.** Add
+   `Tests/IsenoughCoreTests/RestoreRecoveryTests.swift` and `RestoreTransactionTests.swift` using fake
+   signing/probe/archive adapters and real temporary directories or a fake FS. Inject
+   `beforeJournal`, `afterJournal`, `afterMutation` for every restore-in/out phase, abandon the runner
+   without automatic cleanup, reopen durable artifacts, recover and recover again. Include each rename,
+   partial extraction, disposition/retention move and deletion, retirement and close boundary. Assert
+   recognized clean layouts finish, exactly one stub/real bundle occupies destination, every original or
+   updated bundle remains accounted for or has independently verified archive evidence, restored mirror
+   is retired, outcome assigned once, journal closed and subsequent recovery a no-op. Non-clean usage
+   must remain recoverably waiting; ambiguous layouts must remain unchanged with actionable diagnostics.
+   Run with official `swift:6.1` Docker `swift test` on Linux (isolated scratch path, `--rm`).
+
+7. **Implement and run the real macOS gates exclusively in GitHub Actions.** Extend `scripts/e2e.sh`
+   (or a dedicated restore harness invoked by `.github/workflows/macos-e2e.yml`) with a restore fixture
+   and test-hook build. A33 must kill a child at every journal-write/rename/state-retirement boundary on
+   APFS and run repeated recovery. A33b must kill the installed/active owner with app/helper alive,
+   start two recovery callers, verify one watcher/journal owner, no early swap, then one post-quit hook
+   execution and eventual stub restoration/retirement/closure. Use the explicitly parked stub for join
+   assertions, not the destination real app. A34d must replace the destination with a genuinely signed
+   updated bundle, kill the supervisor, then prove adoption while busy, retention when clean, durable
+   `needsResolution` and refusal to launch until resolution. Test missing/corrupt-stub regeneration.
+   Keep a clean release build separate from fault-enabled builds. Preserve all existing E2E assertions;
+   do not equate mount-only E2E success with F-B1 closure. Attach bounded logs/artifacts and require
+   passing macOS runs before declaring F-B1 satisfied. Never run against a remote/personal Mac.
