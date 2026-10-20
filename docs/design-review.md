@@ -160,7 +160,7 @@ All seven blocking issues are accepted; `docs/design.md` is revised (rev. r1). S
   directory is gone. Phases are idempotent, and each phase has a table entry for forward or rollback recovery.
   Restore-out checks cdhash and a new tree hash (`app.treeHash`) **before** any removal. A bundle is deleted
   only if it matches a cached or uploaded image. Otherwise it goes to `retained/` and gets `needsResolution`.
-  Supervisors never prompt; the user decides with `wupan resolve`. A hook failure or an identity failure now
+  Supervisors never prompt; the user decides with `isenough resolve`. A hook failure or an identity failure now
   fully rolls back, journaled (§5.2.5/6). Permission preflight refuses non-writable destinations before changing
   anything (N5). Fault-injection tests cover every journal and mutation point plus hook failure and self-update
   (§5.8.6, §11.2, e2e A33/A34).
@@ -195,7 +195,7 @@ All seven blocking issues are accepted; `docs/design.md` is revised (rev. r1). S
   a signal; a joiner's cancel never affects the session. Tests: §11.1 StubProtocol and e2e A11b, A22, A24.
 - **B6 — accepted.** New §10.1 defines two credentials:
   - The CLI uses a Bearer token from a 0600 file.
-  - The Pake UI pairs once with a one-time code (`wupan serve pair`) and then gets an HttpOnly session cookie
+  - The Pake UI pairs once with a one-time code (`isenough serve pair`) and then gets an HttpOnly session cookie
     plus a CSRF token, which it can re-fetch with `GET /api/session`. SSE is authenticated by the cookie.
   
   Allowed Host values and serialized Origins are listed separately. The doc also specifies the
@@ -207,7 +207,7 @@ All seven blocking issues are accepted; `docs/design.md` is revised (rev. r1). S
   - LS document and URL delivery (A11/A12, with the fixture logging `via:"appleEvent"`) and restore
     swap/recovery (A30–A33) are required gates. An unavailable environment exits `2` (inconclusive), which CI
     treats as a failure; the skip fallback is removed.
-  - A16 now expects `WUPAN_EXIT_STATUS=unknown|crash`, with no numeric status.
+  - A16 now expects `ISENOUGH_EXIT_STATUS=unknown|crash`, with no numeric status.
   - The LRU and pin fixtures compute the quota from measured allocated sizes. A20 asserts one deterministic
     outcome (pinned app1 kept, app2 evicted, `launch app2` → `EX_NOSPACE`).
   - A10 also checks that LS resolved the mounted path (preserved originals are in `retained/`).
@@ -228,7 +228,7 @@ All seven blocking issues are accepted; `docs/design.md` is revised (rev. r1). S
 - **N6 adopted:** `trust` and `resolve` are in the MVP command list. Schemas now include `trusted`,
   `reservations`, journals, `treeHash` and leases. The doc defines plist Date/Data → JSON, the migration
   policy, the manifest cache and icon regeneration. Hook documents and URLs are passed as a JSON file
-  (`WUPAN_ARGS_FILE`).
+  (`ISENOUGH_ARGS_FILE`).
 - **N7 adopted:** `lsregister` is treated as best-effort, a manual compatibility checklist is added, and GPL
   notice and corresponding-source obligations are covered for Pake distribution.
 

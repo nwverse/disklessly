@@ -7,7 +7,7 @@
 > 中文摘要：每个冷门 App 打成只读压缩 DMG（远端 ULMO），放在可插拔后端（MVP = iCloud Drive / 本地目录）；
 > `/Applications` 里放一个独立 bundle id、可签名的轻量 Stub。点击 Stub → **pre-launch hook**（拉取到本地缓存、
 > sha256 校验、`hdiutil attach -readonly -nobrowse`、带文档/URL 打开真 App）→ App 退出 → **post-quit hook**
-> （等所有进程离开挂载点、延迟卸载、更新 LRU、按配额淘汰）。引擎/CLI/Stub 用 Swift，GUI 是 `wupan serve`
+> （等所有进程离开挂载点、延迟卸载、更新 LRU、按配额淘汰）。引擎/CLI/Stub 用 Swift，GUI 是 `isenough serve`
 > 提供的本地网页，用 Pake 打包。MAS/带特权 helper 的 App 走"临时还原"模式。
 
 This document is the implementation spec. Sources: [research.md](research.md), [research-luna.md](research-luna.md),
@@ -15,7 +15,7 @@ This document is the implementation spec. Sources: [research.md](research.md), [
 dataless DMG, no `cp -c` zero-copy cache, ULMO remote, stub must forward documents and URLs, Pake = tray window +
 HTTP to a daemon, sessions tiering starts with pi JSONL only).
 
-Naming: product **256isenough**; CLI **`wupan`** (无盘); stub launcher **`wupan-stub`**; Swift modules `Wupan*`.
+Naming: product **256isenough**; CLI **`isenough`** (the name "wupan" was rejected by the user — never use it); stub launcher **`isenough-stub`**; Swift modules `Isenough*`.
 Reverse-DNS prefix `io.github.s546126.256isenough`.
 
 ---
@@ -53,8 +53,8 @@ Reverse-DNS prefix `io.github.s546126.256isenough`.
 | **Catalog index** | Derived, rebuildable `catalog/manifest.json` listing all image manifests. |
 | **Cache** | Local directory of verified image copies (`~/Library/Caches/256isenough/images`). |
 | **Stub (portal)** | Small generated `.app` at the original location with its own bundle id `<orig>.256stub`. |
-| **Engine** | `WupanEngine` library implementing pack/fetch/launch/gc; used by CLI and daemon. |
-| **Supervisor** | The `wupan hook launch` process that owns one app session from pre-launch to detach. |
+| **Engine** | `IsenoughEngine` library implementing pack/fetch/launch/gc; used by CLI and daemon. |
+| **Supervisor** | The `isenough hook launch` process that owns one app session from pre-launch to detach. |
 | **Session** | One mount lifetime of an image: attach → (one or more app runs) → detach. |
 | **Lease** | Record "pid P needs mount M"; the mount is detached only when no live lease and no process uses it. |
 | **Mount mode** | Real app runs from the read-only mounted image. |
@@ -114,20 +114,20 @@ the first `unsupported` hit wins, otherwise any `restore` hit wins, otherwise `m
             │  (Apple Events: oapp / odoc / GURL)
             ▼
  /Applications/Foo.app  ── stub, bundle id com.foo.Foo.256stub, LSUIElement
-   Contents/MacOS/wupan-stub  (Swift/AppKit, ~400 LOC)
+   Contents/MacOS/isenough-stub  (Swift/AppKit, ~400 LOC)
             │ spawns; sends every doc/URL batch over a socketpair; exits after all batches are acked
             ▼
- wupan hook launch --app <appId> --control-fd 3      ← "supervisor" (owner of a session, or short-lived joiner)
+ isenough hook launch --app <appId> --control-fd 3      ← "supervisor" (owner of a session, or short-lived joiner)
    ├── pre-launch:  lock → resolve image → fetch(backend→cache) → verify sha256 → attach → user hooks → open
    ├── watch:       NSWorkspace termination + process scan of mountpoint
    └── post-quit:   grace delay → user hooks → lsregister -u → detach → LRU update → quota evict
             │ uses
             ▼
- WupanEngine (Swift library)  ── WupanCore (pure) + WupanMac (macOS adapters)
+ IsenoughEngine (Swift library)  ── IsenoughCore (pure) + IsenoughMac (macOS adapters)
    Backends: LocalFolderBackend, ICloudBackend (MVP) | SMB/NFS path, WebDAV, OpenList (phase 2)
    State:    ~/Library/Application Support/256isenough/state.json (+ flock)
 
- wupan serve  (optional LaunchAgent io.github.s546126.256isenough.daemon)
+ isenough serve  (optional LaunchAgent io.github.s546126.256isenough.daemon)
    127.0.0.1:47256 HTTP/JSON + SSE; session cookie for the UI, Bearer for CLI (§10.1)
             ▲
  Pake app "256isenough.app" (tray + window) loading http://127.0.0.1:47256/ui/ (pairs once with a code)
@@ -137,7 +137,7 @@ the first `unsupported` hit wins, otherwise any `restore` hit wins, otherwise `m
 | Component | Language | Why |
 |---|---|---|
 | Engine, CLI, stub launcher | **Swift 5.10+ (Swift 6 toolchain, language mode 5)** | First-class `FileManager` ubiquity APIs, `NSWorkspace`, `NSRunningApplication`, `libproc`, `Security`/`codesign` APIs; single static-ish binary; same language for stub and engine; SwiftPM builds on Linux for pure logic tests. |
-| Web UI | Plain HTML + vanilla JS (ES modules), no build step | Served by `wupan serve` from `Resources/web`; zero toolchain; easy to wrap with Pake. |
+| Web UI | Plain HTML + vanilla JS (ES modules), no build step | Served by `isenough serve` from `Resources/web`; zero toolchain; easy to wrap with Pake. |
 | GUI shell | **Pake** (Tauri) build recipe `scripts/build-gui.sh` | User decision. Pake only loads `http://127.0.0.1:47256/ui/`; no fork, no custom IPC. |
 | Test glue / e2e | Bash (`scripts/e2e.sh`) + Swift test helpers | Portable to any Mac, runs on GH Actions. |
 
@@ -148,17 +148,17 @@ External tools invoked via `Process` (absolute paths, argument arrays, never a s
 (hdiutil deprecated there).
 
 ### 2.3 Process model
-- **No mandatory daemon.** The stub spawns a **supervisor** (`wupan hook launch`) that lives for the whole session
+- **No mandatory daemon.** The stub spawns a **supervisor** (`isenough hook launch`) that lives for the whole session
   (pre-launch → app run → post-quit → detach) and then exits. This keeps the MVP robust: no IPC needed for launch,
   works even if the daemon is not installed. Concurrency is solved with file locks (§5.6).
-- **Optional daemon** (`wupan serve`, installed by `wupan daemon install` as LaunchAgent with `KeepAlive`): serves
+- **Optional daemon** (`isenough serve`, installed by `isenough daemon install` as LaunchAgent with `KeepAlive`): serves
   the API/UI, runs periodic `gc`, recovers stale mounts at start, handles sleep/wake revalidation, and runs
   prefetch for pinned apps. When the daemon is running, the stub still uses the supervisor path (identical code);
   the daemon only observes state and receives progress via the shared event log (§3.5). Launch-via-daemon is a v1
   optimization, not MVP.
 - **Why supervisor per session instead of the stub itself?** The stub must stay a tiny, rarely-regenerated signed
-  binary; all logic lives in the versioned `wupan` binary which the stub locates via `Resources/stub.json`
-  (`wupanPath`) with fallbacks `~/.local/bin/wupan`, `/usr/local/bin/wupan`, `/opt/homebrew/bin/wupan`.
+  binary; all logic lives in the versioned `isenough` binary which the stub locates via `Resources/stub.json`
+  (`isenoughPath`) with fallbacks `~/.local/bin/isenough`, `/usr/local/bin/isenough`, `/opt/homebrew/bin/isenough`.
   The stub stays alive (Dock-less, `LSUIElement`) during pre-launch to show progress and until every forwarded
   document/URL batch is acknowledged (§8.3), then exits; the supervisor is spawned detached (`posix_spawn` +
   `setsid`) so it outlives the stub.
@@ -167,7 +167,7 @@ External tools invoked via `Process` (absolute paths, argument arrays, never a s
 ```
 Package.swift                (swift-tools-version 5.9; platforms: .macOS(.v13))
 Sources/
-  WupanCore/        pure Swift, Foundation only, builds on Linux
+  IsenoughCore/        pure Swift, Foundation only, builds on Linux
     Model/          AppManifest, CatalogIndex, DeviceRecord, Config, LocalState, AppFacts, Classification
     Classifier/     classify(AppFacts, Policy)
     Cache/          CachePolicy, LRU planner (planEviction), quota math
@@ -177,7 +177,7 @@ Sources/
     Util/           SHA256 (swift-crypto on Linux / CryptoKit on macOS via #if canImport), AtomicFile,
                     FileLock (flock), JSONCoding (sorted keys, ISO-8601), Semver/version compare, Logging
     API/            APIRoutes model types (request/response Codables) shared by server + tests
-  WupanMac/         macOS-only adapters, each file wrapped in #if os(macOS); protocols declared in WupanCore
+  IsenoughMac/         macOS-only adapters, each file wrapped in #if os(macOS); protocols declared in IsenoughCore
     HdiutilDiskImageTool.swift   (DiskImageTool)
     MacAppInspector.swift        (AppInspector: Info.plist, codesign info via SecStaticCode, xattrs)
     WorkspaceAppLauncher.swift   (AppLauncher: NSWorkspace.openApplication / open(urls:withApplicationAt:))
@@ -186,20 +186,20 @@ Sources/
     LaunchServices.swift         (lsregister -f/-u wrapper)
     CodeSigner.swift             (codesign stub)
     SystemEvents.swift           (sleep/wake, termination notifications)
-  WupanEngine/      orchestration: PackService, FetchService, LaunchSupervisor, GCService, RestoreService,
+  IsenoughEngine/      orchestration: PackService, FetchService, LaunchSupervisor, GCService, RestoreService,
                     DoctorService, StubBuilder (plist transform is pure; file ops via protocols). Depends on
-                    WupanCore; uses WupanMac only through injected protocol implementations (`Platform` struct).
-  WupanServer/      tiny HTTP/1.1 server on NIO-free BSD sockets (or Network.framework on macOS), routes → Engine
-  wupan/            CLI executable (swift-argument-parser), composition root: builds `Platform.mac` or fails on Linux
-  wupan-stub/       AppKit stub launcher executable (macOS only; on Linux compiles to a no-op main)
+                    IsenoughCore; uses IsenoughMac only through injected protocol implementations (`Platform` struct).
+  IsenoughServer/      tiny HTTP/1.1 server on NIO-free BSD sockets (or Network.framework on macOS), routes → Engine
+  isenough/            CLI executable (swift-argument-parser), composition root: builds `Platform.mac` or fails on Linux
+  isenough-stub/       AppKit stub launcher executable (macOS only; on Linux compiles to a no-op main)
 Resources/web/      index.html, app.js, style.css (copied into the CLI bundle dir / installed share dir)
 Tests/
-  WupanCoreTests/   Linux + macOS: manifest coding/versioning, classifier fixtures, LRU/quota planner, session state
+  IsenoughCoreTests/   Linux + macOS: manifest coding/versioning, classifier fixtures, LRU/quota planner, session state
                     machine, lease table, RepoLayout naming, LocalFolderBackend (temp dirs), Fetcher (resume, sha
                     mismatch), hook runner (env, timeout), plist transform for stubs, API codables, config merge
-  WupanEngineTests/ Linux + macOS with fake Platform (FakeDiskImageTool, FakeLauncher, FakeProbe, FakeUbiquity):
+  IsenoughEngineTests/ Linux + macOS with fake Platform (FakeDiskImageTool, FakeLauncher, FakeProbe, FakeUbiquity):
                     pack → launch → quit → detach flow, concurrency (two launches), crash recovery, offline
-  WupanMacTests/    macOS only (CI): hdiutil create/attach/detach real, inspector on a fixture app, codesign stub
+  IsenoughMacTests/    macOS only (CI): hdiutil create/attach/detach real, inspector on a fixture app, codesign stub
 scripts/  e2e.sh, build-gui.sh, make-fixture-app.sh, linux-test.sh (docker run swift:6.0 swift test)
 ```
 Dependencies: `swift-argument-parser`, `swift-crypto` (Linux only via condition). No others in MVP.
@@ -240,7 +240,7 @@ the same major and ignore unknown keys; a higher major is refused with exit code
 - `<version>` = `CFBundleShortVersionString` sanitized to `[A-Za-z0-9._-]` (else `0`), plus `+<CFBundleVersion>` folded
   in as `_b<build>` when present: `com.blender.blender-4.2.1_b4.2.1-1a2b3c4d.dmg`.
 - `<sha8>` = first 8 hex of the image sha256. Names are unique by content → no write conflicts between Macs.
-- `catalog/manifest.json` is only an optimization: `wupan` always merges it with `list manifests/` and treats
+- `catalog/manifest.json` is only an optimization: `isenough` always merges it with `list manifests/` and treats
   `manifests/*.json` as truth. iCloud conflict copies (`manifest 2.json`) are ignored for the catalog and reported by
   `doctor`.
 
@@ -277,7 +277,7 @@ the same major and ignore unknown keys; a higher major is refused with exit code
   "mode": "mount",
   "classification": { "reasons": [], "warnings": ["sparkle"], "override": null },
   "createdAt": "2026-10-20T08:00:00Z",
-  "createdBy": { "deviceId": "6F1C…", "host": "mini", "tool": "wupan 0.1.0", "os": "15.6" }
+  "createdBy": { "deviceId": "6F1C…", "host": "mini", "tool": "isenough 0.1.0", "os": "15.6" }
 }
 ```
 `documentTypes`/`urlTypes` are stored verbatim (plist → JSON) so stubs can be regenerated on another Mac without the
@@ -287,7 +287,7 @@ Plist→JSON (N6): `String/Bool/Int/Double/Array/Dict` map directly; `Date` → 
 `{"$data":"base64"}`, so `StubPlist` can round-trip to a binary-identical-semantics plist. Manifests also record
 `"iconFiles": [...]` and the image stores the icons, so `stub rebuild` on a new Mac extracts icons by attaching the
 cached image read-only (never needs the original app). Schema migrations: readers support the current and previous
-minor layout of each major; `wupan` rewrites local files (`state`, `config`) to the newest minor on first write;
+minor layout of each major; `isenough` rewrites local files (`state`, `config`) to the newest minor on first write;
 immutable repo files are never migrated in place. Manifests used by a successful fetch are copied to
 `cache/manifests/<imageId>.json` (offline launch).
 
@@ -317,7 +317,7 @@ locks/global.lock, locks/app/<appId>.lock, locks/image/<imageId>.lock   flock lo
 sessions/<sessionId>.json   live session record (also mirrored in state.json)
 events.jsonl        append-only event log (progress + audit); rotated at 5 MB, 3 generations
 hooks/<bundleId>/pre-launch[.d/*], post-quit[.d/*]        local user hooks
-logs/wupan.log
+logs/isenough.log
 ```
 JSON file (not SQLite) is chosen: small (≤ few hundred apps), human-debuggable, Linux-testable, no dependency.
 ```json
@@ -390,9 +390,9 @@ attaching ULMO locally. Unit tests: config with `localFormat: "ULMO"` or `"UDZO"
 
 ---
 
-## 4. CLI (`wupan`)
+## 4. CLI (`isenough`)
 
-Global flags: `--config <path>` (env `WUPAN_CONFIG`), `--state-dir <path>` (env `WUPAN_STATE_DIR`; tests), `--json` (machine output on stdout, logs on stderr),
+Global flags: `--config <path>` (env `ISENOUGH_CONFIG`), `--state-dir <path>` (env `ISENOUGH_STATE_DIR`; tests), `--json` (machine output on stdout, logs on stderr),
 `-v/--verbose`, `--quiet`. `<app>` accepts bundle id, app name (case-insensitive), stub path, or image id.
 
 | Command | Purpose / key flags |
@@ -413,13 +413,13 @@ Global flags: `--config <path>` (env `WUPAN_CONFIG`), `--state-dir <path>` (env 
 | `unpack <app> [--to <dir>]` (alias `rehydrate`) | Permanently put the real app back (stub removed), keep image in repo unless `--delete-remote`. Used for "refresh": `unpack` → update app → `pack`. |
 | `stub rebuild <app>\|--all [--sign-identity <id>]` | Regenerate stub(s) from the manifest (e.g. new Mac, new launcher version). |
 | `hooks list\|edit\|enable\|disable <app>` | Manage user hooks (§5.5). |
-| `doctor [--fix]` | Checks: config, backend reachable, iCloud signed in + Optimize Storage, free space, `hdiutil` present, stale mounts, lock files, LS registration of stubs, conflict copies, stub ↔ manifest consistency, wupan path in stubs. `--fix` performs safe repairs. |
+| `doctor [--fix]` | Checks: config, backend reachable, iCloud signed in + Optimize Storage, free space, `hdiutil` present, stale mounts, lock files, LS registration of stubs, conflict copies, stub ↔ manifest consistency, isenough path in stubs. `--fix` performs safe repairs. |
 | `serve [--port 47256] [--print-token]` | HTTP/JSON API + web UI on 127.0.0.1 (§2.3, §10). |
 | `daemon install\|uninstall\|status` | Manage the LaunchAgent plist `~/Library/LaunchAgents/io.github.s546126.256isenough.daemon.plist`. |
 | `trust <app> [--team-id <id>\|--cdhash <h>]` | Approve a new signing identity for an app (TOFU, §10). |
 | `version` | Prints version + schema versions. |
 
-Exit codes (stable, documented in `wupan --help`):
+Exit codes (stable, documented in `isenough --help`):
 | Code | Name | Meaning |
 |---|---|---|
 | 0 | OK | success |
@@ -444,7 +444,7 @@ Exit codes (stable, documented in `wupan --help`):
 ## 5. Hook lifecycle
 
 ### 5.1 State machine (per app on this device)
-Pure `enum AppState` in `WupanCore/Lifecycle` with an explicit transition table (illegal transitions throw → bug):
+Pure `enum AppState` in `IsenoughCore/Lifecycle` with an explicit transition table (illegal transitions throw → bug):
 
 ```
 remote ──fetch──▶ downloading ──complete──▶ verifying ──ok──▶ cached ──attach──▶ mounted ──open──▶ running
@@ -525,7 +525,7 @@ remote ──fetch──▶ downloading ──complete──▶ verifying ──
    watch.
 3. Mark session `detaching` in state (under lock). From here until step 6 any joiner waits on the lock and then
    finds no session (it mounts again).
-4. **User post-quit hooks** (§5.5), env `WUPAN_EXIT_STATUS` = `crash` if a crash report for the leased pid appears
+4. **User post-quit hooks** (§5.5), env `ISENOUGH_EXIT_STATUS` = `crash` if a crash report for the leased pid appears
    in `~/Library/Logs/DiagnosticReports` within 5 s, else `unknown`. We do not promise numeric exit codes: a
    non-child app's status is not observable via NSWorkspace/`NOTE_EXIT` without being its parent. Failures logged.
 5. Mount mode: `lsregister -u <mnt>/<app>`; `hdiutil detach <devEntry>` (only if the attach-time `devEntry` +
@@ -545,16 +545,16 @@ remote ──fetch──▶ downloading ──complete──▶ verifying ──
   - local: `~/Library/Application Support/256isenough/hooks/<bundleId>/{pre-launch,post-quit}` and
     `…/{pre-launch.d,post-quit.d}/*` (lexical order); global `hooks/_all/…` applies to every app.
   - shared (repo, **v2**; designed now, not in MVP): `<repoRoot>/hooks/<bundleId>/…` — **disabled by default**; enabled per-app with
-    `wupan hooks enable <app> --shared --sha256 <hash>` which pins the exact content hash (a modified shared
+    `isenough hooks enable <app> --shared --sha256 <hash>` which pins the exact content hash (a modified shared
     script is refused until re-approved). Rationale: the repo is synced from other devices (§10).
 - Must be regular files, owned by the user, not group/world-writable, executable. Run with `Process`, no shell,
   `cwd` = hook dir, stdin `/dev/null`, timeout `hookTimeoutSeconds` (SIGTERM then SIGKILL after 5 s).
 - Environment contract (also documented in README):
-  `WUPAN_PHASE` (`pre-launch`|`post-quit`), `WUPAN_APP_ID`, `WUPAN_BUNDLE_ID`, `WUPAN_IMAGE_ID`, `WUPAN_VERSION`,
-  `WUPAN_MODE`, `WUPAN_APP_PATH` (real app path, mounted or restored), `WUPAN_MOUNT_POINT`, `WUPAN_SESSION_ID`,
-  `WUPAN_EXIT_STATUS` (post-quit: `crash`|`unknown`), `WUPAN_STATE_DIR`, `WUPAN_ARGS_FILE` = path of a 0600
+  `ISENOUGH_PHASE` (`pre-launch`|`post-quit`), `ISENOUGH_APP_ID`, `ISENOUGH_BUNDLE_ID`, `ISENOUGH_IMAGE_ID`, `ISENOUGH_VERSION`,
+  `ISENOUGH_MODE`, `ISENOUGH_APP_PATH` (real app path, mounted or restored), `ISENOUGH_MOUNT_POINT`, `ISENOUGH_SESSION_ID`,
+  `ISENOUGH_EXIT_STATUS` (post-quit: `crash`|`unknown`), `ISENOUGH_STATE_DIR`, `ISENOUGH_ARGS_FILE` = path of a 0600
   JSON file `{"documents":[...],"urls":[...],"arguments":[...]}` (arrays, since file names may contain newlines;
-  N6). `WUPAN_DOCS`/`WUPAN_URLS` are not provided.
+  N6). `ISENOUGH_DOCS`/`ISENOUGH_URLS` are not provided.
 - Pre-launch non-zero → abort launch (`EX_HOOK`), stdout/stderr tail shown in stub alert. Post-quit failure → log.
 - Typical uses: restore an app-data archive (v2), set `defaults` keys, start/stop a companion service, mount a
   data volume, notify.
@@ -620,8 +620,8 @@ but never detached (N4). Open journals (§5.8) are completed before session adop
 ```mermaid
 sequenceDiagram
     actor U as User
-    participant S as Stub (wupan-stub)
-    participant V as Supervisor (wupan hook launch)
+    participant S as Stub (isenough-stub)
+    participant V as Supervisor (isenough hook launch)
     participant B as Backend (iCloud/local)
     participant C as Cache
     participant H as hdiutil
@@ -687,7 +687,7 @@ Every operation that moves an `.app` bundle (pack's final install, restore-in, r
   confirmed uploaded. Otherwise the bundle is moved to `retained/<appId>/<ts>-<name>.app` (same volume when possible;
   else kept in staging) and recorded as `needsResolution`.
 - **Supervisors never prompt and never block on a user decision.** A decision is recorded (`needsResolution`, event,
-  GUI/daemon notification, and `status`/`doctor` output); the user resolves with `wupan resolve <app> --keep-updated|--discard|--keep-both`
+  GUI/daemon notification, and `status`/`doctor` output); the user resolves with `isenough resolve <app> --keep-updated|--discard|--keep-both`
   (CLI/GUI). Until resolved, the stub launches the retained bundle (restore-in from `retained/` instead of the image).
 
 #### 5.8.2 restore-in (pre-launch, restore mode)
@@ -710,7 +710,7 @@ Every operation that moves an `.app` bundle (pack's final install, restore-in, r
 | `closed` | remove staging + journal | — |
 
 If the stub copy in staging is missing/corrupt at `stubBack`, a new stub is built from the manifest first (stubs
-are always regenerable). `wupan resolve --keep-updated` runs `pack` on the retained bundle (new image, upload
+are always regenerable). `isenough resolve --keep-updated` runs `pack` on the retained bundle (new image, upload
 confirmed per §7.2) and only then deletes it; `--discard` moves it to the Trash (user-recoverable), never `rm`.
 
 #### 5.8.4 Self-updating apps in mount mode
@@ -806,7 +806,7 @@ our usage root during a session.
   (e.g. new version packed on another Mac). Independent of Finder "Keep Downloaded" (which is an xattr on the
   *repo* file, single-device, undocumented): we only set it when `keepRemoteDownloaded` is true.
 - **Versions**: when a newer image becomes `latest`, the old cached one becomes an orphan candidate after the app
-  next uses the new one. `apps[*].imageId` pins a version explicitly (`wupan launch --image <id>` / `pin --version`).
+  next uses the new one. `apps[*].imageId` pins a version explicitly (`isenough launch --image <id>` / `pin --version`).
 - **APFS clone usage**: we do **not** use `cp -c` from iCloud Drive into the cache as a "zero-copy" trick: clone
   sharing does not survive File Provider eviction/re-download (research-cursor §2.3) and cloning a dataless
   placeholder clones nothing. The cache is a real streamed copy (needed anyway for on-the-fly hashing). APFS clones
@@ -823,7 +823,7 @@ our usage root during a session.
 
 ## 7. Backend abstraction
 
-### 7.1 Protocol (`WupanCore/Backend`)
+### 7.1 Protocol (`IsenoughCore/Backend`)
 ```swift
 public struct RemoteItem: Codable, Equatable { var path: String; var size: Int64; var modified: Date?;
   var isDirectory: Bool; var etag: String?; var localState: LocalState? }   // localState: iCloud only
@@ -923,11 +923,11 @@ collision of `<sha8>` with different content → extend to 16 hex, then full has
   Contents/
     Info.plist                             transformed (below)
     PkgInfo                                "APPL????"
-    MacOS/wupan-stub                       universal (arm64+x86_64) launcher, identical bytes for every stub
+    MacOS/isenough-stub                       universal (arm64+x86_64) launcher, identical bytes for every stub
     Resources/
       <iconFile>.icns / Assets.car         copied from the real app (and doc-type icons)
       stub.json                            {"schema":"stub/1","appId":"com.blender.blender","imageId":"…",
-                                            "wupanPath":"/Users/me/.local/bin/wupan","stubVersion":1,"createdAt":"…"}
+                                            "isenoughPath":"/Users/me/.local/bin/isenough","stubVersion":1,"createdAt":"…"}
       <lang>.lproj/InfoPlist.strings       only CFBundleName/CFBundleDisplayName/CFBundleSpokenName
     _CodeSignature/
 ```
@@ -942,9 +942,9 @@ Start from the original Info.plist, then:
   `CFBundleVersion` (so Finder shows the real version), `CFBundleIconFile`/`CFBundleIconName`, `LSMinimumSystemVersion`
   = `"13.0"` (= SwiftPM deployment target, N5), `CFBundleDocumentTypes`, `CFBundleURLTypes`, `UTExportedTypeDeclarations`,
   `UTImportedTypeDeclarations`, `NSHumanReadableCopyright`, `LSApplicationCategoryType`.
-- Set `CFBundleExecutable = "wupan-stub"`, `CFBundlePackageType = "APPL"`, `LSUIElement = true` (no Dock tile for
+- Set `CFBundleExecutable = "isenough-stub"`, `CFBundlePackageType = "APPL"`, `LSUIElement = true` (no Dock tile for
   the stub itself; the real app gets its own), `NSHighResolutionCapable = true`,
-  `WupanTargetBundleIdentifier = <orig>`, `WupanImageId`, `WupanStubVersion`.
+  `IsenoughTargetBundleIdentifier = <orig>`, `IsenoughImageId`, `IsenoughStubVersion`.
 - In each document type set `LSHandlerRank = "Alternate"` unless it was `Owner` for a type the real app owns
   exclusively (keep `Owner`), so the stub doesn't steal defaults from other installed apps; `CFBundleTypeRole` kept.
 - Remove: `NSPrincipalClass`, `NSMainNibFile`, `NSMainStoryboardFile`, `LSEnvironment`, `LSBackgroundOnly`,
@@ -954,12 +954,12 @@ Start from the original Info.plist, then:
   `CFBundleHelpBookName/Folder`, `NSUserActivityTypes`, `NSDockTilePlugIn`.
 - Rationale for unique bundle id: real app keeps its own LS/TCC identity; Playpen's same-id approach mixes TCC/LS.
 
-### 8.3 Launcher binary (`wupan-stub`, AppKit, no storyboard)
+### 8.3 Launcher binary (`isenough-stub`, AppKit, no storyboard)
 - `NSApplication` with delegate; `setActivationPolicy(.accessory)` (needed to show the progress window). SIGPIPE is
   ignored (`signal(SIGPIPE, SIG_IGN)`) in both the stub and the supervisor; writes check `EPIPE`.
 - Receives events: `application(_:open urls:)` (files = `odoc`, other URLs = `GURL`; split by `isFileURL`) and
   `applicationDidFinishLaunching` (`oapp`; extra `CommandLine.arguments` forwarded as `arguments`).
-- **Request protocol (B5).** The stub spawns **one** supervisor: `wupan hook launch --app <appId> --stub <path>
+- **Request protocol (B5).** The stub spawns **one** supervisor: `isenough hook launch --app <appId> --stub <path>
   --control-fd 3` via `posix_spawn` + `POSIX_SPAWN_SETSID`; fd 3 is a socketpair (bidirectional, NDJSON). No
   documents are passed on argv. Messages:
   - stub → supervisor: `{"type":"open","req":<n>,"documents":[…],"urls":[…],"arguments":[…]}` — every Apple Event
@@ -985,7 +985,7 @@ Start from the original Info.plist, then:
   aborts and rolls back (journaled, §5.2.5); once the app is running, cancel is ignored. A joiner's cancel only
   aborts its own pending forwarding (§5.6.3). The stub never sends signals to the supervisor.
 - UI: no window if `ready` arrives < 700 ms; otherwise a small floating panel "Fetching Blender from iCloud…
-  (412 MB)" with progress and **Cancel**. If `wupan` not found: alert "256isenough is not installed (wupan missing)".
+  (412 MB)" with progress and **Cancel**. If `isenough` not found: alert "256isenough is not installed (isenough missing)".
 - Size target: < 300 KB universal. Built by SwiftPM, `lipo`'d universal in release CI.
 
 ### 8.4 Signing
@@ -995,10 +995,10 @@ Start from the original Info.plist, then:
   forks on stub files only (stub files are ours).
 - Identity: `pack.signIdentity` — default `-` (ad-hoc; fine for one user on one Mac). Recommended for the user:
   `Developer ID Application: … (TEAMID)` — stable designated requirement, survives stub rebuilds. The stub needs no
-  TCC permissions (it only spawns `wupan`); the real app gets its own TCC prompts under its own identity.
+  TCC permissions (it only spawns `isenough`); the real app gets its own TCC prompts under its own identity.
   Notarization is not needed for locally generated stubs (no quarantine); it is needed for the distributed
-  `wupan` release / GUI (v1).
-- The `wupan-stub` binary inside the release is pre-signed; `StubBuilder` re-signs the whole stub bundle anyway
+  `isenough` release / GUI (v1).
+- The `isenough-stub` binary inside the release is pre-signed; `StubBuilder` re-signs the whole stub bundle anyway
   because Info.plist differs per app.
 
 ### 8.5 Launch Services registration
@@ -1023,11 +1023,11 @@ Start from the original Info.plist, then:
 |---|---|---|
 | Interrupted download (Ctrl-C, crash, network loss, sleep) | `.part` + `.part.json` exist | Next fetch resumes: range-capable backends continue from verified prefix length (prefix re-hashed); iCloud: `ensureLocal` again (iCloud resumes internally) then re-copy (local copy is fast). `gc` deletes partials older than 7 days. |
 | Download stall | no progress/status change for `downloadStallSeconds` | Retry once (re-request download), then `EX_TIMEOUT`; stub alert offers Retry. |
-| sha256/size mismatch | after copy | Move to `cache/bad/`, refetch once; second mismatch → `EX_INTEGRITY`, event + alert "image corrupt in repository; run `wupan doctor`". Never attach unverified bytes. |
+| sha256/size mismatch | after copy | Move to `cache/bad/`, refetch once; second mismatch → `EX_INTEGRITY`, event + alert "image corrupt in repository; run `isenough doctor`". Never attach unverified bytes. |
 | Mounted app identity mismatch (bundle id / team / cdhash) | after attach | Detach, `EX_INTEGRITY`. |
 | Attach failure (`hdiutil` non-zero, timeout `attachTimeoutSeconds`) | exit status / plist error | If "image already attached" → resolve existing devEntry and reuse; if corrupt → delete cache entry, refetch once; else `EX_DISKIMAGE` with hdiutil stderr. |
 | Real app fails to launch | `openApplication` error, or identity mismatch (§5.2.6) | Roll back as for a hook failure (§5.2.5: detach / journaled restore-out), `EX_LAUNCH`, alert with error. |
-| Real app crashes | pid exits; crash report check | Treated as quit (`WUPAN_EXIT_STATUS=crash`), normal delayed detach. Event logged. |
+| Real app crashes | pid exits; crash report check | Treated as quit (`ISENOUGH_EXIT_STATUS=crash`), normal delayed detach. Event logged. |
 | Detach busy | hdiutil exit 16 / "Resource busy" | Backoff retry (§5.4); `stuck` state surfaced; never `-force` unless configured. |
 | Supervisor / engine crash | dead owner (pid+start) with session record | **Recovery** at every supervisor start, `gc`, daemon start, per app under L1 (§5.6.4): first complete open journals (§5.8), then reconcile `state.mounts` with `hdiutil info -plist`: (a) attached with our image path *and* our mountpoint but not in state → adopt; (b) in state but not attached → drop record; (c) dead owner → single adopter elected under L1+L3: watch if busy/unknown else post-quit. Same image attached elsewhere → report only. `status` is read-only and never recovers. |
 | Corrupt `state.json` | JSON decode error | Move to `state.json.corrupt-<ts>`, rebuild from cache dir listing + `hdiutil info` + stubs found via `mdfind kMDItemCFBundleIdentifier == '*.256stub'` and `/Applications` scan. |
@@ -1038,12 +1038,12 @@ Start from the original Info.plist, then:
 | Sleep/wake | daemon: `NSWorkspace.willSleep/didWake`; supervisor: same notifications | Downloads: re-check status on wake (stall timer paused during sleep). Mounted images are local files → survive sleep. On wake the supervisor re-probes leases. |
 | Logout / shutdown | SIGTERM to supervisor | Supervisor marks state `interrupted` and exits quickly (journals stay open). Images may or may not be detached by the system (N4); the next run reconciles either outcome. |
 | Stub moved/renamed by user | stub.json path mismatch | Works (stub passes its own path). `doctor` updates `stubPath`. |
-| `wupan` binary moved | stub can't find it | Alert with fix (`wupan stub rebuild --all`); fallbacks in §2.3. |
+| `isenough` binary moved | stub can't find it | Alert with fix (`isenough stub rebuild --all`); fallbacks in §2.3. |
 | Crash during any bundle swap (restore-in/out, pack install, unpack) | open `journals/<txid>.json` | Recovery replays the journaled phase table (§5.8.2–5.8.5) forward or back; never deletes a bundle unless it matches cdhash+tree hash of a cached/uploaded image; otherwise `retained/` + `needsResolution`. |
 | Restored app still busy (helper, open data file) after quit | usage probe busy/unknown (§5.9) | Stay `active`, retry with backoff indefinitely; never force; `status`/GUI show which pids hold it. |
 | Pack interrupted | pack journal (§5.8.5) | Steps are idempotent; `pack --resume` continues; original app untouched until `swapped`. |
 
-All errors go to `events.jsonl` (`{"ts","level","app","session","phase","code","message"}`) and `logs/wupan.log`.
+All errors go to `events.jsonl` (`{"ts","level","app","session","phase","code","message"}`) and `logs/isenough.log`.
 
 ---
 
@@ -1056,7 +1056,7 @@ All errors go to `events.jsonl` (`{"ts","level","app","session","phase","code","
   tampered repo (other device or attacker with iCloud access) can at worst supply a different image + matching
   manifest: **trust anchor** = the `signing.teamId` recorded at pack time is also stored locally in
   `state.apps[*].trusted` (schema §3.5) on the device that packed or first approved it; an image whose Team ID differs from the
-  locally trusted one requires explicit `wupan trust <app>` (TOFU). Ad-hoc/unsigned apps: cdhash is the identity;
+  locally trusted one requires explicit `isenough trust <app>` (TOFU). Ad-hoc/unsigned apps: cdhash is the identity;
   a new cdhash for such apps requires approval.
 - **Shared hooks are code execution**: disabled by default, content-hash pinned when enabled (§5.5). Local hooks must
   be owned by the user and not writable by others.
@@ -1071,12 +1071,12 @@ All errors go to `events.jsonl` (`{"ts","level","app","session","phase","code","
 #### 10.1 API authentication protocol (B6)
 Two credentials, one per client type; neither is ever placed in a URL.
 - **CLI / scripts: Bearer.** `server-token` (256-bit random, base64url) in Application Support, mode 0600, created by
-  `serve` on first start. `wupan` reads it and sends `Authorization: Bearer …`. Bearer requests need no Origin.
+  `serve` on first start. `isenough` reads it and sends `Authorization: Bearer …`. Bearer requests need no Origin.
 - **Web UI (Pake WKWebView): pairing → session cookie.** The page shell (`/ui/*` static HTML/JS/CSS, no data) is
-  public. On load, `app.js` calls `GET /api/session`; `401` shows a pairing form. The user runs `wupan serve pair`
-  (or clicks "Pair GUI" in `wupan daemon status`), which asks the running daemon (Bearer) for a one-time code:
+  public. On load, `app.js` calls `GET /api/session`; `401` shows a pairing form. The user runs `isenough serve pair`
+  (or clicks "Pair GUI" in `isenough daemon status`), which asks the running daemon (Bearer) for a one-time code:
   8 chars Crockford base32, valid 10 min, single use, invalidated after 5 wrong attempts, attempts rate-limited to
-  1/s. `POST /api/pair {"code":…}` (Origin-checked) returns `Set-Cookie: wupan_session=<256-bit>; HttpOnly;
+  1/s. `POST /api/pair {"code":…}` (Origin-checked) returns `Set-Cookie: isenough_session=<256-bit>; HttpOnly;
   SameSite=Strict; Path=/; Max-Age=34560000` plus a JSON body containing the per-session `csrf` token. The server
   stores only `sha256(sessionId)`, created/last-used time and a label in `server-sessions.json` (0600), so sessions
   survive daemon restarts. `GET /api/session` (cookie) returns `{csrf, expiresAt}` so a reloaded page regains its
@@ -1084,18 +1084,18 @@ Two credentials, one per client type; neither is ever placed in a URL.
 - **Request checks** (pure functions, unit-tested): valid `Host` values = `127.0.0.1:<port>` and `localhost:<port>`
   (literal match, otherwise `421`); valid serialized Origins = `http://127.0.0.1:<port>`, `http://localhost:<port>`.
   Cookie-authenticated mutating requests must be `POST`, `Content-Type: application/json`, carry an allowed `Origin`
-  (absent Origin → reject) and `X-Wupan-CSRF` equal to the session's csrf token (constant-time compare).
+  (absent Origin → reject) and `X-Isenough-CSRF` equal to the session's csrf token (constant-time compare).
   Cookie-authenticated `GET` (incl. SSE) requires valid Host and, if present, an allowed Origin.
   The response to unauthenticated API calls is `401 {"ok":false,"error":{"name":"EX_UNAUTHENTICATED"}}` without
   `WWW-Authenticate` (no browser auth dialog); wrong CSRF/Origin → `403`.
 - **SSE**: `GET /api/events` is authenticated by the cookie (native `EventSource` sends same-origin cookies; it
   cannot send headers). Streams are closed when the session is revoked.
-- **Rotation/revocation**: `wupan serve rotate-token` (new Bearer token; CLI rereads the file), `wupan serve sessions
+- **Rotation/revocation**: `isenough serve rotate-token` (new Bearer token; CLI rereads the file), `isenough serve sessions
   list|revoke <id>|revoke --all`, idle expiry 90 days. Revocation is immediate (checked per request).
 - **Assumption to verify** in the Pake startup test (§11.3): WKWebView in the Pake build persists cookies across app
   restarts. If not, the GUI degrades to re-pairing at each launch (still secure); no secrets are baked into the
   Pake bundle and the shell never reads the daemon's token file.
-- Daemon not running: Pake shows a WebView load error; README and `wupan daemon install` (KeepAlive LaunchAgent)
+- Daemon not running: Pake shows a WebView load error; README and `isenough daemon install` (KeepAlive LaunchAgent)
   cover it; the GUI never starts the daemon itself.
 - **Secrets** (phase 2 WebDAV/OpenList credentials): Keychain (`kSecClassInternetPassword`), never in config.
 - **Repo privacy**: app images are not secret, but device files reveal hostnames/usage; session tiering (roadmap)
@@ -1130,7 +1130,7 @@ Two credentials, one per client type; neither is ever placed in a URL.
 | `StubProtocol` | NDJSON codec; supervisor-side queue/ack ordering; stub-side outstanding counter + drain/bye/done state machine (pure); EOF/EPIPE handling marks client gone without aborting the session. |
 | `Engine` (fake `Platform`) | pack → stub build (fake signer) → launch (fake attach/launcher) → quit → detach after delay (fake clock) → LRU updated; two concurrent launches = one attach + one forward; join at detach deadline; supervisor crash → single adoption; offline cached vs uncached; restore-mode swap & rollback; wrong-path instance rejected; probe `unknown` blocks cleanup. |
 
-### 11.2 macOS integration tests (`WupanMacTests`, CI only, `#if os(macOS)`)
+### 11.2 macOS integration tests (`IsenoughMacTests`, CI only, `#if os(macOS)`)
 - `HdiutilDiskImageTool`: create ULMO from fixture folder, convert ULFO, attach with `-plist` (parse devEntry/mount),
   re-attach detection, detach, busy detach (hold an open file handle → exit 16 → retry succeeds after close).
 - `MacAppInspector` on the fixture app (bundle id, doc/URL types, codesign info, ad-hoc kind).
@@ -1138,7 +1138,7 @@ Two credentials, one per client type; neither is ever placed in a URL.
 - `MountUsageProbe`: spawn a process from the mount → detected; after exit → not detected; a process (not under
   the mount) holding only a data file on the mount → busy; a helper surviving its parent → busy; `lsof` replaced by a
   failing stub binary → `unknown`.
-- **Multiprocess lock tests** (real processes via `wupan` built binary): launch vs `evict` vs `prefetch` vs `gc`
+- **Multiprocess lock tests** (real processes via `isenough` built binary): launch vs `evict` vs `prefetch` vs `gc`
   started together (random order, 50 iterations) → no attach of a missing file, no deleted mounted image, no
   corrupt `.part`; two `gc` processes recovering one dead owner → exactly one adopter; two different-app fetches
   sized so only one fits → one succeeds, other `EX_NOSPACE` (reservation), never both.
@@ -1148,68 +1148,68 @@ Two credentials, one per client type; neither is ever placed in a URL.
 Single portable bash script (macOS 13+, bash 3.2 compatible, no Homebrew deps). Runs on GitHub Actions `macos-latest`
 (`.github/workflows/macos.yml` job `e2e`) and on any Mac by `./scripts/e2e.sh` (needs Xcode CLT for `swift build`).
 Everything lives in `E2E_DIR=$(mktemp -d)`; nothing touches `/Applications`, real iCloud, or user config:
-`HOME` is not changed, but `WUPAN_CONFIG`, `--state-dir`, cache dir, repo root and stub install dir all point into
-`$E2E_DIR`. A `trap` cleanup **first** copies diagnostics to `$E2E_DIR/artifacts/` (`events.jsonl`, `wupan.log`,
+`HOME` is not changed, but `ISENOUGH_CONFIG`, `--state-dir`, cache dir, repo root and stub install dir all point into
+`$E2E_DIR`. A `trap` cleanup **first** copies diagnostics to `$E2E_DIR/artifacts/` (`events.jsonl`, `isenough.log`,
 `state.json`, journals, `hdiutil info -plist`, `lsregister -dump | grep $E2E_DIR`, `ps`, `log show --last 5m
---predicate 'process == "wupan" OR process == "wupan-stub"'`) and copies them to `$E2E_ARTIFACTS` if set (CI upload),
+--predicate 'process == "isenough" OR process == "isenough-stub"'`) and copies them to `$E2E_ARTIFACTS` if set (CI upload),
 then detaches only images whose backing path is under `$E2E_DIR`, `lsregister -u`s the stub and fixture paths, and
 deletes the dir (unless `KEEP=1`). Every step logs the exact command it runs (`set -x` style prefix) so a run is
 inspectable. Exit codes: `0` all required assertions passed; `1` an assertion failed; `2` **inconclusive**
 (environment cannot run a required gate, e.g. no GUI session / LS unavailable) — CI treats `2` as failure.
 
 Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non-zero on first failure and dumps
-`events.jsonl`, `wupan.log`, `hdiutil info`):
-1. **Build**: `swift build -c release` (wupan, wupan-stub). `scripts/make-fixture-app.sh` compiles
+`events.jsonl`, `isenough.log`, `hdiutil info`):
+1. **Build**: `swift build -c release` (isenough, isenough-stub). `scripts/make-fixture-app.sh` compiles
    `Tests/Fixtures/E2EApp` (≈60-line AppKit app `io.github.s546126.e2eapp`, declares doc type `public.plain-text`
-   and URL scheme `wupane2e`) into `$E2E_DIR/src/E2EApp.app`, ad-hoc signed. On launch it appends one JSON line to
+   and URL scheme `isenough-e2e`) into `$E2E_DIR/src/E2EApp.app`, ad-hoc signed. On launch it appends one JSON line to
    `$E2E_DIR/app-events.jsonl` (env var not available via LS, so path is baked into the fixture's Info.plist key
    `E2ELogPath` at build time) with `{event:"launch", bundlePath, pid}`, then one line per `open urls` event
    `{event:"open", url, via:"appleEvent"}` from `application(_:open:)` (argv is logged separately as
    `{event:"argv", args}` and never satisfies an `open` assertion); quits itself when file `$E2E_DIR/quit-now` exists (polls 200 ms) or after 60 s.
    - A1 `fixture_valid`: `codesign --verify --strict` passes.
-2. **Init** fake iCloud: `wupan init --backend local --root $E2E_DIR/fake-icloud --cache-dir $E2E_DIR/cache --quota 200M`.
+2. **Init** fake iCloud: `isenough init --backend local --root $E2E_DIR/fake-icloud --cache-dir $E2E_DIR/cache --quota 200M`.
    (Variant job `E2E_FAKE_DATALESS=1` uses `FakeUbiquity` mode via `backend.type: "local-fake-icloud"` to exercise
    ensureLocal.)
-3. **Pack**: `wupan pack $E2E_DIR/src/E2EApp.app --stub-dir $E2E_DIR/Applications --keep-original --json`.
+3. **Pack**: `isenough pack $E2E_DIR/src/E2EApp.app --stub-dir $E2E_DIR/Applications --keep-original --json`.
    - A2 `pack_mode`: JSON `data.mode == "mount"`.
    - A3 `image_in_repo`: exactly one `images/io.github.s546126.e2eapp-1.0_b1-<sha8>.dmg`; `shasum -a 256` equals
      manifest `image.sha256`; `<sha8>` equals its prefix; `hdiutil imageinfo` format is `ULMO`.
    - A4 `manifest_valid`: `manifests/<id>.json` has schema `image/1`, bundleId, version, size == file size, teamId/
-     cdhash fields present, documentTypes contains `public.plain-text`, urlTypes contains `wupane2e`.
+     cdhash fields present, documentTypes contains `public.plain-text`, urlTypes contains `isenough-e2e`.
    - A5 `catalog_updated`: `catalog/manifest.json` `apps["io.github.s546126.e2eapp"].latest == <id>`.
    - A6 `stub_valid`: `$E2E_DIR/Applications/E2EApp.app` exists; `codesign --verify --strict` ok;
-     `CFBundleIdentifier == io.github.s546126.e2eapp.256stub`; `CFBundleExecutable == wupan-stub`; `LSUIElement` true;
+     `CFBundleIdentifier == io.github.s546126.e2eapp.256stub`; `CFBundleExecutable == isenough-stub`; `LSUIElement` true;
      `Resources/stub.json` appId matches; stub size < 2 MB.
-   - A7 `not_cached_yet`: `wupan status <app> --json` → state `remote`, no cache file.
+   - A7 `not_cached_yet`: `isenough status <app> --json` → state `remote`, no cache file.
 4. **Launch via the hook path, through the stub**: `open -a $E2E_DIR/Applications/E2EApp.app $E2E_DIR/doc1.txt`
-   then `open "wupane2e://hello?x=1"` is **not** used (would hit global LS default) — URL forwarding is tested via
-   `open -a <stub> "wupane2e://hello?x=1"` after start (stub forwards to live session).
+   then `open "isenough-e2e://hello?x=1"` is **not** used (would hit global LS default) — URL forwarding is tested via
+   `open -a <stub> "isenough-e2e://hello?x=1"` after start (stub forwards to live session).
    Wait (≤ 60 s) for `app-events.jsonl` launch line.
    - A8 `fetched_verified`: cache dir has `images/<id>.ulfo.dmg`; state cache entry `complete:true`, `remoteSha256`
      == manifest; `events.jsonl` contains phases `fetch.start, fetch.done, verify.ok, convert.done, attach.ok`
      in that order.
    - A9 `mounted_readonly`: `hdiutil info -plist` lists the cache image with mountpoint `$E2E_DIR/cache/mnt/<id>`;
      `mount` shows it `read-only` + `nobrowse`.
-   - A10 `running_from_mount`: launch line `bundlePath` starts with the mountpoint; pid alive; `wupan status` →
+   - A10 `running_from_mount`: launch line `bundlePath` starts with the mountpoint; pid alive; `isenough status` →
      `running` with one lease; real app's process path (`ps -o comm= -p pid`) under mountpoint.
    - A11 `doc_forwarded` (**required**): `app-events.jsonl` contains `open` with `file://…/doc1.txt`, `via:"appleEvent"`;
      the stub's ack log shows the batch `delivered`; the stub process has exited.
    - A11b `doc_during_fetch`: with the fake-dataless backend delay at 5 s, `open -a <stub> doc2.txt` and, 1 s later,
      `open -a <stub> doc3.txt` (arrives during fetch), and a third doc right after `ready` → all three `open` events
      present exactly once.
-   - A12 `second_launch_no_remount` (**required**): `open -a <stub> "wupane2e://hello?x=1"` → `open` event with that URL appears
+   - A12 `second_launch_no_remount` (**required**): `open -a <stub> "isenough-e2e://hello?x=1"` → `open` event with that URL appears
      within 10 s; still exactly one attachment of the image in `hdiutil info`; same app pid.
    - A13 `prelaunch_hook_ran`: a local hook `hooks/io.github.s546126.e2eapp/pre-launch` (installed before step 4)
-     wrote `$E2E_DIR/hook-pre.env` containing `WUPAN_PHASE=pre-launch` and `WUPAN_MOUNT_POINT=<mnt>`.
+     wrote `$E2E_DIR/hook-pre.env` containing `ISENOUGH_PHASE=pre-launch` and `ISENOUGH_MOUNT_POINT=<mnt>`.
 5. **Quit**: `touch $E2E_DIR/quit-now`; config for e2e sets `detachDelaySeconds: 3`.
    - A14 `app_exited`: pid gone within 10 s.
-   - A15 `idle_then_detached`: `wupan status` shows `idle` before the delay elapses (checked at +1 s), then within
+   - A15 `idle_then_detached`: `isenough status` shows `idle` before the delay elapses (checked at +1 s), then within
      `3 + 20` s the image is absent from `hdiutil info` and the mountpoint dir is empty/removed.
-   - A16 `postquit_hook_ran`: `hook-post.env` contains `WUPAN_PHASE=post-quit` and `WUPAN_EXIT_STATUS` ∈
+   - A16 `postquit_hook_ran`: `hook-post.env` contains `ISENOUGH_PHASE=post-quit` and `ISENOUGH_EXIT_STATUS` ∈
      {`unknown`, `crash`} with value `unknown` for this clean quit (no numeric status is promised, §5.4).
    - A17 `lru_updated`: state `apps[..].lastUsedAt` > launch time, `launchCount == 1` (the URL forward doesn't count),
      cache entry `lastUsedAt` updated; state `cached`; `supervisor` process gone; device file written in repo.
-6. **Cache hit relaunch**: `wupan launch <app> --no-wait`, then quit.
+6. **Cache hit relaunch**: `isenough launch <app> --no-wait`, then quit.
    - A18 `cache_hit`: `events.jsonl` for this session has no `fetch.start`; launch < 10 s; detaches again.
 7. **LRU eviction (deterministic sizes)**: the script measures allocated sizes instead of assuming them. After
    step 6, `A1 = allocated bytes of app1's cache file` (`stat -f %b` × 512). It packs `…e2eapp2` with random padding
@@ -1225,12 +1225,12 @@ Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non
    leftover `.part`/`.tmp`; state passes `doctor`. A22 `relaunch_at_deadline`: with `detachDelaySeconds: 3`, quit the
    app and open the stub at 2.9–3.1 s (loop of offsets) → either the session was joined (same mount) or a fresh
    mount happened; app event log shows the `open` event every time.
-9. **Crash recovery**: launch app1, `kill -9` the supervisor, then quit the app; run `wupan gc` twice concurrently.
+9. **Crash recovery**: launch app1, `kill -9` the supervisor, then quit the app; run `isenough gc` twice concurrently.
    - A23 `stale_mount_recovered`: image detached; exactly one `adopt` event; state has no mounts.
    - A24 `stub_killed_app_survives`: launch, `kill -9` the stub process right after `ready`; app keeps running,
      session completes and detaches normally after quit.
 10. **Integrity**: flip one byte in a *copy* of app2's repo image published under a test-only repo, evict its cache,
-   `wupan launch app2`.
+   `isenough launch app2`.
    - A25 `sha_mismatch_refused`: exit code 5; nothing attached; file moved to `cache/bad/`.
 11. **Lifetime protection (mount)**: fixture app spawns a helper (`E2EHelper`, from inside the bundle) that survives
    the main app 10 s; and a `cat`-style process from `/bin` holding a file on the mount open.
@@ -1245,14 +1245,14 @@ Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non
      (cdhash = manifest), the stub is in `.256isenough-staging/<txid>/`, document event logged; after quit the stub is
      back, staging/journal gone.
    - A32 `restore_helper_waits`: helper outliving the app keeps the restored bundle in place until it exits.
-   - A33 `restore_fault_recovery`: for each fault point (env `WUPAN_FAULT=<phase>:<before|after>`, test builds only),
-     run a launch that `kill -9`s itself there, then `wupan gc`; assert the §5.8.6 invariant.
+   - A33 `restore_fault_recovery`: for each fault point (env `ISENOUGH_FAULT=<phase>:<before|after>`, test builds only),
+     run a launch that `kill -9`s itself there, then `isenough gc`; assert the §5.8.6 invariant.
    - A34 `restore_update_retained`: the fixture writes a file into its own bundle during the session (simulated
      self-update) → after quit the bundle is in `retained/`, `status` shows `needsResolution`, nothing deleted;
      `resolve --discard` moves it to the Trash.
-13. **Unpack**: `wupan unpack app1 --to $E2E_DIR/restored`.
+13. **Unpack**: `isenough unpack app1 --to $E2E_DIR/restored`.
    - A35 `unpack_ok`: restored app `codesign --verify --strict` ok and cdhash + tree hash equal manifest; stub removed.
-14. **GUI auth smoke (daemon, no Pake)**: `wupan serve --port <free>`; with `curl`: unauthenticated `/api/apps` → 401;
+14. **GUI auth smoke (daemon, no Pake)**: `isenough serve --port <free>`; with `curl`: unauthenticated `/api/apps` → 401;
    pairing code → cookie + csrf; cookie POST without CSRF/with foreign Origin → 403; `Host: evil.com` → 421; SSE
    stream receives an event for a `prefetch`. (Actual Pake startup is tested in the manual `gui.yml` job: build
    Pake app, start it with the daemon running, pair via a test hook, assert the page fetched `/api/apps` with 200.)
@@ -1265,11 +1265,11 @@ Apple-Event delivery (`application(_:open:)`), not argv. If LS/`open` is unavail
 mounted path (no preserved original was selected: originals live in `retained/`, §8.1).
 
 CI notes: GitHub macOS runners have a logged-in GUI session, so `open`/NSWorkspace are expected to work; there is
-no fallback that marks LS assertions skipped (see Required gates). Running directly (`wupan launch --doc`) is an
+no fallback that marks LS assertions skipped (see Required gates). Running directly (`isenough launch --doc`) is an
 extra diagnostic, not a substitute.
 
 ### 11.4 CI workflows
-- `linux.yml`: `ubuntu-24.04-arm`/`ubuntu-latest` + `swift:6.0` container → `swift build --target WupanCore` + `swift test`
+- `linux.yml`: `ubuntu-24.04-arm`/`ubuntu-latest` + `swift:6.0` container → `swift build --target IsenoughCore` + `swift test`
   (macOS-only tests compiled out).
 - `macos.yml` (`macos-latest`): `swift build`, `swift test`, `scripts/e2e.sh` with `E2E_ARTIFACTS` set; uploads the
   artifacts dir always (`if: always()`); exit `2` (inconclusive) fails the job. GUI build (`scripts/build-gui.sh`, needs Node + Rust) is a separate manual `workflow_dispatch` job.
@@ -1279,7 +1279,7 @@ extra diagnostic, not a substitute.
 ## 12. Scope: MVP vs v1 / v2 / v3
 
 ### 12.1 MVP (this branch `feat/mvp`)
-- Swift package: `WupanCore`, `WupanMac`, `WupanEngine`, `WupanServer`, `wupan`, `wupan-stub` as in §2.4.
+- Swift package: `IsenoughCore`, `IsenoughMac`, `IsenoughEngine`, `IsenoughServer`, `isenough`, `isenough-stub` as in §2.4.
 - Backends: `local`, `icloud` (FileManager APIs; upload wait; ensureLocal; evict of repo local copy),
   `local-fake-icloud` (tests).
 - Commands: `init, pack, list, status, launch, hook launch, prefetch, pin, unpin, evict, gc, restore, unpack, resolve,
@@ -1295,7 +1295,7 @@ extra diagnostic, not a substitute.
   user hooks (local only in MVP; shared repo hooks behind hash approval move to v2).
 - Cache: ULMO remote → ULFO (or UDRO) local conversion, quota + minFree with atomic reservations, LRU, pins.
 - Stub: AppKit launcher with doc/URL forwarding + progress window; ad-hoc or configured identity signing; LS register.
-- GUI (minimal): `wupan serve` serves `web/` — one page: app list (name, version, mode, state, cached size, pinned,
+- GUI (minimal): `isenough serve` serves `web/` — one page: app list (name, version, mode, state, cached size, pinned,
   last used), actions Launch / Prefetch / Pin / Unpin / Evict, cache usage bar (used/quota/free), live progress via
   `GET /api/events` (SSE), `doctor` results. API: `GET /api/apps`, `GET /api/apps/{id}`, `POST /api/apps/{id}/launch|
   prefetch|pin|unpin|evict`, `GET /api/cache`, `POST /api/gc`, `GET /api/doctor`, `GET /api/events`, `GET /api/version`.
@@ -1309,7 +1309,7 @@ extra diagnostic, not a substitute.
 ### 12.2 v1
 - Native-feeling UX: progress in the GUI for stub launches, drag-and-drop pack, "refresh app version" flow,
   daemon-driven launch over a Unix socket (faster cold starts, single owner of mounts), low-disk notifications,
-  `NSMetadataQuery`-based push progress, Developer ID signed + notarized `wupan` release and Homebrew tap.
+  `NSMetadataQuery`-based push progress, Developer ID signed + notarized `isenough` release and Homebrew tap.
 - Compatibility database (`compat.json`: bundleId → mode, notes, tested OS) shipped and user-contributed.
 - `diskutil image` backend for `DiskImageTool` on macOS 27+.
 - Optional SwiftUI `MenuBarExtra` companion if Pake tray UX is insufficient.
@@ -1345,7 +1345,7 @@ cache, manifest, hooks), different object type.
   `{schema:"session/1", tool, originalPath, sha256, size, mtime, sessionId, parentSession, cwd}` → verify upload →
   replace local file with nothing (pi) or a tiny tombstone index entry in `~/.256isenough/sessions-index.json`
   (we do not leave stub files the agent might parse as corrupt sessions).
-- **Recall**: (a) explicit `wupan sessions restore <id|cwd|--recent>`; (b) launcher wrapper hook: `wupan exec pi …`
+- **Recall**: (a) explicit `isenough sessions restore <id|cwd|--recent>`; (b) launcher wrapper hook: `isenough exec pi …`
   (or a shell alias) runs a pre-launch hook that restores cold sessions for the current cwd before `pi`/`claude`
   starts (pi `--continue`/`--resume` need the files back at the original absolute path, `parentSession` paths kept);
   restore resets mtime to the original value for listing order, except Claude where mtime is set to now to avoid the
@@ -1385,7 +1385,7 @@ cache, manifest, hooks), different object type.
 4. Default cache quota (20 GiB) and free-space floor (15 GiB) OK?
 5. Default detach delay 120 s OK? Should pinned apps stay mounted (never detach)?
 6. Move originals to Trash after pack (default) or keep them in `retained/` until first successful launch?
-7. Install location of `wupan` (`~/.local/bin` vs `/usr/local/bin` vs Homebrew)?
+7. Install location of `isenough` (`~/.local/bin` vs `/usr/local/bin` vs Homebrew)?
 8. Is a Pake tray window acceptable as the GUI, or do you want a native SwiftUI menu bar extra in v1?
 9. Which apps (list + sizes) should be the first compatibility test set?
 10. Multi-Mac sharing of one repo in scope for v2?
