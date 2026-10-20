@@ -13,7 +13,9 @@ APP_PID=""
 
 cleanup() {
   if [[ -f "${ISENOUGH_E2E_PID:-}" ]]; then kill "$(cat "$ISENOUGH_E2E_PID")" 2>/dev/null || true; fi
-  if [[ -n "$APP_PID" ]]; then kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi
+  if [[ -n "${APP_PID:-}" ]]; then kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi
+  if [[ -n "${HELPER:-}" ]]; then kill "$HELPER" 2>/dev/null || true; wait "$HELPER" 2>/dev/null || true; fi
+  if [[ -f "${BUSY_PID:-}" ]]; then kill -9 "$(cat "$BUSY_PID")" 2>/dev/null || true; fi
   rm -rf "$TMP"
 }
 trap cleanup EXIT INT TERM
@@ -199,4 +201,9 @@ printf 'corruption' >> "$REMOTE_IMAGE"
 rm -f "$CACHE_IMAGE"
 if run_cli prefetch "$IMAGE_ID" >>"$LOG" 2>&1; then fail 'remote sha256 mismatch rejected'; fi
 pass 'remote sha256 mismatch rejected'
+
+# Restore-mode crash recovery. Mount-mode assertions above are unchanged.
+# shellcheck source=e2e-restore.sh
+source "$ROOT/scripts/e2e-restore.sh"
+
 printf 'PASS: all macOS end-to-end assertions completed\n' | tee -a "$LOG"

@@ -6,9 +6,25 @@ import Darwin
 #endif
 
 public enum IsenoughError: Error, LocalizedError, Equatable {
-    case usage(String), unsupported(String), backend(String), integrity(String), busy(String), diskImage(String), failure(String)
-    public var exitCode: Int { switch self { case .usage: 2; case .unsupported: 3; case .backend: 4; case .integrity: 5; case .diskImage: 6; case .busy: 9; case .failure: 1 } }
-    public var errorDescription: String? { switch self { case .usage(let s), .unsupported(let s), .backend(let s), .integrity(let s), .busy(let s), .diskImage(let s), .failure(let s): s } }
+    case usage(String), unsupported(String), backend(String), integrity(String), busy(String), diskImage(String), failure(String), hook(String), resolution(String)
+    public var exitCode: Int {
+        switch self {
+        case .usage: 2
+        case .unsupported: 3
+        case .backend: 4
+        case .integrity: 5
+        case .diskImage: 6
+        case .hook: 10
+        case .busy: 9
+        case .resolution: 14
+        case .failure: 1
+        }
+    }
+    public var errorDescription: String? {
+        switch self {
+        case .usage(let s), .unsupported(let s), .backend(let s), .integrity(let s), .busy(let s), .diskImage(let s), .failure(let s), .hook(let s), .resolution(let s): s
+        }
+    }
 }
 
 public struct ImageManifest: Codable, Equatable {
@@ -27,12 +43,22 @@ public struct ImageManifest: Codable, Equatable {
         public init(file: String, format: String, sha256: String, size: UInt64, volumeName: String, appPathInVolume: String) { self.file=file; self.format=format; self.sha256=sha256; self.size=size; self.volumeName=volumeName; self.appPathInVolume=appPathInVolume }
     }
     public struct App: Codable, Equatable {
-        public var originalPath: String; public var executable: String; public var documentTypes: [[String: AnyCodable]]; public var urlTypes: [[String: AnyCodable]]
-        public init(originalPath: String, executable: String, documentTypes: [[String: AnyCodable]], urlTypes: [[String: AnyCodable]]) { self.originalPath=originalPath; self.executable=executable; self.documentTypes=documentTypes; self.urlTypes=urlTypes }
+        public var originalPath: String
+        public var executable: String
+        public var documentTypes: [[String: AnyCodable]]
+        public var urlTypes: [[String: AnyCodable]]
+        /// Code-directory hash recorded at pack. On macOS this is `codesign`'s CDHash when the bundle is signed; otherwise it is the sha256 of the main executable.
+        public var cdhash: String?
+        /// Canonical tree hash from `BundleHasher`, recorded at pack.
+        public var treeHash: String?
+        public init(originalPath: String, executable: String, documentTypes: [[String: AnyCodable]], urlTypes: [[String: AnyCodable]], cdhash: String? = nil, treeHash: String? = nil) {
+            self.originalPath=originalPath; self.executable=executable; self.documentTypes=documentTypes; self.urlTypes=urlTypes; self.cdhash=cdhash; self.treeHash=treeHash
+        }
     }
     public init(bundleId: String, name: String, version: String, image: Image, app: App, mode: Mode = .mount, createdAt: Date = Date()) {
         self.schema = "image/1"; self.bundleId = bundleId; self.name = name; self.version = version; self.image = image; self.app = app; self.mode = mode; self.createdAt = createdAt
         self.imageId = "\(bundleId)-\(version)-\(String(image.sha256.prefix(8)))"
+        if self.image.file.isEmpty { self.image.file = "images/\(self.imageId).dmg" }
     }
     public func validate() throws {
         guard schema == "image/1" else { throw IsenoughError.failure("Unsupported manifest schema: \(schema)") }
@@ -93,14 +119,27 @@ public struct FileLock {
     private var descriptor: Int32 = -1
     public init(path: String) { self.path=path }
     public var isLocked: Bool { descriptor >= 0 }
-    public mutating func lock() throws {
+    public mutating func lock() throws { try acquire(LOCK_EX) }
+    /// Non-blocking exclusive lock. `false` means another process holds it.
+    public mutating func tryLock() throws -> Bool {
+        if descriptor >= 0 { return true }
+        let fd = open(path, O_CREAT | O_RDWR, mode_t(0o600))
+        guard fd >= 0 else { throw IsenoughError.failure("Cannot open lock file") }
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            close(fd)
+            return false
+        }
+        descriptor = fd
+        return true
+    }
+    public mutating func unlock() { if descriptor >= 0 { _ = flock(descriptor, LOCK_UN); _ = close(descriptor); descriptor = -1 } }
+    private mutating func acquire(_ operation: Int32) throws {
         #if canImport(Darwin)
         importDarwinLockUnavailable()
         #endif
         let fd = open(path, O_CREAT | O_RDWR, mode_t(0o600)); guard fd >= 0 else { throw IsenoughError.failure("Cannot open lock file") }
-        guard flock(fd, LOCK_EX) == 0 else { close(fd); throw IsenoughError.failure("Cannot acquire lock") }; descriptor=fd
+        guard flock(fd, operation) == 0 else { close(fd); throw IsenoughError.failure("Cannot acquire lock") }; descriptor=fd
     }
-    public mutating func unlock() { if descriptor >= 0 { _ = flock(descriptor, LOCK_UN); _ = close(descriptor); descriptor = -1 } }
     #if canImport(Darwin)
     private func importDarwinLockUnavailable() {}
     #endif

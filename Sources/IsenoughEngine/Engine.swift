@@ -59,9 +59,15 @@ public enum StubGenerator {
 
     public static func locateLauncher(cliExecutable: URL, environment: [String:String], isExecutable: (String)->Bool) throws -> URL {
         let cli=cliExecutable.resolvingSymlinksInPath().standardizedFileURL
-        let candidates=[environment["ISENOUGH_STUB_BINARY"], cli.deletingLastPathComponent().appendingPathComponent("isenough-stub").path].compactMap{$0}
-        guard let path=candidates.first(where:isExecutable) else { throw IsenoughError.failure("isenough-stub launcher binary not found next to \(cli.path)") }
-        let found=URL(fileURLWithPath:path).resolvingSymlinksInPath().standardizedFileURL
+        if let override=environment["ISENOUGH_STUB_BINARY"] {
+            guard isExecutable(override) else { throw IsenoughError.usage("ISENOUGH_STUB_BINARY is not executable: \(override)") }
+            let found=URL(fileURLWithPath:override).resolvingSymlinksInPath().standardizedFileURL
+            guard found.path != cli.path else { throw IsenoughError.failure("Refusing to use CLI as isenough-stub launcher") }
+            return found
+        }
+        let sibling=cli.deletingLastPathComponent().appendingPathComponent("isenough-stub").path
+        guard isExecutable(sibling) else { throw IsenoughError.failure("isenough-stub launcher binary not found next to \(cli.path)") }
+        let found=URL(fileURLWithPath:sibling).resolvingSymlinksInPath().standardizedFileURL
         guard found.path != cli.path else { throw IsenoughError.failure("Refusing to use CLI as isenough-stub launcher") }
         return found
     }
@@ -75,7 +81,17 @@ public enum StubGenerator {
 
 public struct IsenoughEngine {
     public var config: RuntimeConfig
-    public init(config: RuntimeConfig) { self.config=config }
+    public var services: RestoreServices
+    public let faults: FaultController
+    public let restore: RestoreCoordinator
+    public init(config: RuntimeConfig, services: RestoreServices? = nil, faults: FaultController? = nil) {
+        self.config=config
+        let faults=faults ?? FaultController()
+        self.faults=faults
+        let services=services ?? RestoreServices.live(config: config)
+        self.services=services
+        self.restore=RestoreCoordinator(config: config, services: services, faults: faults)
+    }
     public var repo: LocalFolderBackend { get throws { try LocalFolderBackend(root: URL(fileURLWithPath: config.repoPath)) } }
     public func initialize() throws {
         let fm=FileManager.default
@@ -100,7 +116,9 @@ public struct IsenoughEngine {
         try run("/usr/bin/hdiutil",["create","-quiet","-srcfolder",staging.appendingPathComponent("src").path,"-format","ULMO","-volname",name,"-o",dmg.deletingPathExtension().path])
         let sha=try Hashing.sha256(dmg), attrs=try FileManager.default.attributesOfItem(atPath:dmg.path), size=(attrs[.size] as? NSNumber)?.uint64Value ?? 0
         let image=ImageManifest.Image(file:"",format:"ULMO",sha256:sha,size:size,volumeName:name,appPathInVolume:app.lastPathComponent)
-        let facts=ImageManifest.App(originalPath:app.path,executable:info["CFBundleExecutable"] as? String ?? "",documentTypes:(info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },urlTypes:(info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) })
+        let treeHash=try BundleHasher.treeHash(of: stagedApp)
+        let cdhash=try BundleHasher.cdhash(of: stagedApp)
+        let facts=ImageManifest.App(originalPath:app.path,executable:info["CFBundleExecutable"] as? String ?? "",documentTypes:(info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },urlTypes:(info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },cdhash:cdhash,treeHash:treeHash)
         var manifest=ImageManifest(bundleId:bid,name:name,version:version,image:image,app:facts,mode:selected); manifest.image.file="images/\(manifest.imageId).dmg"; try manifest.validate()
         let backend=try repo; try backend.put(manifest.image.file,data:Data(contentsOf:dmg)); try backend.put("manifests/\(manifest.imageId).json",data:manifest.encode())
         if !noStub { try installStub(info:info, manifest:manifest, path:app.path, keepOriginal:keepOriginal) }
@@ -159,7 +177,63 @@ public struct IsenoughEngine {
     }
     #endif
     public func list() throws -> [ImageManifest] { let b=try repo; return try b.list("manifests").filter{$0.hasSuffix(".json")}.compactMap { try? ImageManifest.decode(b.get("manifests/\($0)",range:nil)) } }
-    public func status() -> [String:Any] { let state=StateStore(config.stateDir).read(); return ["backend":config.backend,"repoPath":config.repoPath,"cacheDir":config.cacheDir,"apps":state["apps"] ?? [:],"cache":state["cache"] ?? [:]] }
+    public func status() -> [String:Any] {
+        let state=StateStore(config.stateDir).read()
+        return ["backend":config.backend,"repoPath":config.repoPath,"cacheDir":config.cacheDir,"apps":state["apps"] ?? [:],"cache":state["cache"] ?? [:],"restored":state["restored"] ?? [:]]
+    }
+    public func manifest(named name: String, in manifests: [ImageManifest]) -> ImageManifest? {
+        if let exact=manifests.first(where: { $0.imageId == name }) { return exact }
+        let apps=StateStore(config.stateDir).read()["apps"] as? [String:[String:Any]] ?? [:]
+        if let imageId=apps[name]?["imageId"] as? String, let pinned=manifests.first(where: { $0.imageId == imageId }) { return pinned }
+        return manifests.first(where: { $0.bundleId == name || $0.name.caseInsensitiveCompare(name) == .orderedSame })
+    }
+    public func evict(_ manifest: ImageManifest) throws {
+        if let reason=restore.blockReason(appId: manifest.bundleId) { throw IsenoughError.busy(reason) }
+        let path=URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
+        if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
+    }
+    public func gc() throws -> [String] {
+        restore.loadConfiguredFaults()
+        return try restore.recoverAll(shortLived: true)
+    }
+    public func doctor() -> [String: Any] {
+        let issues=restore.diagnose()
+        return ["ok": issues.isEmpty, "platform": ProcessInfo.processInfo.operatingSystemVersionString, "repo": FileManager.default.fileExists(atPath: config.repoPath), "issues": issues]
+    }
+    public func resolve(_ manifest: ImageManifest, keepUpdated: Bool, trust: Bool, export: String?, discard: Bool) throws {
+        guard let record=restore.needsResolution(manifest.bundleId), let path=record["retainedPath"] as? String, let tree=record["treeHash"] as? String else {
+            throw IsenoughError.usage("no retained bundle to resolve for \(manifest.bundleId)")
+        }
+        let url=URL(fileURLWithPath: path)
+        let actual=try restore.services.treeHash(url)
+        guard actual == tree else { throw IsenoughError.integrity("retained bundle tree hash does not match the resolution record") }
+        if keepUpdated {
+            guard restore.services.signatureValid(url) else { throw IsenoughError.integrity("retained bundle has an invalid code signature; export or discard it") }
+            let cdhash=try restore.services.cdhash(url)
+            if cdhash != manifest.app.cdhash && !trust { throw IsenoughError.usage("updated bundle cdhash differs from the packed image; pass --trust to approve it") }
+            #if os(macOS)
+            let packed=try pack(path, mode: manifest.mode, keepOriginal: true, noStub: true)
+            try restore.switchImage(appId: manifest.bundleId, imageId: packed.imageId, cdhash: cdhash)
+            try restore.trash(url)
+            try restore.clearResolution(appId: manifest.bundleId)
+            return
+            #else
+            throw IsenoughError.unsupported("resolve --keep-updated packs a new image and requires macOS")
+            #endif
+        }
+        if let export {
+            try restore.export(url, to: URL(fileURLWithPath: export))
+        } else if discard {
+            try restore.trash(url)
+        } else {
+            throw IsenoughError.usage("resolve requires --discard, --export, or --keep-updated")
+        }
+        try restore.clearResolution(appId: manifest.bundleId)
+    }
+    public func watch(appId: String) throws {
+        restore.loadConfiguredFaults()
+        try restore.watch(appId: appId)
+    }
     public func prefetch(_ manifest:ImageManifest) throws -> URL {
         let backend=try repo, paths=CachePaths(cacheDir:config.cacheDir,mountRoot:config.mountRoot), cache=paths.image(manifest.imageId); try FileManager.default.createDirectory(at:cache.deletingLastPathComponent(),withIntermediateDirectories:true)
         if FileManager.default.fileExists(atPath:cache.path), try Hashing.sha256(cache)==manifest.image.sha256 { return cache }
@@ -179,7 +253,12 @@ public struct IsenoughEngine {
     }
     private func digest(_ data:Data)->String { let u=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try? data.write(to:u); defer{try? FileManager.default.removeItem(at:u)}; return (try? Hashing.sha256(u)) ?? "" }
     public func launch(_ manifest:ImageManifest, documents:[String]=[], urls:[String]=[], arguments:[String]=[], wait:Bool=true) throws {
-        guard manifest.mode == .mount else { throw IsenoughError.unsupported("restore mode is disabled until durable restore recovery is implemented") }
+        restore.loadConfiguredFaults()
+        if manifest.mode == .restore {
+            _ = try prefetch(manifest)
+            try restore.launch(manifest, documents: documents, urls: urls, arguments: arguments, wait: wait)
+            return
+        }
         let image=try prefetch(manifest)
         #if !os(macOS)
         throw IsenoughError.unsupported("launch requires macOS hdiutil and Launch Services")
@@ -207,7 +286,7 @@ public struct IsenoughEngine {
                 try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"cached")
             } catch {
                 try? state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"backoff",mountPoint:mount.path)
-                FileHandle.standardError.write(Data("isenough: detach failed: \\(error)\\n".utf8))
+                FileHandle.standardError.write(Data("isenough: detach failed: \(error)\n".utf8))
                 throw error
             }
         }

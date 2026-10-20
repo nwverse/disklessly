@@ -10,11 +10,15 @@ public enum StubArgv {
                 guard i < rawArguments.count else { throw StubArgvError.missingValue(token) }
                 out += [token,rawArguments[i]]; i += 1; continue
             }
-            if token.hasPrefix("-psn_") { continue }
-            if token.hasPrefix("-NS") || token.hasPrefix("-Apple") { if i < rawArguments.count { i += 1 }; continue }
+            // Launch Services noise is only dropped while option parsing is active.
+            // After `--`, a filename such as `-NSnotes.txt` is a document.
+            if options && token.hasPrefix("-psn_") { continue }
+            if options && (token.hasPrefix("-NS") || token.hasPrefix("-Apple")) { if i < rawArguments.count { i += 1 }; continue }
             if let scheme=token.range(of:"^[A-Za-z][A-Za-z0-9+.-]*:", options:.regularExpression), !token.hasPrefix("/") {
                 if token[..<scheme.upperBound].lowercased() == "file:" {
-                    let url=URL(string:token); let path=url?.path.removingPercentEncoding ?? url?.path ?? token
+                    // `URL.path` is already percent-decoded once. Decoding again turns
+                    // a literal `%20` (`%2520` in the URL) into the wrong path.
+                    let path=URL(string:token)?.path ?? token
                     out += ["--doc",standard(path,cwd:cwd)]
                 } else { out += ["--url",token] }
             } else { out += ["--doc",standard(token,cwd:cwd)] }

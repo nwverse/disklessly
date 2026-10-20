@@ -16,21 +16,21 @@ func usage() -> Never {
     """)
     exit(0)
 }
-var args=Array(CommandLine.arguments.dropFirst()); var json=false; var configPath=ProcessInfo.processInfo.environment["ISENOUGH_CONFIG"]
-while let first=args.first, first.hasPrefix("--") {
-    if first=="--json" { json=true; args.removeFirst() }
-    else if first=="--config", args.count>1 { configPath=args[1]; args.removeFirst(2) }
-    else if first=="--state-dir", args.count>1 { setenv("ISENOUGH_STATE_DIR",args[1],1); args.removeFirst(2) }
-    else if first.hasPrefix("--") { fputs("isenough: Unknown option: \(first)\n",stderr); exit(2) }
-    else { break }
+let invocation: GlobalArguments
+do { invocation = try GlobalArguments.parse(Array(CommandLine.arguments.dropFirst())) }
+catch let error as IsenoughError {
+    fputs("isenough: \(error.errorDescription ?? String(describing: error))\n", stderr)
+    exit(Int32(error.exitCode))
 }
+var args=invocation.rest; let json=invocation.json; var configPath=ProcessInfo.processInfo.environment["ISENOUGH_CONFIG"] ?? invocation.configPath
+if let stateDir=invocation.stateDir { setenv("ISENOUGH_STATE_DIR", stateDir, 1) }
 let env=ProcessInfo.processInfo.environment
 var config=RuntimeConfig.environment()
 if let path=configPath, let d=try? Data(contentsOf:URL(fileURLWithPath:path)), let c=try? JSONDecoder().decode(RuntimeConfig.self,from:d) { config=c }
 if let n=env["ISENOUGH_DETACH_DELAY"].flatMap(UInt64.init) { config.detachDelaySeconds=n }
 let engine=IsenoughEngine(config:config)
 func emit(_ data:Any) { if json, JSONSerialization.isValidJSONObject(data), let d=try? JSONSerialization.data(withJSONObject:data,options:[.prettyPrinted,.sortedKeys]), let s=String(data:d,encoding:.utf8) { print(s) } else { print(data) } }
-func find(_ name:String) throws -> ImageManifest { guard let m=try engine.list().first(where:{$0.imageId==name || $0.bundleId==name || $0.name.caseInsensitiveCompare(name) == .orderedSame}) else { throw IsenoughError.usage("Unknown app: \(name)") }; return m }
+func find(_ name:String) throws -> ImageManifest { guard let m=engine.manifest(named: name, in: try engine.list()) else { throw IsenoughError.usage("Unknown app: \(name)") }; return m }
 do {
     guard let command=args.first else { usage() }; args.removeFirst()
     switch command {
@@ -46,21 +46,46 @@ do {
     case "list": emit(try engine.list().map { ["imageId":$0.imageId,"bundleId":$0.bundleId,"name":$0.name,"version":$0.version,"mode":$0.mode.rawValue] })
     case "status": emit(engine.status())
     case "prefetch": guard let n=args.first else { throw IsenoughError.usage("prefetch requires app") }; let m=try find(n); emit(["ok":true,"path":try engine.prefetch(m).path])
-    case "launch", "restore":
+    case "launch":
         let parsed=try LaunchArguments.parse(args)
         try engine.launch(find(parsed.app),documents:parsed.documents,urls:parsed.urls,arguments:parsed.arguments,wait:parsed.wait); emit(["ok":true])
+    case "restore":
+        let parsed=try LaunchArguments.parse(args)
+        var manifest=try find(parsed.app)
+        manifest.mode = .restore
+        try engine.launch(manifest,documents:parsed.documents,urls:parsed.urls,arguments:parsed.arguments,wait:parsed.wait); emit(["ok":true])
     case "pin", "unpin": guard let n=args.first else { throw IsenoughError.usage("\(command) requires app") }; let m=try find(n); var s=StateStore(config.stateDir).read(); var apps=s["apps"] as? [String:[String:Any]] ?? [:]; var item=apps[m.bundleId] ?? [:]; item["imageId"]=m.imageId; item["pinned"]=command=="pin"; apps[m.bundleId]=item; s["apps"]=apps; try StateStore(config.stateDir).write(s); if command=="pin" { _=try engine.prefetch(m) }; emit(["ok":true,"pinned":command=="pin"])
-    case "evict": guard let n=args.first else { throw IsenoughError.usage("evict requires app") }; let m=try find(n); let p=URL(fileURLWithPath:config.cacheDir).appendingPathComponent("images/\(m.imageId).dmg"); try? FileManager.default.removeItem(at:p); emit(["ok":true])
-    case "gc": emit(["ok":true,"removed":[] as [String]])
-    case "doctor": emit(["ok":true,"platform":ProcessInfo.processInfo.operatingSystemVersionString,"repo":FileManager.default.fileExists(atPath:config.repoPath)])
+    case "evict": guard let n=args.first else { throw IsenoughError.usage("evict requires app") }; try engine.evict(find(n)); emit(["ok":true])
+    case "gc": emit(["ok":true,"removed":[] as [String],"recovered":try engine.gc()])
+    case "doctor":
+        if args.first == "--fix" { _ = try engine.gc() }
+        emit(engine.doctor())
+    case "hook":
+        guard args.first == "watch" else { throw IsenoughError.usage("hook watch requires --app") }
+        args.removeFirst()
+        guard args.first == "--app", args.count >= 2 else { throw IsenoughError.usage("hook watch requires --app") }
+        try engine.watch(appId: args[1]); emit(["ok":true])
+    case "resolve":
+        guard let name=args.first else { throw IsenoughError.usage("resolve requires an app") }
+        args.removeFirst()
+        var discard=false, trust=false, keep=false, export:String?
+        while let flag=args.first {
+            args.removeFirst()
+            if flag == "--discard" { discard=true }
+            else if flag == "--keep-updated" { keep=true }
+            else if flag == "--trust" { trust=true }
+            else if flag == "--export", let dir=args.first { export=dir; args.removeFirst() }
+            else { throw IsenoughError.usage("Unknown option or missing value: \(flag)") }
+        }
+        try engine.resolve(find(name), keepUpdated: keep, trust: trust, export: export, discard: discard); emit(["ok":true])
     case "stub": if args.first=="rebuild" { emit(["ok":false,"message":"Stub rebuild requires macOS and a manifest-backed installed app" ]) } else { usage() }
     case "hooks": emit(["ok":true,"hooks":[] as [String]])
     case "serve": emit(["ok":false,"message":"HTTP server not yet available; use the static management UI" ])
     case "daemon": emit(["ok":false,"message":"Daemon management is not implemented in MVP build"])
-    case "detach", "unpack", "trust", "resolve": throw IsenoughError.unsupported("\(command) is not available in this MVP build")
+    case "detach", "unpack", "trust": throw IsenoughError.unsupported("\(command) is not available in this MVP build")
     default: throw IsenoughError.usage(command.hasPrefix("--") ? "Unknown option: \(command)" : "Unknown command: \(command)")
     }
-} catch let e as IsenoughError { if json { emit(["ok":false,"error":["code":e.exitCode,"message":e.errorDescription]]) } else { fputs("isenough: \(e.errorDescription ?? String(describing:e))\n",stderr) }; exit(Int32(e.exitCode)) } catch {
+} catch let e as IsenoughError { if json { emit(["ok":false,"error":["code":e.exitCode,"message":e.errorDescription ?? String(describing: e)]]) } else { fputs("isenough: \(e.errorDescription ?? String(describing:e))\n",stderr) }; exit(Int32(e.exitCode)) } catch {
     let nsError = error as NSError
     fputs("isenough: \(error.localizedDescription) [\(nsError.domain) \(nsError.code)]\n", stderr)
     if !nsError.userInfo.isEmpty { fputs("details: \(nsError.userInfo)\n", stderr) }

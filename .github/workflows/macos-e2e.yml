@@ -4,7 +4,7 @@ on:
   push:
     branches: [feat/mvp]
   pull_request:
-    branches: [main]
+    branches: [main, feat/mvp]
   workflow_dispatch:
 
 permissions:

@@ -765,10 +765,14 @@ if `postQuitRanForEpoch == epoch`). An adopter that ends in `stuck` again exits 
 (daemon); the record is never dropped while the image is attached.
 
 **(b) Restore sessions (R3-B4).** Input: the open restore journal (`kind` restore-in/restore-out), its paths,
-`destId`/`stubId`, `owner`, `epoch`. No attached image is expected (restore-in detached it). Layout check first:
-`<dest>` is our real bundle (`(dev,ino) == destId`, else bundle id + cdhash == manifest) and
-`staging/<txid>/stub.app` is our stub (bundle id `*.256stub`); a mismatch (user moved things) → no swap at all,
-`doctor` reports, app refused `EX_BUSY` until `doctor --fix`/manual action. Then by journal phase:
+`destId`/`stubId`, `owner`, `epoch`. No attached image is expected (restore-in detached it during `extracted`,
+before `stubParked` / `active`). There is no single active-layout prerequisite. `RestoreRecovery.decide` checks
+the directory layout against the phase that was actually journaled and accepts both the pre-effect and
+post-effect of that phase, because the phase is written before the mutation. A layout that matches neither side,
+or that contains a symlink, a path escape, or an unexplained staging entry, is rejected with no rename and no
+delete; `doctor` reports the repair hint. A changed inode or cdhash at the controlled destination is watched
+and retained unless cdhash, tree hash, and a verified archive all match. Decisions that are intentionally
+narrower than this paragraph are recorded in `docs/fb1-decisions.md`. Then by journal phase:
 
 | Journal phase at crash | Usage probe of `<dest>` + staging (§5.9, restore mode) | Action of the adopter |
 |---|---|---|
