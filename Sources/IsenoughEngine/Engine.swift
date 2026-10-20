@@ -91,13 +91,32 @@ public struct IsenoughEngine {
         let p=StubGenerator.infoPlist(source:info,appId:manifest.bundleId); (p as NSDictionary).write(to:temp.appendingPathComponent("Contents/Info.plist"),atomically:true)
         let executable=Bundle.main.executableURL ?? URL(fileURLWithPath:CommandLine.arguments[0]); try FileManager.default.copyItem(at:executable,to:temp.appendingPathComponent("Contents/MacOS/isenough-stub"))
         try manifest.encode().write(to:temp.appendingPathComponent("Contents/Resources/manifest.json"))
-        try run("/usr/bin/codesign",["--force","--sign","-",temp.path]); try run("/usr/bin/codesign",["--verify","--strict",temp.path])
-        guard source == dest else { throw IsenoughError.unsupported("Stub must replace the app at its original path") }
-        try FileManager.default.moveItem(at:source,to:backup)
-        do { try FileManager.default.moveItem(at:temp,to:dest) }
-        catch { try? FileManager.default.moveItem(at:backup,to:source); throw error }
-        if keepOriginal { try? FileManager.default.moveItem(at:backup,to:dest.deletingLastPathComponent().appendingPathComponent(source.deletingPathExtension().lastPathComponent+".256orig.app")) }
-        else { try FileManager.default.removeItem(at:backup) }
+        try run("/usr/bin/codesign",["--force","--deep","--sign","-",temp.path])
+        try run("/usr/bin/codesign",["--verify","--strict","--deep",temp.path])
+        guard source == dest else { throw IsenoughError.unsupported("Stub must replace the app at its original path (source: \(source.path), destination: \(dest.path))") }
+        do {
+            try FileManager.default.moveItem(at:source,to:backup)
+        } catch {
+            throw IsenoughError.failure("Could not move original app to transaction backup \(backup.path): \(error.localizedDescription)")
+        }
+        do {
+            try FileManager.default.moveItem(at:temp,to:dest)
+        } catch {
+            try? FileManager.default.moveItem(at:backup,to:source)
+            throw IsenoughError.failure("Could not install signed stub at \(dest.path): \(error.localizedDescription)")
+        }
+        if keepOriginal {
+            let retained=dest.deletingLastPathComponent().appendingPathComponent(source.deletingPathExtension().lastPathComponent+".256orig.app")
+            do { try FileManager.default.moveItem(at:backup,to:retained) }
+            catch {
+                try? FileManager.default.removeItem(at:dest)
+                try? FileManager.default.moveItem(at:backup,to:source)
+                throw IsenoughError.failure("Could not retain original app at \(retained.path): \(error.localizedDescription)")
+            }
+        } else {
+            do { try FileManager.default.removeItem(at:backup) }
+            catch { throw IsenoughError.failure("Stub installed, but could not remove backup \(backup.path): \(error.localizedDescription)") }
+        }
     }
     #endif
     public func list() throws -> [ImageManifest] { let b=try repo; return try b.list("manifests").filter{$0.hasSuffix(".json")}.compactMap { try? ImageManifest.decode(b.get("manifests/\($0)",range:nil)) } }
@@ -129,6 +148,14 @@ public struct IsenoughEngine {
         #endif
     }
     #if os(macOS)
-    private func run(_ path:String,_ args:[String]) throws { let p=Process(); p.executableURL=URL(fileURLWithPath:path); p.arguments=args; try p.run(); p.waitUntilExit(); guard p.terminationStatus==0 else { throw IsenoughError.diskImage("\(path) exited \(p.terminationStatus)") } }
+    private func run(_ path:String,_ args:[String]) throws {
+        let p=Process(); p.executableURL=URL(fileURLWithPath:path); p.arguments=args
+        let output=Pipe(); p.standardOutput=output; p.standardError=output
+        try p.run(); let data=output.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+        guard p.terminationStatus==0 else {
+            let detail=String(data:data,encoding:.utf8)?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
+            throw IsenoughError.diskImage("\(path) \(args.joined(separator:" ")) exited \(p.terminationStatus)\(detail.isEmpty ? "" : ": \(detail)")")
+        }
+    }
     #endif
 }
