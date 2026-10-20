@@ -88,11 +88,19 @@ public struct IsenoughEngine {
         let backup=dest.deletingLastPathComponent().appendingPathComponent(".isenough-original-\(UUID().uuidString).app")
         try FileManager.default.createDirectory(at:temp.appendingPathComponent("Contents/MacOS"),withIntermediateDirectories:true)
         try FileManager.default.createDirectory(at:temp.appendingPathComponent("Contents/Resources"),withIntermediateDirectories:true)
-        let p=StubGenerator.infoPlist(source:info,appId:manifest.bundleId); (p as NSDictionary).write(to:temp.appendingPathComponent("Contents/Info.plist"),atomically:true)
-        let executable=Bundle.main.executableURL ?? URL(fileURLWithPath:CommandLine.arguments[0]); try FileManager.default.copyItem(at:executable,to:temp.appendingPathComponent("Contents/MacOS/isenough-stub"))
+        let plistPath=temp.appendingPathComponent("Contents/Info.plist")
+        guard (StubGenerator.infoPlist(source:info,appId:manifest.bundleId) as NSDictionary).write(to:plistPath,atomically:true) else {
+            throw IsenoughError.failure("Could not write generated stub Info.plist at \(plistPath.path)")
+        }
+        let executable=Bundle.main.executableURL ?? URL(fileURLWithPath:CommandLine.arguments[0])
+        let stubExecutable=temp.appendingPathComponent("Contents/MacOS/isenough-stub")
+        try FileManager.default.copyItem(at:executable,to:stubExecutable)
         try manifest.encode().write(to:temp.appendingPathComponent("Contents/Resources/manifest.json"))
-        try run("/usr/bin/codesign",["--force","--deep","--sign","-",temp.path])
-        try run("/usr/bin/codesign",["--verify","--strict","--deep",temp.path])
+        // Sign only the outer app bundle. --deep recursively re-signs the copied
+        // Swift executable, which can fail on newer macOS codesign implementations
+        // when replacing its existing ad-hoc signature.
+        try run("/usr/bin/codesign",["--force","--sign","-",temp.path])
+        try run("/usr/bin/codesign",["--verify","--strict",temp.path])
         guard source == dest else { throw IsenoughError.unsupported("Stub must replace the app at its original path (source: \(source.path), destination: \(dest.path))") }
         do {
             try FileManager.default.moveItem(at:source,to:backup)
@@ -151,10 +159,13 @@ public struct IsenoughEngine {
     private func run(_ path:String,_ args:[String]) throws {
         let p=Process(); p.executableURL=URL(fileURLWithPath:path); p.arguments=args
         let output=Pipe(); p.standardOutput=output; p.standardError=output
-        try p.run(); let data=output.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
+        do { try p.run() } catch {
+            throw IsenoughError.failure("Could not start \(path) \(args.joined(separator:" ")): \(error.localizedDescription)")
+        }
+        let data=output.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
         guard p.terminationStatus==0 else {
             let detail=String(data:data,encoding:.utf8)?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
-            throw IsenoughError.diskImage("\(path) \(args.joined(separator:" ")) exited \(p.terminationStatus)\(detail.isEmpty ? "" : ": \(detail)")")
+            throw IsenoughError.diskImage("Command failed: \(path) \(args.joined(separator:" ")) (exit \(p.terminationStatus))\(detail.isEmpty ? "" : "\n\(detail)")")
         }
     }
     #endif
