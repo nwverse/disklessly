@@ -20,7 +20,7 @@ docker run --rm -v "$PWD":/src -w /src swift:6.1 swift test
 On macOS install Xcode Command Line Tools and build with Swift 5.9+ / Swift 6. The `isenough-stub`
 product is copied into a generated stub and ad-hoc signed; a Developer ID signing flow is not yet provided.
 GUI recipe: `scripts/build-gui.sh` (Pake; see `gui/README.md`). Pake is GPL-3.0 and generated app distribution
-needs a licensing decision.
+needs a licensing decision. This repository's own code is MIT (`LICENSE`).
 
 ## Configuration
 
@@ -53,6 +53,7 @@ adapter is not implemented yet.
 - `isenough stub rebuild APP`: placeholder.
 - `isenough hooks list|enable|disable APP`: placeholder.
 - `isenough doctor`: basic path/platform check.
+- `isenough backend add smb|nfs|webdav ...` / `backend list` / `backend use ID`: register a share or WebDAV repository. Passwords come from `--password-stdin` and are stored in the Keychain, not in `config.json`. See `docs/backends.md`.
 - `isenough serve [--port PORT]`, `daemon install|uninstall|status`: placeholders; HTTP daemon is not shipped.
 - `isenough trust APP`: not implemented.
 - `isenough version`: version/schema.

@@ -10,9 +10,11 @@ func usage() -> Never {
       pack APP.app [--mode mount|restore] [--no-stub] [--keep-original] [--stub-dir DIR]
       list [--json] | status [APP] [--json] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
       pin APP | unpin APP | evict APP | gc | restore APP | unpack APP | stub rebuild APP
+      backend add smb|nfs|webdav ... | backend list | backend use ID
       hooks list|enable|disable APP | doctor | version | serve [--port PORT]
     Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
-      ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY
+      ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,
+      ISENOUGH_QUOTA_BYTES, ISENOUGH_MIN_FREE_BYTES, ISENOUGH_SIGN_IDENTITY
     """)
     exit(0)
 }
@@ -28,7 +30,7 @@ let env=ProcessInfo.processInfo.environment
 var config=RuntimeConfig.environment()
 if let path=configPath, let d=try? Data(contentsOf:URL(fileURLWithPath:path)), let c=try? JSONDecoder().decode(RuntimeConfig.self,from:d) { config=c }
 if let n=env["ISENOUGH_DETACH_DELAY"].flatMap(UInt64.init) { config.detachDelaySeconds=n }
-let engine=IsenoughEngine(config:config)
+var engine=IsenoughEngine(config:config)
 func emit(_ data:Any) { if json, JSONSerialization.isValidJSONObject(data), let d=try? JSONSerialization.data(withJSONObject:data,options:[.prettyPrinted,.sortedKeys]), let s=String(data:d,encoding:.utf8) { print(s) } else { print(data) } }
 func find(_ name:String) throws -> ImageManifest { guard let m=engine.manifest(named: name, in: try engine.list()) else { throw IsenoughError.usage("Unknown app: \(name)") }; return m }
 do {
@@ -78,6 +80,37 @@ do {
             else { throw IsenoughError.usage("Unknown option or missing value: \(flag)") }
         }
         try engine.resolve(find(name), keepUpdated: keep, trust: trust, export: export, discard: discard); emit(["ok":true])
+    case "backend":
+        guard let sub = args.first else { throw IsenoughError.usage("backend requires add, list, or use") }
+        args.removeFirst()
+        switch sub {
+        case "list":
+            emit(config.backends.map { endpoint in
+                ["id": endpoint.id, "type": endpoint.type, "mountPoint": endpoint.mountPoint ?? "", "url": endpoint.url ?? "", "user": endpoint.user ?? ""]
+            })
+        case "use":
+            guard let id = args.first, config.backends.contains(where: { $0.id == id }) else { throw IsenoughError.usage("backend use requires a known id") }
+            guard let endpoint = config.backends.first(where: { $0.id == id }) else { throw IsenoughError.usage("Unknown backend: \(id)") }
+            config.remember(endpoint)
+            engine.config = config
+            try engine.saveConfig()
+            emit(["ok": true, "active": id])
+        case "add":
+            var draft = try BackendCommands.parseAdd(args)
+            if draft.readPasswordFromStdin {
+                let data = FileHandle.standardInput.readDataToEndOfFile()
+                let password = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !password.isEmpty else { throw IsenoughError.usage("password from stdin was empty") }
+                draft.password = password
+            }
+            let endpoint = try BackendCatalog.store(draft, secrets: engine.secrets)
+            config.remember(endpoint)
+            engine.config = config
+            try engine.saveConfig()
+            emit(["ok": true, "id": endpoint.id, "type": endpoint.type])
+        default:
+            throw IsenoughError.usage("Unknown backend command: \(sub)")
+        }
     case "stub": if args.first=="rebuild" { emit(["ok":false,"message":"Stub rebuild requires macOS and a manifest-backed installed app" ]) } else { usage() }
     case "hooks": emit(["ok":true,"hooks":[] as [String]])
     case "serve": emit(["ok":false,"message":"HTTP server not yet available; use the static management UI" ])

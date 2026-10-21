@@ -6,7 +6,7 @@ import Darwin
 #endif
 
 public enum IsenoughError: Error, LocalizedError, Equatable {
-    case usage(String), unsupported(String), backend(String), integrity(String), busy(String), diskImage(String), failure(String), hook(String), resolution(String)
+    case usage(String), unsupported(String), backend(String), integrity(String), busy(String), diskImage(String), noSpace(String), failure(String), hook(String), resolution(String)
     public var exitCode: Int {
         switch self {
         case .usage: 2
@@ -14,6 +14,7 @@ public enum IsenoughError: Error, LocalizedError, Equatable {
         case .backend: 4
         case .integrity: 5
         case .diskImage: 6
+        case .noSpace: 8
         case .hook: 10
         case .busy: 9
         case .resolution: 14
@@ -22,7 +23,7 @@ public enum IsenoughError: Error, LocalizedError, Equatable {
     }
     public var errorDescription: String? {
         switch self {
-        case .usage(let s), .unsupported(let s), .backend(let s), .integrity(let s), .busy(let s), .diskImage(let s), .failure(let s), .hook(let s), .resolution(let s): s
+        case .usage(let s), .unsupported(let s), .backend(let s), .integrity(let s), .busy(let s), .diskImage(let s), .noSpace(let s), .failure(let s), .hook(let s), .resolution(let s): s
         }
     }
 }
@@ -107,12 +108,39 @@ public enum CachePolicy {
     }
 }
 
+public struct ResumableBody: Equatable {
+    public var data: Data
+    /// The server ignored `Range` and returned the object from byte 0.
+    public var restart: Bool
+    public init(data: Data, restart: Bool) {
+        self.data = data
+        self.restart = restart
+    }
+}
+
 public protocol StorageBackend {
     func list(_ path: String) throws -> [String]
     func stat(_ path: String) throws -> BackendStat?
     func get(_ path: String, range: Range<UInt64>?) throws -> Data
     func put(_ path: String, data: Data) throws
     func delete(_ path: String) throws
+    func getResumable(_ path: String, offset: UInt64) throws -> ResumableBody
+    /// Local directory for file-backed backends. Nil for HTTP backends.
+    func localRoot() -> URL?
+    func ensureCollection(_ path: String) throws
+}
+
+extension StorageBackend {
+    public func getResumable(_ path: String, offset: UInt64) throws -> ResumableBody {
+        guard let info = try stat(path) else { throw IsenoughError.backend("remote object is missing: \(path)") }
+        if offset > info.size { throw IsenoughError.integrity("cached partial is larger than the remote object") }
+        if offset == info.size { return ResumableBody(data: Data(), restart: false) }
+        return ResumableBody(data: try get(path, range: offset..<info.size), restart: false)
+    }
+    public func localRoot() -> URL? { nil }
+    public func ensureCollection(_ path: String) throws {
+        throw IsenoughError.unsupported("this backend has no local directory")
+    }
 }
 public struct FileLock {
     public let path: String
@@ -188,4 +216,8 @@ public struct LocalFolderBackend: StorageBackend {
     public func get(_ path: String, range: Range<UInt64>? = nil) throws -> Data { let d = try Data(contentsOf: url(path)); guard let r = range else { return d }; let lo = min(Int(r.lowerBound), d.count), hi = min(Int(r.upperBound), d.count); return d.subdata(in: lo..<max(lo, hi)) }
     public func put(_ path: String, data: Data) throws { let u = try url(path); try FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true); try data.write(to: u, options: .atomic) }
     public func delete(_ path: String) throws { let u = try url(path); if FileManager.default.fileExists(atPath: u.path) { try FileManager.default.removeItem(at: u) } }
+    public func localRoot() -> URL? { root }
+    public func ensureCollection(_ path: String) throws {
+        try FileManager.default.createDirectory(at: url(path), withIntermediateDirectories: true)
+    }
 }

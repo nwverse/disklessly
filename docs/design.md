@@ -1267,7 +1267,9 @@ collision of `<sha8>` with different content → extend to 16 hex, then full has
   re-creates it) so the iCloud state machine is exercised on Linux and in CI without an Apple ID.
 - `put` = temp + `rename`, `get` with ranges via `FileHandle.seek`. Capabilities: `rangeReads, atomicPut, localPath`.
 
-### 7.4 Phase 2 backends (designed now, not implemented)
+### 7.4 Phase 2 backends
+Implemented on the synchronous `StorageBackend` (`docs/backends.md`): SMB/NFS via `mount_smbfs -N` / `mount_nfs` or an already-mounted path, WebDAV via PROPFIND/GET Range/PUT/MOVE. Credentials stay in the Keychain. `hdiutil create`/`convert` still builds ULMO/ULFO images. The notes below are the original design; where they disagree with `docs/backends.md`, the note file is what the code does.
+
 - **NAS via mounted path (SMB/NFS)**: `LocalFolderBackend` + `mountURL` (`smb://nas/share/256isenough`); `ensureMounted`
   uses `NetFSMountURLAsync` / `open smb://…` once, keychain credentials; availability = path is a mountpoint reachable
   within 3 s (avoid hanging `stat` on dead SMB: probe in a child task with timeout). Never run apps from the share.
@@ -1890,6 +1892,9 @@ cache, manifest, hooks), different object type.
    after the fake-backend CI is green (G-c).
 
 ### 14.2 Open questions
+
+Resolved for the current tree unless a config value is already set: project license MIT (`LICENSE`); ad-hoc signing (`signIdentity` `-`, override `ISENOUGH_SIGN_IDENTITY`); cache quota 20 GiB; free-space floor 15 GiB; detach delay 120 s. Pake remains the GUI shell.
+
 1. Project license for our own code (MIT/Apache-2.0 suggested; compatible with distributing a separate GPL Pake shell)?
 2. Signing identity: use your Developer ID for stubs (stable DR) or ad-hoc for MVP? Team ID to configure in CI secrets?
 3. Target macOS versions (13+ assumed for the stub; engine 13+)? Is the Mac mini on 15, 26 or 27? Optimize Mac Storage on?
