@@ -37,7 +37,7 @@ public struct RestoreServices {
             attach: { image, mount in
                 #if os(macOS)
                 try fm.createDirectory(at: mount, withIntermediateDirectories: true)
-                try ProcessRunner.run("/usr/bin/hdiutil", ["attach", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", mount.path, image.path])
+                try LiveDiskImage.attach(image: image, mountPoint: mount)
                 return mount
                 #else
                 _ = image
@@ -55,7 +55,7 @@ public struct RestoreServices {
             },
             detach: { mount in
                 #if os(macOS)
-                try ProcessRunner.run("/usr/bin/hdiutil", ["detach", mount.path])
+                try LiveDiskImage.detach(mountPoint: mount, force: false)
                 #else
                 _ = mount
                 #endif

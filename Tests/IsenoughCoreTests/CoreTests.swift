@@ -126,8 +126,18 @@ final class CoreTests: XCTestCase {
             guard case IsenoughError.diskImage(let message) = error else {
                 return XCTFail("expected diskImage, got \(error)")
             }
-            XCTAssertTrue(message.hasPrefix("Command failed: /usr/bin/hdiutil attach "), message)
-            XCTAssertTrue(message.contains("(exit 1)"), message)
+            let backend = LiveDiskImage.backend()
+            let image = URL(fileURLWithPath: world.engine.config.cacheDir).appendingPathComponent("images/\(world.manifest.imageId).dmg")
+            let rawMount = URL(fileURLWithPath: world.engine.config.mountRoot).appendingPathComponent(world.manifest.imageId)
+            let mount = rawMount.resolvingSymlinksInPath().standardizedFileURL
+            let command = DiskImageTool.attachCommand(image: image.path, mountPoint: mount.path, backend: backend)
+            XCTAssertTrue(message.contains(command.rendered), message)
+            if backend == .hdiutil {
+                XCTAssertTrue(message.contains("(exit 1)"), message)
+            } else {
+                XCTAssertTrue(message.contains("(exit "), message)
+                XCTAssertFalse(message.contains("(exit 0)"), message)
+            }
             #endif
         }
         XCTAssertTrue(world.journals().isEmpty)
@@ -136,6 +146,72 @@ final class CoreTests: XCTestCase {
     /// These tools are spawned with `LC_ALL=C` and `LANG=en_US.UTF-8`. That does not
     /// select hdiutil's language: on macOS it follows AppleLanguages, so a zh-Hans
     /// session still prints "无法识别映像". Callers classify by exit status.
+    func testDiskImageAttachPrefersDiskutilAndFallsBackToHdiutil() throws {
+        XCTAssertEqual(DiskImageTool.select(diskutilImageHelpStatus: 0), .diskutil)
+        XCTAssertEqual(DiskImageTool.select(diskutilImageHelpStatus: 1), .hdiutil)
+
+        let diskutil = DiskImageTool.attachCommand(image: "/img.dmg", mountPoint: "/mnt", backend: .diskutil)
+        XCTAssertEqual(diskutil.executable, "/usr/sbin/diskutil")
+        XCTAssertEqual(diskutil.arguments, ["image", "attach", "--plist", "--readOnly", "--mountOptions", "nobrowse", "--mountPoint", "/mnt", "/img.dmg"])
+        let hdiutil = DiskImageTool.attachCommand(image: "/img.dmg", mountPoint: "/mnt", backend: .hdiutil)
+        XCTAssertEqual(hdiutil.arguments, ["attach", "-plist", "-readonly", "-nobrowse", "-noautoopen", "-mountpoint", "/mnt", "/img.dmg"])
+
+        XCTAssertEqual(
+            DiskImageTool.detachCommands(mountPoint: "/mnt", force: false, backend: .diskutil).map(\.arguments),
+            [["eject", "/mnt"]]
+        )
+        XCTAssertEqual(
+            DiskImageTool.detachCommands(mountPoint: "/mnt", force: true, backend: .diskutil).map(\.arguments),
+            [["eject", "force", "/mnt"], ["unmount", "force", "/mnt"]]
+        )
+        XCTAssertEqual(
+            DiskImageTool.detachCommands(mountPoint: "/mnt", force: true, backend: .hdiutil).map(\.arguments),
+            [["detach", "-force", "/mnt"]]
+        )
+
+        let plist = Data("""
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict><key>system-entities</key><array><dict>
+        <key>mount-point</key><string>/private/var/mnt</string>
+        </dict></array></dict></plist>
+        """.utf8)
+        let chinese = Data("无法识别映像".utf8)
+        try DiskImageTool.classifyAttach(
+            command: diskutil,
+            output: DiskImageOutput(status: 0, stdout: plist, stderr: chinese),
+            mountPoint: "/var/mnt"
+        )
+        XCTAssertThrowsError(try DiskImageTool.classifyAttach(
+            command: diskutil,
+            output: DiskImageOutput(status: 1, stdout: Data(), stderr: chinese),
+            mountPoint: "/mnt"
+        )) { error in
+            guard case IsenoughError.diskImage(let message) = error else {
+                return XCTFail("expected diskImage, got \(error)")
+            }
+            XCTAssertTrue(message.hasPrefix("Command failed: /usr/sbin/diskutil image attach "), message)
+            XCTAssertTrue(message.contains("(exit 1)"), message)
+        }
+        XCTAssertThrowsError(try DiskImageTool.classifyAttach(
+            command: diskutil,
+            output: DiskImageOutput(status: 0, stdout: Data("not a plist".utf8), stderr: Data()),
+            mountPoint: "/mnt"
+        )) { error in
+            guard case IsenoughError.diskImage(let message) = error else {
+                return XCTFail("expected diskImage, got \(error)")
+            }
+            XCTAssertTrue(message.hasPrefix("attach exited 0 but the plist did not list mount point "), message)
+        }
+        let eject = DiskImageTool.detachCommands(mountPoint: "/mnt", force: true, backend: .diskutil)
+        try DiskImageTool.classifyDetach(
+            commands: eject,
+            outputs: [
+                DiskImageOutput(status: 1, stdout: Data(), stderr: chinese),
+                DiskImageOutput(status: 0, stdout: Data(), stderr: Data()),
+            ]
+        )
+    }
     func testParsedCommandSpawnsDiagnosticsInEnglish() throws {
         let chinese = ["PATH": "/bin:/usr/bin", "LANG": "zh_CN.UTF-8", "LC_ALL": "zh_CN.UTF-8", "KEEP": "marker"]
         let env = ParsedCommand.environment(inheriting: chinese)

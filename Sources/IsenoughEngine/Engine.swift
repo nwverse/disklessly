@@ -121,15 +121,15 @@ public struct IsenoughEngine {
         // describe that tree.
         let mount=staging.appendingPathComponent("mount")
         try FileManager.default.createDirectory(at:mount,withIntermediateDirectories:true)
-        try run("/usr/bin/hdiutil",["attach","-readonly","-nobrowse","-noautoopen","-mountpoint",mount.path,dmg.path])
+        try LiveDiskImage.attach(image: dmg, mountPoint: mount)
         var detachedPackMount=false
-        defer { if !detachedPackMount { try? run("/usr/bin/hdiutil",["detach","-force",mount.path]) } }
+        defer { if !detachedPackMount { try? LiveDiskImage.detach(mountPoint: mount, force: true) } }
         let checked=staging.appendingPathComponent("checked-\(app.lastPathComponent)")
         try run("/usr/bin/ditto",[mount.appendingPathComponent(app.lastPathComponent).path,checked.path])
         BundleHasher.removeMetadataSidecars(checked)
         let treeHash=try BundleHasher.treeHash(of: checked)
         let cdhash=try BundleHasher.cdhash(of: checked)
-        try run("/usr/bin/hdiutil",["detach",mount.path])
+        try LiveDiskImage.detach(mountPoint: mount, force: false)
         detachedPackMount=true
         let facts=ImageManifest.App(originalPath:app.path,executable:info["CFBundleExecutable"] as? String ?? "",documentTypes:(info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },urlTypes:(info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },cdhash:cdhash,treeHash:treeHash)
         var manifest=ImageManifest(bundleId:bid,name:name,version:version,image:image,app:facts,mode:selected); manifest.image.file="images/\(manifest.imageId).dmg"; try manifest.validate()
@@ -279,7 +279,7 @@ public struct IsenoughEngine {
         let rawMount=URL(fileURLWithPath:config.mountRoot).appendingPathComponent(manifest.imageId)
         try FileManager.default.createDirectory(at:rawMount,withIntermediateDirectories:true)
         let mount=rawMount.resolvingSymlinksInPath().standardizedFileURL
-        try run("/usr/bin/hdiutil",["attach","-readonly","-nobrowse","-noautoopen","-mountpoint",mount.path,image.path])
+        try LiveDiskImage.attach(image: image, mountPoint: mount)
         let state=StateStore(config.stateDir)
         try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"running",mountPoint:mount.path)
         let app=mount.appendingPathComponent(manifest.image.appPathInVolume)
@@ -295,7 +295,7 @@ public struct IsenoughEngine {
             Thread.sleep(forTimeInterval:Double(config.detachDelaySeconds))
             try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"detaching",mountPoint:mount.path)
             do {
-                try run("/usr/bin/hdiutil",["detach",mount.path])
+                try LiveDiskImage.detach(mountPoint: mount, force: false)
                 try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"cached")
             } catch {
                 try? state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"backoff",mountPoint:mount.path)

@@ -30,47 +30,117 @@ trap cleanup EXIT INT TERM
 
 fail() {
   if isenough_mounts_present; then
-    /usr/bin/hdiutil info >>"$LOG" 2>&1 || true
+    list_image_mounts >>"$LOG" 2>&1 || true
     printf 'FAIL: %s (isenough mount still attached under %s)\n' "$1" "${MOUNT_ROOT:-$TMP}" | tee -a "$LOG" >&2
   else
     printf 'FAIL: %s\n' "$1" | tee -a "$LOG" >&2
   fi
   exit 1
 }
+# Exit 0 means `diskutil image` exists. The help text is not read.
+diskutil_image_available() {
+  /usr/sbin/diskutil image --help >/dev/null 2>&1
+}
+alt_mount_path() {
+  case "$1" in
+    /private/*) printf '/%s\n' "${1#/private/}" ;;
+    /var/*|/tmp/*|/etc/*) printf '/private%s\n' "$1" ;;
+    *) printf '\n' ;;
+  esac
+}
+# Forced detach. diskutil has no image detach: eject force, then unmount force.
+# hdiutil detach -force still runs so an older attachment is not left behind.
+detach_one_mount() {
+  local mp="$1" alt
+  if diskutil_image_available; then
+    /usr/sbin/diskutil eject force "$mp" >>"${LOG:-/dev/null}" 2>&1 || /usr/sbin/diskutil unmount force "$mp" >>"${LOG:-/dev/null}" 2>&1 || true
+  fi
+  /usr/bin/hdiutil detach -force "$mp" >>"${LOG:-/dev/null}" 2>&1 || true
+  alt="$(alt_mount_path "$mp")"
+  [[ -n "$alt" ]] || return 0
+  if diskutil_image_available; then
+    /usr/sbin/diskutil eject force "$alt" >>"${LOG:-/dev/null}" 2>&1 || /usr/sbin/diskutil unmount force "$alt" >>"${LOG:-/dev/null}" 2>&1 || true
+  fi
+  /usr/bin/hdiutil detach -force "$alt" >>"${LOG:-/dev/null}" 2>&1 || true
+}
+# Print mount-point values from a plist. Keys are machine names, not sentences.
+plist_mount_points() {
+  /usr/bin/python3 - "$1" <<'PY'
+import plistlib, sys
+def walk(value, found):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in ("mount-point", "MountPoint") and isinstance(item, str):
+                found.append(item)
+            else:
+                walk(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            walk(item, found)
+with open(sys.argv[1], "rb") as handle:
+    data = plistlib.load(handle)
+found = []
+walk(data, found)
+print("\n".join(found))
+PY
+}
+hdiutil_mount_points() {
+  local plist="${TMP:-/tmp}/hdiutil-info.plist"
+  /usr/bin/hdiutil info -plist >"$plist" 2>/dev/null || return 0
+  plist_mount_points "$plist" 2>/dev/null || true
+}
+mount_point_is_attached() {
+  local mp="$1" alt points
+  if diskutil_image_available; then
+    /usr/sbin/diskutil info -plist "$mp" >/dev/null 2>&1 && return 0
+    alt="$(alt_mount_path "$mp")"
+    [[ -n "$alt" ]] && /usr/sbin/diskutil info -plist "$alt" >/dev/null 2>&1 && return 0
+    return 1
+  fi
+  points="$(hdiutil_mount_points)"
+  printf '%s\n' "$points" | grep -Fx "$mp" >/dev/null && return 0
+  alt="$(alt_mount_path "$mp")"
+  [[ -n "$alt" ]] && printf '%s\n' "$points" | grep -Fx "$alt" >/dev/null
+}
 force_detach_isenough_mounts() {
-  local token info line path mp alt
+  local token mp point
   token="$(basename "${TMP:-}")"
   [[ -n "$token" ]] || return 0
   if [[ -d "${MOUNT_ROOT:-}" ]]; then
     for mp in "$MOUNT_ROOT"/*; do
       [[ -e "$mp" ]] || continue
-      /usr/bin/hdiutil detach -force "$mp" >>"${LOG:-/dev/null}" 2>&1 || true
-      case "$mp" in
-        /private/*)
-          alt="/${mp#/private/}"
-          /usr/bin/hdiutil detach -force "$alt" >>"${LOG:-/dev/null}" 2>&1 || true
-          ;;
-      esac
+      detach_one_mount "$mp"
     done
   fi
-  info="$(/usr/bin/hdiutil info 2>/dev/null || true)"
-  while IFS= read -r line; do
-    path="$(printf '%s' "$line" | sed 's/^[[:space:]]*//')"
-    case "$path" in
-      /*"$token"*) /usr/bin/hdiutil detach -force "$path" >>"${LOG:-/dev/null}" 2>&1 || true ;;
-    esac
-  done <<< "$info"
+  while IFS= read -r point; do
+    [[ "$point" == *"$token"* ]] || continue
+    detach_one_mount "$point"
+  done < <(hdiutil_mount_points)
 }
 isenough_mounts_present() {
-  local token info
+  local token mp point
   token="$(basename "${TMP:-}")"
   [[ -n "$token" ]] || return 1
-  info="$(/usr/bin/hdiutil info 2>/dev/null || true)"
-  printf '%s\n' "$info" | grep -F "$token" >/dev/null
+  if [[ -d "${MOUNT_ROOT:-}" ]]; then
+    for mp in "$MOUNT_ROOT"/*; do
+      [[ -e "$mp" ]] || continue
+      if mount_point_is_attached "$mp"; then return 0; fi
+    done
+  fi
+  while IFS= read -r point; do
+    [[ "$point" == *"$token"* ]] && return 0
+  done < <(hdiutil_mount_points)
+  return 1
+}
+list_image_mounts() {
+  if diskutil_image_available; then
+    /usr/sbin/diskutil list || true
+  fi
+  /usr/bin/hdiutil info -plist || true
 }
 assert_no_isenough_mounts() {
   if isenough_mounts_present; then
-    /usr/bin/hdiutil info >>"$LOG" 2>&1 || true
+    list_image_mounts >>"$LOG" 2>&1 || true
     fail "no isenough mount should remain ($1)"
   fi
   pass "no isenough mount left behind ($1)"
@@ -93,7 +163,7 @@ wait_for() {
 }
 is_attached() {
   kill -0 "$APP_PID" 2>/dev/null || fail 'stub exited before attach'
-  /usr/bin/hdiutil info >"$TMP/hdiutil-info" 2>>"$LOG" && grep -Fq "$MOUNT" "$TMP/hdiutil-info"
+  mount_point_is_attached "$MOUNT"
 }
 is_detached() { ! /sbin/mount | grep -Fq "$MOUNT"; }
 stub_code_diagnostics() {

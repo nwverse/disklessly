@@ -165,12 +165,15 @@ External tools invoked via `Process` (absolute paths, argument arrays, never a s
 `hdiutil` is wrapped behind `DiskImageTool` so a `diskutil image` implementation can be added for macOS 27+
 (hdiutil deprecated there). On macOS 27.0, `hdiutil attach -readonly -nobrowse -mountpoint` warns that the
 invocation is deprecated and names `diskutil image attach --readOnly --mountOptions nobrowse --mountPoint`
-as the replacement. Prefer that `diskutil` form when the subcommand exists, and keep this `hdiutil` command
-as the fallback. The current engine still calls `hdiutil`. Those tools may be spawned with `LC_ALL=C` and
-`LANG=en_US.UTF-8`; that does not change hdiutil's language, which follows AppleLanguages. The engine
-classifies attach, detach, and `codesign --verify` by exit status. It reads `codesign -dvvv`'s `CDHash=`
-field and does not match translated sentences. `hdiutil info -plist` is the structured attachment listing
-when a listing is required.
+as the replacement. Attach and detach use that `diskutil` form when `diskutil image --help` exits 0,
+and the previous `hdiutil attach` / `hdiutil detach` commands otherwise. The help text is not read.
+`diskutil image attach` has no `--noautoopen`; `--mountOptions nobrowse` is the Finder suppression.
+There is no `diskutil image detach`: a normal detach is `diskutil eject`, and a forced detach is
+`diskutil eject force` followed by `diskutil unmount force` if eject does not exit 0. Success is exit 0
+plus a plist that lists the requested mount point (`mount-point` / `MountPoint`). Tool sentences are not
+matched. Image creation stays `hdiutil create -format ULMO`. `diskutil image create from` can write ULMO,
+but its scrubbing and ownership behavior differ, so pack does not use it. `LC_ALL=C` does not change
+hdiutil's language.
 
 ### 2.3 Process model
 - **No mandatory daemon.** The stub spawns a **supervisor** (`isenough hook launch`) that lives for the whole session
@@ -1807,7 +1810,7 @@ extra diagnostic, not a substitute.
   daemon-driven launch over a Unix socket (faster cold starts, single owner of mounts), low-disk notifications,
   `NSMetadataQuery`-based push progress, Developer ID signed + notarized `isenough` release and Homebrew tap.
 - Compatibility database (`compat.json`: bundleId → mode, notes, tested OS) shipped and user-contributed.
-- `diskutil image` backend for `DiskImageTool` on macOS 27+.
+- `diskutil image create` for ULMO pack images, after scrubbing and ownership match `hdiutil create`. Attach and detach already prefer `diskutil image` when that subcommand exists.
 - Optional SwiftUI `MenuBarExtra` companion if Pake tray UX is insufficient.
 
 ### 12.3 v2 (phase 2)
@@ -1868,7 +1871,7 @@ cache, manifest, hooks), different object type.
    moment; budgeted by the claim, §6.1); `cache.localFormat` can only choose ULFO or UDRO.
 5. **Launch Services duplicates** (stub + mounted real app) may confuse "Open With" briefly during sessions.
 6. **TCC**: same bundle id + DR should keep grants, but Accessibility/Input Monitoring toggles may need re-approval.
-7. **macOS 27**: `hdiutil attach -readonly -nobrowse -mountpoint` is deprecated and still works on 27.0. It prints `hdiutil: WARNING: 'hdiutil attach -readonly -nobrowse -mountpoint ...' is deprecated. Please use 'diskutil image attach --readOnly --mountOptions nobrowse --mountPoint ...' instead.` Future work: prefer `diskutil image attach` when that subcommand is available, and keep the current `hdiutil` invocation as the fallback. This slice does not switch attach. hdiutil's failure sentence follows AppleLanguages (`无法识别映像` on zh-Hans) even with `LC_ALL=C`, `LANG=en_US.UTF-8`, or `-AppleLanguages '(en)'`. Classify by exit status and `-plist` output, not by that sentence. Stricter bundle validation for stubs still needs a 27 test.
+7. **macOS 27**: `hdiutil attach` is deprecated. The engine attaches with `diskutil image attach --plist --readOnly --mountOptions nobrowse --mountPoint` when `diskutil image --help` exits 0, and falls back to `hdiutil attach -plist -readonly -nobrowse -noautoopen -mountpoint` otherwise. Detach is `diskutil eject` (force: `eject force`, then `unmount force`). hdiutil's failure sentence follows AppleLanguages even with `LC_ALL=C`. Classify by exit status and plist, not by that sentence. `hdiutil create` remains the ULMO pack path. Stricter bundle validation for stubs still needs a 27 test.
 8. **GitHub runners**: LS/`open` behavior on CI may differ; e2e then reports *inconclusive* (red), never a skipped
    pass; the same script runs on the user's Mac as the authoritative gate.
 9. **Apple Event at stub exit** (§8.3): a mach message enqueued between the stub's final drain and `exit` cannot be
