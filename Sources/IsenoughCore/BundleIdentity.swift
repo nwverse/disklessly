@@ -303,7 +303,9 @@ public enum BundleHasher {
     /// executable, not the bundle directory, keeps pack and extract on the same value:
     /// `codesign` rejects a directory whose name is not a bundle extension, and restore
     /// stages the copy at `app.new`. A printed `CDHash=` is used even when the exit
-    /// status is non-zero; `--verify` is what checks the seal.
+    /// status is non-zero; `--verify` is what checks the seal. `CDHash=` is the machine
+    /// field from `-dvvv`. There is no `-plist` form of that field. Translated sentences
+    /// in the same output are ignored.
     private static func codesignCDHash(_ root: URL) -> String? {
         if let info = BundleFacts.readInfo(root) {
             let name = info["CFBundleExecutable"] as? String ?? ""

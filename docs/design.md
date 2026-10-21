@@ -166,8 +166,11 @@ External tools invoked via `Process` (absolute paths, argument arrays, never a s
 (hdiutil deprecated there). On macOS 27.0, `hdiutil attach -readonly -nobrowse -mountpoint` warns that the
 invocation is deprecated and names `diskutil image attach --readOnly --mountOptions nobrowse --mountPoint`
 as the replacement. Prefer that `diskutil` form when the subcommand exists, and keep this `hdiutil` command
-as the fallback. The current engine still calls `hdiutil`. `hdiutil`, `diskutil`, and `codesign` are spawned
-with `LC_ALL=C` and `LANG=en_US.UTF-8` because their diagnostics are parsed as English text.
+as the fallback. The current engine still calls `hdiutil`. Those tools may be spawned with `LC_ALL=C` and
+`LANG=en_US.UTF-8`; that does not change hdiutil's language, which follows AppleLanguages. The engine
+classifies attach, detach, and `codesign --verify` by exit status. It reads `codesign -dvvv`'s `CDHash=`
+field and does not match translated sentences. `hdiutil info -plist` is the structured attachment listing
+when a listing is required.
 
 ### 2.3 Process model
 - **No mandatory daemon.** The stub spawns a **supervisor** (`isenough hook launch`) that lives for the whole session
@@ -1865,7 +1868,7 @@ cache, manifest, hooks), different object type.
    moment; budgeted by the claim, §6.1); `cache.localFormat` can only choose ULFO or UDRO.
 5. **Launch Services duplicates** (stub + mounted real app) may confuse "Open With" briefly during sessions.
 6. **TCC**: same bundle id + DR should keep grants, but Accessibility/Input Monitoring toggles may need re-approval.
-7. **macOS 27**: `hdiutil attach -readonly -nobrowse -mountpoint` is deprecated and still works on 27.0. It prints `hdiutil: WARNING: 'hdiutil attach -readonly -nobrowse -mountpoint ...' is deprecated. Please use 'diskutil image attach --readOnly --mountOptions nobrowse --mountPoint ...' instead.` Future work: prefer `diskutil image attach` when that subcommand is available, and keep the current `hdiutil` invocation as the fallback. This slice does not switch attach. Stricter bundle validation for stubs still needs a 27 test.
+7. **macOS 27**: `hdiutil attach -readonly -nobrowse -mountpoint` is deprecated and still works on 27.0. It prints `hdiutil: WARNING: 'hdiutil attach -readonly -nobrowse -mountpoint ...' is deprecated. Please use 'diskutil image attach --readOnly --mountOptions nobrowse --mountPoint ...' instead.` Future work: prefer `diskutil image attach` when that subcommand is available, and keep the current `hdiutil` invocation as the fallback. This slice does not switch attach. hdiutil's failure sentence follows AppleLanguages (`无法识别映像` on zh-Hans) even with `LC_ALL=C`, `LANG=en_US.UTF-8`, or `-AppleLanguages '(en)'`. Classify by exit status and `-plist` output, not by that sentence. Stricter bundle validation for stubs still needs a 27 test.
 8. **GitHub runners**: LS/`open` behavior on CI may differ; e2e then reports *inconclusive* (red), never a skipped
    pass; the same script runs on the user's Mac as the authoritative gate.
 9. **Apple Event at stub exit** (§8.3): a mach message enqueued between the stub's final drain and `exit` cannot be

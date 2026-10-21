@@ -175,6 +175,8 @@ enum ProcessRunner {
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0 else {
+            // Record the tool's sentence without classifying on it. hdiutil's wording
+            // follows AppleLanguages, including when LC_ALL=C.
             let detail = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
             throw IsenoughError.diskImage("Command failed: \(path) \(args.joined(separator: " ")) (exit \(process.terminationStatus))\(detail.isEmpty ? "" : "\n\(detail)")")
         }

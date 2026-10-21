@@ -145,12 +145,15 @@ public struct FileLock {
     #endif
 }
 
-/// `hdiutil`, `diskutil`, and `codesign` localize the diagnostics this program parses
-/// (`image not recognized`, `CDHash=`). Those processes get a fixed English locale.
-/// Every other variable is copied from the parent so paths and home still resolve.
-/// `open` is not included: its environment is inherited by the launched app.
+/// `hdiutil`, `diskutil`, and `codesign` are spawned with `LC_ALL=C` and `LANG=en_US.UTF-8`.
+/// That does not select hdiutil's language: macOS follows the user's AppleLanguages.
+/// Failures are classified by exit status. `codesign -dvvv`'s `CDHash=` field is a stable
+/// machine key, not a translated sentence. `open` is not included: its environment is
+/// inherited by the launched app.
 public enum ParsedCommand {
-    public static func localizesDiagnostics(_ path: String) -> Bool {
+    /// These basenames get the pinned locale variables. The name is not a claim that
+    /// the tool then speaks English; hdiutil still follows AppleLanguages.
+    public static func pinsLocale(_ path: String) -> Bool {
         switch (path as NSString).lastPathComponent {
         case "hdiutil", "diskutil", "codesign": return true
         default: return false
@@ -168,7 +171,7 @@ public enum ParsedCommand {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments
-        if localizesDiagnostics(path) {
+        if pinsLocale(path) {
             process.environment = environment(inheriting: base)
         }
         return process

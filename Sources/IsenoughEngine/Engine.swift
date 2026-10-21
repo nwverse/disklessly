@@ -314,6 +314,8 @@ public struct IsenoughEngine {
         }
         let data=output.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
         guard p.terminationStatus==0 else {
+            // The tool's own sentence is recorded and not interpreted. hdiutil follows
+            // AppleLanguages, so the words are not a stable classifier.
             let detail=String(data:data,encoding:.utf8)?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
             throw IsenoughError.diskImage("Command failed: \(path) \(args.joined(separator:" ")) (exit \(p.terminationStatus))\(detail.isEmpty ? "" : "\n\(detail)")")
         }

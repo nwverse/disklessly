@@ -96,8 +96,9 @@ final class CoreTests: XCTestCase {
     /// Recovery now exists, so this test requires the journaled transaction instead:
     /// detach happens before `active`, and a mount-mode launch does not create a
     /// restore journal or a mount session. Linux still throws the unsupported
-    /// hdiutil message. macOS reaches `hdiutil attach` and fails because the
-    /// fixture is not a disk image.
+    /// hdiutil message. macOS reaches `hdiutil attach` and fails as `diskImage`
+    /// because the fixture is not a disk image. That assertion records the command
+    /// and exit status. hdiutil's sentence follows AppleLanguages, not `LC_ALL`.
     func testRestoreModeRunsJournalDetachesBeforeActiveAndSkipsMountRecovery() throws {
         let world = try RestoreWorld()
         defer { world.cleanup() }
@@ -125,15 +126,16 @@ final class CoreTests: XCTestCase {
             guard case IsenoughError.diskImage(let message) = error else {
                 return XCTFail("expected diskImage, got \(error)")
             }
-            XCTAssertTrue(message.contains("image not recognized"), message)
+            XCTAssertTrue(message.hasPrefix("Command failed: /usr/bin/hdiutil attach "), message)
+            XCTAssertTrue(message.contains("(exit 1)"), message)
             #endif
         }
         XCTAssertTrue(world.journals().isEmpty)
     }
 
-    /// hdiutil on a zh_CN Mac prints "无法识别映像" unless the child locale is English.
-    /// The mount-mode assertion still matches "image not recognized"; this test checks
-    /// the environment that child is given.
+    /// These tools are spawned with `LC_ALL=C` and `LANG=en_US.UTF-8`. That does not
+    /// select hdiutil's language: on macOS it follows AppleLanguages, so a zh-Hans
+    /// session still prints "无法识别映像". Callers classify by exit status.
     func testParsedCommandSpawnsDiagnosticsInEnglish() throws {
         let chinese = ["PATH": "/bin:/usr/bin", "LANG": "zh_CN.UTF-8", "LC_ALL": "zh_CN.UTF-8", "KEEP": "marker"]
         let env = ParsedCommand.environment(inheriting: chinese)
@@ -147,7 +149,7 @@ final class CoreTests: XCTestCase {
             XCTAssertEqual(spawned.environment?["KEEP"], "marker", tool)
         }
         XCTAssertNil(ParsedCommand.process(path: "/usr/bin/open", arguments: ["-a", "Finder"], inheriting: chinese).environment)
-        XCTAssertFalse(ParsedCommand.localizesDiagnostics("/usr/bin/ditto"))
+        XCTAssertFalse(ParsedCommand.pinsLocale("/usr/bin/ditto"))
 
         let child = Process()
         child.executableURL = URL(fileURLWithPath: "/bin/sh")
