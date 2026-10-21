@@ -291,6 +291,17 @@ public struct IsenoughEngine {
         if let imageId=apps[name]?["imageId"] as? String, let pinned=manifests.first(where: { $0.imageId == imageId }) { return pinned }
         return manifests.first(where: { $0.bundleId == name || $0.name.caseInsensitiveCompare(name) == .orderedSame })
     }
+    public func setPinned(_ manifest: ImageManifest, pinned: Bool) throws {
+        var state = StateStore(config.stateDir).read()
+        var apps = state["apps"] as? [String: [String: Any]] ?? [:]
+        var item = apps[manifest.bundleId] ?? [:]
+        item["imageId"] = manifest.imageId
+        item["pinned"] = pinned
+        apps[manifest.bundleId] = item
+        state["apps"] = apps
+        try StateStore(config.stateDir).write(state)
+        if pinned { _ = try prefetch(manifest) }
+    }
     public func evict(_ manifest: ImageManifest) throws {
         if let reason=restore.blockReason(appId: manifest.bundleId) { throw IsenoughError.busy(reason) }
         let path=URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")

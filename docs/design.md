@@ -1897,7 +1897,7 @@ cache, manifest, hooks), different object type.
 
 ### 14.2 Open questions
 
-Resolved for the current tree unless a config value is already set: project license MIT (`LICENSE`); ad-hoc signing (`signIdentity` `-`, override `ISENOUGH_SIGN_IDENTITY`); cache quota 20 GiB; free-space floor 15 GiB; detach delay 120 s. Pake remains the GUI shell.
+Resolved for the current tree unless a config value is already set: project license MIT (`LICENSE`); ad-hoc signing (`signIdentity` `-`, override `ISENOUGH_SIGN_IDENTITY`); cache quota 20 GiB; free-space floor 15 GiB; detach delay 120 s. The management page is `isenough ui` (loopback, random token). `scripts/build-ui.sh` copies the web assets and runs Pake into `256isenough.app` when `pake` is installed; CI sets `ISENOUGH_SKIP_PAKE=1`.
 
 1. Project license for our own code (MIT/Apache-2.0 suggested; compatible with distributing a separate GPL Pake shell)?
 2. Signing identity: use your Developer ID for stubs (stable DR) or ad-hoc for MVP? Team ID to configure in CI secrets?

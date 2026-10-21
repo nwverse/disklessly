@@ -12,7 +12,7 @@ func usage() -> Never {
       pin APP | unpin APP | evict APP | gc | restore APP | unpack APP | stub rebuild APP
       backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
       sessions [--apply] [--days N] | sessions search QUERY | sessions restore ID|PATH
-      hooks list|enable|disable APP | doctor | version | serve [--port PORT]
+      ui | hooks list|enable|disable APP | doctor | version
     Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
       ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,
       ISENOUGH_QUOTA_BYTES, ISENOUGH_MIN_FREE_BYTES, ISENOUGH_SIGN_IDENTITY
@@ -71,7 +71,7 @@ do {
         var manifest=try find(parsed.app)
         manifest.mode = .restore
         try engine.launch(manifest,documents:parsed.documents,urls:parsed.urls,arguments:parsed.arguments,wait:parsed.wait); emit(["ok":true])
-    case "pin", "unpin": guard let n=args.first else { throw IsenoughError.usage("\(command) requires app") }; let m=try find(n); var s=StateStore(config.stateDir).read(); var apps=s["apps"] as? [String:[String:Any]] ?? [:]; var item=apps[m.bundleId] ?? [:]; item["imageId"]=m.imageId; item["pinned"]=command=="pin"; apps[m.bundleId]=item; s["apps"]=apps; try StateStore(config.stateDir).write(s); if command=="pin" { _=try engine.prefetch(m) }; emit(["ok":true,"pinned":command=="pin"])
+    case "pin", "unpin": guard let n=args.first else { throw IsenoughError.usage("\(command) requires app") }; try engine.setPinned(try find(n), pinned: command=="pin"); emit(["ok":true,"pinned":command=="pin"])
     case "evict": guard let n=args.first else { throw IsenoughError.usage("evict requires app") }; try engine.evict(find(n)); emit(["ok":true])
     case "gc": emit(["ok":true,"removed":[] as [String],"recovered":try engine.gc()])
     case "doctor":
@@ -154,7 +154,15 @@ do {
         }
     case "stub": if args.first=="rebuild" { emit(["ok":false,"message":"Stub rebuild requires macOS and a manifest-backed installed app" ]) } else { usage() }
     case "hooks": emit(["ok":true,"hooks":[] as [String]])
-    case "serve": emit(["ok":false,"message":"HTTP server not yet available; use the static management UI" ])
+    case "ui":
+        let webRoot = ProcessInfo.processInfo.environment["ISENOUGH_WEB_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
+            ?? Bundle.module.url(forResource: "web", withExtension: nil)
+        let ui = LoopbackUIServer { request in ManagementUI.respond(engine: engine, webRoot: webRoot, request: request) }
+        try ui.start()
+        print("http://127.0.0.1:\(ui.port)/?token=\(ui.token)")
+        fflush(stdout)
+        dispatchMain()
+    case "serve": emit(["ok":false,"message":"HTTP server not yet available; use isenough ui" ])
     case "daemon": emit(["ok":false,"message":"Daemon management is not implemented in MVP build"])
     case "detach", "unpack", "trust": throw IsenoughError.unsupported("\(command) is not available in this MVP build")
     default: throw IsenoughError.usage(command.hasPrefix("--") ? "Unknown option: \(command)" : "Unknown command: \(command)")

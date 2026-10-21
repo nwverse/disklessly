@@ -54,7 +54,8 @@ adapter is not implemented yet.
 - `isenough hooks list|enable|disable APP`: placeholder.
 - `isenough doctor`: basic path/platform check.
 - `isenough backend add smb|nfs|webdav ...` / `backend list` / `backend use ID`: register a share or WebDAV repository. Passwords come from `--password-stdin` and are stored in the Keychain, not in `config.json`. See `docs/backends.md`.
-- `isenough serve [--port PORT]`, `daemon install|uninstall|status`: placeholders; HTTP daemon is not shipped.
+- `isenough ui` serves the management page on `127.0.0.1` with a random token. `scripts/build-ui.sh` copies the page and, when Pake is installed, builds `256isenough.app`.
+- `isenough serve`, `daemon install|uninstall|status`: placeholders.
 - `isenough trust APP`: not implemented.
 - `isenough version`: version/schema.
 
