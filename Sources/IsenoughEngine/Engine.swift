@@ -307,7 +307,7 @@ public struct IsenoughEngine {
     }
     #if os(macOS)
     private func run(_ path:String,_ args:[String]) throws {
-        let p=Process(); p.executableURL=URL(fileURLWithPath:path); p.arguments=args
+        let p=ParsedCommand.process(path:path, arguments:args)
         let output=Pipe(); p.standardOutput=output; p.standardError=output
         do { try p.run() } catch {
             throw IsenoughError.failure("Could not start \(path) \(args.joined(separator:" ")): \(error.localizedDescription)")

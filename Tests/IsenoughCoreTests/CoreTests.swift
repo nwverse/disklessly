@@ -131,6 +131,38 @@ final class CoreTests: XCTestCase {
         XCTAssertTrue(world.journals().isEmpty)
     }
 
+    /// hdiutil on a zh_CN Mac prints "无法识别映像" unless the child locale is English.
+    /// The mount-mode assertion still matches "image not recognized"; this test checks
+    /// the environment that child is given.
+    func testParsedCommandSpawnsDiagnosticsInEnglish() throws {
+        let chinese = ["PATH": "/bin:/usr/bin", "LANG": "zh_CN.UTF-8", "LC_ALL": "zh_CN.UTF-8", "KEEP": "marker"]
+        let env = ParsedCommand.environment(inheriting: chinese)
+        XCTAssertEqual(env["LC_ALL"], "C")
+        XCTAssertEqual(env["LANG"], "en_US.UTF-8")
+        XCTAssertEqual(env["KEEP"], "marker")
+        for tool in ["/usr/bin/hdiutil", "/usr/sbin/diskutil", "/usr/bin/codesign"] {
+            let spawned = ParsedCommand.process(path: tool, arguments: ["attach"], inheriting: chinese)
+            XCTAssertEqual(spawned.environment?["LC_ALL"], "C", tool)
+            XCTAssertEqual(spawned.environment?["LANG"], "en_US.UTF-8", tool)
+            XCTAssertEqual(spawned.environment?["KEEP"], "marker", tool)
+        }
+        XCTAssertNil(ParsedCommand.process(path: "/usr/bin/open", arguments: ["-a", "Finder"], inheriting: chinese).environment)
+        XCTAssertFalse(ParsedCommand.localizesDiagnostics("/usr/bin/ditto"))
+
+        let child = Process()
+        child.executableURL = URL(fileURLWithPath: "/bin/sh")
+        child.arguments = ["-c", "printf '%s %s %s' \"$LC_ALL\" \"$LANG\" \"$KEEP\""]
+        child.environment = ParsedCommand.process(path: "/usr/bin/hdiutil", arguments: ["attach"], inheriting: chinese).environment
+        let pipe = Pipe()
+        child.standardOutput = pipe
+        child.standardError = Pipe()
+        try child.run()
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        child.waitUntilExit()
+        XCTAssertEqual(child.terminationStatus, 0)
+        XCTAssertEqual(String(decoding: data, as: UTF8.self), "C en_US.UTF-8 marker")
+    }
+
     func testStubArgvKeepsFlagShapedNamesAfterSeparator() throws {
         let cwd = URL(fileURLWithPath: "/w")
         let built = try StubArgv.build(appId: "com.a", rawArguments: ["--", "-NSnotes.txt", "keep.txt"], cwd: cwd)

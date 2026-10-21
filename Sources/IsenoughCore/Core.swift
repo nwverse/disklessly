@@ -145,6 +145,36 @@ public struct FileLock {
     #endif
 }
 
+/// `hdiutil`, `diskutil`, and `codesign` localize the diagnostics this program parses
+/// (`image not recognized`, `CDHash=`). Those processes get a fixed English locale.
+/// Every other variable is copied from the parent so paths and home still resolve.
+/// `open` is not included: its environment is inherited by the launched app.
+public enum ParsedCommand {
+    public static func localizesDiagnostics(_ path: String) -> Bool {
+        switch (path as NSString).lastPathComponent {
+        case "hdiutil", "diskutil", "codesign": return true
+        default: return false
+        }
+    }
+
+    public static func environment(inheriting base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var env = base
+        env["LC_ALL"] = "C"
+        env["LANG"] = "en_US.UTF-8"
+        return env
+    }
+
+    public static func process(path: String, arguments: [String], inheriting base: [String: String] = ProcessInfo.processInfo.environment) -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        if localizesDiagnostics(path) {
+            process.environment = environment(inheriting: base)
+        }
+        return process
+    }
+}
+
 public struct BackendStat: Equatable { public var size: UInt64; public var modified: Date; public init(size: UInt64, modified: Date) { self.size=size; self.modified=modified } }
 public struct LocalFolderBackend: StorageBackend {
     public let root: URL

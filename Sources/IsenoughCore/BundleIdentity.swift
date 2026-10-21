@@ -287,9 +287,7 @@ public enum BundleHasher {
 
     public static func signatureValid(_ root: URL) -> Bool {
         #if os(macOS)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        process.arguments = ["--verify", "--strict", root.path]
+        let process = ParsedCommand.process(path: "/usr/bin/codesign", arguments: ["--verify", "--strict", root.path])
         process.standardOutput = Pipe()
         process.standardError = Pipe()
         do { try process.run() } catch { return false }
@@ -320,9 +318,7 @@ public enum BundleHasher {
     }
 
     private static func codesignDisplay(_ url: URL) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/codesign")
-        process.arguments = ["-dvvv", url.path]
+        let process = ParsedCommand.process(path: "/usr/bin/codesign", arguments: ["-dvvv", url.path])
         let pipe = Pipe()
         process.standardOutput = Pipe()
         process.standardError = pipe

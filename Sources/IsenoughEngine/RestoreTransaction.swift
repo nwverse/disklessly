@@ -167,9 +167,7 @@ enum ProcessProbe {
 
 enum ProcessRunner {
     static func run(_ path: String, _ args: [String]) throws {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: path)
-        process.arguments = args
+        let process = ParsedCommand.process(path: path, arguments: args)
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = pipe
