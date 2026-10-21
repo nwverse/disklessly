@@ -10,7 +10,7 @@ func usage() -> Never {
       pack APP.app [--mode mount|restore] [--no-stub] [--keep-original] [--stub-dir DIR]
       list [--json] | status [APP] [--json] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
       pin APP | unpin APP | evict APP | gc | restore APP | unpack APP | stub rebuild APP
-      backend add smb|nfs|webdav ... | backend list | backend use ID
+      backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
       hooks list|enable|disable APP | doctor | version | serve [--port PORT]
     Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
       ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,

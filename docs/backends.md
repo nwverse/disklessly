@@ -28,6 +28,16 @@ isenough backend add webdav --url https://nas.example/dav/256isenough --user ali
 
 `PROPFIND` lists and stats. `GET` with `Range: bytes=N-` resumes a `.part` in the cache. A `200` response to a ranged GET is the whole object and replaces the partial. After the bytes are on disk, the cache file's sha256 must match the manifest. `PUT` goes to `.<name>.tmp-<uuid>`, then `MOVE` with `Overwrite: F`, then a re-read hash. Basic credentials come from the Keychain. A connection failure is `EX_BACKEND`.
 
+## OpenList
+
+Supported API: **OpenList 3 and AList 3** (`/api/auth/login`, `/api/fs/list`, `/api/fs/get`, `/api/fs/put`, `/api/fs/remove`, `/api/fs/mkdir`). AList 2 is not supported.
+
+```sh
+isenough backend add openlist --url http://nas.local:5244 --root /256isenough --user alice --id ol --password-stdin
+```
+
+The password is stored in the Keychain. A successful login stores the token there as well (`openlist-token:…`). A 401 logs in again. `fs/get` returns `raw_url`; the download uses the same ranged GET and sha256 check as WebDAV. The raw URL does not receive the API token. `fs/put` uploads with `File-Path` and `As-Task: false`, then re-reads the object and checks the hash.
+
 ## Defaults
 
 Unless the config or environment already sets them: cache quota 20 GiB, free-space floor 15 GiB (`ISENOUGH_MIN_FREE_BYTES`), detach delay 120 s, ad-hoc signing (`-`, override with `ISENOUGH_SIGN_IDENTITY`). Fetching refuses with `EX_NOSPACE` (8) when the download would leave less than the floor free.

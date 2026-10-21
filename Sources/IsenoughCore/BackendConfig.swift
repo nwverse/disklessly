@@ -32,6 +32,7 @@ public struct BackendDraft: Equatable {
     public var user: String?
     public var mountPoint: String?
     public var url: String?
+    public var remoteRoot: String?
     public var password: String?
     public var readPasswordFromStdin: Bool
     public init(type: String) {
@@ -55,8 +56,8 @@ public enum SpaceFloor {
 
 public enum BackendCommands {
     public static func parseAdd(_ args: [String]) throws -> BackendDraft {
-        guard let type = args.first, ["smb", "nfs", "webdav"].contains(type) else {
-            throw IsenoughError.usage("backend add requires smb, nfs, or webdav")
+        guard let type = args.first, ["smb", "nfs", "webdav", "openlist"].contains(type) else {
+            throw IsenoughError.usage("backend add requires smb, nfs, webdav, or openlist")
         }
         var draft = BackendDraft(type: type)
         var index = 1
@@ -81,6 +82,7 @@ public enum BackendCommands {
             case "--user": draft.user = value
             case "--mount": draft.mountPoint = value
             case "--url": draft.url = value
+            case "--root": draft.remoteRoot = value
             default: throw IsenoughError.usage("Unknown option: \(flag)")
             }
         }
@@ -98,6 +100,11 @@ public enum BackendCommands {
             guard let url = draft.url, url.hasPrefix("http://") || url.hasPrefix("https://") else {
                 throw IsenoughError.usage("webdav requires --url http(s)://…")
             }
+        case "openlist":
+            guard let url = draft.url, url.hasPrefix("http://") || url.hasPrefix("https://") else {
+                throw IsenoughError.usage("openlist requires --url http(s)://…")
+            }
+            guard draft.user != nil else { throw IsenoughError.usage("openlist requires --user") }
         default: break
         }
         return draft
@@ -137,6 +144,9 @@ public enum BackendCatalog {
             return BackendEndpoint(id: id, type: "nfs", host: host, exportPath: export, user: draft.user, mountPoint: draft.mountPoint, url: "nfs://\(host)\(export)")
         case "webdav":
             return BackendEndpoint(id: id, type: "webdav", user: draft.user, url: draft.url)
+        case "openlist":
+            let root = draft.remoteRoot ?? "/"
+            return BackendEndpoint(id: id, type: "openlist", user: draft.user, url: draft.url, root: root)
         default:
             throw IsenoughError.usage("Unknown backend type: \(draft.type)")
         }
@@ -177,6 +187,13 @@ public enum BackendFactory {
             }
             let client = transport ?? URLSessionTransport(origin: url.host)
             return WebDAVBackend(baseURL: url, user: endpoint.user, password: password, transport: client)
+        case "openlist":
+            guard let raw = endpoint.url, let url = URL(string: raw) else { throw IsenoughError.backend("openlist backend has no URL") }
+            let account = BackendCommands.secretAccount(type: "openlist", id: endpoint.id)
+            let password = try secrets.load(service: BackendCatalog.keychainService, account: account)
+            guard let password, !password.isEmpty else { throw IsenoughError.backend("openlist credential is not in the Keychain") }
+            let client = transport ?? URLSessionTransport(origin: url.host)
+            return OpenListBackend(baseURL: url, root: endpoint.root, user: endpoint.user ?? "", password: password, transport: client, secrets: secrets, secretAccount: account)
         default:
             throw IsenoughError.backend("Unknown backend type: \(endpoint.type)")
         }
