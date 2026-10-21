@@ -16,7 +16,7 @@ func usage() -> Never {
       list [--json] | status [APP] [--json] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
       pin APP | unpin APP | evict APP | gc | restore APP | unpack APP | stub rebuild APP
       backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
-      sessions [--apply] [--days N] | sessions search QUERY | sessions restore ID|PATH
+      sessions [--apply] [--days N] [--home DIR] | sessions search QUERY | sessions restore ID|PATH
       ui | hooks list|enable|disable APP | doctor | version
     Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
       ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,
@@ -118,12 +118,14 @@ do {
     case "sessions":
         var apply = false
         var days: Int?
+        var home: String?
         var rest = args
         var filtered: [String] = []
         while !rest.isEmpty {
             let flag = rest.removeFirst()
             if flag == "--apply" { apply = true }
             else if flag == "--days", let raw = rest.first, let value = Int(raw) { days = value; rest.removeFirst() }
+            else if flag == "--home", let raw = rest.first { home = raw; rest.removeFirst() }
             else { filtered.append(flag) }
         }
         if filtered.first == "search" {
@@ -136,7 +138,7 @@ do {
             let path = try SessionArchive.restore(config: config, backend: engine.repo, query: filtered[1])
             emit(["ok": true, "path": path])
         } else if filtered.isEmpty {
-            let report = try SessionArchive.tier(config: config, backend: engine.repo, apply: apply, coldDays: days, isOpen: liveSessionOpen)
+            let report = try SessionArchive.tier(config: config, backend: engine.repo, apply: apply, coldDays: days, home: home, isOpen: liveSessionOpen)
             emit(["ok": true, "applied": report.applied, "cold": report.cold, "skipped": report.skipped.map { ["path": $0.0, "reason": $0.1] }])
         } else {
             throw IsenoughError.usage("Unknown sessions command: \(filtered[0])")

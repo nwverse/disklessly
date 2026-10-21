@@ -53,6 +53,21 @@ public enum SessionPaths {
     public static func canonical(_ path: String) -> String {
         URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
     }
+
+    /// `$HOME` when the variable is set. `NSHomeDirectory()` is the passwd home and is
+    /// used only when HOME is missing or empty. On macOS `NSHomeDirectory()` ignores `$HOME`.
+    public static func homeDirectory(environment: [String: String]) -> String {
+        if let home = environment["HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines), !home.isEmpty {
+            return canonical(home)
+        }
+        return canonical(NSHomeDirectory())
+    }
+
+    public static func contains(_ root: String, path: String) -> Bool {
+        let base = canonical(root)
+        let file = canonical(path)
+        return file == base || file.hasPrefix(base + "/")
+    }
 }
 
 public enum OpenFileProbe {

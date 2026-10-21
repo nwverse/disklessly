@@ -349,12 +349,32 @@ case "$SESSION_HOME" in
 esac
 SESSION_ALIAS="$SESSION_HOME_ALIAS/.pi/agent/sessions/old.jsonl"
 HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions >"$TMP/sessions-dry.json" 2>>"$LOG" || fail 'sessions dry run'
-/usr/bin/python3 - "$TMP/sessions-dry.json" "$SESSION_CANON" <<'PY' || fail 'sessions dry run canonical path'
-import json, sys
-report, canon = json.load(open(sys.argv[1])), sys.argv[2]
+# Refuse --apply unless every dry-run path stays inside the temp home. An empty
+# cold list is not enough: a scan of the real home shows up in skipped.
+if ! /usr/bin/python3 - "$TMP/sessions-dry.json" "$SESSION_HOME" "$SESSION_CANON" >>"$LOG" 2>&1 <<'PY'
+import json, os, sys
+report = json.load(open(sys.argv[1]))
+root = os.path.realpath(sys.argv[2])
+canon = os.path.realpath(sys.argv[3])
+paths = list(report.get("cold") or [])
+for item in report.get("skipped") or []:
+    paths.append(item["path"])
+bad = []
+for path in paths:
+    real = os.path.realpath(path)
+    if real != root and not real.startswith(root + os.sep):
+        bad.append(path)
+if bad:
+    print("outside temp home:")
+    print("\n".join(bad[:30]))
+    raise SystemExit(1)
 if report.get("applied") is not False or report.get("cold") != [canon]:
-    raise SystemExit(f"dry run {report} expected cold {[canon]}")
+    print("dry run cold %s expected %s" % (report.get("cold"), [canon]))
+    raise SystemExit(1)
 PY
+then
+  fail 'sessions dry run listed a path outside the temp home; refusing to apply'
+fi
 [[ -f "$SESSION_CANON" ]] || fail 'sessions dry run deleted a file'
 pass 'sessions dry run keeps the cold file and reports its canonical path'
 HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions --apply >"$TMP/sessions-apply.json" 2>>"$LOG" || fail 'sessions apply'

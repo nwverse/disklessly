@@ -20,10 +20,12 @@ public struct RuntimeConfig: Codable {
     public var sessionColdDays: Int = 14
     /// Extra session roots. When empty, the built-in pi, Claude Code, and Codex roots are used.
     public var sessionRoots: [SessionRoot] = []
+    /// Home used to build the built-in session roots. Overrides `$HOME` when set. `--home` overrides this.
+    public var sessionHome: String? = nil
     public init(repoPath: String, cacheDir: String, stateDir: String, mountRoot: String, stubDir: String) { self.repoPath=repoPath; self.cacheDir=cacheDir; self.stateDir=stateDir; self.mountRoot=mountRoot; self.stubDir=stubDir }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, backends, activeBackendId, signIdentity, sessionColdDays, sessionRoots
+        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, backends, activeBackendId, signIdentity, sessionColdDays, sessionRoots, sessionHome
     }
 
     public init(from decoder: Decoder) throws {
@@ -43,6 +45,7 @@ public struct RuntimeConfig: Codable {
         signIdentity = try container.decodeIfPresent(String.self, forKey: .signIdentity) ?? "-"
         sessionColdDays = try container.decodeIfPresent(Int.self, forKey: .sessionColdDays) ?? 14
         sessionRoots = try container.decodeIfPresent([SessionRoot].self, forKey: .sessionRoots) ?? []
+        sessionHome = try container.decodeIfPresent(String.self, forKey: .sessionHome)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -62,6 +65,7 @@ public struct RuntimeConfig: Codable {
         try container.encode(signIdentity, forKey: .signIdentity)
         try container.encode(sessionColdDays, forKey: .sessionColdDays)
         try container.encode(sessionRoots, forKey: .sessionRoots)
+        try container.encodeIfPresent(sessionHome, forKey: .sessionHome)
     }
 
     public static func environment() -> RuntimeConfig {

@@ -46,14 +46,17 @@ public enum SessionArchive {
             for case let url as URL in enumerator {
                 let path = SessionPaths.canonical(url.path)
                 guard path.hasSuffix(root.suffix) else { continue }
-                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
-                guard values.isRegularFile == true else { continue }
-                let data = (try? Data(contentsOf: url)) ?? Data()
+                let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+                guard values.isRegularFile == true || values.isSymbolicLink == true else { continue }
+                var targetIsDirectory: ObjCBool = false
+                guard fm.fileExists(atPath: path, isDirectory: &targetIsDirectory), !targetIsDirectory.boolValue else { continue }
+                let data = (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data()
+                let attributes = try? fm.attributesOfItem(atPath: path)
                 found.append(SessionCandidate(
                     path: path,
                     tool: root.tool,
-                    size: UInt64(values.fileSize ?? data.count),
-                    modified: values.contentModificationDate ?? .distantPast,
+                    size: (attributes?[.size] as? NSNumber)?.uint64Value ?? UInt64(data.count),
+                    modified: attributes?[.modificationDate] as? Date ?? .distantPast,
                     open: isOpen(path),
                     preview: SessionTiering.preview(of: data)
                 ))
@@ -62,16 +65,47 @@ public enum SessionArchive {
         return found.sorted { $0.path < $1.path }
     }
 
+    /// Built-in roots come from `--home`, then `config.sessionHome`, then `$HOME`.
+    /// The passwd home is used only when HOME is unset. An explicit `sessionRoots`
+    /// list replaces the built-in directories.
+    public static func configuredRoots(config: RuntimeConfig, home: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment) -> [SessionRoot] {
+        if !config.sessionRoots.isEmpty {
+            return config.sessionRoots.map { root in
+                var copy = root
+                copy.directory = SessionPaths.canonical(root.directory)
+                return copy
+            }
+        }
+        let base: String
+        if let home, !home.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            base = SessionPaths.canonical(home)
+        } else if let configured = config.sessionHome, !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            base = SessionPaths.canonical(configured)
+        } else {
+            base = SessionPaths.homeDirectory(environment: environment)
+        }
+        return SessionRoot.defaults(home: base)
+    }
+
+    /// Paths whose canonical form is not inside a configured root. `--apply` refuses these.
+    public static func pathsOutsideRoots(_ paths: [String], roots: [SessionRoot]) -> [String] {
+        paths.filter { path in !roots.contains { SessionPaths.contains($0.directory, path: path) } }
+    }
+
     /// Without `apply`, nothing is uploaded or deleted. The first run is a dry run
     /// unless the caller passes `apply: true`.
-    public static func tier(config: RuntimeConfig, backend: any StorageBackend, now: Date = Date(), apply: Bool = false, coldDays: Int? = nil, isOpen: (String) -> Bool = { _ in false }) throws -> SessionReport {
+    public static func tier(config: RuntimeConfig, backend: any StorageBackend, now: Date = Date(), apply: Bool = false, coldDays: Int? = nil, home: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment, isOpen: (String) -> Bool = { _ in false }) throws -> SessionReport {
         let days = coldDays ?? config.sessionColdDays
-        let roots = config.sessionRoots.isEmpty ? SessionRoot.defaults(home: NSHomeDirectory()) : config.sessionRoots
+        let roots = configuredRoots(config: config, home: home, environment: environment)
         let candidates = try scan(roots: roots, isOpen: isOpen)
         let decisions = candidates.map { SessionTiering.decide($0, now: now, coldDays: days) }
         let cold = decisions.filter(\.cold).map(\.candidate)
         let skipped = decisions.filter { !$0.cold }.map { ($0.candidate.path, $0.reason) }
         guard apply else { return SessionReport(cold: cold.map(\.path), skipped: skipped, applied: false) }
+        let outside = pathsOutsideRoots(candidates.map(\.path), roots: roots)
+        if !outside.isEmpty {
+            throw IsenoughError.usage("refusing to apply session tiering; candidate is outside the configured roots: \(outside.sorted().joined(separator: ", "))")
+        }
         var index = try loadIndex(config.stateDir)
         let groups = Dictionary(grouping: cold) { SessionTiering.archivePath(tool: $0.tool, month: SessionTiering.monthKey($0.modified)) }
         for (archive, files) in groups {

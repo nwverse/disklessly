@@ -83,4 +83,74 @@ final class SessionTests: XCTestCase {
         XCTAssertEqual(restoredMtime.timeIntervalSince1970, found[0].modified.timeIntervalSince1970, accuracy: 1)
         XCTAssertTrue(try SessionArchive.search(config: config, query: "blender").isEmpty)
     }
+
+    func testHomeEnvironmentControlsSessionDiscovery() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let realHome = root.appendingPathComponent("real-home")
+        let alias = root.appendingPathComponent("alias-home")
+        let sessions = realHome.appendingPathComponent(".pi/agent/sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: realHome)
+        let oldURL = sessions.appendingPathComponent("old.jsonl")
+        try Data("{\"text\":\"from home\"}\n".utf8).write(to: oldURL)
+        let decoyDir = root.appendingPathComponent("other-home/.pi/agent/sessions")
+        try FileManager.default.createDirectory(at: decoyDir, withIntermediateDirectories: true)
+        let decoy = decoyDir.appendingPathComponent("decoy.jsonl")
+        try Data("{\"text\":\"not this home\"}\n".utf8).write(to: decoy)
+        let now = Date()
+        let oldDate = now.addingTimeInterval(-(30 * 24 * 60 * 60))
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: oldURL.path)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: decoy.path)
+        let oldPath = SessionPaths.canonical(oldURL.path)
+        var config = RuntimeConfig(repoPath: root.appendingPathComponent("repo").path, cacheDir: root.appendingPathComponent("cache").path, stateDir: root.appendingPathComponent("state").path, mountRoot: root.appendingPathComponent("mnt").path, stubDir: root.appendingPathComponent("apps").path)
+        let backend = try LocalFolderBackend(root: URL(fileURLWithPath: config.repoPath))
+        XCTAssertEqual(SessionPaths.homeDirectory(environment: ["HOME": alias.path]), SessionPaths.canonical(alias.path))
+        XCTAssertEqual(SessionPaths.homeDirectory(environment: ["HOME": ""]), SessionPaths.canonical(NSHomeDirectory()))
+        XCTAssertEqual(SessionPaths.homeDirectory(environment: [:]), SessionPaths.canonical(NSHomeDirectory()))
+        let fromHome = try SessionArchive.tier(config: config, backend: backend, now: now, apply: false, environment: ["HOME": alias.path])
+        XCTAssertEqual(fromHome.cold, [oldPath])
+        let listed = fromHome.cold + fromHome.skipped.map(\.0)
+        XCTAssertTrue(listed.allSatisfy { SessionPaths.contains(realHome.path, path: $0) })
+        XCTAssertFalse(listed.contains { $0.contains("other-home") })
+        let decoyHome = decoyDir.deletingLastPathComponent().path
+        config.sessionHome = alias.path
+        let fromConfig = try SessionArchive.tier(config: config, backend: backend, now: now, apply: false, environment: ["HOME": decoyHome])
+        XCTAssertEqual(fromConfig.cold, [oldPath])
+        config.sessionHome = decoyHome
+        let fromFlag = try SessionArchive.tier(config: config, backend: backend, now: now, apply: false, home: alias.path, environment: ["HOME": decoyHome])
+        XCTAssertEqual(fromFlag.cold, [oldPath])
+        let roots = [SessionRoot(tool: "pi", directory: sessions.path)]
+        XCTAssertEqual(SessionArchive.pathsOutsideRoots([decoy.path], roots: roots), [SessionPaths.canonical(decoy.path)])
+        XCTAssertTrue(SessionArchive.pathsOutsideRoots([oldURL.path], roots: roots).isEmpty)
+    }
+
+    func testApplyRefusesACandidateOutsideTheConfiguredRoot() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let sessions = root.appendingPathComponent("home/.pi/agent/sessions")
+        let outsideDir = root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outsideDir, withIntermediateDirectories: true)
+        let outside = outsideDir.appendingPathComponent("secret.jsonl")
+        let body = Data("do not pack\n".utf8)
+        try body.write(to: outside)
+        let link = sessions.appendingPathComponent("escape.jsonl")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        let kept = sessions.appendingPathComponent("kept.jsonl")
+        try Data("kept\n".utf8).write(to: kept)
+        let now = Date()
+        let oldDate = now.addingTimeInterval(-(30 * 24 * 60 * 60))
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: outside.path)
+        try FileManager.default.setAttributes([.modificationDate: oldDate], ofItemAtPath: kept.path)
+        var config = RuntimeConfig(repoPath: root.appendingPathComponent("repo").path, cacheDir: root.appendingPathComponent("cache").path, stateDir: root.appendingPathComponent("state").path, mountRoot: root.appendingPathComponent("mnt").path, stubDir: root.appendingPathComponent("apps").path)
+        config.sessionRoots = [SessionRoot(tool: "pi", directory: sessions.path)]
+        let backend = try LocalFolderBackend(root: URL(fileURLWithPath: config.repoPath))
+        XCTAssertThrowsError(try SessionArchive.tier(config: config, backend: backend, now: now, apply: true)) { error in
+            XCTAssertTrue(((error as? IsenoughError)?.errorDescription ?? "").contains("outside the configured roots"))
+        }
+        XCTAssertEqual(try Data(contentsOf: outside), body)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("repo/sessions").path))
+    }
 }
