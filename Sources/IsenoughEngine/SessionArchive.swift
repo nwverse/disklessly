@@ -44,7 +44,7 @@ public enum SessionArchive {
             guard fm.fileExists(atPath: root.directory, isDirectory: &isDir), isDir.boolValue else { continue }
             guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: root.directory), includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey], options: [.skipsHiddenFiles]) else { continue }
             for case let url as URL in enumerator {
-                let path = url.path
+                let path = SessionPaths.canonical(url.path)
                 guard path.hasSuffix(root.suffix) else { continue }
                 let values = try url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey])
                 guard values.isRegularFile == true else { continue }
@@ -92,7 +92,7 @@ public enum SessionArchive {
 
     public static func restore(config: RuntimeConfig, backend: any StorageBackend, query: String) throws -> String {
         let index = try loadIndex(config.stateDir)
-        let matches = index.entries.filter { $0.id == query || $0.path == query || $0.path.hasSuffix("/" + query) }
+        let matches = index.matches(query)
         guard let entry = matches.first else { throw IsenoughError.usage("no cold session matches \(query)") }
         guard matches.count == 1 else { throw IsenoughError.usage("session query \(query) matches \(matches.count) entries") }
         let data = try backend.get(entry.archive, range: nil)
@@ -110,11 +110,12 @@ public enum SessionArchive {
         try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
         try bytes.write(to: destination, options: .atomic)
         let restoredDate = entry.tool == "claude" ? Date() : entry.modified
-        try FileManager.default.setAttributes([.modificationDate: restoredDate], ofItemAtPath: destination.path)
+        let restoredPath = SessionPaths.canonical(destination.path)
+        try FileManager.default.setAttributes([.modificationDate: restoredDate], ofItemAtPath: restoredPath)
         var updated = index
         updated.entries.removeAll { $0.id == entry.id }
         try saveIndex(updated, stateDir: config.stateDir)
-        return destination.path
+        return restoredPath
     }
 
     private static func publish(archive: String, files: [SessionCandidate], backend: any StorageBackend, index: inout SessionIndex) throws {

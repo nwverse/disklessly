@@ -10,11 +10,13 @@ mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 MOUNT_ROOT="$TMP/mounts"
 APP_PID=""
+UI_PID=""
 
 cleanup() {
   local status=$?
   if [[ -f "${ISENOUGH_E2E_PID:-}" ]]; then kill "$(cat "$ISENOUGH_E2E_PID")" 2>/dev/null || true; fi
   if [[ -n "${APP_PID:-}" ]]; then kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi
+  if [[ -n "${UI_PID:-}" ]]; then kill "$UI_PID" 2>/dev/null || true; wait "$UI_PID" 2>/dev/null || true; fi
   if [[ -n "${HELPER:-}" ]]; then kill "$HELPER" 2>/dev/null || true; wait "$HELPER" 2>/dev/null || true; fi
   if [[ -f "${BUSY_PID:-}" ]]; then kill -9 "$(cat "$BUSY_PID")" 2>/dev/null || true; fi
   if [[ "$status" -ne 0 && -f "${LOG:-}" ]]; then
@@ -329,5 +331,89 @@ pass 'remote sha256 mismatch rejected'
 # Restore-mode crash recovery. Mount-mode assertions above are unchanged.
 # shellcheck source=e2e-restore.sh
 source "$ROOT/scripts/e2e-restore.sh"
+
+# Session tiering against a temp HOME. The alias spelling (/var vs /private/var)
+# must round-trip through the index.
+SESSION_HOME="$TMP/session-home"
+mkdir -p "$SESSION_HOME/.pi/agent/sessions"
+SESSION_OLD="$SESSION_HOME/.pi/agent/sessions/old.jsonl"
+SESSION_FRESH="$SESSION_HOME/.pi/agent/sessions/fresh.jsonl"
+printf '%s\n' '{"type":"user","text":"pack the blender notes"}' > "$SESSION_OLD"
+printf '%s\n' 'still hot' > "$SESSION_FRESH"
+touch -t "$(date -v-30d '+%Y%m%d%H%M.%S')" "$SESSION_OLD"
+touch -t "$(date -v-2H '+%Y%m%d%H%M.%S')" "$SESSION_FRESH"
+SESSION_CANON="$(/usr/bin/python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SESSION_OLD")"
+case "$SESSION_HOME" in
+  /private/*) SESSION_HOME_ALIAS="/${SESSION_HOME#/private/}" ;;
+  *) SESSION_HOME_ALIAS="$SESSION_HOME" ;;
+esac
+SESSION_ALIAS="$SESSION_HOME_ALIAS/.pi/agent/sessions/old.jsonl"
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions >"$TMP/sessions-dry.json" 2>>"$LOG" || fail 'sessions dry run'
+/usr/bin/python3 - "$TMP/sessions-dry.json" "$SESSION_CANON" <<'PY' || fail 'sessions dry run canonical path'
+import json, sys
+report, canon = json.load(open(sys.argv[1])), sys.argv[2]
+if report.get("applied") is not False or report.get("cold") != [canon]:
+    raise SystemExit(f"dry run {report} expected cold {[canon]}")
+PY
+[[ -f "$SESSION_CANON" ]] || fail 'sessions dry run deleted a file'
+pass 'sessions dry run keeps the cold file and reports its canonical path'
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions --apply >"$TMP/sessions-apply.json" 2>>"$LOG" || fail 'sessions apply'
+/usr/bin/python3 - "$TMP/sessions-apply.json" "$SESSION_CANON" "$ISENOUGH_STATE_DIR/sessions-index.json" <<'PY' || fail 'sessions apply canonical index'
+import json, sys
+report, canon, index_path = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
+index = json.load(open(index_path))
+paths = [entry["path"] for entry in index["entries"]]
+if report.get("applied") is not True or report.get("cold") != [canon] or paths != [canon]:
+    raise SystemExit(f"apply {report} index {paths} expected {[canon]}")
+PY
+[[ ! -f "$SESSION_CANON" ]] || fail 'sessions apply left the cold file in place'
+[[ -f "$SESSION_FRESH" ]] || fail 'sessions apply removed a hot file'
+pass 'sessions apply packs the cold file and keeps the hot file'
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions search blender >"$TMP/sessions-search.json" 2>>"$LOG" || fail 'sessions search'
+/usr/bin/python3 - "$TMP/sessions-search.json" "$SESSION_CANON" <<'PY' || fail 'sessions search missed the packed preview'
+import json, sys
+hits, canon = json.load(open(sys.argv[1])), sys.argv[2]
+if len(hits) != 1 or hits[0].get("path") != canon or "blender" not in hits[0].get("preview", ""):
+    raise SystemExit(f"search {hits}")
+PY
+pass 'sessions search finds the packed preview'
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions restore "$SESSION_ALIAS" >"$TMP/sessions-restore.json" 2>>"$LOG" || fail 'sessions restore'
+/usr/bin/python3 - "$TMP/sessions-restore.json" "$SESSION_CANON" <<'PY' || fail 'sessions restore path'
+import json, sys
+report, canon = json.load(open(sys.argv[1])), sys.argv[2]
+if report.get("ok") is not True or report.get("path") != canon:
+    raise SystemExit(f"restore {report} expected {canon}")
+PY
+grep -Fq 'pack the blender notes' "$SESSION_CANON" || fail 'sessions restore bytes'
+pass 'sessions restore round-trip writes the canonical path'
+
+# Loopback UI: 127.0.0.1 only, token required, clean SIGTERM exit.
+"$ROOT/.build/debug/isenough" ui >"$TMP/ui-server.log" 2>&1 &
+UI_PID=$!
+UI_URL=""
+for _ in $(seq 1 50); do
+  if ! kill -0 "$UI_PID" 2>/dev/null; then fail 'isenough ui exited before printing a URL'; fi
+  UI_URL="$(grep -Eo 'http://127\.0\.0\.1:[0-9]+/\?token=[^[:space:]]+' "$TMP/ui-server.log" | head -n 1 || true)"
+  [[ -n "$UI_URL" ]] && break
+  sleep 0.1
+done
+[[ -n "$UI_URL" ]] || fail 'isenough ui did not print a loopback URL'
+/usr/sbin/lsof -nP -a -p "$UI_PID" -iTCP -sTCP:LISTEN >"$TMP/ui-listen.txt" 2>>"$LOG" || fail 'lsof UI listen socket'
+grep -F '127.0.0.1:' "$TMP/ui-listen.txt" >/dev/null || fail 'isenough ui is not bound to 127.0.0.1'
+if grep -E '(\*:|0\.0\.0\.0:)' "$TMP/ui-listen.txt" >/dev/null; then fail 'isenough ui listened outside loopback'; fi
+UI_PORT="$(printf '%s' "$UI_URL" | sed -E 's#http://127\.0\.0\.1:([0-9]+)/.*#\1#')"
+UI_DENIED="$(/usr/bin/curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${UI_PORT}/api/status")"
+[[ "$UI_DENIED" == "401" ]] || fail "isenough ui without a token returned $UI_DENIED"
+UI_PAGE="$(/usr/bin/curl -s -o "$TMP/ui-page.html" -w '%{http_code}' "$UI_URL")"
+[[ "$UI_PAGE" == "200" ]] || fail "isenough ui with a token returned $UI_PAGE"
+grep -Fq 'app.js?token=' "$TMP/ui-page.html" || fail 'isenough ui page omitted the token'
+kill -TERM "$UI_PID"
+set +e
+wait "$UI_PID"
+UI_STATUS=$?
+set -e
+UI_PID=""
+[[ "$UI_STATUS" -eq 0 ]] || fail "isenough ui exit status $UI_STATUS"
+pass 'isenough ui serves loopback with a token and exits cleanly'
 
 printf 'PASS: all macOS end-to-end assertions completed\n' | tee -a "$LOG"

@@ -1,6 +1,11 @@
 import Foundation
 import IsenoughCore
 import IsenoughEngine
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 func usage() -> Never {
     print("""
@@ -46,6 +51,21 @@ func liveSessionOpen(_ path: String) -> Bool {
     process.waitUntilExit()
     let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
     return OpenFileProbe.isOpen(lsofStatus: process.terminationStatus, lsofStdout: text, path: path)
+}
+func serveUntilSignaled(_ server: LoopbackUIServer) -> Never {
+    signal(SIGINT, SIG_IGN)
+    signal(SIGTERM, SIG_IGN)
+    let stop = {
+        server.stop()
+        exit(0)
+    }
+    let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    term.setEventHandler(handler: stop)
+    term.resume()
+    let intr = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+    intr.setEventHandler(handler: stop)
+    intr.resume()
+    dispatchMain()
 }
 func find(_ name:String) throws -> ImageManifest { guard let m=engine.manifest(named: name, in: try engine.list()) else { throw IsenoughError.usage("Unknown app: \(name)") }; return m }
 do {
@@ -161,7 +181,7 @@ do {
         try ui.start()
         print("http://127.0.0.1:\(ui.port)/?token=\(ui.token)")
         fflush(stdout)
-        dispatchMain()
+        serveUntilSignaled(ui)
     case "serve": emit(["ok":false,"message":"HTTP server not yet available; use isenough ui" ])
     case "daemon": emit(["ok":false,"message":"Daemon management is not implemented in MVP build"])
     case "detach", "unpack", "trust": throw IsenoughError.unsupported("\(command) is not available in this MVP build")

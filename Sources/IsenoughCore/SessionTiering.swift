@@ -47,13 +47,26 @@ public struct SessionDecision: Equatable {
     }
 }
 
+public enum SessionPaths {
+    /// Resolve symlinks once. On macOS `/var`, `/tmp`, and `/etc` become `/private/...`,
+    /// so a session discovered through either spelling is stored as one path.
+    public static func canonical(_ path: String) -> String {
+        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+    }
+}
+
 public enum OpenFileProbe {
     /// `lsof -Fn` prints a machine record `n` + path. That line is the classifier.
     /// Exit status other than 0 means the file is not open. The sentence lsof prints
-    /// on failure is ignored.
+    /// on failure is ignored. Both the record and the queried path are canonicalized,
+    /// so `/var/...` and `/private/var/...` name the same open file.
     public static func isOpen(lsofStatus: Int32, lsofStdout: String, path: String) -> Bool {
         guard lsofStatus == 0 else { return false }
-        return lsofStdout.split(separator: "\n", omittingEmptySubsequences: false).contains { $0 == "n\(path)" }
+        let needle = SessionPaths.canonical(path)
+        return lsofStdout.split(separator: "\n", omittingEmptySubsequences: false).contains { line in
+            guard line.hasPrefix("n"), line.count > 1 else { return false }
+            return SessionPaths.canonical(String(line.dropFirst())) == needle
+        }
     }
 }
 
@@ -145,8 +158,23 @@ public struct SessionIndex: Codable, Equatable {
 
     public func search(_ query: String) -> [SessionIndexEntry] {
         let needle = query.lowercased()
-        return entries.filter {
-            $0.id.lowercased().contains(needle) || $0.path.lowercased().contains(needle) || $0.preview.lowercased().contains(needle) || $0.tool.lowercased().contains(needle)
+        let canonicalQuery = query.hasPrefix("/") ? SessionPaths.canonical(query) : nil
+        return entries.filter { entry in
+            if entry.id.lowercased().contains(needle) || entry.preview.lowercased().contains(needle) || entry.tool.lowercased().contains(needle) {
+                return true
+            }
+            if entry.path.lowercased().contains(needle) { return true }
+            guard let canonicalQuery else { return false }
+            let stored = SessionPaths.canonical(entry.path)
+            return stored == canonicalQuery || stored.lowercased().contains(canonicalQuery.lowercased())
         }
+    }
+
+    public func matches(_ query: String) -> [SessionIndexEntry] {
+        if query.hasPrefix("/") {
+            let canonicalQuery = SessionPaths.canonical(query)
+            return entries.filter { SessionPaths.canonical($0.path) == canonicalQuery }
+        }
+        return entries.filter { $0.id == query || $0.path == query || $0.path.hasSuffix("/" + query) }
     }
 }
