@@ -1,4 +1,9 @@
 import Foundation
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
 
 public struct SessionRoot: Codable, Equatable {
     public var tool: String
@@ -48,10 +53,31 @@ public struct SessionDecision: Equatable {
 }
 
 public enum SessionPaths {
-    /// Resolve symlinks once. On macOS `/var`, `/tmp`, and `/etc` become `/private/...`,
-    /// so a session discovered through either spelling is stored as one path.
+    /// Realpath of `path`, including a missing leaf's existing ancestor.
+    /// On macOS `/var`, `/tmp`, and `/etc` are symlinks, so the stored spelling is
+    /// `/private/var`, `/private/tmp`, or `/private/etc`. The result is not passed
+    /// back through `URL.path`, which strips that `/private` prefix.
     public static func canonical(_ path: String) -> String {
-        URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL.path
+        let absolute = absoluteForm(path)
+        if let existing = posixRealpath(absolute) {
+            return privateSystemPrefix(existing)
+        }
+        let parts = absolute.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+        var resolved = "/"
+        for part in parts {
+            if part == "." { continue }
+            if part == ".." {
+                resolved = parentPath(resolved)
+                continue
+            }
+            let next = join(resolved, part)
+            if let existing = posixRealpath(next) {
+                resolved = existing
+            } else {
+                resolved = next
+            }
+        }
+        return privateSystemPrefix(resolved)
     }
 
     /// `$HOME` when the variable is set. `NSHomeDirectory()` is the passwd home and is
@@ -67,6 +93,46 @@ public enum SessionPaths {
         let base = canonical(root)
         let file = canonical(path)
         return file == base || file.hasPrefix(base + "/")
+    }
+
+    private static func absoluteForm(_ path: String) -> String {
+        if path.hasPrefix("/") { return path }
+        let cwd = FileManager.default.currentDirectoryPath
+        if path.isEmpty { return cwd }
+        return join(cwd, path)
+    }
+
+    private static func parentPath(_ path: String) -> String {
+        if path == "/" { return "/" }
+        let parent = (path as NSString).deletingLastPathComponent
+        return parent.isEmpty ? "/" : parent
+    }
+
+    private static func join(_ base: String, _ part: String) -> String {
+        if base == "/" { return "/" + part }
+        return base + "/" + part
+    }
+
+    /// POSIX `realpath(3)`. A nil buffer lets libc allocate, so the result can
+    /// exceed `PATH_MAX` and is not rewritten by Foundation.
+    private static func posixRealpath(_ path: String) -> String? {
+        path.withCString { pointer in
+            guard let resolved = realpath(pointer, nil) else { return nil }
+            defer { free(resolved) }
+            return String(cString: resolved)
+        }
+    }
+
+    /// `/var` → `/private/var` (also `/tmp` and `/etc`) only when that short prefix
+    /// realpaths to the `/private` form. A Linux `/var` that is not a symlink stays `/var`.
+    private static func privateSystemPrefix(_ path: String) -> String {
+        let pairs = [("/var", "/private/var"), ("/tmp", "/private/tmp"), ("/etc", "/private/etc")]
+        for (short, long) in pairs {
+            guard path == short || path.hasPrefix(short + "/") else { continue }
+            guard posixRealpath(short) == long else { continue }
+            return long + String(path.dropFirst(short.count))
+        }
+        return path
     }
 }
 

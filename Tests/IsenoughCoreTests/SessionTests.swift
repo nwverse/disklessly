@@ -1,6 +1,11 @@
 import XCTest
 import IsenoughCore
 import IsenoughEngine
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
 
 final class SessionTests: XCTestCase {
     func testTieringSkipsOpenRecentAndSecretFiles() throws {
@@ -123,6 +128,72 @@ final class SessionTests: XCTestCase {
         let roots = [SessionRoot(tool: "pi", directory: sessions.path)]
         XCTAssertEqual(SessionArchive.pathsOutsideRoots([decoy.path], roots: roots), [SessionPaths.canonical(decoy.path)])
         XCTAssertTrue(SessionArchive.pathsOutsideRoots([oldURL.path], roots: roots).isEmpty)
+    }
+
+    /// A home passed as a symlink must be reported as the target directory.
+    /// The expected path is POSIX `realpath`, not `URL.path`, so a `/var` alias
+    /// has to come back as `/private/var` on macOS and a custom symlink has to
+    /// resolve on Linux too.
+    func testSymlinkedHomeIsReportedAsTheRealpath() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let realHome = root.appendingPathComponent("real-home")
+        let alias = root.appendingPathComponent("alias-home")
+        let sessions = realHome.appendingPathComponent(".pi/agent/sessions")
+        try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+        try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: realHome)
+        let oldURL = sessions.appendingPathComponent("old.jsonl")
+        let body = Data("{\"text\":\"canonical home\"}\n".utf8)
+        try body.write(to: oldURL)
+        let now = Date()
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-(30 * 24 * 60 * 60))], ofItemAtPath: oldURL.path)
+        let aliasFile = alias.appendingPathComponent(".pi/agent/sessions/old.jsonl").path
+        let expected = try Self.posixRealpath(aliasFile)
+        XCTAssertFalse(expected.contains("/alias-home"))
+        XCTAssertTrue(expected.hasSuffix("/real-home/.pi/agent/sessions/old.jsonl"))
+        XCTAssertEqual(SessionPaths.canonical(aliasFile), expected)
+        XCTAssertEqual(SessionPaths.canonical(oldURL.path), expected)
+        let missing = alias.appendingPathComponent(".pi/agent/sessions/gone.jsonl").path
+        let missingExpected = try Self.posixRealpath(alias.appendingPathComponent(".pi/agent/sessions").path) + "/gone.jsonl"
+        XCTAssertEqual(SessionPaths.canonical(missing), missingExpected)
+        XCTAssertFalse(SessionPaths.canonical(missing).contains("/alias-home"))
+
+        var config = RuntimeConfig(repoPath: root.appendingPathComponent("repo").path, cacheDir: root.appendingPathComponent("cache").path, stateDir: root.appendingPathComponent("state").path, mountRoot: root.appendingPathComponent("mnt").path, stubDir: root.appendingPathComponent("apps").path)
+        let backend = try LocalFolderBackend(root: URL(fileURLWithPath: config.repoPath))
+        let fromHome = try SessionArchive.tier(config: config, backend: backend, now: now, apply: false, environment: ["HOME": alias.path])
+        XCTAssertEqual(fromHome.cold, [expected])
+        config.sessionHome = alias.path
+        let fromConfig = try SessionArchive.tier(config: config, backend: backend, now: now, apply: false, environment: ["HOME": "/no/such-home"])
+        XCTAssertEqual(fromConfig.cold, [expected])
+        config.sessionHome = nil
+        let fromFlag = try SessionArchive.tier(config: config, backend: backend, now: now, apply: false, home: alias.path, environment: ["HOME": "/no/such-home"])
+        XCTAssertEqual(fromFlag.cold, [expected])
+        let aliasRoot = [SessionRoot(tool: "pi", directory: alias.appendingPathComponent(".pi/agent/sessions").path)]
+        XCTAssertTrue(SessionArchive.pathsOutsideRoots([oldURL.path, aliasFile], roots: aliasRoot).isEmpty)
+        let realRoot = [SessionRoot(tool: "pi", directory: sessions.path)]
+        XCTAssertTrue(SessionArchive.pathsOutsideRoots([aliasFile], roots: realRoot).isEmpty)
+        let outside = root.appendingPathComponent("outside.jsonl").path
+        XCTAssertEqual(SessionArchive.pathsOutsideRoots([outside], roots: realRoot), [SessionPaths.canonical(outside)])
+
+        let applied = try SessionArchive.tier(config: config, backend: backend, now: now, apply: true, home: alias.path, environment: ["HOME": "/no/such-home"])
+        XCTAssertEqual(applied.cold, [expected])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: expected))
+        let indexed = try SessionArchive.search(config: config, query: aliasFile)
+        XCTAssertEqual(indexed.map(\.path), [expected])
+        let restored = try SessionArchive.restore(config: config, backend: backend, query: aliasFile)
+        XCTAssertEqual(restored, expected)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: restored)), body)
+    }
+
+    /// Independent of `SessionPaths`, so a canonicalizer that keeps the symlink spelling fails here.
+    private static func posixRealpath(_ path: String) throws -> String {
+        try path.withCString { pointer in
+            guard let resolved = realpath(pointer, nil) else {
+                throw IsenoughError.failure("realpath failed for \(path)")
+            }
+            defer { free(resolved) }
+            return String(cString: resolved)
+        }
     }
 
     func testApplyRefusesACandidateOutsideTheConfiguredRoot() throws {
