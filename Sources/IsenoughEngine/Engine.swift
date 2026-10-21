@@ -16,10 +16,14 @@ public struct RuntimeConfig: Codable {
     public var activeBackendId: String?
     /// codesign identity. `-` is ad-hoc. `ISENOUGH_SIGN_IDENTITY` overrides this at pack time.
     public var signIdentity: String = "-"
+    /// Files untouched for this many days are cold-tier candidates. The 24 hour guard still applies.
+    public var sessionColdDays: Int = 14
+    /// Extra session roots. When empty, the built-in pi, Claude Code, and Codex roots are used.
+    public var sessionRoots: [SessionRoot] = []
     public init(repoPath: String, cacheDir: String, stateDir: String, mountRoot: String, stubDir: String) { self.repoPath=repoPath; self.cacheDir=cacheDir; self.stateDir=stateDir; self.mountRoot=mountRoot; self.stubDir=stubDir }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, backends, activeBackendId, signIdentity
+        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, backends, activeBackendId, signIdentity, sessionColdDays, sessionRoots
     }
 
     public init(from decoder: Decoder) throws {
@@ -37,6 +41,8 @@ public struct RuntimeConfig: Codable {
         backends = try container.decodeIfPresent([BackendEndpoint].self, forKey: .backends) ?? []
         activeBackendId = try container.decodeIfPresent(String.self, forKey: .activeBackendId)
         signIdentity = try container.decodeIfPresent(String.self, forKey: .signIdentity) ?? "-"
+        sessionColdDays = try container.decodeIfPresent(Int.self, forKey: .sessionColdDays) ?? 14
+        sessionRoots = try container.decodeIfPresent([SessionRoot].self, forKey: .sessionRoots) ?? []
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -54,6 +60,8 @@ public struct RuntimeConfig: Codable {
         try container.encode(backends, forKey: .backends)
         try container.encodeIfPresent(activeBackendId, forKey: .activeBackendId)
         try container.encode(signIdentity, forKey: .signIdentity)
+        try container.encode(sessionColdDays, forKey: .sessionColdDays)
+        try container.encode(sessionRoots, forKey: .sessionRoots)
     }
 
     public static func environment() -> RuntimeConfig {

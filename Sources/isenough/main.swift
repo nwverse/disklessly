@@ -11,6 +11,7 @@ func usage() -> Never {
       list [--json] | status [APP] [--json] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
       pin APP | unpin APP | evict APP | gc | restore APP | unpack APP | stub rebuild APP
       backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
+      sessions [--apply] [--days N] | sessions search QUERY | sessions restore ID|PATH
       hooks list|enable|disable APP | doctor | version | serve [--port PORT]
     Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
       ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,
@@ -32,6 +33,20 @@ if let path=configPath, let d=try? Data(contentsOf:URL(fileURLWithPath:path)), l
 if let n=env["ISENOUGH_DETACH_DELAY"].flatMap(UInt64.init) { config.detachDelaySeconds=n }
 var engine=IsenoughEngine(config:config)
 func emit(_ data:Any) { if json, JSONSerialization.isValidJSONObject(data), let d=try? JSONSerialization.data(withJSONObject:data,options:[.prettyPrinted,.sortedKeys]), let s=String(data:d,encoding:.utf8) { print(s) } else { print(data) } }
+func liveSessionOpen(_ path: String) -> Bool {
+    let lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].first { FileManager.default.isExecutableFile(atPath: $0) }
+    guard let lsof else { return false }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: lsof)
+    process.arguments = ["-Fn", "--", path]
+    let output = Pipe()
+    process.standardOutput = output
+    process.standardError = Pipe()
+    guard (try? process.run()) != nil else { return false }
+    process.waitUntilExit()
+    let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    return OpenFileProbe.isOpen(lsofStatus: process.terminationStatus, lsofStdout: text, path: path)
+}
 func find(_ name:String) throws -> ImageManifest { guard let m=engine.manifest(named: name, in: try engine.list()) else { throw IsenoughError.usage("Unknown app: \(name)") }; return m }
 do {
     guard let command=args.first else { usage() }; args.removeFirst()
@@ -80,6 +95,32 @@ do {
             else { throw IsenoughError.usage("Unknown option or missing value: \(flag)") }
         }
         try engine.resolve(find(name), keepUpdated: keep, trust: trust, export: export, discard: discard); emit(["ok":true])
+    case "sessions":
+        var apply = false
+        var days: Int?
+        var rest = args
+        var filtered: [String] = []
+        while !rest.isEmpty {
+            let flag = rest.removeFirst()
+            if flag == "--apply" { apply = true }
+            else if flag == "--days", let raw = rest.first, let value = Int(raw) { days = value; rest.removeFirst() }
+            else { filtered.append(flag) }
+        }
+        if filtered.first == "search" {
+            let query = filtered.dropFirst().joined(separator: " ")
+            guard !query.isEmpty else { throw IsenoughError.usage("sessions search requires a query") }
+            let hits = try SessionArchive.search(config: config, query: query)
+            emit(hits.map { ["id": $0.id, "tool": $0.tool, "path": $0.path, "preview": $0.preview] })
+        } else if filtered.first == "restore" {
+            guard filtered.count >= 2 else { throw IsenoughError.usage("sessions restore requires an id or path") }
+            let path = try SessionArchive.restore(config: config, backend: engine.repo, query: filtered[1])
+            emit(["ok": true, "path": path])
+        } else if filtered.isEmpty {
+            let report = try SessionArchive.tier(config: config, backend: engine.repo, apply: apply, coldDays: days, isOpen: liveSessionOpen)
+            emit(["ok": true, "applied": report.applied, "cold": report.cold, "skipped": report.skipped.map { ["path": $0.0, "reason": $0.1] }])
+        } else {
+            throw IsenoughError.usage("Unknown sessions command: \(filtered[0])")
+        }
     case "backend":
         guard let sub = args.first else { throw IsenoughError.usage("backend requires add, list, or use") }
         args.removeFirst()
