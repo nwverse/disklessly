@@ -87,9 +87,15 @@ public enum SessionArchive {
         return SessionRoot.defaults(home: base)
     }
 
-    /// Paths whose canonical form is not inside a configured root. `--apply` refuses these.
+    /// Canonical paths that are not inside a configured root. Both sides of the
+    /// comparison are canonical, and the returned spelling is the realpath form
+    /// so a `/var` alias is reported as `/private/var`. `--apply` refuses these.
     public static func pathsOutsideRoots(_ paths: [String], roots: [SessionRoot]) -> [String] {
-        paths.filter { path in !roots.contains { SessionPaths.contains($0.directory, path: path) } }
+        paths.compactMap { path in
+            let canonical = SessionPaths.canonical(path)
+            guard !roots.contains(where: { SessionPaths.contains($0.directory, path: canonical) }) else { return nil }
+            return canonical
+        }
     }
 
     /// Without `apply`, nothing is uploaded or deleted. The first run is a dry run
