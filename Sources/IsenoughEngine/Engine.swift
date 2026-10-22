@@ -10,12 +10,80 @@ public struct RuntimeConfig: Codable {
     public var mountRoot: String
     public var stubDir: String
     public var quotaBytes: UInt64 = 20 * 1024 * 1024 * 1024
+    public var minFreeBytes: UInt64 = 15 * 1024 * 1024 * 1024
     public var detachDelaySeconds: UInt64 = 120
+    public var backends: [BackendEndpoint] = []
+    public var activeBackendId: String?
+    /// codesign identity. `-` is ad-hoc. `ISENOUGH_SIGN_IDENTITY` overrides this at pack time.
+    public var signIdentity: String = "-"
+    /// Files untouched for this many days are cold-tier candidates. The 24 hour guard still applies.
+    public var sessionColdDays: Int = 14
+    /// Extra session roots. When empty, the built-in pi, Claude Code, and Codex roots are used.
+    public var sessionRoots: [SessionRoot] = []
+    /// Home used to build the built-in session roots. Overrides `$HOME` when set. `--home` overrides this.
+    public var sessionHome: String? = nil
     public init(repoPath: String, cacheDir: String, stateDir: String, mountRoot: String, stubDir: String) { self.repoPath=repoPath; self.cacheDir=cacheDir; self.stateDir=stateDir; self.mountRoot=mountRoot; self.stubDir=stubDir }
+
+    private enum CodingKeys: String, CodingKey {
+        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, backends, activeBackendId, signIdentity, sessionColdDays, sessionRoots, sessionHome
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try container.decodeIfPresent(String.self, forKey: .schema) ?? "config/1"
+        backend = try container.decodeIfPresent(String.self, forKey: .backend) ?? "local"
+        repoPath = try container.decode(String.self, forKey: .repoPath)
+        cacheDir = try container.decode(String.self, forKey: .cacheDir)
+        stateDir = try container.decode(String.self, forKey: .stateDir)
+        mountRoot = try container.decode(String.self, forKey: .mountRoot)
+        stubDir = try container.decode(String.self, forKey: .stubDir)
+        quotaBytes = try container.decodeIfPresent(UInt64.self, forKey: .quotaBytes) ?? 20 * 1024 * 1024 * 1024
+        minFreeBytes = try container.decodeIfPresent(UInt64.self, forKey: .minFreeBytes) ?? 15 * 1024 * 1024 * 1024
+        detachDelaySeconds = try container.decodeIfPresent(UInt64.self, forKey: .detachDelaySeconds) ?? 120
+        backends = try container.decodeIfPresent([BackendEndpoint].self, forKey: .backends) ?? []
+        activeBackendId = try container.decodeIfPresent(String.self, forKey: .activeBackendId)
+        signIdentity = try container.decodeIfPresent(String.self, forKey: .signIdentity) ?? "-"
+        sessionColdDays = try container.decodeIfPresent(Int.self, forKey: .sessionColdDays) ?? 14
+        sessionRoots = try container.decodeIfPresent([SessionRoot].self, forKey: .sessionRoots) ?? []
+        sessionHome = try container.decodeIfPresent(String.self, forKey: .sessionHome)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schema, forKey: .schema)
+        try container.encode(backend, forKey: .backend)
+        try container.encode(repoPath, forKey: .repoPath)
+        try container.encode(cacheDir, forKey: .cacheDir)
+        try container.encode(stateDir, forKey: .stateDir)
+        try container.encode(mountRoot, forKey: .mountRoot)
+        try container.encode(stubDir, forKey: .stubDir)
+        try container.encode(quotaBytes, forKey: .quotaBytes)
+        try container.encode(minFreeBytes, forKey: .minFreeBytes)
+        try container.encode(detachDelaySeconds, forKey: .detachDelaySeconds)
+        try container.encode(backends, forKey: .backends)
+        try container.encodeIfPresent(activeBackendId, forKey: .activeBackendId)
+        try container.encode(signIdentity, forKey: .signIdentity)
+        try container.encode(sessionColdDays, forKey: .sessionColdDays)
+        try container.encode(sessionRoots, forKey: .sessionRoots)
+        try container.encodeIfPresent(sessionHome, forKey: .sessionHome)
+    }
+
     public static func environment() -> RuntimeConfig {
         let home = NSHomeDirectory(), env = ProcessInfo.processInfo.environment
         func v(_ key: String, _ fallback: String) -> String { env["ISENOUGH_\(key)"] ?? fallback }
-        return RuntimeConfig(repoPath: v("REPO_PATH", "\(home)/Library/Mobile Documents/com~apple~CloudDocs/256isenough"), cacheDir: v("CACHE_DIR", "\(home)/Library/Caches/256isenough"), stateDir: v("STATE_DIR", "\(home)/Library/Application Support/256isenough"), mountRoot: v("MOUNT_ROOT", "\(home)/Library/Caches/256isenough/mnt"), stubDir: v("STUB_DIR", "/Applications"))
+        var config = RuntimeConfig(repoPath: v("REPO_PATH", "\(home)/Library/Mobile Documents/com~apple~CloudDocs/256isenough"), cacheDir: v("CACHE_DIR", "\(home)/Library/Caches/256isenough"), stateDir: v("STATE_DIR", "\(home)/Library/Application Support/256isenough"), mountRoot: v("MOUNT_ROOT", "\(home)/Library/Caches/256isenough/mnt"), stubDir: v("STUB_DIR", "/Applications"))
+        if let quota = env["ISENOUGH_QUOTA_BYTES"].flatMap(UInt64.init) { config.quotaBytes = quota }
+        if let floor = env["ISENOUGH_MIN_FREE_BYTES"].flatMap(UInt64.init) { config.minFreeBytes = floor }
+        if let identity = env["ISENOUGH_SIGN_IDENTITY"], !identity.isEmpty { config.signIdentity = identity }
+        return config
+    }
+
+    public mutating func remember(_ endpoint: BackendEndpoint) {
+        backends.removeAll { $0.id == endpoint.id }
+        backends.append(endpoint)
+        activeBackendId = endpoint.id
+        backend = endpoint.type
+        if let mount = endpoint.mountPoint { repoPath = mount }
     }
 }
 
@@ -59,9 +127,15 @@ public enum StubGenerator {
 
     public static func locateLauncher(cliExecutable: URL, environment: [String:String], isExecutable: (String)->Bool) throws -> URL {
         let cli=cliExecutable.resolvingSymlinksInPath().standardizedFileURL
-        let candidates=[environment["ISENOUGH_STUB_BINARY"], cli.deletingLastPathComponent().appendingPathComponent("isenough-stub").path].compactMap{$0}
-        guard let path=candidates.first(where:isExecutable) else { throw IsenoughError.failure("isenough-stub launcher binary not found next to \(cli.path)") }
-        let found=URL(fileURLWithPath:path).resolvingSymlinksInPath().standardizedFileURL
+        if let override=environment["ISENOUGH_STUB_BINARY"] {
+            guard isExecutable(override) else { throw IsenoughError.usage("ISENOUGH_STUB_BINARY is not executable: \(override)") }
+            let found=URL(fileURLWithPath:override).resolvingSymlinksInPath().standardizedFileURL
+            guard found.path != cli.path else { throw IsenoughError.failure("Refusing to use CLI as isenough-stub launcher") }
+            return found
+        }
+        let sibling=cli.deletingLastPathComponent().appendingPathComponent("isenough-stub").path
+        guard isExecutable(sibling) else { throw IsenoughError.failure("isenough-stub launcher binary not found next to \(cli.path)") }
+        let found=URL(fileURLWithPath:sibling).resolvingSymlinksInPath().standardizedFileURL
         guard found.path != cli.path else { throw IsenoughError.failure("Refusing to use CLI as isenough-stub launcher") }
         return found
     }
@@ -75,14 +149,50 @@ public enum StubGenerator {
 
 public struct IsenoughEngine {
     public var config: RuntimeConfig
-    public init(config: RuntimeConfig) { self.config=config }
-    public var repo: LocalFolderBackend { get throws { try LocalFolderBackend(root: URL(fileURLWithPath: config.repoPath)) } }
+    public var services: RestoreServices
+    public let faults: FaultController
+    public let restore: RestoreCoordinator
+    public var secrets: any SecretStore
+    public var shareOpener: ShareOpener
+    public var backendOverride: (any StorageBackend)?
+    public init(config: RuntimeConfig, services: RestoreServices? = nil, faults: FaultController? = nil, secrets: (any SecretStore)? = nil, shareOpener: ShareOpener = .system) {
+        self.config=config
+        let faults=faults ?? FaultController()
+        self.faults=faults
+        let services=services ?? RestoreServices.live(config: config)
+        self.services=services
+        self.restore=RestoreCoordinator(config: config, services: services, faults: faults)
+        self.secrets = secrets ?? KeychainSecretStore()
+        self.shareOpener = shareOpener
+        self.backendOverride = nil
+    }
+    public func openBackend() throws -> any StorageBackend {
+        if let backendOverride { return backendOverride }
+        if let id = config.activeBackendId, let endpoint = config.backends.first(where: { $0.id == id }) {
+            return try BackendFactory.open(endpoint, secrets: secrets, opener: shareOpener)
+        }
+        return try LocalFolderBackend(root: URL(fileURLWithPath: config.repoPath))
+    }
+    public var repo: any StorageBackend { get throws { try openBackend() } }
+    public func saveConfig() throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let cfg = try encoder.encode(config)
+        try FileManager.default.createDirectory(atPath: config.stateDir, withIntermediateDirectories: true)
+        try cfg.write(to: URL(fileURLWithPath: config.stateDir).appendingPathComponent("config.json"), options: .atomic)
+    }
     public func initialize() throws {
-        let fm=FileManager.default
-        for p in [config.repoPath, config.cacheDir, config.stateDir, config.mountRoot, config.stubDir] { try fm.createDirectory(atPath:p, withIntermediateDirectories:true) }
-        let r=try LocalFolderBackend(root:URL(fileURLWithPath:config.repoPath)); if try r.stat("repo.json") == nil { try r.put("repo.json", data:Data("{\"schema\":\"repo/1\",\"repoId\":\"\(UUID().uuidString)\",\"layoutVersion\":1}".utf8)) }
-        for p in ["images","manifests","catalog","devices","trash"] { try fm.createDirectory(atPath:config.repoPath+"/"+p,withIntermediateDirectories:true) }
-        let cfg=try JSONEncoder().encode(config); try cfg.write(to:URL(fileURLWithPath:config.stateDir).appendingPathComponent("config.json"),options:.atomic)
+        let fm = FileManager.default
+        for p in [config.cacheDir, config.stateDir, config.mountRoot, config.stubDir] { try fm.createDirectory(atPath: p, withIntermediateDirectories: true) }
+        let backend = try repo
+        if let root = backend.localRoot() {
+            try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        }
+        if try backend.stat("repo.json") == nil {
+            try backend.put("repo.json", data: Data("{\"schema\":\"repo/1\",\"repoId\":\"\(UUID().uuidString)\",\"layoutVersion\":1}".utf8))
+        }
+        for p in ["images", "manifests", "catalog", "devices", "trash"] { try backend.ensureCollection(p) }
+        try saveConfig()
     }
     public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false) throws -> ImageManifest {
         #if !os(macOS)
@@ -100,7 +210,22 @@ public struct IsenoughEngine {
         try run("/usr/bin/hdiutil",["create","-quiet","-srcfolder",staging.appendingPathComponent("src").path,"-format","ULMO","-volname",name,"-o",dmg.deletingPathExtension().path])
         let sha=try Hashing.sha256(dmg), attrs=try FileManager.default.attributesOfItem(atPath:dmg.path), size=(attrs[.size] as? NSNumber)?.uint64Value ?? 0
         let image=ImageManifest.Image(file:"",format:"ULMO",sha256:sha,size:size,volumeName:name,appPathInVolume:app.lastPathComponent)
-        let facts=ImageManifest.App(originalPath:app.path,executable:info["CFBundleExecutable"] as? String ?? "",documentTypes:(info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },urlTypes:(info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) })
+        // Hash the ditto restore will verify, not the pre-image staged app. hdiutil
+        // can change modes and materialize AppleDouble files; the manifest has to
+        // describe that tree.
+        let mount=staging.appendingPathComponent("mount")
+        try FileManager.default.createDirectory(at:mount,withIntermediateDirectories:true)
+        try LiveDiskImage.attach(image: dmg, mountPoint: mount)
+        var detachedPackMount=false
+        defer { if !detachedPackMount { try? LiveDiskImage.detach(mountPoint: mount, force: true) } }
+        let checked=staging.appendingPathComponent("checked-\(app.lastPathComponent)")
+        try run("/usr/bin/ditto",[mount.appendingPathComponent(app.lastPathComponent).path,checked.path])
+        BundleHasher.removeMetadataSidecars(checked)
+        let treeHash=try BundleHasher.treeHash(of: checked)
+        let cdhash=try BundleHasher.cdhash(of: checked)
+        try LiveDiskImage.detach(mountPoint: mount, force: false)
+        detachedPackMount=true
+        let facts=ImageManifest.App(originalPath:app.path,executable:info["CFBundleExecutable"] as? String ?? "",documentTypes:(info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },urlTypes:(info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },cdhash:cdhash,treeHash:treeHash)
         var manifest=ImageManifest(bundleId:bid,name:name,version:version,image:image,app:facts,mode:selected); manifest.image.file="images/\(manifest.imageId).dmg"; try manifest.validate()
         let backend=try repo; try backend.put(manifest.image.file,data:Data(contentsOf:dmg)); try backend.put("manifests/\(manifest.imageId).json",data:manifest.encode())
         if !noStub { try installStub(info:info, manifest:manifest, path:app.path, keepOriginal:keepOriginal) }
@@ -130,7 +255,8 @@ public struct IsenoughEngine {
         try JSONSerialization.data(withJSONObject:StubGenerator.stubInfo(manifest:manifest,cliPath:cli.resolvingSymlinksInPath().path),options:[.prettyPrinted,.sortedKeys]).write(to:temp.appendingPathComponent("Contents/Resources/stub.json"))
         // Signing the bundle re-signs its main executable isenough-stub in place.
         // No --deep is needed because there are no nested code items.
-        try run("/usr/bin/codesign",["--force","--sign","-",temp.path])
+        let identity = SigningIdentity.resolve(configured: config.signIdentity, environment: ProcessInfo.processInfo.environment)
+        try run("/usr/bin/codesign",["--force","--sign",identity,temp.path])
         try run("/usr/bin/codesign",["--verify","--strict",temp.path])
         guard StubGenerator.pathsReferToSameLocation(source.path, dest.path) else { throw IsenoughError.unsupported("Stub must replace the app at its original path (source: \(source.path), destination: \(dest.path))") }
         do {
@@ -159,27 +285,97 @@ public struct IsenoughEngine {
     }
     #endif
     public func list() throws -> [ImageManifest] { let b=try repo; return try b.list("manifests").filter{$0.hasSuffix(".json")}.compactMap { try? ImageManifest.decode(b.get("manifests/\($0)",range:nil)) } }
-    public func status() -> [String:Any] { let state=StateStore(config.stateDir).read(); return ["backend":config.backend,"repoPath":config.repoPath,"cacheDir":config.cacheDir,"apps":state["apps"] ?? [:],"cache":state["cache"] ?? [:]] }
+    public func status() -> [String:Any] {
+        let state=StateStore(config.stateDir).read()
+        return ["backend":config.backend,"activeBackendId":config.activeBackendId ?? "","repoPath":config.repoPath,"cacheDir":config.cacheDir,"quotaBytes":NSNumber(value: config.quotaBytes),"minFreeBytes":NSNumber(value: config.minFreeBytes),"detachDelaySeconds":NSNumber(value: config.detachDelaySeconds),"apps":state["apps"] ?? [:],"cache":state["cache"] ?? [:],"restored":state["restored"] ?? [:]]
+    }
+    public func manifest(named name: String, in manifests: [ImageManifest]) -> ImageManifest? {
+        if let exact=manifests.first(where: { $0.imageId == name }) { return exact }
+        let apps=StateStore(config.stateDir).read()["apps"] as? [String:[String:Any]] ?? [:]
+        if let imageId=apps[name]?["imageId"] as? String, let pinned=manifests.first(where: { $0.imageId == imageId }) { return pinned }
+        return manifests.first(where: { $0.bundleId == name || $0.name.caseInsensitiveCompare(name) == .orderedSame })
+    }
+    public func setPinned(_ manifest: ImageManifest, pinned: Bool) throws {
+        var state = StateStore(config.stateDir).read()
+        var apps = state["apps"] as? [String: [String: Any]] ?? [:]
+        var item = apps[manifest.bundleId] ?? [:]
+        item["imageId"] = manifest.imageId
+        item["pinned"] = pinned
+        apps[manifest.bundleId] = item
+        state["apps"] = apps
+        try StateStore(config.stateDir).write(state)
+        if pinned { _ = try prefetch(manifest) }
+    }
+    public func evict(_ manifest: ImageManifest) throws {
+        if let reason=restore.blockReason(appId: manifest.bundleId) { throw IsenoughError.busy(reason) }
+        let path=URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
+        if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
+    }
+    public func gc() throws -> [String] {
+        restore.loadConfiguredFaults()
+        return try restore.recoverAll(shortLived: true)
+    }
+    public func doctor() -> [String: Any] {
+        let issues=restore.diagnose()
+        return ["ok": issues.isEmpty, "platform": ProcessInfo.processInfo.operatingSystemVersionString, "repo": FileManager.default.fileExists(atPath: config.repoPath), "issues": issues]
+    }
+    public func resolve(_ manifest: ImageManifest, keepUpdated: Bool, trust: Bool, export: String?, discard: Bool) throws {
+        guard let record=restore.needsResolution(manifest.bundleId), let path=record["retainedPath"] as? String, let tree=record["treeHash"] as? String else {
+            throw IsenoughError.usage("no retained bundle to resolve for \(manifest.bundleId)")
+        }
+        let url=URL(fileURLWithPath: path)
+        let actual=try restore.services.treeHash(url)
+        guard actual == tree else { throw IsenoughError.integrity("retained bundle tree hash does not match the resolution record") }
+        if keepUpdated {
+            guard restore.services.signatureValid(url) else { throw IsenoughError.integrity("retained bundle has an invalid code signature; export or discard it") }
+            let cdhash=try restore.services.cdhash(url)
+            if cdhash != manifest.app.cdhash && !trust { throw IsenoughError.usage("updated bundle cdhash differs from the packed image; pass --trust to approve it") }
+            #if os(macOS)
+            let packed=try pack(path, mode: manifest.mode, keepOriginal: true, noStub: true)
+            try restore.switchImage(appId: manifest.bundleId, imageId: packed.imageId, cdhash: cdhash)
+            try restore.trash(url)
+            try restore.clearResolution(appId: manifest.bundleId)
+            return
+            #else
+            throw IsenoughError.unsupported("resolve --keep-updated packs a new image and requires macOS")
+            #endif
+        }
+        if let export {
+            try restore.export(url, to: URL(fileURLWithPath: export))
+        } else if discard {
+            try restore.trash(url)
+        } else {
+            throw IsenoughError.usage("resolve requires --discard, --export, or --keep-updated")
+        }
+        try restore.clearResolution(appId: manifest.bundleId)
+    }
+    public func watch(appId: String) throws {
+        restore.loadConfiguredFaults()
+        try restore.watch(appId: appId)
+    }
     public func prefetch(_ manifest:ImageManifest) throws -> URL {
-        let backend=try repo, paths=CachePaths(cacheDir:config.cacheDir,mountRoot:config.mountRoot), cache=paths.image(manifest.imageId); try FileManager.default.createDirectory(at:cache.deletingLastPathComponent(),withIntermediateDirectories:true)
-        if FileManager.default.fileExists(atPath:cache.path), try Hashing.sha256(cache)==manifest.image.sha256 { return cache }
-        let data=try backend.get(manifest.image.file,range:nil); guard UInt64(data.count)==manifest.image.size, digest(data)==manifest.image.sha256 else { throw IsenoughError.integrity("Remote image hash or size mismatch") }
+        let backend = try repo
+        let paths = CachePaths(cacheDir: config.cacheDir, mountRoot: config.mountRoot)
+        let cache = paths.image(manifest.imageId)
+        try FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if FileManager.default.fileExists(atPath: cache.path), SHA256Digest.hex(try Data(contentsOf: cache)) == manifest.image.sha256 { return cache }
+        let free = try VolumeSpace.availableBytes(at: config.cacheDir)
+        guard SpaceFloor.admits(freeBytes: free, incoming: manifest.image.size, floor: config.minFreeBytes) else {
+            throw IsenoughError.noSpace("free space \(free) bytes would fall below the \(config.minFreeBytes) byte floor after fetching \(manifest.image.size) bytes")
+        }
         // Keep the fetched image byte-for-byte identical to the published artifact.
         // The manifest hashes the remote ULMO image; converting it on download both
         // invalidates that identity and relies on hdiutil's output-name conventions.
-        let partial=paths.partial(manifest.imageId); try FileManager.default.createDirectory(at:partial.deletingLastPathComponent(),withIntermediateDirectories:true); try? FileManager.default.removeItem(at:partial); try data.write(to:partial,options:.atomic)
-        do {
-            if FileManager.default.fileExists(atPath:cache.path) { try FileManager.default.removeItem(at:cache) }
-            try FileManager.default.moveItem(at:partial,to:cache)
-        } catch {
-            try? FileManager.default.removeItem(at:partial)
-            throw IsenoughError.failure("Could not install verified image at cache path \(cache.path): \(error.localizedDescription)")
-        }
+        try CacheFetcher.materialize(backend: backend, remote: manifest.image.file, destination: cache, partial: paths.partial(manifest.imageId), expectedSize: manifest.image.size, expectedSHA256: manifest.image.sha256)
         return cache
     }
-    private func digest(_ data:Data)->String { let u=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString); try? data.write(to:u); defer{try? FileManager.default.removeItem(at:u)}; return (try? Hashing.sha256(u)) ?? "" }
     public func launch(_ manifest:ImageManifest, documents:[String]=[], urls:[String]=[], arguments:[String]=[], wait:Bool=true) throws {
-        guard manifest.mode == .mount else { throw IsenoughError.unsupported("restore mode is disabled until durable restore recovery is implemented") }
+        restore.loadConfiguredFaults()
+        if manifest.mode == .restore {
+            _ = try prefetch(manifest)
+            try restore.launch(manifest, documents: documents, urls: urls, arguments: arguments, wait: wait)
+            return
+        }
         let image=try prefetch(manifest)
         #if !os(macOS)
         throw IsenoughError.unsupported("launch requires macOS hdiutil and Launch Services")
@@ -187,7 +383,7 @@ public struct IsenoughEngine {
         let rawMount=URL(fileURLWithPath:config.mountRoot).appendingPathComponent(manifest.imageId)
         try FileManager.default.createDirectory(at:rawMount,withIntermediateDirectories:true)
         let mount=rawMount.resolvingSymlinksInPath().standardizedFileURL
-        try run("/usr/bin/hdiutil",["attach","-readonly","-nobrowse","-noautoopen","-mountpoint",mount.path,image.path])
+        try LiveDiskImage.attach(image: image, mountPoint: mount)
         let state=StateStore(config.stateDir)
         try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"running",mountPoint:mount.path)
         let app=mount.appendingPathComponent(manifest.image.appPathInVolume)
@@ -203,11 +399,11 @@ public struct IsenoughEngine {
             Thread.sleep(forTimeInterval:Double(config.detachDelaySeconds))
             try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"detaching",mountPoint:mount.path)
             do {
-                try run("/usr/bin/hdiutil",["detach",mount.path])
+                try LiveDiskImage.detach(mountPoint: mount, force: false)
                 try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"cached")
             } catch {
                 try? state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"backoff",mountPoint:mount.path)
-                FileHandle.standardError.write(Data("isenough: detach failed: \\(error)\\n".utf8))
+                FileHandle.standardError.write(Data("isenough: detach failed: \(error)\n".utf8))
                 throw error
             }
         }
@@ -215,13 +411,15 @@ public struct IsenoughEngine {
     }
     #if os(macOS)
     private func run(_ path:String,_ args:[String]) throws {
-        let p=Process(); p.executableURL=URL(fileURLWithPath:path); p.arguments=args
+        let p=ParsedCommand.process(path:path, arguments:args)
         let output=Pipe(); p.standardOutput=output; p.standardError=output
         do { try p.run() } catch {
             throw IsenoughError.failure("Could not start \(path) \(args.joined(separator:" ")): \(error.localizedDescription)")
         }
         let data=output.fileHandleForReading.readDataToEndOfFile(); p.waitUntilExit()
         guard p.terminationStatus==0 else {
+            // The tool's own sentence is recorded and not interpreted. hdiutil follows
+            // AppleLanguages, so the words are not a stable classifier.
             let detail=String(data:data,encoding:.utf8)?.trimmingCharacters(in:.whitespacesAndNewlines) ?? ""
             throw IsenoughError.diskImage("Command failed: \(path) \(args.joined(separator:" ")) (exit \(p.terminationStatus))\(detail.isEmpty ? "" : "\n\(detail)")")
         }

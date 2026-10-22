@@ -6,9 +6,26 @@ import Darwin
 #endif
 
 public enum IsenoughError: Error, LocalizedError, Equatable {
-    case usage(String), unsupported(String), backend(String), integrity(String), busy(String), diskImage(String), failure(String)
-    public var exitCode: Int { switch self { case .usage: 2; case .unsupported: 3; case .backend: 4; case .integrity: 5; case .diskImage: 6; case .busy: 9; case .failure: 1 } }
-    public var errorDescription: String? { switch self { case .usage(let s), .unsupported(let s), .backend(let s), .integrity(let s), .busy(let s), .diskImage(let s), .failure(let s): s } }
+    case usage(String), unsupported(String), backend(String), integrity(String), busy(String), diskImage(String), noSpace(String), failure(String), hook(String), resolution(String)
+    public var exitCode: Int {
+        switch self {
+        case .usage: 2
+        case .unsupported: 3
+        case .backend: 4
+        case .integrity: 5
+        case .diskImage: 6
+        case .noSpace: 8
+        case .hook: 10
+        case .busy: 9
+        case .resolution: 14
+        case .failure: 1
+        }
+    }
+    public var errorDescription: String? {
+        switch self {
+        case .usage(let s), .unsupported(let s), .backend(let s), .integrity(let s), .busy(let s), .diskImage(let s), .noSpace(let s), .failure(let s), .hook(let s), .resolution(let s): s
+        }
+    }
 }
 
 public struct ImageManifest: Codable, Equatable {
@@ -27,12 +44,22 @@ public struct ImageManifest: Codable, Equatable {
         public init(file: String, format: String, sha256: String, size: UInt64, volumeName: String, appPathInVolume: String) { self.file=file; self.format=format; self.sha256=sha256; self.size=size; self.volumeName=volumeName; self.appPathInVolume=appPathInVolume }
     }
     public struct App: Codable, Equatable {
-        public var originalPath: String; public var executable: String; public var documentTypes: [[String: AnyCodable]]; public var urlTypes: [[String: AnyCodable]]
-        public init(originalPath: String, executable: String, documentTypes: [[String: AnyCodable]], urlTypes: [[String: AnyCodable]]) { self.originalPath=originalPath; self.executable=executable; self.documentTypes=documentTypes; self.urlTypes=urlTypes }
+        public var originalPath: String
+        public var executable: String
+        public var documentTypes: [[String: AnyCodable]]
+        public var urlTypes: [[String: AnyCodable]]
+        /// Code-directory hash recorded at pack. On macOS this is `codesign`'s CDHash when the bundle is signed; otherwise it is the sha256 of the main executable.
+        public var cdhash: String?
+        /// Canonical tree hash from `BundleHasher`, recorded at pack.
+        public var treeHash: String?
+        public init(originalPath: String, executable: String, documentTypes: [[String: AnyCodable]], urlTypes: [[String: AnyCodable]], cdhash: String? = nil, treeHash: String? = nil) {
+            self.originalPath=originalPath; self.executable=executable; self.documentTypes=documentTypes; self.urlTypes=urlTypes; self.cdhash=cdhash; self.treeHash=treeHash
+        }
     }
     public init(bundleId: String, name: String, version: String, image: Image, app: App, mode: Mode = .mount, createdAt: Date = Date()) {
         self.schema = "image/1"; self.bundleId = bundleId; self.name = name; self.version = version; self.image = image; self.app = app; self.mode = mode; self.createdAt = createdAt
         self.imageId = "\(bundleId)-\(version)-\(String(image.sha256.prefix(8)))"
+        if self.image.file.isEmpty { self.image.file = "images/\(self.imageId).dmg" }
     }
     public func validate() throws {
         guard schema == "image/1" else { throw IsenoughError.failure("Unsupported manifest schema: \(schema)") }
@@ -81,29 +108,102 @@ public enum CachePolicy {
     }
 }
 
+public struct ResumableBody: Equatable {
+    public var data: Data
+    /// The server ignored `Range` and returned the object from byte 0.
+    public var restart: Bool
+    public init(data: Data, restart: Bool) {
+        self.data = data
+        self.restart = restart
+    }
+}
+
 public protocol StorageBackend {
     func list(_ path: String) throws -> [String]
     func stat(_ path: String) throws -> BackendStat?
     func get(_ path: String, range: Range<UInt64>?) throws -> Data
     func put(_ path: String, data: Data) throws
     func delete(_ path: String) throws
+    func getResumable(_ path: String, offset: UInt64) throws -> ResumableBody
+    /// Local directory for file-backed backends. Nil for HTTP backends.
+    func localRoot() -> URL?
+    func ensureCollection(_ path: String) throws
+}
+
+extension StorageBackend {
+    public func getResumable(_ path: String, offset: UInt64) throws -> ResumableBody {
+        guard let info = try stat(path) else { throw IsenoughError.backend("remote object is missing: \(path)") }
+        if offset > info.size { throw IsenoughError.integrity("cached partial is larger than the remote object") }
+        if offset == info.size { return ResumableBody(data: Data(), restart: false) }
+        return ResumableBody(data: try get(path, range: offset..<info.size), restart: false)
+    }
+    public func localRoot() -> URL? { nil }
+    public func ensureCollection(_ path: String) throws {
+        throw IsenoughError.unsupported("this backend has no local directory")
+    }
 }
 public struct FileLock {
     public let path: String
     private var descriptor: Int32 = -1
     public init(path: String) { self.path=path }
     public var isLocked: Bool { descriptor >= 0 }
-    public mutating func lock() throws {
+    public mutating func lock() throws { try acquire(LOCK_EX) }
+    /// Non-blocking exclusive lock. `false` means another process holds it.
+    public mutating func tryLock() throws -> Bool {
+        if descriptor >= 0 { return true }
+        let fd = open(path, O_CREAT | O_RDWR, mode_t(0o600))
+        guard fd >= 0 else { throw IsenoughError.failure("Cannot open lock file") }
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            close(fd)
+            return false
+        }
+        descriptor = fd
+        return true
+    }
+    public mutating func unlock() { if descriptor >= 0 { _ = flock(descriptor, LOCK_UN); _ = close(descriptor); descriptor = -1 } }
+    private mutating func acquire(_ operation: Int32) throws {
         #if canImport(Darwin)
         importDarwinLockUnavailable()
         #endif
         let fd = open(path, O_CREAT | O_RDWR, mode_t(0o600)); guard fd >= 0 else { throw IsenoughError.failure("Cannot open lock file") }
-        guard flock(fd, LOCK_EX) == 0 else { close(fd); throw IsenoughError.failure("Cannot acquire lock") }; descriptor=fd
+        guard flock(fd, operation) == 0 else { close(fd); throw IsenoughError.failure("Cannot acquire lock") }; descriptor=fd
     }
-    public mutating func unlock() { if descriptor >= 0 { _ = flock(descriptor, LOCK_UN); _ = close(descriptor); descriptor = -1 } }
     #if canImport(Darwin)
     private func importDarwinLockUnavailable() {}
     #endif
+}
+
+/// `hdiutil`, `diskutil`, and `codesign` are spawned with `LC_ALL=C` and `LANG=en_US.UTF-8`.
+/// That does not select hdiutil's language: macOS follows the user's AppleLanguages.
+/// Failures are classified by exit status. `codesign -dvvv`'s `CDHash=` field is a stable
+/// machine key, not a translated sentence. `open` is not included: its environment is
+/// inherited by the launched app.
+public enum ParsedCommand {
+    /// These basenames get the pinned locale variables. The name is not a claim that
+    /// the tool then speaks English; hdiutil still follows AppleLanguages.
+    public static func pinsLocale(_ path: String) -> Bool {
+        switch (path as NSString).lastPathComponent {
+        case "hdiutil", "diskutil", "codesign": return true
+        default: return false
+        }
+    }
+
+    public static func environment(inheriting base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
+        var env = base
+        env["LC_ALL"] = "C"
+        env["LANG"] = "en_US.UTF-8"
+        return env
+    }
+
+    public static func process(path: String, arguments: [String], inheriting base: [String: String] = ProcessInfo.processInfo.environment) -> Process {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = arguments
+        if pinsLocale(path) {
+            process.environment = environment(inheriting: base)
+        }
+        return process
+    }
 }
 
 public struct BackendStat: Equatable { public var size: UInt64; public var modified: Date; public init(size: UInt64, modified: Date) { self.size=size; self.modified=modified } }
@@ -116,4 +216,8 @@ public struct LocalFolderBackend: StorageBackend {
     public func get(_ path: String, range: Range<UInt64>? = nil) throws -> Data { let d = try Data(contentsOf: url(path)); guard let r = range else { return d }; let lo = min(Int(r.lowerBound), d.count), hi = min(Int(r.upperBound), d.count); return d.subdata(in: lo..<max(lo, hi)) }
     public func put(_ path: String, data: Data) throws { let u = try url(path); try FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true); try data.write(to: u, options: .atomic) }
     public func delete(_ path: String) throws { let u = try url(path); if FileManager.default.fileExists(atPath: u.path) { try FileManager.default.removeItem(at: u) } }
+    public func localRoot() -> URL? { root }
+    public func ensureCollection(_ path: String) throws {
+        try FileManager.default.createDirectory(at: url(path), withIntermediateDirectories: true)
+    }
 }

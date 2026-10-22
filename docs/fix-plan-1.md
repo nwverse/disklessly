@@ -271,9 +271,9 @@ Keep `testPrefetchCachesPublishedImageBytesWithoutReencoding`.
    with explicit timeouts that still fail the run.
 4. Regression guard for RC1: the e2e `cmp` check and unit test 7 fail if the CLI is ever copied as the stub again.
 
-## F-B1 fix items (from sol review) — DEFERRED
+## F-B1 fix items (from sol review)
 
-> **DEFERRED (Shengtao, 2026-10-20):** this round fixes only RC1–RC3 and the follow-on items that block macos-e2e. The F-B1 restore WAL / crash-recovery items below are postponed to a separate round and stay open; e2e assertions that depend on restore crash recovery may be marked `SKIP (deferred: F-B1)`. Items kept unchanged for that round.
+> **IMPLEMENTED:** restore WAL, per-phase recovery, and the macOS fault-injection e2e landed after this plan was written. The items below are the original checklist and stay here as the requirement text. Decisions that narrowed or completed an ambiguous point are in `docs/fb1-decisions.md`. Do not mark restore e2e assertions `SKIP (deferred: F-B1)`.
 
 Review baseline: `4ee74a3`; verdict **NOT SATISFIED**. See `docs/fb1-review.md` for all twelve
 phase layouts and current file:line evidence. This is missing implementation, not a one-line

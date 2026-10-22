@@ -163,7 +163,17 @@ External tools invoked via `Process` (absolute paths, argument arrays, never a s
 `/usr/bin/codesign`, `/usr/bin/ditto`, `/usr/sbin/lsof` (optional), `/usr/bin/xattr` (not needed; use
 `removexattr(2)`), `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister`.
 `hdiutil` is wrapped behind `DiskImageTool` so a `diskutil image` implementation can be added for macOS 27+
-(hdiutil deprecated there).
+(hdiutil deprecated there). On macOS 27.0, `hdiutil attach -readonly -nobrowse -mountpoint` warns that the
+invocation is deprecated and names `diskutil image attach --readOnly --mountOptions nobrowse --mountPoint`
+as the replacement. Attach and detach use that `diskutil` form when `diskutil image --help` exits 0,
+and the previous `hdiutil attach` / `hdiutil detach` commands otherwise. The help text is not read.
+`diskutil image attach` has no `--noautoopen`; `--mountOptions nobrowse` is the Finder suppression.
+There is no `diskutil image detach`: a normal detach is `diskutil eject`, and a forced detach is
+`diskutil eject force` followed by `diskutil unmount force` if eject does not exit 0. Success is exit 0
+plus a plist that lists the requested mount point (`mount-point` / `MountPoint`). Tool sentences are not
+matched. Image creation stays `hdiutil create -format ULMO`. `diskutil image create from` can write ULMO,
+but its scrubbing and ownership behavior differ, so pack does not use it. `LC_ALL=C` does not change
+hdiutil's language.
 
 ### 2.3 Process model
 - **No mandatory daemon.** The stub spawns a **supervisor** (`isenough hook launch`) that lives for the whole session
@@ -765,10 +775,14 @@ if `postQuitRanForEpoch == epoch`). An adopter that ends in `stuck` again exits 
 (daemon); the record is never dropped while the image is attached.
 
 **(b) Restore sessions (R3-B4).** Input: the open restore journal (`kind` restore-in/restore-out), its paths,
-`destId`/`stubId`, `owner`, `epoch`. No attached image is expected (restore-in detached it). Layout check first:
-`<dest>` is our real bundle (`(dev,ino) == destId`, else bundle id + cdhash == manifest) and
-`staging/<txid>/stub.app` is our stub (bundle id `*.256stub`); a mismatch (user moved things) → no swap at all,
-`doctor` reports, app refused `EX_BUSY` until `doctor --fix`/manual action. Then by journal phase:
+`destId`/`stubId`, `owner`, `epoch`. No attached image is expected (restore-in detached it during `extracted`,
+before `stubParked` / `active`). There is no single active-layout prerequisite. `RestoreRecovery.decide` checks
+the directory layout against the phase that was actually journaled and accepts both the pre-effect and
+post-effect of that phase, because the phase is written before the mutation. A layout that matches neither side,
+or that contains a symlink, a path escape, or an unexplained staging entry, is rejected with no rename and no
+delete; `doctor` reports the repair hint. A changed inode or cdhash at the controlled destination is watched
+and retained unless cdhash, tree hash, and a verified archive all match. Decisions that are intentionally
+narrower than this paragraph are recorded in `docs/fb1-decisions.md`. Then by journal phase:
 
 | Journal phase at crash | Usage probe of `<dest>` + staging (§5.9, restore mode) | Action of the adopter |
 |---|---|---|
@@ -1253,7 +1267,9 @@ collision of `<sha8>` with different content → extend to 16 hex, then full has
   re-creates it) so the iCloud state machine is exercised on Linux and in CI without an Apple ID.
 - `put` = temp + `rename`, `get` with ranges via `FileHandle.seek`. Capabilities: `rangeReads, atomicPut, localPath`.
 
-### 7.4 Phase 2 backends (designed now, not implemented)
+### 7.4 Phase 2 backends
+Implemented on the synchronous `StorageBackend` (`docs/backends.md`): SMB/NFS via `mount_smbfs -N` / `mount_nfs` or an already-mounted path, WebDAV via PROPFIND/GET Range/PUT/MOVE. Credentials stay in the Keychain. `hdiutil create`/`convert` still builds ULMO/ULFO images. The notes below are the original design; where they disagree with `docs/backends.md`, the note file is what the code does.
+
 - **NAS via mounted path (SMB/NFS)**: `LocalFolderBackend` + `mountURL` (`smb://nas/share/256isenough`); `ensureMounted`
   uses `NetFSMountURLAsync` / `open smb://…` once, keychain credentials; availability = path is a mountpoint reachable
   within 3 s (avoid hanging `stat` on dead SMB: probe in a child task with timeout). Never run apps from the share.
@@ -1796,7 +1812,7 @@ extra diagnostic, not a substitute.
   daemon-driven launch over a Unix socket (faster cold starts, single owner of mounts), low-disk notifications,
   `NSMetadataQuery`-based push progress, Developer ID signed + notarized `isenough` release and Homebrew tap.
 - Compatibility database (`compat.json`: bundleId → mode, notes, tested OS) shipped and user-contributed.
-- `diskutil image` backend for `DiskImageTool` on macOS 27+.
+- `diskutil image create` for ULMO pack images, after scrubbing and ownership match `hdiutil create`. Attach and detach already prefer `diskutil image` when that subcommand exists.
 - Optional SwiftUI `MenuBarExtra` companion if Pake tray UX is insufficient.
 
 ### 12.3 v2 (phase 2)
@@ -1811,7 +1827,11 @@ extra diagnostic, not a substitute.
 
 ---
 
-## 13. Roadmap design (not MVP): agent session file offloading with hot/cold tiering
+## 13. Agent session file offloading with hot/cold tiering
+
+The command is `isenough sessions` (`docs/sessions.md`). A run without `--apply` is a dry run. Cold files are a monthly gzip tar on the active backend. The notes below are the original roadmap; the command, the 24 hour guard, and the index are what the code does.
+
+## 13.1 Original roadmap notes
 
 Goal: keep agent session histories available without them filling the disk. Same engine primitives (backend,
 cache, manifest, hooks), different object type.
@@ -1857,7 +1877,7 @@ cache, manifest, hooks), different object type.
    moment; budgeted by the claim, §6.1); `cache.localFormat` can only choose ULFO or UDRO.
 5. **Launch Services duplicates** (stub + mounted real app) may confuse "Open With" briefly during sessions.
 6. **TCC**: same bundle id + DR should keep grants, but Accessibility/Input Monitoring toggles may need re-approval.
-7. **macOS 27**: hdiutil deprecated (still works); stricter bundle validation for stubs — test on 27 betas.
+7. **macOS 27**: `hdiutil attach` is deprecated. The engine attaches with `diskutil image attach --plist --readOnly --mountOptions nobrowse --mountPoint` when `diskutil image --help` exits 0, and falls back to `hdiutil attach -plist -readonly -nobrowse -noautoopen -mountpoint` otherwise. Detach is `diskutil eject` (force: `eject force`, then `unmount force`). hdiutil's failure sentence follows AppleLanguages even with `LC_ALL=C`. Classify by exit status and plist, not by that sentence. `hdiutil create` remains the ULMO pack path. Stricter bundle validation for stubs still needs a 27 test.
 8. **GitHub runners**: LS/`open` behavior on CI may differ; e2e then reports *inconclusive* (red), never a skipped
    pass; the same script runs on the user's Mac as the authoritative gate.
 9. **Apple Event at stub exit** (§8.3): a mach message enqueued between the stub's final drain and `exit` cannot be
@@ -1876,6 +1896,9 @@ cache, manifest, hooks), different object type.
    after the fake-backend CI is green (G-c).
 
 ### 14.2 Open questions
+
+Resolved for the current tree unless a config value is already set: project license MIT (`LICENSE`); ad-hoc signing (`signIdentity` `-`, override `ISENOUGH_SIGN_IDENTITY`); cache quota 20 GiB; free-space floor 15 GiB; detach delay 120 s. The management page is `isenough ui` (loopback, random token). `scripts/build-ui.sh` copies the web assets and runs Pake into `256isenough.app` when `pake` is installed; CI sets `ISENOUGH_SKIP_PAKE=1`.
+
 1. Project license for our own code (MIT/Apache-2.0 suggested; compatible with distributing a separate GPL Pake shell)?
 2. Signing identity: use your Developer ID for stubs (stable DR) or ad-hoc for MVP? Team ID to configure in CI secrets?
 3. Target macOS versions (13+ assumed for the stub; engine 13+)? Is the Mac mini on 15, 26 or 27? Optimize Mac Storage on?

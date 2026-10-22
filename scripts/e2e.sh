@@ -10,15 +10,143 @@ mkdir -p "$(dirname "$LOG")"
 : > "$LOG"
 MOUNT_ROOT="$TMP/mounts"
 APP_PID=""
+UI_PID=""
 
 cleanup() {
+  local status=$?
   if [[ -f "${ISENOUGH_E2E_PID:-}" ]]; then kill "$(cat "$ISENOUGH_E2E_PID")" 2>/dev/null || true; fi
-  if [[ -n "$APP_PID" ]]; then kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi
+  if [[ -n "${APP_PID:-}" ]]; then kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi
+  if [[ -n "${UI_PID:-}" ]]; then kill "$UI_PID" 2>/dev/null || true; wait "$UI_PID" 2>/dev/null || true; fi
+  if [[ -n "${HELPER:-}" ]]; then kill "$HELPER" 2>/dev/null || true; wait "$HELPER" 2>/dev/null || true; fi
+  if [[ -f "${BUSY_PID:-}" ]]; then kill -9 "$(cat "$BUSY_PID")" 2>/dev/null || true; fi
+  if [[ "$status" -ne 0 && -f "${LOG:-}" ]]; then
+    local kept="/tmp/isenough-e2e.log"
+    if [[ "$LOG" != "$kept" ]]; then cp "$LOG" "$kept" 2>/dev/null || true; fi
+    printf 'e2e failed (exit %s). Full log: %s\n' "$status" "$kept" >&2
+    tail -80 "$LOG" >&2 || true
+  fi
+  force_detach_isenough_mounts
   rm -rf "$TMP"
 }
 trap cleanup EXIT INT TERM
 
-fail() { printf 'FAIL: %s\n' "$1" | tee -a "$LOG" >&2; exit 1; }
+fail() {
+  if isenough_mounts_present; then
+    list_image_mounts >>"$LOG" 2>&1 || true
+    printf 'FAIL: %s (isenough mount still attached under %s)\n' "$1" "${MOUNT_ROOT:-$TMP}" | tee -a "$LOG" >&2
+  else
+    printf 'FAIL: %s\n' "$1" | tee -a "$LOG" >&2
+  fi
+  exit 1
+}
+# Exit 0 means `diskutil image` exists. The help text is not read.
+diskutil_image_available() {
+  /usr/sbin/diskutil image --help >/dev/null 2>&1
+}
+alt_mount_path() {
+  case "$1" in
+    /private/*) printf '/%s\n' "${1#/private/}" ;;
+    /var/*|/tmp/*|/etc/*) printf '/private%s\n' "$1" ;;
+    *) printf '\n' ;;
+  esac
+}
+# Forced detach. diskutil has no image detach: eject force, then unmount force.
+# hdiutil detach -force still runs so an older attachment is not left behind.
+detach_one_mount() {
+  local mp="$1" alt
+  if diskutil_image_available; then
+    /usr/sbin/diskutil eject force "$mp" >>"${LOG:-/dev/null}" 2>&1 || /usr/sbin/diskutil unmount force "$mp" >>"${LOG:-/dev/null}" 2>&1 || true
+  fi
+  /usr/bin/hdiutil detach -force "$mp" >>"${LOG:-/dev/null}" 2>&1 || true
+  alt="$(alt_mount_path "$mp")"
+  [[ -n "$alt" ]] || return 0
+  if diskutil_image_available; then
+    /usr/sbin/diskutil eject force "$alt" >>"${LOG:-/dev/null}" 2>&1 || /usr/sbin/diskutil unmount force "$alt" >>"${LOG:-/dev/null}" 2>&1 || true
+  fi
+  /usr/bin/hdiutil detach -force "$alt" >>"${LOG:-/dev/null}" 2>&1 || true
+}
+# Print mount-point values from a plist. Keys are machine names, not sentences.
+plist_mount_points() {
+  /usr/bin/python3 - "$1" <<'PY'
+import plistlib, sys
+def walk(value, found):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if key in ("mount-point", "MountPoint") and isinstance(item, str):
+                found.append(item)
+            else:
+                walk(item, found)
+    elif isinstance(value, list):
+        for item in value:
+            walk(item, found)
+with open(sys.argv[1], "rb") as handle:
+    data = plistlib.load(handle)
+found = []
+walk(data, found)
+print("\n".join(found))
+PY
+}
+hdiutil_mount_points() {
+  local plist="${TMP:-/tmp}/hdiutil-info.plist"
+  /usr/bin/hdiutil info -plist >"$plist" 2>/dev/null || return 0
+  plist_mount_points "$plist" 2>/dev/null || true
+}
+mount_point_is_attached() {
+  local mp="$1" alt points
+  if diskutil_image_available; then
+    /usr/sbin/diskutil info -plist "$mp" >/dev/null 2>&1 && return 0
+    alt="$(alt_mount_path "$mp")"
+    [[ -n "$alt" ]] && /usr/sbin/diskutil info -plist "$alt" >/dev/null 2>&1 && return 0
+    return 1
+  fi
+  points="$(hdiutil_mount_points)"
+  printf '%s\n' "$points" | grep -Fx "$mp" >/dev/null && return 0
+  alt="$(alt_mount_path "$mp")"
+  [[ -n "$alt" ]] && printf '%s\n' "$points" | grep -Fx "$alt" >/dev/null
+}
+force_detach_isenough_mounts() {
+  local token mp point
+  token="$(basename "${TMP:-}")"
+  [[ -n "$token" ]] || return 0
+  if [[ -d "${MOUNT_ROOT:-}" ]]; then
+    for mp in "$MOUNT_ROOT"/*; do
+      [[ -e "$mp" ]] || continue
+      detach_one_mount "$mp"
+    done
+  fi
+  while IFS= read -r point; do
+    [[ "$point" == *"$token"* ]] || continue
+    detach_one_mount "$point"
+  done < <(hdiutil_mount_points)
+}
+isenough_mounts_present() {
+  local token mp point
+  token="$(basename "${TMP:-}")"
+  [[ -n "$token" ]] || return 1
+  if [[ -d "${MOUNT_ROOT:-}" ]]; then
+    for mp in "$MOUNT_ROOT"/*; do
+      [[ -e "$mp" ]] || continue
+      if mount_point_is_attached "$mp"; then return 0; fi
+    done
+  fi
+  while IFS= read -r point; do
+    [[ "$point" == *"$token"* ]] && return 0
+  done < <(hdiutil_mount_points)
+  return 1
+}
+list_image_mounts() {
+  if diskutil_image_available; then
+    /usr/sbin/diskutil list || true
+  fi
+  /usr/bin/hdiutil info -plist || true
+}
+assert_no_isenough_mounts() {
+  if isenough_mounts_present; then
+    list_image_mounts >>"$LOG" 2>&1 || true
+    fail "no isenough mount should remain ($1)"
+  fi
+  pass "no isenough mount left behind ($1)"
+}
 pass() { printf 'PASS: %s\n' "$1" | tee -a "$LOG"; }
 assert_file() { [[ -f "$1" ]] || fail "$2 (missing: $1)"; pass "$2"; }
 assert_contains() { grep -Fq -- "$2" "$1" || fail "$3 (expected '$2' in $1)"; pass "$3"; }
@@ -37,7 +165,7 @@ wait_for() {
 }
 is_attached() {
   kill -0 "$APP_PID" 2>/dev/null || fail 'stub exited before attach'
-  /usr/bin/hdiutil info >"$TMP/hdiutil-info" 2>>"$LOG" && grep -Fq "$MOUNT" "$TMP/hdiutil-info"
+  mount_point_is_attached "$MOUNT"
 }
 is_detached() { ! /sbin/mount | grep -Fq "$MOUNT"; }
 stub_code_diagnostics() {
@@ -58,11 +186,11 @@ state_is_cached() { [[ "$(app_state)" == cached ]]; }
 log_state() { cat "$STATE" >>"$LOG"; }
 
 {
-  echo "E2E started $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-  sw_vers
-  xcodebuild -version
-  swift --version
-} >>"$LOG" 2>&1
+  echo "E2E started $(date -u '+%Y-%m-%dT%H:%M:%SZ')" || true
+  sw_vers || true
+  xcodebuild -version || true
+  swift --version || true
+} >>"$LOG" 2>&1 || true
 
 cd "$ROOT"
 swift build -c debug >>"$LOG" 2>&1 || fail 'swift build -c debug'
@@ -199,4 +327,113 @@ printf 'corruption' >> "$REMOTE_IMAGE"
 rm -f "$CACHE_IMAGE"
 if run_cli prefetch "$IMAGE_ID" >>"$LOG" 2>&1; then fail 'remote sha256 mismatch rejected'; fi
 pass 'remote sha256 mismatch rejected'
+
+# Restore-mode crash recovery. Mount-mode assertions above are unchanged.
+# shellcheck source=e2e-restore.sh
+source "$ROOT/scripts/e2e-restore.sh"
+
+# Session tiering against a temp HOME. The alias spelling (/var vs /private/var)
+# must round-trip through the index.
+SESSION_HOME="$TMP/session-home"
+mkdir -p "$SESSION_HOME/.pi/agent/sessions"
+SESSION_OLD="$SESSION_HOME/.pi/agent/sessions/old.jsonl"
+SESSION_FRESH="$SESSION_HOME/.pi/agent/sessions/fresh.jsonl"
+printf '%s\n' '{"type":"user","text":"pack the blender notes"}' > "$SESSION_OLD"
+printf '%s\n' 'still hot' > "$SESSION_FRESH"
+touch -t "$(date -v-30d '+%Y%m%d%H%M.%S')" "$SESSION_OLD"
+touch -t "$(date -v-2H '+%Y%m%d%H%M.%S')" "$SESSION_FRESH"
+SESSION_CANON="$(/usr/bin/python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$SESSION_OLD")"
+case "$SESSION_HOME" in
+  /private/*) SESSION_HOME_ALIAS="/${SESSION_HOME#/private/}" ;;
+  *) SESSION_HOME_ALIAS="$SESSION_HOME" ;;
+esac
+SESSION_ALIAS="$SESSION_HOME_ALIAS/.pi/agent/sessions/old.jsonl"
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions >"$TMP/sessions-dry.json" 2>>"$LOG" || fail 'sessions dry run'
+# Refuse --apply unless every dry-run path stays inside the temp home. An empty
+# cold list is not enough: a scan of the real home shows up in skipped.
+if ! /usr/bin/python3 - "$TMP/sessions-dry.json" "$SESSION_HOME" "$SESSION_CANON" >>"$LOG" 2>&1 <<'PY'
+import json, os, sys
+report = json.load(open(sys.argv[1]))
+root = os.path.realpath(sys.argv[2])
+canon = os.path.realpath(sys.argv[3])
+paths = list(report.get("cold") or [])
+for item in report.get("skipped") or []:
+    paths.append(item["path"])
+bad = []
+for path in paths:
+    real = os.path.realpath(path)
+    if real != root and not real.startswith(root + os.sep):
+        bad.append(path)
+if bad:
+    print("outside temp home:")
+    print("\n".join(bad[:30]))
+    raise SystemExit(1)
+if report.get("applied") is not False or report.get("cold") != [canon]:
+    print("dry run cold %s expected %s" % (report.get("cold"), [canon]))
+    raise SystemExit(1)
+PY
+then
+  fail 'sessions dry run listed a path outside the temp home; refusing to apply'
+fi
+[[ -f "$SESSION_CANON" ]] || fail 'sessions dry run deleted a file'
+pass 'sessions dry run keeps the cold file and reports its canonical path'
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions --apply >"$TMP/sessions-apply.json" 2>>"$LOG" || fail 'sessions apply'
+/usr/bin/python3 - "$TMP/sessions-apply.json" "$SESSION_CANON" "$ISENOUGH_STATE_DIR/sessions-index.json" <<'PY' || fail 'sessions apply canonical index'
+import json, sys
+report, canon, index_path = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
+index = json.load(open(index_path))
+paths = [entry["path"] for entry in index["entries"]]
+if report.get("applied") is not True or report.get("cold") != [canon] or paths != [canon]:
+    raise SystemExit(f"apply {report} index {paths} expected {[canon]}")
+PY
+[[ ! -f "$SESSION_CANON" ]] || fail 'sessions apply left the cold file in place'
+[[ -f "$SESSION_FRESH" ]] || fail 'sessions apply removed a hot file'
+pass 'sessions apply packs the cold file and keeps the hot file'
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions search blender >"$TMP/sessions-search.json" 2>>"$LOG" || fail 'sessions search'
+/usr/bin/python3 - "$TMP/sessions-search.json" "$SESSION_CANON" <<'PY' || fail 'sessions search missed the packed preview'
+import json, sys
+hits, canon = json.load(open(sys.argv[1])), sys.argv[2]
+if len(hits) != 1 or hits[0].get("path") != canon or "blender" not in hits[0].get("preview", ""):
+    raise SystemExit(f"search {hits}")
+PY
+pass 'sessions search finds the packed preview'
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions restore "$SESSION_ALIAS" >"$TMP/sessions-restore.json" 2>>"$LOG" || fail 'sessions restore'
+/usr/bin/python3 - "$TMP/sessions-restore.json" "$SESSION_CANON" <<'PY' || fail 'sessions restore path'
+import json, sys
+report, canon = json.load(open(sys.argv[1])), sys.argv[2]
+if report.get("ok") is not True or report.get("path") != canon:
+    raise SystemExit(f"restore {report} expected {canon}")
+PY
+grep -Fq 'pack the blender notes' "$SESSION_CANON" || fail 'sessions restore bytes'
+pass 'sessions restore round-trip writes the canonical path'
+
+# Loopback UI: 127.0.0.1 only, token required, clean SIGTERM exit.
+"$ROOT/.build/debug/isenough" ui >"$TMP/ui-server.log" 2>&1 &
+UI_PID=$!
+UI_URL=""
+for _ in $(seq 1 50); do
+  if ! kill -0 "$UI_PID" 2>/dev/null; then fail 'isenough ui exited before printing a URL'; fi
+  UI_URL="$(grep -Eo 'http://127\.0\.0\.1:[0-9]+/\?token=[^[:space:]]+' "$TMP/ui-server.log" | head -n 1 || true)"
+  [[ -n "$UI_URL" ]] && break
+  sleep 0.1
+done
+[[ -n "$UI_URL" ]] || fail 'isenough ui did not print a loopback URL'
+/usr/sbin/lsof -nP -a -p "$UI_PID" -iTCP -sTCP:LISTEN >"$TMP/ui-listen.txt" 2>>"$LOG" || fail 'lsof UI listen socket'
+grep -F '127.0.0.1:' "$TMP/ui-listen.txt" >/dev/null || fail 'isenough ui is not bound to 127.0.0.1'
+if grep -E '(\*:|0\.0\.0\.0:)' "$TMP/ui-listen.txt" >/dev/null; then fail 'isenough ui listened outside loopback'; fi
+UI_PORT="$(printf '%s' "$UI_URL" | sed -E 's#http://127\.0\.0\.1:([0-9]+)/.*#\1#')"
+UI_DENIED="$(/usr/bin/curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${UI_PORT}/api/status")"
+[[ "$UI_DENIED" == "401" ]] || fail "isenough ui without a token returned $UI_DENIED"
+UI_PAGE="$(/usr/bin/curl -s -o "$TMP/ui-page.html" -w '%{http_code}' "$UI_URL")"
+[[ "$UI_PAGE" == "200" ]] || fail "isenough ui with a token returned $UI_PAGE"
+grep -Fq 'app.js?token=' "$TMP/ui-page.html" || fail 'isenough ui page omitted the token'
+kill -TERM "$UI_PID"
+set +e
+wait "$UI_PID"
+UI_STATUS=$?
+set -e
+UI_PID=""
+[[ "$UI_STATUS" -eq 0 ]] || fail "isenough ui exit status $UI_STATUS"
+pass 'isenough ui serves loopback with a token and exits cleanly'
+
 printf 'PASS: all macOS end-to-end assertions completed\n' | tee -a "$LOG"

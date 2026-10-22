@@ -4,7 +4,7 @@ on:
   push:
     branches: [feat/mvp]
   pull_request:
-    branches: [main]
+    branches: [main, feat/mvp]
   workflow_dispatch:
 
 permissions:
@@ -25,6 +25,10 @@ jobs:
         run: swift build
       - name: Unit tests
         run: swift test
+      - name: Build web assets
+        env:
+          ISENOUGH_SKIP_PAKE: "1"
+        run: bash scripts/build-ui.sh
       - name: End-to-end harness
         env:
           E2E_LOG_FILE: ${{ runner.temp }}/isenough-e2e.log
