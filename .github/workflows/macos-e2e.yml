@@ -1,0 +1,45 @@
+name: macOS E2E
+
+on:
+  push:
+    branches: [feat/mvp]
+  pull_request:
+    branches: [main, feat/mvp]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-e2e:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show macOS and toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+      - name: Build
+        run: swift build
+      - name: Unit tests
+        run: swift test
+      - name: Build web assets
+        env:
+          ISENOUGH_SKIP_PAKE: "1"
+        run: bash scripts/build-ui.sh
+      - name: End-to-end harness
+        env:
+          E2E_LOG_FILE: ${{ runner.temp }}/isenough-e2e.log
+        run: bash scripts/e2e.sh
+      - name: Print bounded E2E log on failure
+        if: failure()
+        run: tail -200 "${{ runner.temp }}/isenough-e2e.log" || true
+      - name: Upload E2E log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-e2e-log
+          path: ${{ runner.temp }}/isenough-e2e.log
+          if-no-files-found: warn

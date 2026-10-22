@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>256isenough</title>
+<link rel="stylesheet" href="style.css">
+<main>
+  <header>
+    <h1>256isenough</h1>
+    <button id="refresh" type="button">Refresh</button>
+  </header>
+  <section>
+    <h2>Backend</h2>
+    <p id="backend">Loading…</p>
+  </section>
+  <section>
+    <h2>Cache</h2>
+    <p id="cache"></p>
+    <div class="bar"><div id="cache-fill"></div></div>
+  </section>
+  <section>
+    <h2>Offloaded apps</h2>
+    <table>
+      <thead><tr><th>App</th><th>Mode</th><th>Cache</th><th></th></tr></thead>
+      <tbody id="apps"></tbody>
+    </table>
+  </section>
+  <section>
+    <h2>Session tiers</h2>
+    <p id="sessions-summary"></p>
+    <ul id="sessions"></ul>
+  </section>
+  <p id="error" class="error"></p>
+</main>
+<script type="module" src="app.js"></script>

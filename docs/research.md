@@ -25,9 +25,9 @@
 
 ### 2.1 DMG、sparsebundle 和本地缓存
 - **格式**：分发用 `hdiutil create -srcfolder Foo.app -fs APFS -format ULMO`（LZMA 压缩、只读、UDIF 自带校验和），或 ULFO（LZFSE，解压更快）。sparsebundle（UDSB，默认 8MB 一个 band）适合需要写入或做增量同步的场景，放在云盘里会变成几百上千个小文件，同步和冲突风险都会增加。**只读 App 镜像用单文件 DMG 更合适**。([sparse bundle 性能](https://eclecticlight.co/2024/12/16/are-sparse-bundles-faster-than-disk-images/), [band 大小](https://eclecticlight.co/2020/06/18/selecting-sizes-for-sparse-bundles/))
-- **挂载**：`hdiutil attach -readonly -nobrowse -noautoopen -mountpoint ~/.wupan/mnt/<id>`。个别 App 一定要写自己的 bundle，可以加 `-shadow <本机文件>`，写入会落到本地影子文件，而且每台 Mac 必须用各自的影子文件。([多机 + shadow](https://apple.stackexchange.com/questions/144814))
+- **挂载**：`hdiutil attach -readonly -nobrowse -noautoopen -mountpoint ~/.isenough/mnt/<id>`。个别 App 一定要写自己的 bundle，可以加 `-shadow <本机文件>`，写入会落到本地影子文件，而且每台 Mac 必须用各自的影子文件。([多机 + shadow](https://apple.stackexchange.com/questions/144814))
 - **经 SMB/WebDAV 直接挂远端 DMG**：SMB 下能用，但启动时的随机读要走网络，而且休眠或断网会让卷失效（常见报错 “Resource temporarily unavailable”）。WebDAV（macOS 自带的 webdavfs）性能差。**建议始终先把整个镜像拉到本地缓存再挂载**，远端只作为仓库。
-- **本地缓存**：`~/Library/Caches/Wupan/images/`，设容量上限，按 LRU 淘汰，支持固定（pin）。这台机器的 iCloud Drive 和缓存都在同一个 APFS 卷上，可以用 `cp -c`（APFS clone）实现“零拷贝缓存”，然后再把 iCloud 里的原件 evict 掉。**clone 在原件被 evict 后是否还保留数据，需要实测**。
+- **本地缓存**：`~/Library/Caches/Isenough/images/`，设容量上限，按 LRU 淘汰，支持固定（pin）。这台机器的 iCloud Drive 和缓存都在同一个 APFS 卷上，可以用 `cp -c`（APFS clone）实现“零拷贝缓存”，然后再把 iCloud 里的原件 evict 掉。**clone 在原件被 evict 后是否还保留数据，需要实测**。
 - 另一个选择是 macOS 26 的 ASIF 格式。macOS 27 新增的 DiskImageKit 主要面向虚拟化，暂时不需要。
 
 ### 2.2 File Provider 和 iCloud Drive（MVP 首选后端，下面展开）
@@ -109,21 +109,21 @@
 /Applications/Foo.app (Stub, Developer ID 签名)
       │ 点击
       ▼
-wupand (LaunchAgent, Swift)  ←→  wupan CLI / 菜单栏 App
+isenoughd (LaunchAgent, Swift)  ←→  isenough CLI / 菜单栏 App
   ├─ Catalog: manifest.json (bundleId, ver, sha256, cdhash, teamId, mode, size)
   ├─ Backend 抽象: list/stat/get(range)/put/delete
-  │    ├─ iCloudBackend (MVP)：~/Library/Mobile Documents/.../Wupan/ + startDownloading/evict
+  │    ├─ iCloudBackend (MVP)：~/Library/Mobile Documents/.../Isenough/ + startDownloading/evict
   │    ├─ LocalPathBackend（SMB/NFS 已挂载路径）    ← Phase 2
   │    └─ HTTP/WebDAV/OpenList API Backend           ← Phase 2
-  ├─ Cache: ~/Library/Caches/Wupan (LRU, pin, 配额, sha 校验)
+  ├─ Cache: ~/Library/Caches/Isenough (LRU, pin, 配额, sha 校验)
   └─ Runner: attach -readonly -nobrowse → open → 监听退出 → 延迟 detach
 ```
 
-**打包流程**：`wupan pack /Applications/Foo.app`
+**打包流程**：`isenough pack /Applications/Foo.app`
 1. 检查签名、quarantine、helper 和 MAS 收据，自动判定用挂载模式还是还原模式。
 2. 用 `hdiutil create ULMO` 打包。
 3. 计算 sha256，写入 manifest。
-4. 拷进 iCloud Drive 的 Wupan 目录。
+4. 拷进 iCloud Drive 的 Isenough 目录。
 5. 等上传完成（`brctl` 或 `NSMetadataQuery`）。
 6. 生成并签名 Stub。
 7. 删除原 App（先移到废纸篓，可回滚）。

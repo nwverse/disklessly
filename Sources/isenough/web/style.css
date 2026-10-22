@@ -1,0 +1,12 @@
+body{font:15px -apple-system,BlinkMacSystemFont,sans-serif;background:#111827;color:#e5e7eb;margin:0}
+main{max-width:880px;margin:6vh auto;padding:1.5rem 2rem}
+header{display:flex;align-items:center;justify-content:space-between}
+h1{font-size:1.8rem;margin:0}
+h2{font-size:1rem;margin:1.4rem 0 .4rem;color:#93c5fd}
+button{background:#38bdf8;color:#082f49;border:0;border-radius:6px;padding:.45rem .8rem;cursor:pointer;margin-right:.4rem}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:.45rem .3rem;border-bottom:1px solid #1f2937}
+.bar{height:8px;background:#1f2937;border-radius:99px;overflow:hidden}
+#cache-fill{height:100%;width:0;background:#38bdf8}
+.error{color:#fca5a5}
+ul{padding-left:1.1rem}
