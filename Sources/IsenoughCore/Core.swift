@@ -118,13 +118,29 @@ public struct ResumableBody: Equatable {
     }
 }
 
+/// Result of streaming a remote object onto disk. `bytesWritten` is the size of this
+/// response, not the total size of a resumed file.
+public struct ResumableFile: Equatable {
+    public var restart: Bool
+    public var bytesWritten: UInt64
+    public init(restart: Bool, bytesWritten: UInt64) {
+        self.restart = restart
+        self.bytesWritten = bytesWritten
+    }
+}
+
 public protocol StorageBackend {
     func list(_ path: String) throws -> [String]
     func stat(_ path: String) throws -> BackendStat?
+    /// Small objects (manifests, JSON). Large images and archives use `download`.
     func get(_ path: String, range: Range<UInt64>?) throws -> Data
     func put(_ path: String, data: Data) throws
+    /// Upload a local file without reading it into one `Data`.
+    func put(_ path: String, file: URL) throws
     func delete(_ path: String) throws
     func getResumable(_ path: String, offset: UInt64) throws -> ResumableBody
+    /// Stream `path` onto `destination`, appending when `offset` is past zero and the server honored `Range`.
+    func download(_ path: String, to destination: URL, offset: UInt64) throws -> ResumableFile
     /// Local directory for file-backed backends. Nil for HTTP backends.
     func localRoot() -> URL?
     func ensureCollection(_ path: String) throws
@@ -136,6 +152,26 @@ extension StorageBackend {
         if offset > info.size { throw IsenoughError.integrity("cached partial is larger than the remote object") }
         if offset == info.size { return ResumableBody(data: Data(), restart: false) }
         return ResumableBody(data: try get(path, range: offset..<info.size), restart: false)
+    }
+    public func put(_ path: String, file: URL) throws {
+        let size = try ChunkedIO.byteCount(file)
+        if size > 32 * 1024 * 1024 {
+            throw IsenoughError.unsupported("this backend cannot stream an upload of \(size) bytes")
+        }
+        try put(path, data: ChunkedIO.readAll(file))
+    }
+    public func download(_ path: String, to destination: URL, offset: UInt64) throws -> ResumableFile {
+        let body = try getResumable(path, offset: offset)
+        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        if body.restart || offset == 0 {
+            try ChunkedIO.writeAtomically(body.data, to: destination)
+        } else if !body.data.isEmpty {
+            let staging = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-append-\(UUID().uuidString)")
+            try body.data.write(to: staging)
+            defer { try? FileManager.default.removeItem(at: staging) }
+            try ChunkedIO.appendFile(staging, to: destination)
+        }
+        return ResumableFile(restart: body.restart, bytesWritten: UInt64(body.data.count))
     }
     public func localRoot() -> URL? { nil }
     public func ensureCollection(_ path: String) throws {
@@ -209,15 +245,170 @@ public enum ParsedCommand {
 public struct BackendStat: Equatable { public var size: UInt64; public var modified: Date; public init(size: UInt64, modified: Date) { self.size=size; self.modified=modified } }
 public struct LocalFolderBackend: StorageBackend {
     public let root: URL
-    public init(root: URL) throws { self.root = root.standardizedFileURL; try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true) }
-    private func url(_ path: String) throws -> URL { guard !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else { throw IsenoughError.usage("Invalid backend path") }; return root.appendingPathComponent(path) }
-    public func list(_ path: String = "") throws -> [String] { try FileManager.default.contentsOfDirectory(atPath: url(path).path).sorted() }
-    public func stat(_ path: String) throws -> BackendStat? { let u = try url(path); guard let a = try? FileManager.default.attributesOfItem(atPath: u.path), let n = a[.size] as? NSNumber else { return nil }; return BackendStat(size: n.uint64Value, modified: a[.modificationDate] as? Date ?? .distantPast) }
-    public func get(_ path: String, range: Range<UInt64>? = nil) throws -> Data { let d = try Data(contentsOf: url(path)); guard let r = range else { return d }; let lo = min(Int(r.lowerBound), d.count), hi = min(Int(r.upperBound), d.count); return d.subdata(in: lo..<max(lo, hi)) }
-    public func put(_ path: String, data: Data) throws { let u = try url(path); try FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true); try data.write(to: u, options: .atomic) }
-    public func delete(_ path: String) throws { let u = try url(path); if FileManager.default.fileExists(atPath: u.path) { try FileManager.default.removeItem(at: u) } }
+    /// When set, directory listings and stats run on a background thread and fail
+    /// instead of blocking the caller. iCloud Drive uses this.
+    public var boundsListing: Bool
+    public var listTimeout: TimeInterval
+    /// Download evicted ubiquitous items before reading them.
+    public var materializeReads: Bool
+    public var materializeTimeout: TimeInterval
+
+    public init(root: URL, boundsListing: Bool = false, listTimeout: TimeInterval = 20, materializeReads: Bool = false, materializeTimeout: TimeInterval = 900) throws {
+        self.root = root.standardizedFileURL
+        self.boundsListing = boundsListing
+        self.listTimeout = listTimeout
+        self.materializeReads = materializeReads
+        self.materializeTimeout = materializeTimeout
+        try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
+    }
+
+    private func url(_ path: String) throws -> URL {
+        guard !path.hasPrefix("/"), !path.split(separator: "/").contains("..") else { throw IsenoughError.usage("Invalid backend path") }
+        return root.appendingPathComponent(path)
+    }
+
+    public func list(_ path: String = "") throws -> [String] {
+        let directory = try url(path)
+        if boundsListing {
+            let coordinated = materializeReads
+            return try BlockingCall.run(seconds: listTimeout, what: "listing \(directory.path)") {
+                try Self.names(in: directory, coordinated: coordinated)
+            }
+        }
+        return try Self.names(in: directory, coordinated: false)
+    }
+
+    public func stat(_ path: String) throws -> BackendStat? {
+        let file = try url(path)
+        let attrs: [FileAttributeKey: Any]?
+        if boundsListing {
+            attrs = try BlockingCall.run(seconds: listTimeout, what: "stat \(file.path)") {
+                try? FileManager.default.attributesOfItem(atPath: file.path)
+            }
+        } else {
+            attrs = try? FileManager.default.attributesOfItem(atPath: file.path)
+        }
+        guard let attrs, let size = attrs[.size] as? NSNumber else { return nil }
+        return BackendStat(size: size.uint64Value, modified: attrs[.modificationDate] as? Date ?? .distantPast)
+    }
+
+    public func get(_ path: String, range: Range<UInt64>? = nil) throws -> Data {
+        let file = try url(path)
+        try UbiquitousMaterializer.beforeRead(file, timeout: materializeTimeout, enabled: materializeReads)
+        if let range {
+            let length = range.upperBound > range.lowerBound ? range.upperBound - range.lowerBound : 0
+            var data = Data()
+            _ = try ChunkedIO.read(file, offset: range.lowerBound, count: length) { data.append($0) }
+            return data
+        }
+        return try ChunkedIO.readAll(file)
+    }
+
+    public func put(_ path: String, data: Data) throws {
+        let destination = try url(path)
+        try ChunkedIO.writeAtomically(data, to: destination)
+    }
+
+    public func put(_ path: String, file: URL) throws {
+        let destination = try url(path)
+        let fm = FileManager.default
+        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).tmp-\(UUID().uuidString)")
+        do {
+            try ChunkedIO.copyFile(from: file, to: temporary)
+            try ChunkedIO.replaceFile(destination, with: temporary)
+        } catch {
+            try? fm.removeItem(at: temporary)
+            throw error
+        }
+    }
+
+    public func download(_ path: String, to destination: URL, offset: UInt64) throws -> ResumableFile {
+        let file = try url(path)
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            throw IsenoughError.backend("remote object is missing: \(path)")
+        }
+        try UbiquitousMaterializer.beforeRead(file, timeout: materializeTimeout, enabled: materializeReads)
+        let size = try ChunkedIO.byteCount(file)
+        if offset > size { throw IsenoughError.integrity("cached partial is larger than the remote object") }
+        if offset == size { return ResumableFile(restart: false, bytesWritten: 0) }
+        if offset == 0 {
+            let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).fetch-\(UUID().uuidString)")
+            try ChunkedIO.copyFile(from: file, to: temporary)
+            try ChunkedIO.replaceFile(destination, with: temporary)
+            return ResumableFile(restart: false, bytesWritten: size)
+        }
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-range-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try writeTail(of: file, offset: offset, length: size - offset, to: temporary)
+        try ChunkedIO.appendFile(temporary, to: destination)
+        return ResumableFile(restart: false, bytesWritten: size - offset)
+    }
+
+    public func delete(_ path: String) throws {
+        let file = try url(path)
+        if FileManager.default.fileExists(atPath: file.path) { try FileManager.default.removeItem(at: file) }
+    }
+
     public func localRoot() -> URL? { root }
+
     public func ensureCollection(_ path: String) throws {
         try FileManager.default.createDirectory(at: url(path), withIntermediateDirectories: true)
+    }
+
+    private static func names(in directory: URL, coordinated: Bool) throws -> [String] {
+        #if os(macOS)
+        if coordinated { return try coordinatedNames(directory) }
+        #else
+        _ = coordinated
+        #endif
+        return try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted()
+    }
+
+    #if os(macOS)
+    private static func coordinatedNames(_ directory: URL) throws -> [String] {
+        let coordinator = NSFileCoordinator()
+        var coordinationError: NSError?
+        var names: [String] = []
+        var readError: Error?
+        coordinator.coordinate(readingItemAt: directory, options: [.immediatelyAvailableMetadataOnly], error: &coordinationError) { url in
+            do {
+                names = try FileManager.default.contentsOfDirectory(atPath: url.path)
+            } catch {
+                readError = error
+            }
+        }
+        if let coordinationError {
+            throw IsenoughError.backend("could not coordinate a read of \(directory.path): \(coordinationError.localizedDescription). \(ICloudLimits.permissionHint)")
+        }
+        if let readError { throw readError }
+        return names.sorted()
+    }
+    #endif
+
+    private func writeTail(of source: URL, offset: UInt64, length: UInt64, to destination: URL) throws {
+        guard FileManager.default.createFile(atPath: destination.path, contents: nil) else {
+            throw IsenoughError.failure("cannot write \(destination.path)")
+        }
+        let output = open(destination.path, O_WRONLY | O_TRUNC)
+        guard output >= 0 else { throw IsenoughError.failure("cannot write \(destination.path)") }
+        defer { _ = close(output) }
+        _ = try ChunkedIO.read(source, offset: offset, count: length) { chunk in
+            try chunk.withUnsafeBytes { raw in
+                guard let base = raw.baseAddress else { return }
+                var sent = 0
+                while sent < raw.count {
+                    let n: Int
+                    #if canImport(Glibc)
+                    n = Glibc.write(output, base.advanced(by: sent), raw.count - sent)
+                    #else
+                    n = Darwin.write(output, base.advanced(by: sent), raw.count - sent)
+                    #endif
+                    if n < 0 && errno == EINTR { continue }
+                    if n <= 0 { throw IsenoughError.failure("cannot write \(destination.path)") }
+                    sent += n
+                }
+            }
+        }
     }
 }

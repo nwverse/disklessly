@@ -67,7 +67,11 @@ final class UIServerTests: XCTestCase {
         let apps = try XCTUnwrap(object["apps"] as? [[String: Any]])
         XCTAssertEqual(apps.first?["name"] as? String, "Test")
         XCTAssertEqual(apps.first?["cached"] as? Bool, true)
+        XCTAssertEqual(apps.first?["remote"] as? Bool, false)
+        XCTAssertEqual(apps.first?["pinned"] as? Bool, false)
+        XCTAssertEqual(apps.first?["restored"] as? Bool, false)
         let backend = try XCTUnwrap(object["backend"] as? [String: Any])
+        XCTAssertEqual(backend["health"] as? String, "ok")
         XCTAssertEqual(backend["activeId"] as? String, "nas")
         let sessions = try XCTUnwrap(object["sessions"] as? [String: Any])
         let offloaded = try XCTUnwrap(sessions["offloaded"] as? [[String: Any]])
@@ -83,6 +87,11 @@ final class UIServerTests: XCTestCase {
         let evict = try request(port: server.port, path: "/api/evict", token: "page-token", method: "POST", body: Data("{\"app\":\"Test\"}".utf8))
         XCTAssertEqual(evict.status, 200)
         XCTAssertFalse(FileManager.default.fileExists(atPath: cached.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: repo.appendingPathComponent("manifests/\(manifest.imageId).json").path))
+        let restore = try request(port: server.port, path: "/api/restore", token: "page-token", method: "POST", body: Data("{\"app\":\"Test\"}".utf8))
+        let restoreBody = try XCTUnwrap(JSONSerialization.jsonObject(with: restore.body) as? [String: Any])
+        XCTAssertEqual(restoreBody["ok"] as? Bool, false)
+        XCTAssertFalse((restoreBody["error"] as? String ?? "").isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: repo.appendingPathComponent("manifests/\(manifest.imageId).json").path))
     }
 
