@@ -1,35 +1,76 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hans">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>256isenough</title>
+<script>
+(function () {
+  try {
+    var params = new URLSearchParams(location.search);
+    var theme = params.get("theme");
+    if (theme !== "light" && theme !== "dark") theme = localStorage.getItem("isenough.theme");
+    if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
+    var lang = params.get("lang");
+    if (lang !== "zh" && lang !== "en") lang = localStorage.getItem("isenough.lang") || "zh";
+    document.documentElement.lang = lang === "en" ? "en" : "zh-Hans";
+  } catch (e) {}
+})();
+</script>
 <link rel="stylesheet" href="style.css">
-<main>
-  <header>
-    <h1>256isenough</h1>
-    <button id="refresh" type="button">Refresh</button>
+</head>
+<body>
+<div class="window">
+  <header class="toolbar">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">256</div>
+      <div>
+        <h1>256isenough</h1>
+        <p class="sub" id="subtitle"></p>
+      </div>
+    </div>
+    <div class="toolbar-actions">
+      <div class="health" id="health" data-state="unknown"><span class="dot"></span><span id="health-label"></span></div>
+      <button id="lang" type="button"></button>
+      <button id="theme" type="button"></button>
+      <button id="refresh" type="button" class="primary"></button>
+    </div>
   </header>
-  <section>
-    <h2>Backend</h2>
-    <p id="backend">Loading…</p>
+  <section class="grid">
+    <article class="card meter-card">
+      <h2 id="cache-title"></h2>
+      <div class="meter-row">
+        <div class="meter" id="meter" style="--pct: 0">
+          <div class="meter-hole">
+            <strong id="meter-pct">0%</strong>
+            <span id="meter-caption"></span>
+          </div>
+        </div>
+        <dl id="cache-stats"></dl>
+      </div>
+    </article>
+    <article class="card">
+      <h2 id="backend-title"></h2>
+      <p id="backend" class="lead"></p>
+      <p id="backend-detail" class="muted"></p>
+    </article>
   </section>
-  <section>
-    <h2>Cache</h2>
-    <p id="cache"></p>
-    <div class="bar"><div id="cache-fill"></div></div>
+  <section class="card">
+    <div class="section-head">
+      <h2 id="apps-title"></h2>
+    </div>
+    <div id="apps" class="apps"></div>
   </section>
-  <section>
-    <h2>Offloaded apps</h2>
-    <table>
-      <thead><tr><th>App</th><th>Mode</th><th>Cache</th><th></th></tr></thead>
-      <tbody id="apps"></tbody>
-    </table>
+  <section class="card">
+    <div class="section-head">
+      <h2 id="sessions-title"></h2>
+    </div>
+    <p id="sessions-summary" class="muted"></p>
+    <ul id="sessions" class="sessions"></ul>
   </section>
-  <section>
-    <h2>Session tiers</h2>
-    <p id="sessions-summary"></p>
-    <ul id="sessions"></ul>
-  </section>
-  <p id="error" class="error"></p>
-</main>
+  <p id="error" class="error" role="alert"></p>
+</div>
 <script type="module" src="app.js"></script>
+</body>
+</html>

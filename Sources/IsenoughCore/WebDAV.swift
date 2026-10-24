@@ -22,6 +22,22 @@ public struct HTTPResponse: Equatable {
 
 public protocol HTTPTransport: AnyObject {
     func send(method: String, url: URL, headers: [String: String], body: Data?) throws -> HTTPResponse
+    /// Stream a file as the request body. `URLSessionTransport` uses `uploadTask(with:fromFile:)`.
+    func upload(method: String, url: URL, headers: [String: String], file: URL) throws -> HTTPResponse
+    /// Stream the response body onto `destination`. `URLSessionTransport` uses `downloadTask`.
+    func download(method: String, url: URL, headers: [String: String], to destination: URL) throws -> HTTPResponse
+}
+
+extension HTTPTransport {
+    public func upload(method: String, url: URL, headers: [String: String], file: URL) throws -> HTTPResponse {
+        try send(method: method, url: url, headers: headers, body: ChunkedIO.readAll(file))
+    }
+
+    public func download(method: String, url: URL, headers: [String: String], to destination: URL) throws -> HTTPResponse {
+        let response = try send(method: method, url: url, headers: headers, body: nil)
+        try ChunkedIO.writeAtomically(response.body, to: destination)
+        return HTTPResponse(status: response.status, headers: response.headers, body: Data())
+    }
 }
 
 public enum BasicAuth {
@@ -53,8 +69,8 @@ public final class URLSessionTransport: HTTPTransport {
     public init(origin: String? = nil) {
         stripper = RedirectStripper(origin: origin)
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 60
-        configuration.timeoutIntervalForResource = 60
+        configuration.timeoutIntervalForRequest = 120
+        configuration.timeoutIntervalForResource = 6 * 60 * 60
         session = URLSession(configuration: configuration, delegate: stripper, delegateQueue: nil)
     }
 
@@ -81,6 +97,68 @@ public final class URLSessionTransport: HTTPTransport {
         task.resume()
         semaphore.wait()
         return try box.result.get()
+    }
+
+    public func upload(method: String, url: URL, headers: [String: String], file: URL) throws -> HTTPResponse {
+        let request = Self.request(method: method, url: url, headers: headers)
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = ResponseBox()
+        let task = session.uploadTask(with: request, fromFile: file) { data, response, error in
+            defer { semaphore.signal() }
+            if let error {
+                box.result = .failure(error)
+                return
+            }
+            box.result = .success(Self.received(response, body: data ?? Data()))
+        }
+        task.resume()
+        semaphore.wait()
+        return try box.result.get()
+    }
+
+    public func download(method: String, url: URL, headers: [String: String], to destination: URL) throws -> HTTPResponse {
+        let request = Self.request(method: method, url: url, headers: headers)
+        let semaphore = DispatchSemaphore(value: 0)
+        let box = ResponseBox()
+        let task = session.downloadTask(with: request) { location, response, error in
+            defer { semaphore.signal() }
+            if let error {
+                box.result = .failure(error)
+                return
+            }
+            let received = Self.received(response, body: Data())
+            if let location {
+                do {
+                    try ChunkedIO.replaceFile(destination, with: location)
+                } catch {
+                    box.result = .failure(error)
+                    return
+                }
+            } else if (200..<300).contains(received.status) {
+                box.result = .failure(IsenoughError.backend("download produced no file (HTTP \(received.status))"))
+                return
+            }
+            box.result = .success(received)
+        }
+        task.resume()
+        semaphore.wait()
+        return try box.result.get()
+    }
+
+    private static func request(method: String, url: URL, headers: [String: String]) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.httpMethod = method
+        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+        return request
+    }
+
+    private static func received(_ response: URLResponse?, body: Data) -> HTTPResponse {
+        let http = response as? HTTPURLResponse
+        var headers: [String: String] = [:]
+        http?.allHeaderFields.forEach { key, value in
+            headers["\(key)"] = "\(value)"
+        }
+        return HTTPResponse(status: http?.statusCode ?? 0, headers: headers, body: body)
     }
 }
 
@@ -190,21 +268,48 @@ public struct WebDAVBackend: StorageBackend {
     }
 
     public func put(_ path: String, data: Data) throws {
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-webdav-\(UUID().uuidString)")
+        try ChunkedIO.writeAtomically(data, to: temporary)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try put(path, file: temporary)
+    }
+
+    public func put(_ path: String, file: URL) throws {
         let finalURL = try itemURL(path)
         let fileName = finalURL.lastPathComponent
         let tempURL = finalURL.deletingLastPathComponent().appendingPathComponent(".\(fileName).tmp-\(UUID().uuidString)")
-        let created = try call(method: "PUT", url: tempURL, headers: ["Content-Type": "application/octet-stream"], body: data)
+        var headers = ["Content-Type": "application/octet-stream"]
+        headers["Content-Length"] = String(try ChunkedIO.byteCount(file))
+        let created = try callUpload(method: "PUT", url: tempURL, headers: headers, file: file)
         try expect(created, ok: [200, 201, 204])
         let moved = try call(method: "MOVE", url: tempURL, headers: ["Destination": finalURL.absoluteString, "Overwrite": "F"], body: nil)
         if ![201, 204, 200].contains(moved.status) {
             _ = try? call(method: "DELETE", url: tempURL, headers: [:], body: nil)
             throw IsenoughError.backend("webdav MOVE failed (HTTP \(moved.status))")
         }
-        let verified = try get(path, range: nil)
-        guard SHA256Digest.hex(verified) == SHA256Digest.hex(data) else {
-            try? delete(path)
-            throw IsenoughError.integrity("webdav upload hash does not match the bytes that were sent")
+        try verify(path, expected: SHA256Digest.hexFile(file))
+    }
+
+    public func download(_ path: String, to destination: URL, offset: UInt64) throws -> ResumableFile {
+        let url = try itemURL(path)
+        var headers: [String: String] = [:]
+        if offset > 0 { headers["Range"] = "bytes=\(offset)-" }
+        let staging = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-webdav-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: staging) }
+        let response = try callDownload(method: "GET", url: url, headers: headers, to: staging)
+        if response.status == 404 { throw IsenoughError.backend("remote object is missing: \(path)") }
+        let received = (try? ChunkedIO.byteCount(staging)) ?? 0
+        if offset > 0 && response.status == 200 {
+            try ChunkedIO.replaceFile(destination, with: staging)
+            return ResumableFile(restart: true, bytesWritten: received)
         }
+        try expect(response, ok: offset > 0 ? [206, 200] : [200])
+        if offset == 0 {
+            try ChunkedIO.replaceFile(destination, with: staging)
+        } else {
+            try ChunkedIO.appendFile(staging, to: destination)
+        }
+        return ResumableFile(restart: false, bytesWritten: received)
     }
 
     public func delete(_ path: String) throws {
@@ -245,13 +350,38 @@ public struct WebDAVBackend: StorageBackend {
     }
 
     private func call(method: String, url: URL, headers: [String: String], body: Data?) throws -> HTTPResponse {
+        let headers = try authorized(headers)
+        return try perform {
+            try transport.send(method: method, url: url, headers: headers, body: body)
+        }
+    }
+
+    private func callUpload(method: String, url: URL, headers: [String: String], file: URL) throws -> HTTPResponse {
+        let headers = try authorized(headers)
+        return try perform {
+            try transport.upload(method: method, url: url, headers: headers, file: file)
+        }
+    }
+
+    private func callDownload(method: String, url: URL, headers: [String: String], to destination: URL) throws -> HTTPResponse {
+        let headers = try authorized(headers)
+        return try perform {
+            try transport.download(method: method, url: url, headers: headers, to: destination)
+        }
+    }
+
+    private func authorized(_ headers: [String: String]) throws -> [String: String] {
         var headers = headers
         if let user {
             guard let password else { throw IsenoughError.backend("webdav credential is not in the Keychain") }
             headers["Authorization"] = BasicAuth.header(user: user, password: password)
         }
+        return headers
+    }
+
+    private func perform(_ work: () throws -> HTTPResponse) throws -> HTTPResponse {
         do {
-            let response = try transport.send(method: method, url: url, headers: headers, body: body)
+            let response = try work()
             if response.status == 0 || response.status == 503 {
                 throw IsenoughError.backend("webdav unavailable (HTTP \(response.status))")
             }
@@ -260,6 +390,16 @@ public struct WebDAVBackend: StorageBackend {
             throw error
         } catch {
             throw IsenoughError.backend("webdav offline: \(error.localizedDescription)")
+        }
+    }
+
+    private func verify(_ path: String, expected: String) throws {
+        let staging = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-verify-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: staging) }
+        _ = try download(path, to: staging, offset: 0)
+        guard try SHA256Digest.hexFile(staging) == expected else {
+            try? delete(path)
+            throw IsenoughError.integrity("webdav upload hash does not match the bytes that were sent")
         }
     }
 

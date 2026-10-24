@@ -79,20 +79,35 @@ public struct OpenListBackend: StorageBackend {
     }
 
     public func put(_ path: String, data: Data) throws {
+        let temporary = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-openlist-\(UUID().uuidString)")
+        try ChunkedIO.writeAtomically(data, to: temporary)
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        try put(path, file: temporary)
+    }
+
+    public func put(_ path: String, file: URL) throws {
         let remote = try remotePath(path)
         var allowed = CharacterSet.urlPathAllowed
         allowed.remove(charactersIn: "/")
         let encoded = remote.addingPercentEncoding(withAllowedCharacters: allowed) ?? remote
-        _ = try send(method: "PUT", url: try api("/api/fs/put"), headers: [
+        let response = try sendUpload(url: try api("/api/fs/put"), headers: [
             "File-Path": encoded,
             "As-Task": "false",
             "Content-Type": "application/octet-stream",
-        ], body: data, authorized: true)
-        let verified = try get(path, range: nil)
-        guard SHA256Digest.hex(verified) == SHA256Digest.hex(data) else {
-            try? delete(path)
-            throw IsenoughError.integrity("openlist upload hash does not match the bytes that were sent")
+            "Content-Length": String(try ChunkedIO.byteCount(file)),
+        ], file: file, authorized: true)
+        guard response.status == 200 else {
+            throw IsenoughError.backend("openlist upload failed (HTTP \(response.status))")
         }
+        try verify(path, expected: SHA256Digest.hexFile(file))
+    }
+
+    public func download(_ path: String, to destination: URL, offset: UInt64) throws -> ResumableFile {
+        let info = try rpc(path: "/api/fs/get", body: ["path": try remotePath(path)])
+        guard let data = info["data"] as? [String: Any], let raw = data["raw_url"] as? String, let url = URL(string: raw) else {
+            throw IsenoughError.backend("openlist fs/get did not return a raw_url")
+        }
+        return try fetchRawFile(url, offset: offset, to: destination, renew: { try self.rawURL(path) })
     }
 
     public func delete(_ path: String) throws {
@@ -134,6 +149,47 @@ public struct OpenListBackend: StorageBackend {
             throw IsenoughError.backend("openlist download failed (HTTP \(response.status))")
         }
         return ResumableBody(data: response.body, restart: false)
+    }
+
+    private func fetchRawFile(_ url: URL, offset: UInt64, to destination: URL, renew: () throws -> URL) throws -> ResumableFile {
+        func once(_ target: URL) throws -> (HTTPResponse, URL) {
+            let staging = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-openlist-\(UUID().uuidString)")
+            var headers: [String: String] = [:]
+            if offset > 0 { headers["Range"] = "bytes=\(offset)-" }
+            let response = try downloadRaw(target, headers: headers, to: staging)
+            return (response, staging)
+        }
+        var (response, staging) = try once(url)
+        if response.status == 403 || response.status == 410 {
+            try? FileManager.default.removeItem(at: staging)
+            (response, staging) = try once(try renew())
+        }
+        defer { try? FileManager.default.removeItem(at: staging) }
+        if response.status == 404 { throw IsenoughError.backend("remote object is missing") }
+        let received = (try? ChunkedIO.byteCount(staging)) ?? 0
+        if offset > 0 && response.status == 200 {
+            try ChunkedIO.replaceFile(destination, with: staging)
+            return ResumableFile(restart: true, bytesWritten: received)
+        }
+        guard [200, 206].contains(response.status) else {
+            throw IsenoughError.backend("openlist download failed (HTTP \(response.status))")
+        }
+        if offset == 0 || response.status == 200 {
+            try ChunkedIO.replaceFile(destination, with: staging)
+        } else {
+            try ChunkedIO.appendFile(staging, to: destination)
+        }
+        return ResumableFile(restart: false, bytesWritten: received)
+    }
+
+    private func verify(_ path: String, expected: String) throws {
+        let staging = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-verify-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: staging) }
+        _ = try download(path, to: staging, offset: 0)
+        guard try SHA256Digest.hexFile(staging) == expected else {
+            try? delete(path)
+            throw IsenoughError.integrity("openlist upload hash does not match the bytes that were sent")
+        }
     }
 
     private func rpc(path: String, body: [String: Any]) throws -> [String: Any] {
@@ -189,16 +245,33 @@ public struct OpenListBackend: StorageBackend {
     }
 
     private func send(method: String, url: URL, headers: [String: String], body: Data?, authorized: Bool) throws -> HTTPResponse {
-        var headers = headers
-        if authorized {
-            if session.token == nil {
-                session.token = try secrets.load(service: BackendCatalog.keychainService, account: "openlist-token:\(secretAccount)")
-            }
-            if session.token == nil { try login() }
-            if let token = session.token { headers["Authorization"] = token }
+        try dispatch(method: method, url: url, headers: headers, authorized: authorized) { headers in
+            try transport.send(method: method, url: url, headers: headers, body: body)
         }
+    }
+
+    private func sendUpload(url: URL, headers: [String: String], file: URL, authorized: Bool) throws -> HTTPResponse {
+        try dispatch(method: "PUT", url: url, headers: headers, authorized: authorized) { headers in
+            try transport.upload(method: "PUT", url: url, headers: headers, file: file)
+        }
+    }
+
+    private func downloadRaw(_ url: URL, headers: [String: String], to destination: URL) throws -> HTTPResponse {
+        try dispatch(method: "GET", url: url, headers: headers, authorized: false) { headers in
+            try transport.download(method: "GET", url: url, headers: headers, to: destination)
+        }
+    }
+
+    private func dispatch(method: String, url: URL, headers: [String: String], authorized: Bool, perform: ([String: String]) throws -> HTTPResponse) throws -> HTTPResponse {
+        var headers = headers
+        if authorized { try authorize(&headers) }
         do {
-            let response = try transport.send(method: method, url: url, headers: headers, body: body)
+            var response = try perform(headers)
+            if response.status == 401 && authorized {
+                try login()
+                try authorize(&headers)
+                response = try perform(headers)
+            }
             if response.status == 0 || response.status == 503 {
                 throw IsenoughError.backend("openlist unavailable (HTTP \(response.status))")
             }
@@ -208,6 +281,14 @@ public struct OpenListBackend: StorageBackend {
         } catch {
             throw IsenoughError.backend("openlist offline: \(error.localizedDescription)")
         }
+    }
+
+    private func authorize(_ headers: inout [String: String]) throws {
+        if session.token == nil {
+            session.token = try secrets.load(service: BackendCatalog.keychainService, account: "openlist-token:\(secretAccount)")
+        }
+        if session.token == nil { try login() }
+        if let token = session.token { headers["Authorization"] = token }
     }
 
     private func api(_ path: String) throws -> URL {

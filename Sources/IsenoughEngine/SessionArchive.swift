@@ -25,7 +25,7 @@ public enum SessionArchive {
         guard FileManager.default.fileExists(atPath: url.path) else { return SessionIndex() }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        return try decoder.decode(SessionIndex.self, from: Data(contentsOf: url))
+        return try decoder.decode(SessionIndex.self, from: ChunkedIO.readAll(url))
     }
 
     public static func saveIndex(_ index: SessionIndex, stateDir: String) throws {
@@ -50,15 +50,15 @@ public enum SessionArchive {
                 guard values.isRegularFile == true || values.isSymbolicLink == true else { continue }
                 var targetIsDirectory: ObjCBool = false
                 guard fm.fileExists(atPath: path, isDirectory: &targetIsDirectory), !targetIsDirectory.boolValue else { continue }
-                let data = (try? Data(contentsOf: URL(fileURLWithPath: path))) ?? Data()
                 let attributes = try? fm.attributesOfItem(atPath: path)
+                let preview = (try? ChunkedIO.prefix(URL(fileURLWithPath: path), maxBytes: 4096)) ?? Data()
                 found.append(SessionCandidate(
                     path: path,
                     tool: root.tool,
-                    size: (attributes?[.size] as? NSNumber)?.uint64Value ?? UInt64(data.count),
+                    size: (attributes?[.size] as? NSNumber)?.uint64Value ?? UInt64(preview.count),
                     modified: attributes?[.modificationDate] as? Date ?? .distantPast,
                     open: isOpen(path),
-                    preview: SessionTiering.preview(of: data)
+                    preview: SessionTiering.preview(of: preview)
                 ))
             }
         }
@@ -135,20 +135,19 @@ public enum SessionArchive {
         let matches = index.matches(query)
         guard let entry = matches.first else { throw IsenoughError.usage("no cold session matches \(query)") }
         guard matches.count == 1 else { throw IsenoughError.usage("session query \(query) matches \(matches.count) entries") }
-        let data = try backend.get(entry.archive, range: nil)
         let archive = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-session-\(UUID().uuidString).tar.gz")
-        try data.write(to: archive)
+        _ = try backend.download(entry.archive, to: archive, offset: 0)
         defer { try? FileManager.default.removeItem(at: archive) }
         let staging = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-session-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: staging) }
         try run("/usr/bin/tar", ["-xzf", archive.path, "-C", staging.path, entry.member])
         let extracted = staging.appendingPathComponent(entry.member)
-        let bytes = try Data(contentsOf: extracted)
-        guard SHA256Digest.hex(bytes) == entry.sha256 else { throw IsenoughError.integrity("restored session hash does not match the index") }
+        guard try SHA256Digest.hexFile(extracted) == entry.sha256 else { throw IsenoughError.integrity("restored session hash does not match the index") }
         let destination = URL(fileURLWithPath: entry.path)
-        try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try bytes.write(to: destination, options: .atomic)
+        let held = staging.appendingPathComponent("restored-\(UUID().uuidString)")
+        try ChunkedIO.copyFile(from: extracted, to: held)
+        try ChunkedIO.replaceFile(destination, with: held)
         let restoredDate = entry.tool == "claude" ? Date() : entry.modified
         let restoredPath = SessionPaths.canonical(destination.path)
         try FileManager.default.setAttributes([.modificationDate: restoredDate], ofItemAtPath: restoredPath)
@@ -163,9 +162,8 @@ public enum SessionArchive {
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: staging) }
         if try backend.stat(archive) != nil {
-            let existing = try backend.get(archive, range: nil)
             let packed = staging.appendingPathComponent("existing.tar.gz")
-            try existing.write(to: packed)
+            _ = try backend.download(archive, to: packed, offset: 0)
             try run("/usr/bin/tar", ["-xzf", packed.path, "-C", staging.path])
             try FileManager.default.removeItem(at: packed)
         }
@@ -174,19 +172,21 @@ public enum SessionArchive {
             let member = "\(file.tool)/\(SHA256Digest.hex(Data(file.path.utf8)).prefix(12))-\((file.path as NSString).lastPathComponent)"
             let destination = staging.appendingPathComponent(member)
             try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let bytes = try Data(contentsOf: URL(fileURLWithPath: file.path))
-            try bytes.write(to: destination)
-            let digest = SHA256Digest.hex(bytes)
-            entries.append(SessionIndexEntry(id: String(digest.prefix(12)), tool: file.tool, path: file.path, sha256: digest, size: UInt64(bytes.count), modified: file.modified, archive: archive, member: member, preview: file.preview))
+            let source = URL(fileURLWithPath: file.path)
+            try ChunkedIO.copyFile(from: source, to: destination)
+            let digest = try SHA256Digest.hexFile(destination)
+            let size = try ChunkedIO.byteCount(destination)
+            entries.append(SessionIndexEntry(id: String(digest.prefix(12)), tool: file.tool, path: file.path, sha256: digest, size: size, modified: file.modified, archive: archive, member: member, preview: file.preview))
         }
         let packed = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-next-\(UUID().uuidString).tar.gz")
         defer { try? FileManager.default.removeItem(at: packed) }
         let names = try FileManager.default.contentsOfDirectory(atPath: staging.path)
         try run("/usr/bin/tar", ["-czf", packed.path, "-C", staging.path] + names)
-        let bytes = try Data(contentsOf: packed)
-        try backend.put(archive, data: bytes)
-        let roundTrip = try backend.get(archive, range: nil)
-        guard SHA256Digest.hex(roundTrip) == SHA256Digest.hex(bytes) else {
+        try backend.put(archive, file: packed)
+        let roundTrip = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-roundtrip-\(UUID().uuidString).tar.gz")
+        defer { try? FileManager.default.removeItem(at: roundTrip) }
+        _ = try backend.download(archive, to: roundTrip, offset: 0)
+        guard try SHA256Digest.hexFile(roundTrip) == SHA256Digest.hexFile(packed) else {
             throw IsenoughError.integrity("session archive hash does not match the bytes that were sent")
         }
         for entry in entries {

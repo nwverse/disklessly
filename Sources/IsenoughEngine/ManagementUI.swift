@@ -19,6 +19,9 @@ public enum ManagementUI {
                 let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
                 let exists = FileManager.default.fileExists(atPath: cached.path)
                 let size = exists ? ((try? cached.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init) ?? 0) : 0
+                let restoredMap = state["restored"] as? [String: Any] ?? [:]
+                let appState = stored[manifest.bundleId]?["state"] as? String ?? ""
+                let restored = restoredMap[manifest.bundleId] != nil || appState == "restored" || appState == "needsResolution"
                 apps.append([
                     "imageId": manifest.imageId,
                     "bundleId": manifest.bundleId,
@@ -27,6 +30,9 @@ public enum ManagementUI {
                     "mode": manifest.mode.rawValue,
                     "pinned": stored[manifest.bundleId]?["pinned"] as? Bool ?? false,
                     "cached": exists,
+                    "remote": !exists,
+                    "restored": restored,
+                    "state": appState,
                     "cachedBytes": NSNumber(value: size),
                 ])
             }
@@ -55,12 +61,15 @@ public enum ManagementUI {
                 "url": endpoint.url ?? "",
             ]
         }
+        let health = backendHealth(engine)
         return [
             "ok": true,
             "backend": [
                 "kind": engine.config.backend,
                 "activeId": engine.config.activeBackendId ?? "",
                 "repoPath": engine.config.repoPath,
+                "health": health.status,
+                "healthDetail": health.detail,
                 "endpoints": endpoints,
             ] as [String: Any],
             "cache": [
@@ -82,18 +91,21 @@ public enum ManagementUI {
         switch (request.method, request.path) {
         case ("GET", "/api/status"):
             return .json(dashboard(engine))
-        case ("POST", "/api/pin"), ("POST", "/api/unpin"), ("POST", "/api/evict"):
+        case ("POST", "/api/pin"), ("POST", "/api/unpin"), ("POST", "/api/evict"), ("POST", "/api/restore"):
             guard let name = appName(request) else { return .json(["ok": false, "error": "app is required"], status: 400) }
             do {
-                guard let manifest = engine.manifest(named: name, in: try engine.list()) else {
+                guard var manifest = engine.manifest(named: name, in: try engine.list()) else {
                     return .json(["ok": false, "error": "Unknown app: \(name)"], status: 404)
                 }
                 if request.path == "/api/evict" {
                     try engine.evict(manifest)
+                } else if request.path == "/api/restore" {
+                    manifest.mode = .restore
+                    try engine.launch(manifest)
                 } else {
                     try engine.setPinned(manifest, pinned: request.path == "/api/pin")
                 }
-                return .json(["ok": true, "app": manifest.name, "pinned": request.path == "/api/pin"])
+                return .json(["ok": true, "app": manifest.name, "pinned": request.path == "/api/pin", "restored": request.path == "/api/restore"])
             } catch let error as IsenoughError {
                 return .json(["ok": false, "error": error.errorDescription ?? "request failed"], status: 400)
             } catch {
@@ -137,6 +149,18 @@ public enum ManagementUI {
             return UIResponse(status: 200, contentType: type, body: Data(html.utf8))
         }
         return UIResponse(status: 200, contentType: type, body: data)
+    }
+
+    private static func backendHealth(_ engine: IsenoughEngine) -> (status: String, detail: String) {
+        do {
+            let backend = try engine.openBackend()
+            if try backend.stat("repo.json") != nil {
+                return ("ok", "")
+            }
+            return ("missing", "repo.json is not in the backend")
+        } catch {
+            return ("offline", (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
     }
 
     private static func directoryBytes(_ path: String) -> UInt64 {
