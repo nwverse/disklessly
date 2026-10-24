@@ -985,7 +985,8 @@ public final class RestoreCoordinator {
         let appNew = staging.appendingPathComponent("app.new")
         if layout.extractionOwned || layout.extractionVerified {
             if fm.fileExists(atPath: appNew.path) {
-                if layout.extractionVerified && !services.archiveVerified(journal) && manifestMatch(appNew, journal) {
+                // observe already compared this tree with the manifest when it set extractionVerified.
+                if layout.extractionVerified && !services.archiveVerified(journal) {
                     try retainBundle(appNew, journal: &journal)
                 } else {
                     try? fm.removeItem(at: appNew)
@@ -1120,26 +1121,53 @@ public final class RestoreCoordinator {
         let okFile = exists(staging.appendingPathComponent(".extracted-ok"))
         let inner = exists(appNew.appendingPathComponent(".isenough-extract"))
         let retainedURL = journal.retainedPath.map { URL(fileURLWithPath: $0) }
+        // A full tree hash is required only where the decision compares one:
+        // `manifestApp` / the extraction marker read `app.new`, and `inspectionStale`
+        // re-reads the destination after `inspected`. The active probe loop (and the
+        // parked stub, `app.old`, and retained path) classifies by bundle id. Post-quit
+        // `inspect` is what records whether the restored tree changed. Hashing the live
+        // app on every probe repeated the same multi-gigabyte walk and did not feed
+        // the decision.
+        var memo = IdentityMemo()
+        let hashDestination = journal.phase == .inspected
         return RestoreLayout(
-            destination: node(URL(fileURLWithPath: journal.dest), journal),
-            appNew: node(appNew, journal),
-            appOld: node(appOld, journal),
-            parkedStub: node(parked, journal),
-            retained: retainedURL.map { node($0, journal) } ?? .absent,
+            destination: node(URL(fileURLWithPath: journal.dest), journal, full: hashDestination, memo: &memo),
+            appNew: node(appNew, journal, full: true, memo: &memo),
+            appOld: node(appOld, journal, full: false, memo: &memo),
+            parkedStub: node(parked, journal, full: false, memo: &memo),
+            retained: retainedURL.map { node($0, journal, full: false, memo: &memo) } ?? .absent,
             staging: stagingState,
             extractionOwned: extracting || okFile || inner,
-            extractionVerified: okFile && manifestMatch(appNew, journal),
+            extractionVerified: okFile && manifestMatch(appNew, journal, memo: &memo),
             pathsEscape: escapes(journal),
             unexpected: unexpected
         )
     }
 
-    private func node(_ url: URL, _ journal: RestoreJournal) -> BundleNode {
+    private struct IdentityMemo {
+        private var hits: [String: BundleIdentity] = [:]
+        private var misses = Set<String>()
+
+        mutating func identity(_ url: URL, full: Bool, services: RestoreServices) -> BundleIdentity? {
+            let key = (full ? "f\t" : "b\t") + url.path
+            if misses.contains(key) { return nil }
+            if let hit = hits[key] { return hit }
+            let value = BundleFacts.identity(url, cdhash: services.cdhash, treeHash: services.treeHash, verifyContent: full)
+            if let value {
+                hits[key] = value
+            } else {
+                misses.insert(key)
+            }
+            return value
+        }
+    }
+
+    private func node(_ url: URL, _ journal: RestoreJournal, full: Bool, memo: inout IdentityMemo) -> BundleNode {
         if DurableIO.isSymlink(url) { return .symlink }
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: url.path, isDirectory: &isDir) else { return .absent }
         guard isDir.boolValue else { return .foreign("not a bundle directory") }
-        guard let ident = BundleFacts.identity(url, cdhash: services.cdhash, treeHash: services.treeHash) else { return .incomplete }
+        guard let ident = memo.identity(url, full: full, services: services) else { return .incomplete }
         if ident.isStub {
             return ident.bundleId == journal.stubBundleId ? .stub(bundleId: ident.bundleId, inode: ident.inode) : .foreign(ident.bundleId)
         }
@@ -1178,8 +1206,8 @@ public final class RestoreCoordinator {
         )
     }
 
-    private func manifestMatch(_ url: URL, _ journal: RestoreJournal) -> Bool {
-        guard let ident = BundleFacts.identity(url, cdhash: services.cdhash, treeHash: services.treeHash) else { return false }
+    private func manifestMatch(_ url: URL, _ journal: RestoreJournal, memo: inout IdentityMemo) -> Bool {
+        guard let ident = memo.identity(url, full: true, services: services) else { return false }
         return ident.bundleId == journal.appId && ident.cdhash == journal.manifestCdhash && ident.treeHash == journal.manifestTreeHash
     }
 
