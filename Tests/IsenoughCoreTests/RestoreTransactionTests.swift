@@ -1,6 +1,7 @@
 import XCTest
 @testable import IsenoughCore
 @testable import IsenoughEngine
+import IsenoughStubSupport
 #if canImport(Glibc)
 import Glibc
 #elseif canImport(Darwin)
@@ -109,7 +110,8 @@ final class RestoreWorld {
             runHook: { url, env in
                 trace.hooks.append(env["ISENOUGH_PHASE"] ?? "")
                 return try ProcessRunner.runHook(url, env)
-            }
+            },
+            detachWatcher: false
         )
         engine = IsenoughEngine(config: config, services: services, faults: FaultController())
         self.trace = trace
@@ -254,6 +256,8 @@ final class RestoreTransactionTests: XCTestCase {
         XCTAssertEqual(ProcessProbe.usage(rows: symlinkShown, roots: [privateRoot], selfPid: 30), .busy)
         let watcher = launching + [ProcessRow(pid: 43, ppid: 1, command: "/opt/debug/isenough --state-dir /s hook watch --app io.example.restore")]
         XCTAssertEqual(ProcessProbe.usage(rows: watcher, roots: [root], selfPid: 30), .clean)
+        let opener = launching + [ProcessRow(pid: 44, ppid: 1, command: "/usr/bin/open -n -a \(root)")]
+        XCTAssertEqual(ProcessProbe.usage(rows: opener, roots: [root], selfPid: 30), .clean)
     }
 
     /// Same URL listing `BundleHasher` uses. `subpathsOfDirectory` is not a substitute:
@@ -749,6 +753,135 @@ final class RestoreTransactionTests: XCTestCase {
         print(String(format: "BENCH portable-swift-sha %.3fs legacy-serial %.3fs workers=1 %.3fs parallel %.3fs bytes≈%d cores=%d digest %@", portableSeconds, legacySeconds, oneSeconds, parallelSeconds, 4 * wide + 2000 * small.count, ProcessInfo.processInfo.activeProcessorCount, parallelDigest))
         XCTAssertEqual(oneDigest, legacyDigest)
         XCTAssertEqual(parallelDigest, legacyDigest)
+    }
+
+    func testLiveProcessUsingTheBundleIsBusy() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-probe-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("Info.plist")
+        try Data("probe\n".utf8).write(to: marker)
+        let app = try DetachedProcess.spawn(
+            executable: "/bin/sh",
+            arguments: ["/bin/sh", "-c", "sleep 60", "isenough-fake-app", root.path],
+            redirectOutput: nil,
+            newSession: true
+        )
+        defer {
+            kill(app, SIGKILL)
+            _ = DetachedProcess.wait(pid: app, timeout: 2)
+        }
+        XCTAssertTrue(waitUntil(5) { ProcessProbe.usage(roots: [root.path]) == .busy })
+        let opener = [ProcessRow(pid: 70, ppid: 1, command: "/usr/bin/open -n -a \(root.path)")]
+        XCTAssertEqual(ProcessProbe.usage(rows: opener, roots: [root.path], selfPid: 1), .clean)
+        kill(app, SIGKILL)
+        _ = DetachedProcess.wait(pid: app, timeout: 5)
+        XCTAssertTrue(waitUntil(5) { ProcessProbe.usage(roots: [root.path]) == .clean })
+    }
+
+    func testDetachedChildHasItsOwnSessionAndDropsTheLock() throws {
+        let sleeper = try DetachedProcess.spawn(
+            executable: "/bin/sh",
+            arguments: ["/bin/sh", "-c", "sleep 60"],
+            redirectOutput: nil,
+            newSession: true
+        )
+        defer {
+            kill(sleeper, SIGKILL)
+            _ = DetachedProcess.wait(pid: sleeper, timeout: 2)
+        }
+        XCTAssertNotEqual(DetachedProcess.sessionID(sleeper), DetachedProcess.sessionID(0))
+        XCTAssertEqual(DetachedProcess.processGroup(sleeper), sleeper)
+        XCTAssertNotEqual(DetachedProcess.processGroup(sleeper), DetachedProcess.processGroup(0))
+
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-lock-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let lockPath = dir.appendingPathComponent("isenough-lock-cloexec.lock").path
+        let listing = dir.appendingPathComponent("fds.txt")
+        var held = FileLock(path: lockPath)
+        XCTAssertTrue(try held.tryLock())
+        let script = "ls -l /proc/self/fd > '\(listing.path)' 2>/dev/null || ls -l /dev/fd > '\(listing.path)'; exec sleep 30"
+        let child = try DetachedProcess.spawn(
+            executable: "/bin/sh",
+            arguments: ["/bin/sh", "-c", script],
+            redirectOutput: nil,
+            newSession: true
+        )
+        defer {
+            kill(child, SIGKILL)
+            _ = DetachedProcess.wait(pid: child, timeout: 2)
+        }
+        XCTAssertTrue(waitUntil(5) { FileManager.default.fileExists(atPath: listing.path) })
+        let listed = (try? String(contentsOf: listing, encoding: .utf8)) ?? ""
+        XCTAssertFalse(listed.contains("isenough-lock-cloexec.lock"), listed)
+        held.unlock()
+        var again = FileLock(path: lockPath)
+        XCTAssertTrue(try again.tryLock())
+        again.unlock()
+    }
+
+    func testFakeAppQuitLetsALaterWatchFinishTheJournal() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        try world.installHook("post-quit", "#!/bin/sh\necho post >> \"$ISENOUGH_STATE_DIR/post-quit.log\"\nexit 0\n")
+        world.arm("active", "afterMutation")
+        XCTAssertThrowsError(try world.launch(wait: true))
+        world.disarm()
+        let journal = try XCTUnwrap(world.journals().first)
+        XCTAssertEqual(journal.phase, .active)
+        XCTAssertFalse(journal.didLaunch)
+        XCTAssertEqual(world.bundleID(at: world.dest), world.bundleID)
+        world.engine.restore.services.probe = { roots in ProcessProbe.usage(roots: roots) }
+        let app = try DetachedProcess.spawn(
+            executable: "/bin/sh",
+            arguments: ["/bin/sh", "-c", "sleep 60", "isenough-fake-app", world.dest.path],
+            redirectOutput: nil,
+            newSession: true
+        )
+        defer {
+            kill(app, SIGKILL)
+            _ = DetachedProcess.wait(pid: app, timeout: 2)
+        }
+        XCTAssertTrue(waitUntil(5) { ProcessProbe.usage(roots: [world.dest.path]) == .busy })
+        let busy = try world.engine.restore.recover(appId: world.bundleID, wait: false, shortLived: true)
+        XCTAssertEqual(busy, .waiting("busy"))
+        XCTAssertEqual(world.journals().first?.owner.pid, 4242)
+        XCTAssertEqual(world.trace.spawned.count, 1)
+        XCTAssertEqual(world.bundleID(at: world.dest), world.bundleID)
+        kill(app, SIGKILL)
+        _ = DetachedProcess.wait(pid: app, timeout: 5)
+        XCTAssertTrue(waitUntil(5) { ProcessProbe.usage(roots: [world.dest.path]) == .clean })
+        world.trace.alive = []
+        try world.assertTerminalStub()
+        XCTAssertEqual(world.outcomeName, "restoredOut")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: world.engine.config.stateDir + "/post-quit.log"))
+        XCTAssertFalse(world.trace.hooks.contains("post-quit"))
+    }
+
+    func testDetachedLaunchHandsOffOnceWhileTheOwnerLives() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        world.engine.restore.services.detachWatcher = true
+        try world.launch(wait: false)
+        XCTAssertEqual(world.trace.spawned.count, 1)
+        XCTAssertEqual(world.journals().first?.owner.pid, 4242)
+        XCTAssertEqual(world.journals().first?.didLaunch, true)
+        XCTAssertEqual(world.journals().first?.phase, .active)
+        try world.launch(wait: false)
+        XCTAssertEqual(world.trace.spawned.count, 1)
+        XCTAssertEqual(world.trace.opened.count, 2)
+        XCTAssertEqual(world.journals().first?.owner.pid, 4242)
+        XCTAssertEqual(world.bundleID(at: world.dest), world.bundleID)
+    }
+
+    private func waitUntil(_ seconds: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if condition() { return true }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return condition()
     }
 }
 

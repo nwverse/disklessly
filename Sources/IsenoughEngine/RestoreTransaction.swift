@@ -1,5 +1,6 @@
 import Foundation
 import IsenoughCore
+import IsenoughStubSupport
 #if canImport(Glibc)
 import Glibc
 #elseif canImport(Darwin)
@@ -30,6 +31,9 @@ public struct RestoreServices {
     public var now: () -> Date
     public var sleep: (TimeInterval) -> Void
     public var runHook: (URL, [String: String]) throws -> Int32
+    /// Production launches hand the post-quit loop to a detached `hook watch`.
+    /// Tests leave this false and recover in-process.
+    public var detachWatcher: Bool
 
     public static func live(config: RuntimeConfig) -> RestoreServices {
         let fm = FileManager.default
@@ -65,11 +69,19 @@ public struct RestoreServices {
             spawnWatch: { appId in try ProcessRunner.spawnWatch(appId: appId, stateDir: config.stateDir) },
             openApp: { app, docs, urls, arguments in
                 #if os(macOS)
-                var args = ["-n", "-a", app.path]
+                var args = ["/usr/bin/open", "-n", "-a", app.path]
                 args += docs
                 args += urls
                 if !arguments.isEmpty { args.append("--args"); args += arguments }
-                try ProcessRunner.run("/usr/bin/open", args)
+                // `open` without a bound waits forever when the stub never checks in
+                // with Launch Services. The watcher must not sit inside that wait:
+                // the journal is already `active`, and a later manual `hook watch`
+                // is what used to finish it. A still-running `open` is ignored by
+                // the usage probe.
+                let pid = try DetachedProcess.spawn(executable: "/usr/bin/open", arguments: args, redirectOutput: nil, newSession: true)
+                if let status = DetachedProcess.wait(pid: pid, timeout: 30), status != 0 {
+                    throw IsenoughError.failure("open exited \(status)")
+                }
                 #else
                 _ = (app, docs, urls, arguments)
                 throw IsenoughError.unsupported("opening an app requires macOS Launch Services")
@@ -82,7 +94,8 @@ public struct RestoreServices {
             buildStub: { dest, journal in try StubRebuilder.write(at: dest, journal: journal, config: config) },
             now: { Date() },
             sleep: { Thread.sleep(forTimeInterval: $0) },
-            runHook: { url, env in try ProcessRunner.runHook(url, env) }
+            runHook: { url, env in try ProcessRunner.runHook(url, env) },
+            detachWatcher: true
         )
     }
 }
@@ -149,7 +162,10 @@ enum ProcessProbe {
         if command.contains("hook watch") { return true }
         let token = command.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? ""
         let base = (token as NSString).lastPathComponent
-        return base == "isenough" || base == "isenough-stub"
+        // `open` / `open -n -a <app>` keeps the destination in argv for as long as
+        // Launch Services is waiting on the stub. That is the launcher, not a user
+        // of the bundle. The restored executable and `tail -f <dest>/...` still count.
+        return base == "isenough" || base == "isenough-stub" || base == "open"
     }
 
     static func ancestorPIDs(selfPid: Int32, rows: [ProcessRow]) -> Set<Int32> {
@@ -209,45 +225,20 @@ enum ProcessRunner {
         return process.terminationStatus
     }
 
-    static func spawnWatch(appId: String, stateDir: String) throws -> ProcessOwner {
-        let exe = CommandLine.arguments[0]
+    static func spawnWatch(appId: String, stateDir: String, executable: String? = nil) throws -> ProcessOwner {
+        let exe = executable ?? CommandLine.arguments[0]
         let args = [exe, "--state-dir", stateDir, "hook", "watch", "--app", appId]
-        let cArgs: [UnsafeMutablePointer<CChar>?] = args.map { strdup($0) } + [nil]
-        defer { cArgs.forEach { free($0) } }
-        // POSIX_SPAWN_SETSID is 0x80 on glibc and 0x0400 on Darwin. The constant is
-        // not always imported, and the Darwin value must not be confused with
-        // POSIX_SPAWN_START_SUSPENDED (0x80), which would freeze the watcher.
-        // Darwin's posix_spawnattr_t is already a pointer, so the spawn calls take
-        // UnsafePointer<posix_spawnattr_t?>. Linux's is a struct.
-        var pid: pid_t = 0
-        let rc: Int32
-        #if os(macOS)
-        var attr: posix_spawnattr_t?
-        guard posix_spawnattr_init(&attr) == 0 else { throw IsenoughError.failure("posix_spawnattr_init failed") }
-        defer { posix_spawnattr_destroy(&attr) }
-        guard posix_spawnattr_setflags(&attr, 0x0400) == 0 else {
-            throw IsenoughError.failure("posix_spawnattr_setflags failed")
+        let logDirectory = URL(fileURLWithPath: stateDir).appendingPathComponent("logs")
+        try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        let log = logDirectory.appendingPathComponent("hook-watch.log").path
+        // Redirect the watcher so a closed stub pipe cannot deliver SIGPIPE, and
+        // start it in a new session so it is not in the stub's process group.
+        let pid: Int32
+        do {
+            pid = try DetachedProcess.spawn(executable: exe, arguments: args, redirectOutput: log, newSession: true)
+        } catch {
+            pid = try DetachedProcess.spawn(executable: exe, arguments: args, redirectOutput: nil, newSession: true)
         }
-        rc = cArgs.withUnsafeBufferPointer { buffer in
-            guard let base = buffer.baseAddress else { return EINVAL }
-            return posix_spawn(&pid, exe, nil, &attr, UnsafeMutablePointer(mutating: base), environ)
-        }
-        #else
-        let attr = UnsafeMutablePointer<posix_spawnattr_t>.allocate(capacity: 1)
-        defer {
-            posix_spawnattr_destroy(attr)
-            attr.deallocate()
-        }
-        guard posix_spawnattr_init(attr) == 0 else { throw IsenoughError.failure("posix_spawnattr_init failed") }
-        guard posix_spawnattr_setflags(attr, 0x80) == 0 else {
-            throw IsenoughError.failure("posix_spawnattr_setflags failed")
-        }
-        rc = cArgs.withUnsafeBufferPointer { buffer in
-            guard let base = buffer.baseAddress else { return EINVAL }
-            return posix_spawn(&pid, exe, nil, attr, UnsafeMutablePointer(mutating: base), environ)
-        }
-        #endif
-        guard rc == 0, pid > 0 else { throw IsenoughError.failure("could not spawn hook watch (errno \(rc))") }
         return ProcessOwner(pid: pid, start: ProcessStart.ticks(for: pid))
     }
 }
@@ -296,7 +287,23 @@ enum StubRebuilder {
         if fm.fileExists(atPath: manifest.path) {
             try fm.copyItem(at: manifest, to: dest.appendingPathComponent("Contents/Resources/manifest.json"))
         }
-        let stubInfo: [String: Any] = ["schema": "stub/1", "appId": journal.appId, "imageId": journal.imageId, "isenoughPath": cli.path, "stubVersion": 1]
+        let enginePath: String
+        if cli.lastPathComponent == "isenough" {
+            enginePath = (try? EngineInstall.install(stateDir: config.stateDir, source: cli).path) ?? cli.path
+        } else if FileManager.default.isExecutableFile(atPath: EngineInstall.binary(stateDir: config.stateDir).path) {
+            enginePath = EngineInstall.binary(stateDir: config.stateDir).path
+        } else {
+            enginePath = cli.path
+        }
+        let stubInfo: [String: Any] = [
+            "schema": "stub/1",
+            "appId": journal.appId,
+            "imageId": journal.imageId,
+            "isenoughPath": enginePath,
+            "engineVersion": EngineInstall.version,
+            "engineRevision": EngineInstall.revision,
+            "stubVersion": 1,
+        ]
         let stubData = try JSONSerialization.data(withJSONObject: stubInfo, options: [.prettyPrinted, .sortedKeys])
         try stubData.write(to: dest.appendingPathComponent("Contents/Resources/stub.json"))
         #if os(macOS)
@@ -393,11 +400,7 @@ public final class RestoreCoordinator {
             guard let journal = openJournal(manifest.bundleId) else { break }
             try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments)
             try markLaunched(manifest.bundleId)
-            if wait {
-                _ = try recover(appId: manifest.bundleId, wait: true, shortLived: false)
-            } else {
-                try handoffApp(manifest.bundleId)
-            }
+            try handoffOrWait(manifest.bundleId, wait: wait)
             return
         case .noop:
             if let journal = openJournal(manifest.bundleId) {
@@ -421,12 +424,40 @@ public final class RestoreCoordinator {
         guard let journal = openJournal(manifest.bundleId) else { throw IsenoughError.failure("restore journal disappeared before launch") }
         try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments)
         try markLaunched(manifest.bundleId)
-        if !wait {
-            try handoffApp(manifest.bundleId)
-            return
+        try handoffOrWait(manifest.bundleId, wait: wait)
+    }
+
+    /// Production `detachWatcher` hands the post-quit loop to a setsid `hook watch`
+    /// and, when `wait` is set, polls until that journal closes. The parent adopts
+    /// only after the watcher is gone, so a dead watcher is replaced and a live one
+    /// is left alone. Tests keep `detachWatcher` false and recover in-process.
+    private func handoffOrWait(_ appId: String, wait: Bool) throws {
+        if services.detachWatcher || !wait {
+            try handoffApp(appId)
         }
-        let finished = try recover(appId: manifest.bundleId, wait: true, shortLived: false)
-        if case .rejected(let message) = finished { throw IsenoughError.busy(message) }
+        if !wait { return }
+        if services.detachWatcher {
+            try waitUntilTerminal(appId)
+        } else {
+            let finished = try recover(appId: appId, wait: true, shortLived: false)
+            if case .rejected(let message) = finished { throw IsenoughError.busy(message) }
+        }
+    }
+
+    /// No step cap. A restored app can stay open for hours; the cap inside
+    /// `recover` still applies once this process itself owns the journal.
+    private func waitUntilTerminal(_ appId: String) throws {
+        while openJournal(appId) != nil {
+            let outcome = try recover(appId: appId, wait: false, shortLived: true)
+            switch outcome {
+            case .idle, .terminal:
+                return
+            case .rejected(let message):
+                throw IsenoughError.busy(message)
+            case .noop, .waiting:
+                services.sleep(max(probeInterval(), 0.05))
+            }
+        }
     }
 
     public func watch(appId: String) throws {

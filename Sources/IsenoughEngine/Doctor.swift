@@ -109,6 +109,7 @@ enum Doctor {
 
         freeSpaceCheck(config: config, seconds: seconds, record: record, timedOut: timedOut)
         mountCheck(config: config, seconds: seconds, record: record, timedOut: timedOut)
+        engineCheck(engine: engine, seconds: seconds, record: record, timedOut: timedOut)
         diskImageCheck(seconds: seconds, record: record)
 
         let failed = checks.contains { check in
@@ -228,6 +229,22 @@ enum Doctor {
             record("mounts", "fail", message)
         case .timedOut:
             record("mounts", "timed out", timedOut("listing mounts at \(mountRoot)", mountRoot))
+        }
+    }
+
+    /// Missing or older than this CLI is a warning. `doctor` still exits 0.
+    private static func engineCheck(engine: IsenoughEngine, seconds: TimeInterval, record: (String, String, String) -> String, timedOut: (String, String) -> String) {
+        switch bound(seconds: seconds, { engine.engineWarnings() }) {
+        case .value(let lines):
+            if lines.isEmpty {
+                record("engine", "ok", EngineInstall.binary(stateDir: engine.config.stateDir).path)
+            } else {
+                record("engine", "warn", lines.joined(separator: " | "))
+            }
+        case .failure(let message):
+            record("engine", "warn", message)
+        case .timedOut:
+            record("engine", "warn", timedOut("checking the installed engine", engine.config.stateDir))
         }
     }
 

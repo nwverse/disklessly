@@ -187,7 +187,10 @@ public struct FileLock {
     /// Non-blocking exclusive lock. `false` means another process holds it.
     public mutating func tryLock() throws -> Bool {
         if descriptor >= 0 { return true }
-        let fd = open(path, O_CREAT | O_RDWR, mode_t(0o600))
+        // CLOEXEC so a posix_spawn'd watcher does not inherit the lock.
+        // flock is tied to the open file description; an inherited fd keeps the
+        // exclusive lock after the parent unlocks and the child then blocks forever.
+        let fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600))
         guard fd >= 0 else { throw IsenoughError.failure("Cannot open lock file") }
         if flock(fd, LOCK_EX | LOCK_NB) != 0 {
             close(fd)
@@ -201,7 +204,7 @@ public struct FileLock {
         #if canImport(Darwin)
         importDarwinLockUnavailable()
         #endif
-        let fd = open(path, O_CREAT | O_RDWR, mode_t(0o600)); guard fd >= 0 else { throw IsenoughError.failure("Cannot open lock file") }
+        let fd = open(path, O_CREAT | O_RDWR | O_CLOEXEC, mode_t(0o600)); guard fd >= 0 else { throw IsenoughError.failure("Cannot open lock file") }
         guard flock(fd, operation) == 0 else { close(fd); throw IsenoughError.failure("Cannot acquire lock") }; descriptor=fd
     }
     #if canImport(Darwin)

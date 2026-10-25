@@ -13,8 +13,10 @@ import Darwin
             let env=ProcessInfo.processInfo.environment
             let cli=try StubArgv.resolveCLI(environment:env,stubInfo:info,path:env["PATH"] ?? "",home:NSHomeDirectory(),isExecutable:{ FileManager.default.isExecutableFile(atPath:$0) })
             let argv=try StubArgv.build(appId:appId,rawArguments:Array(CommandLine.arguments.dropFirst()))
-            let p=Process(); p.executableURL=cli; p.arguments=argv
-            try p.run(); p.waitUntilExit(); exit(p.terminationStatus)
+            // New session so Launch Services tearing down the stub's process group
+            // does not SIGKILL `isenough launch` (exit 137) before post-quit.
+            let pid=try DetachedProcess.spawn(executable:cli.path, arguments:[cli.path]+argv, redirectOutput:nil, newSession:true)
+            exit(DetachedProcess.wait(pid:pid, timeout:nil) ?? 1)
         } catch {
             fputs("isenough-stub: \(error); argv=\(CommandLine.arguments)\n",stderr); exit(2)
         }

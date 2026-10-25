@@ -31,28 +31,36 @@ fixtures and e2e runs:
 - `ISENOUGH_CACHE_DIR`, `ISENOUGH_STATE_DIR`, `ISENOUGH_MOUNT_ROOT`, `ISENOUGH_STUB_DIR`
 - `ISENOUGH_DETACH_DELAY` (seconds)
 
-`init` creates repository directories and a local config. Explicit flags `init --root DIR --cache-dir DIR`
-are available. Local backend is the usable MVP backend. iCloud's FileManager materialization/upload status
-adapter is not implemented yet.
+`init` creates repository directories and writes `<stateDir>/config.json`. Later commands load that file
+unless `--config` or `ISENOUGH_CONFIG` is set. Explicit `ISENOUGH_*` path overrides win over the file.
+`init --backend icloud` stores `backend: icloud`, and `status` reports that value. Without the flag,
+`backend` stays `local` even when the default repository path is under iCloud Drive; opening the
+repository still uses the iCloud folder backend when the path looks like iCloud. iCloud materialization
+and upload-status handling are not implemented yet. `init`, `pack`, `launch`, and `install-engine` also
+copy this `isenough` binary to `<stateDir>/bin/isenough` and write `isenough.stamp` (`version`, `revision`).
 
 ## Commands
 
-- `isenough init [--backend local|icloud] [--root DIR] [--cache-dir DIR]`: initialize repo and paths.
+- `isenough init [--backend local|icloud] [--root DIR] [--cache-dir DIR]`: initialize repo and paths. `--backend` is stored in `config.json` and shown by `status`.
+- `isenough install-engine`: refresh `<stateDir>/bin/isenough` and `isenough.stamp` from the binary you just ran.
 - `isenough pack APP.app [--mode mount|restore] [--no-stub] [--keep-original] [--stub-dir DIR]`: on macOS,
   create an ULMO image, hash it, publish manifest, and optionally replace the app with a signed stub.
+  The stub's `isenoughPath` is the stable engine copy, not the build-tree path.
+- `isenough stub refresh --app ID`: rewrite installed stubs so they exec that stable engine, and re-sign them on macOS. `stub rebuild` is still a placeholder.
 - `isenough list [--json]`: list manifests.
-- `isenough status [APP] [--json]`: local paths and state summary.
-- `isenough prefetch APP`: verify and cache image (ULFO conversion on macOS).
-- `isenough launch APP [--doc PATH]... [--url URL]... [--no-wait]`: mount read-only, open app with supplied args,
-  optionally wait and detach after configured delay. `--no-wait` returns after open; it does not yet install a
-  background post-quit watcher.
+- `isenough status [APP] [--json]`: local paths and state summary, including the stored `backend`.
+- `isenough prefetch APP`: verify and cache image (the cached bytes stay the published ULMO image).
+- `isenough launch APP [--doc PATH]... [--url URL]... [--no-wait]`: mount mode attaches read-only and opens the app.
+  Restore mode runs the journaled transaction. The default waits until the journal closes. The post-quit
+  watcher is a detached `isenough hook watch` in its own session, so it keeps running after the stub exits.
+  `--no-wait` returns after that watcher is installed; it does not wait for quit.
+- `isenough restore APP`: same launch path with restore mode forced.
 - `isenough pin APP` / `unpin APP`: persist the pin state (pin also prefetches).
 - `isenough evict APP`: remove cached image.
-- `isenough gc`: currently a safe no-op placeholder.
-- `isenough restore APP`, `unpack APP`, `detach APP`, `resolve APP`: recognized surface, not implemented.
-- `isenough stub rebuild APP`: placeholder.
-- `isenough hooks list|enable|disable APP`: placeholder.
-- `isenough doctor [--fix]`: each check has a timeout and prints `ok`, `warn`, `fail`, or `timed out` as soon as it finishes. A slow or stuck iCloud repository cannot block the command. `ISENOUGH_DOCTOR_TIMEOUT` is the per-check wait in seconds (default 15). The process exits 1 when any check fails or times out. `--json` prints one object after the checks finish. `--fix` runs recovery inside the same kind of bound.
+- `isenough gc`: adopt journals whose owner has exited and finish a clean restore-out. A live app is handed to one detached `hook watch`.
+- `isenough unpack APP`, `detach APP`: not available in this build. `resolve APP` keeps, exports, or discards a bundle that changed while it was restored.
+- `isenough hooks list|enable|disable APP`: placeholder. Hook files under `stateDir/hooks/<bundleId>/` still run.
+- `isenough doctor [--fix]`: each check has a timeout and prints `ok`, `warn`, `fail`, or `timed out` as soon as it finishes. A slow or stuck iCloud repository cannot block the command. `ISENOUGH_DOCTOR_TIMEOUT` is the per-check wait in seconds (default 15). The process exits 1 when any check fails or times out. A missing or older engine is `engine` / `warn` and does not by itself fail the command. `--json` prints one object after the checks finish. `--fix` runs recovery inside the same kind of bound.
 - `isenough backend add smb|nfs|webdav ...` / `backend list` / `backend use ID`: register a share or WebDAV repository. Passwords come from `--password-stdin` and are stored in the Keychain, not in `config.json`. See `docs/backends.md`.
 - `isenough ui` serves the management page on `127.0.0.1` with a random token. `scripts/build-ui.sh` copies the page and, when Pake is installed, builds `256isenough.app`.
 - `isenough serve`, `daemon install|uninstall|status`: placeholders.
@@ -87,15 +95,16 @@ export ISENOUGH_DETACH_DELAY=0
 .build/debug/isenough launch com.example.Fixture --no-wait
 ```
 
-This does **not** yet provide a safe end-to-end stub->quit->detach automation cycle: non-interactive long-lived
-watching and fixture hold controls are deferred. The macOS harness is intended to expose these gaps rather than
-make production use safe. Run it on any Mac with `bash scripts/e2e.sh`; it builds a fixture app and uses only
-isolated temporary repository/cache/state/mount/Applications directories.
+`bash scripts/e2e.sh` on a Mac builds a fixture app and uses only isolated temporary repository, cache, state,
+mount, and Applications directories. The restore cases launch the generated stub and require the journal to
+reach `restoredOut` after the fixture quits. That harness is not a substitute for trying this on an app you
+can reinstall.
 
 ## Limitations
 
-No reliable iCloud backend, capacity claims/locking in engine, cache LRU persistence, user hook lifecycle, secure
-stub control protocol, fully functional GUI server, restore-mode safeguards or process-wide dependent detection.
+No reliable iCloud materialization, capacity claims/locking in the engine, cache LRU eviction, a secure
+stub control protocol, or process-wide dependent detection. Restore mode has a journal and a detached
+post-quit watcher; it is still young.
 ULMO creation and hdiutil attach have not been run on this Linux host. Mount and restore modes must be validated on
 macOS. Never attach a dataless iCloud DMG: implement FileManager startDownloadingUbiquitousItem and wait for a fully
 materialized/current file before hashing/attach. No session tiering is included (future design only).

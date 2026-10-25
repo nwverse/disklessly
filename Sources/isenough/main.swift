@@ -13,8 +13,9 @@ func usage() -> Never {
     Usage: isenough [--json] [--config PATH] [--state-dir PATH] <command>
       init [--backend local|icloud] [--root DIR] [--cache-dir DIR]
       pack APP.app [--mode mount|restore] [--no-stub] [--keep-original] [--stub-dir DIR]
+      install-engine | stub refresh --app ID | stub rebuild APP
       list [--json] | status [APP] [--json] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
-      pin APP | unpin APP | evict APP | gc | restore APP | unpack APP | stub rebuild APP
+      pin APP | unpin APP | evict APP | gc | restore APP | unpack APP
       backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
       sessions [--apply] [--days N] [--home DIR] | sessions search QUERY | sessions restore ID|PATH
       ui | hooks list|enable|disable APP | doctor | version
@@ -31,11 +32,14 @@ catch let error as IsenoughError {
     fputs("isenough: \(error.errorDescription ?? String(describing: error))\n", stderr)
     exit(Int32(error.exitCode))
 }
-var args=invocation.rest; let json=invocation.json; var configPath=ProcessInfo.processInfo.environment["ISENOUGH_CONFIG"] ?? invocation.configPath
-if let stateDir=invocation.stateDir { setenv("ISENOUGH_STATE_DIR", stateDir, 1) }
+var args=invocation.rest; let json=invocation.json
 let env=ProcessInfo.processInfo.environment
-var config=RuntimeConfig.environment()
-if let path=configPath, let d=try? Data(contentsOf:URL(fileURLWithPath:path)), let c=try? JSONDecoder().decode(RuntimeConfig.self,from:d) { config=c }
+let configPath=env["ISENOUGH_CONFIG"] ?? invocation.configPath
+if let stateDir=invocation.stateDir { setenv("ISENOUGH_STATE_DIR", stateDir, 1) }
+// `ProcessInfo.environment` can miss a setenv from this process. `--state-dir`
+// is applied as an override, and `<stateDir>/config.json` is loaded unless
+// `--config` / `ISENOUGH_CONFIG` replaces it. Path env vars win over the file.
+var config=RuntimeConfig.resolved(environment:env, home:NSHomeDirectory(), stateDirOverride:invocation.stateDir, explicitConfig:configPath)
 if let n=env["ISENOUGH_DETACH_DELAY"].flatMap(UInt64.init) { config.detachDelaySeconds=n }
 var engine=IsenoughEngine(config:config)
 func emit(_ data:Any) { if json, JSONSerialization.isValidJSONObject(data), let d=try? JSONSerialization.data(withJSONObject:data,options:[.prettyPrinted,.sortedKeys]), let s=String(data:d,encoding:.utf8) { print(s) } else { print(data) } }
@@ -71,9 +75,14 @@ func serveUntilSignaled(_ server: LoopbackUIServer) -> Never {
 func find(_ name:String) throws -> ImageManifest { guard let m=engine.manifest(named: name, in: try engine.list()) else { throw IsenoughError.usage("Unknown app: \(name)") }; return m }
 do {
     guard let command=args.first else { usage() }; args.removeFirst()
+    // The stub is a session leader. A hangup must not kill `launch` / `hook watch`
+    // before the journal reaches a terminal phase. SIGKILL faults still apply.
+    if command == "launch" || command == "hook" || command == "restore" {
+        signal(SIGHUP, SIG_IGN)
+    }
     switch command {
     case "help", "--help", "-h": usage()
-    case "version": emit(["version":"0.1.0","schema":"image/1"])
+    case "version": emit(["version":EngineInstall.version,"revision":EngineInstall.revision,"schema":"image/1"])
     case "init":
         while !args.isEmpty { let a=args.removeFirst(); if a=="--backend", !args.isEmpty { config.backend=args.removeFirst() } else if a=="--root", !args.isEmpty { config.repoPath=args.removeFirst() } else if a=="--cache-dir", !args.isEmpty { config.cacheDir=args.removeFirst() } }
         try IsenoughEngine(config:config).initialize(); emit(["ok":true,"repo":config.repoPath])
@@ -181,7 +190,16 @@ do {
         default:
             throw IsenoughError.usage("Unknown backend command: \(sub)")
         }
-    case "stub": if args.first=="rebuild" { emit(["ok":false,"message":"Stub rebuild requires macOS and a manifest-backed installed app" ]) } else { usage() }
+    case "install-engine":
+        let installed=try engine.installEngine()
+        emit(["ok":true,"path":installed.path,"version":EngineInstall.version,"revision":EngineInstall.revision])
+    case "stub":
+        if args.first=="rebuild" { emit(["ok":false,"message":"Stub rebuild requires macOS and a manifest-backed installed app" ]) }
+        else if args.first=="refresh" {
+            args.removeFirst()
+            guard args.first=="--app", args.count>=2 else { throw IsenoughError.usage("stub refresh requires --app ID") }
+            emit(["ok":true,"updated":try engine.refreshStubs(appId:args[1])])
+        } else { usage() }
     case "hooks": emit(["ok":true,"hooks":[] as [String]])
     case "ui":
         let webRoot = ProcessInfo.processInfo.environment["ISENOUGH_WEB_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
