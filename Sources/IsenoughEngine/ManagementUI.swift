@@ -91,6 +91,15 @@ public enum ManagementUI {
         switch (request.method, request.path) {
         case ("GET", "/api/status"):
             return .json(dashboard(engine))
+        case ("GET", "/api/recommend"):
+            do {
+                let arguments = try RecommendArguments.parse(query: request.query)
+                return .json(engine.recommend(options: arguments.options()).jsonObject())
+            } catch let error as IsenoughError {
+                return .json(["ok": false, "error": error.errorDescription ?? "bad request"], status: 400)
+            } catch {
+                return .json(["ok": false, "error": error.localizedDescription], status: 400)
+            }
         case ("POST", "/api/pin"), ("POST", "/api/unpin"), ("POST", "/api/evict"), ("POST", "/api/restore"):
             guard let name = appName(request) else { return .json(["ok": false, "error": "app is required"], status: 400) }
             do {

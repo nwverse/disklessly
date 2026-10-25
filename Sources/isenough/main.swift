@@ -18,6 +18,7 @@ func usage() -> Never {
       pin APP | unpin APP | evict APP | gc | restore APP | unpack APP
       backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
       sessions [--apply] [--days N] [--home DIR] | sessions search QUERY | sessions restore ID|PATH
+      recommend [--json] [--min-size SIZE] [--limit N] [--min-idle-days N]
       ui | hooks list|enable|disable APP | doctor | version
     Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
       ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,
@@ -32,7 +33,7 @@ catch let error as IsenoughError {
     fputs("isenough: \(error.errorDescription ?? String(describing: error))\n", stderr)
     exit(Int32(error.exitCode))
 }
-var args=invocation.rest; let json=invocation.json
+var args=invocation.rest; var json=invocation.json
 let env=ProcessInfo.processInfo.environment
 let configPath=env["ISENOUGH_CONFIG"] ?? invocation.configPath
 if let stateDir=invocation.stateDir { setenv("ISENOUGH_STATE_DIR", stateDir, 1) }
@@ -104,6 +105,11 @@ do {
     case "pin", "unpin": guard let n=args.first else { throw IsenoughError.usage("\(command) requires app") }; try engine.setPinned(try find(n), pinned: command=="pin"); emit(["ok":true,"pinned":command=="pin"])
     case "evict": guard let n=args.first else { throw IsenoughError.usage("evict requires app") }; try engine.evict(find(n)); emit(["ok":true])
     case "gc": emit(["ok":true,"removed":[] as [String],"recovered":try engine.gc()])
+    case "recommend":
+        let parsed = try RecommendArguments.parse(args)
+        if parsed.json { json = true }
+        let report = engine.recommend(options: parsed.options())
+        if json { emit(report.jsonObject()) } else { print(report.text(), terminator: "") }
     case "doctor":
         let fixing = args.first == "--fix"
         let report = engine.doctor(fix: fixing) { check in

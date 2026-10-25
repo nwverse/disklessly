@@ -290,7 +290,9 @@ button:disabled:hover { border-color: var(--line); }
 }
 .chip.cached { background: var(--ok-bg); color: var(--ok); }
 .chip.remote { background: var(--info-bg); color: var(--info); }
-.chip.pinned { background: var(--warn-bg); color: var(--warn); }
+.recommend-reason { color: var(--muted); margin-top: 2px; font-size: 13px; }
+.chip.pinned, .chip.warn { background: var(--warn-bg); color: var(--warn); }
+.warn-title { margin: 18px 0 0; font-size: 16px; }
 .chip.restored { background: var(--info-bg); color: var(--info); }
 .chip.cold { background: var(--chip); color: var(--text); }
 .share {

@@ -470,6 +470,7 @@ Global flags: `--config <path>` (env `ISENOUGH_CONFIG`), `--state-dir <path>` (e
 | `stub rebuild <app>\|--all [--sign-identity <id>]` | Regenerate stub(s) from the manifest (e.g. new Mac, new launcher version). |
 | `hooks list\|edit\|enable\|disable <app>` | Manage user hooks (§5.5). |
 | `doctor [--fix]` | Checks: config, backend reachable, iCloud signed in + Optimize Storage, free space, `hdiutil` present, stale mounts, lock files, LS registration of stubs, conflict copies, stub ↔ manifest consistency, isenough path in stubs. `--fix` performs safe repairs. |
+| `recommend [--min-size SIZE] [--limit N] [--min-idle-days N]` | Rank top-level apps in `/Applications` and `~/Applications` worth offloading. See §4.1. |
 | `serve [--port 47256] [--print-token]` | HTTP/JSON API + web UI on 127.0.0.1 (§2.3, §10). |
 | `daemon install\|uninstall\|status` | Manage the LaunchAgent plist `~/Library/LaunchAgents/io.github.s546126.256isenough.daemon.plist`. |
 | `trust <app> [--team-id <id>\|--cdhash <h>]` | Approve a new signing identity for an app (TOFU, §10). |
@@ -495,6 +496,30 @@ Exit codes (stable, documented in `isenough --help`):
 | 14 | EX_RESOLUTION | an updated bundle is retained and must be resolved first (`isenough resolve`, §5.8.7) |
 
 `--json` output shape: `{"ok":true,"data":{…}}` or `{"ok":false,"error":{"code":5,"name":"EX_INTEGRITY","message":"…","details":{…}}}`.
+
+### 4.1 `recommend`
+
+`isenough recommend` lists installed apps worth offloading. It does not pack or delete anything. It reads `/Applications` and `~/Applications`, and only the top-level `.app` bundle in each directory (nested bundles under `Contents` are ignored).
+
+Skipped before scoring:
+
+- stubs (bundle id suffix `.256stub`, executable `isenough-stub`, or `Contents/Resources/stub.json`) and the 256isenough app
+- apps whose path resolves under `/System`, and apps signed by Apple as macOS system code (`anchor apple`, not `anchor apple generic`)
+- apps whose main executable is currently running
+
+For each remaining app the command records:
+
+- allocated size, `st_blocks * 512`, the same basis as `du`, walked in-process with a per-app time limit and an overall scan limit
+- `kMDItemLastUsedDate` from Spotlight via `NSMetadataItem` (the MDItem attribute). A null attribute means never used. `mdls` text is not parsed
+- Mac App Store receipt at `Contents/_MASReceipt/receipt` (restore mode)
+- bundle id
+- pinned and already-packed, from local state and the manifest catalog
+
+Score is `(size in MiB) × idle weight`. Idle weight is whole days of 86400 seconds since last use. A never-used app uses 365 + 90, so it ranks above an app of the same size last used 365 days ago. Apps smaller than `--min-size` (default 100 MiB) are omitted. `--min-idle-days` omits apps used more recently; never-used apps still pass. `--limit` truncates the ranked list. Estimated space freed is the sum of the listed apps' sizes.
+
+These are warnings, not recommendations, when they are at least `--min-size` (a timed-out size is always a warning): login items, menu bar agents (`LSUIElement` or `LSBackgroundOnly`), a running background helper, system extensions, kernel extensions, the toolchain the engine uses (Xcode, or the app that contains the active developer directory), pinned apps, and apps that are already packed.
+
+`--json` prints one object with `ok`, `scan`, `recommendations`, `warnings`, and `estimatedFreedBytes`. `isenough ui` shows the same lists from `GET /api/recommend`.
 
 ---
 
