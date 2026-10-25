@@ -551,6 +551,9 @@ public struct RecommendCatalog: Equatable {
 
 /// Facts the directory walk cannot see on its own: Spotlight, processes, and signing.
 /// The macOS command fills these in. Tests pass plain values.
+/// `legacyLoginItem` is an extra injected signal. The live scan leaves it false.
+/// Bundled LoginItems, LaunchAgents, and LaunchDaemons, and external launchd
+/// plists whose program is inside the app, are detected without it.
 public struct RecommendEnvironment {
     public var available: Bool
     public var roots: [URL]

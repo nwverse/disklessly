@@ -519,6 +519,8 @@ Score is `(size in MiB) × idle weight`. Idle weight is whole days of 86400 seco
 
 These are warnings, not recommendations, when they are at least `--min-size` (a timed-out size is always a warning): login items, menu bar agents (`LSUIElement` or `LSBackgroundOnly`), a running background helper, system extensions, kernel extensions, the toolchain the engine uses (Xcode, or the app that contains the active developer directory), pinned apps, and apps that are already packed.
 
+A login item is a non-empty `Contents/Library/LoginItems`, `Contents/Library/LaunchAgents`, or `Contents/Library/LaunchDaemons`, or a plist in `~/Library/LaunchAgents`, `/Library/LaunchAgents`, or `/Library/LaunchDaemons` whose `Program` or `ProgramArguments` path is the app or inside it. `SMAppService` is not used.
+
 `--json` prints one object with `ok`, `scan`, `recommendations`, `warnings`, and `estimatedFreedBytes`. `isenough ui` shows the same lists from `GET /api/recommend`.
 
 ---

@@ -2,8 +2,12 @@ import Foundation
 import IsenoughCore
 
 /// Live scan inputs. Directory walking and scoring stay in IsenoughCore.
-/// Spotlight, process listing, login-item status, and the Apple system
-/// signature check exist only on macOS and are not text scraped from tools.
+/// Spotlight, process listing, and the Apple system signature check exist only
+/// on macOS and are not text scraped from tools. Login items are read from
+/// bundled LoginItems and launchd directories, plus LaunchAgent and
+/// LaunchDaemon plists, in IsenoughCore. `SMAppService` is not imported:
+/// `statusForLegacyURL` and `statusForLegacyPlist(at:)` are not both present
+/// in one SDK, so neither name is called.
 enum LiveRecommendScan {
     static func environment(home: String, now: Date = Date()) -> RecommendEnvironment {
         #if os(macOS)
@@ -33,7 +37,6 @@ enum LiveRecommendScan {
             runningPaths: MacRecommendProbes.runningPaths(),
             lastUsed: { MacRecommendProbes.lastUsedDate(path: $0) },
             appleSystemSigned: { MacRecommendProbes.isAppleSystemSigned($0) },
-            legacyLoginItem: { MacRecommendProbes.isLegacyLoginItem($0) },
             sizeTimeout: RecommendLimits.sizeTimeout,
             scanDeadline: now.addingTimeInterval(RecommendLimits.scanTimeout),
             now: now
@@ -45,7 +48,6 @@ enum LiveRecommendScan {
 #if os(macOS)
 import Darwin
 import Security
-import ServiceManagement
 
 enum MacRecommendProbes {
     /// `kMDItemLastUsedDate` through `NSMetadataItem`, which reads the same Spotlight
@@ -70,11 +72,6 @@ enum MacRecommendProbes {
         let value = text as String
         if value.contains("anchor apple generic") { return false }
         return value.contains("anchor apple")
-    }
-
-    static func isLegacyLoginItem(_ url: URL) -> Bool {
-        let status = SMAppService.statusForLegacyURL(url)
-        return status == .enabled || status == .requiresApproval
     }
 
     static func runningPaths() -> [String] {
