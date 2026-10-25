@@ -52,7 +52,7 @@ adapter is not implemented yet.
 - `isenough restore APP`, `unpack APP`, `detach APP`, `resolve APP`: recognized surface, not implemented.
 - `isenough stub rebuild APP`: placeholder.
 - `isenough hooks list|enable|disable APP`: placeholder.
-- `isenough doctor`: basic path/platform check.
+- `isenough doctor [--fix]`: each check has a timeout and prints `ok`, `warn`, `fail`, or `timed out` as soon as it finishes. A slow or stuck iCloud repository cannot block the command. `ISENOUGH_DOCTOR_TIMEOUT` is the per-check wait in seconds (default 15). The process exits 1 when any check fails or times out. `--json` prints one object after the checks finish. `--fix` runs recovery inside the same kind of bound.
 - `isenough backend add smb|nfs|webdav ...` / `backend list` / `backend use ID`: register a share or WebDAV repository. Passwords come from `--password-stdin` and are stored in the Keychain, not in `config.json`. See `docs/backends.md`.
 - `isenough ui` serves the management page on `127.0.0.1` with a random token. `scripts/build-ui.sh` copies the page and, when Pake is installed, builds `256isenough.app`.
 - `isenough serve`, `daemon install|uninstall|status`: placeholders.

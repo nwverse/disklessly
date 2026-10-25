@@ -10,7 +10,7 @@
   try {
     var params = new URLSearchParams(location.search);
     var theme = params.get("theme");
-    if (theme !== "light" && theme !== "dark") theme = localStorage.getItem("isenough.theme");
+    if (theme !== "light" && theme !== "dark" && theme !== "system") theme = localStorage.getItem("isenough.theme");
     if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
     var lang = params.get("lang");
     if (lang !== "zh" && lang !== "en") lang = localStorage.getItem("isenough.lang") || "zh";
@@ -22,54 +22,62 @@
 </head>
 <body>
 <div class="window">
+  <a class="skip" id="skip" href="#apps"></a>
   <header class="toolbar">
     <div class="brand">
       <div class="mark" aria-hidden="true">256</div>
       <div>
         <h1>256isenough</h1>
-        <p class="sub" id="subtitle"></p>
+        <p class="sub" id="subtitle">把冷门 App 放到远端，本机只留一个入口</p>
       </div>
     </div>
     <div class="toolbar-actions">
-      <div class="health" id="health" data-state="unknown"><span class="dot"></span><span id="health-label"></span></div>
-      <button id="lang" type="button"></button>
-      <button id="theme" type="button"></button>
-      <button id="refresh" type="button" class="primary"></button>
+      <button id="lang" type="button">English</button>
+      <button id="theme" type="button">跟随系统</button>
+      <button id="refresh" type="button" class="primary">刷新</button>
     </div>
   </header>
-  <section class="grid">
-    <article class="card meter-card">
-      <h2 id="cache-title"></h2>
-      <div class="meter-row">
-        <div class="meter" id="meter" style="--pct: 0">
-          <div class="meter-hole">
-            <strong id="meter-pct">0%</strong>
-            <span id="meter-caption"></span>
-          </div>
-        </div>
-        <dl id="cache-stats"></dl>
+  <div id="banner" class="banner" role="alert" hidden>
+    <p id="banner-text"></p>
+    <button id="retry" type="button">重试</button>
+  </div>
+  <div class="grid">
+    <article class="card" id="cache-card" data-level="ok">
+      <div class="card-head">
+        <h2 id="cache-title">缓存用量</h2>
+        <p class="near" id="near" hidden></p>
+      </div>
+      <div id="cache-body" aria-busy="true">
+        <div class="skeleton sk-lg"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton sk-short"></div>
       </div>
     </article>
-    <article class="card">
-      <h2 id="backend-title"></h2>
-      <p id="backend" class="lead"></p>
-      <p id="backend-detail" class="muted"></p>
+    <article class="card" id="health-card" data-level="offline">
+      <h2 id="health-title">后端</h2>
+      <div id="health-body" aria-busy="true">
+        <div class="skeleton sk-lg"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton sk-short"></div>
+      </div>
     </article>
-  </section>
-  <section class="card">
+  </div>
+  <section class="card" id="apps">
     <div class="section-head">
-      <h2 id="apps-title"></h2>
+      <h2 id="apps-title">应用</h2>
     </div>
-    <div id="apps" class="apps"></div>
+    <div id="app-list" class="apps" aria-busy="true">
+      <div class="skeleton sk-row"></div>
+      <div class="skeleton sk-row"></div>
+    </div>
   </section>
-  <section class="card">
+  <section class="card" id="sessions-section">
     <div class="section-head">
-      <h2 id="sessions-title"></h2>
+      <h2 id="sessions-title">冷会话</h2>
     </div>
     <p id="sessions-summary" class="muted"></p>
     <ul id="sessions" class="sessions"></ul>
   </section>
-  <p id="error" class="error" role="alert"></p>
 </div>
 <script type="module" src="app.js"></script>
 </body>
