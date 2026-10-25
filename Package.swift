@@ -13,7 +13,7 @@ let package = Package(
     targets: [
         .target(name: "IsenoughCore"),
         .target(name: "IsenoughStubSupport"),
-        .target(name: "IsenoughEngine", dependencies: ["IsenoughCore"]),
+        .target(name: "IsenoughEngine", dependencies: ["IsenoughCore", "IsenoughStubSupport"]),
         .executableTarget(name: "isenough", dependencies: ["IsenoughCore", "IsenoughEngine"], resources: [.copy("web")]),
         .executableTarget(name: "isenough-stub", dependencies: ["IsenoughStubSupport"]),
         .testTarget(name: "IsenoughCoreTests", dependencies: ["IsenoughCore", "IsenoughEngine", "IsenoughStubSupport"]),

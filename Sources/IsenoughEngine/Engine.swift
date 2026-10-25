@@ -68,14 +68,44 @@ public struct RuntimeConfig: Codable {
         try container.encodeIfPresent(sessionHome, forKey: .sessionHome)
     }
 
-    public static func environment() -> RuntimeConfig {
-        let home = NSHomeDirectory(), env = ProcessInfo.processInfo.environment
+    public static func environment(_ env: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory()) -> RuntimeConfig {
         func v(_ key: String, _ fallback: String) -> String { env["ISENOUGH_\(key)"] ?? fallback }
         var config = RuntimeConfig(repoPath: v("REPO_PATH", "\(home)/Library/Mobile Documents/com~apple~CloudDocs/256isenough"), cacheDir: v("CACHE_DIR", "\(home)/Library/Caches/256isenough"), stateDir: v("STATE_DIR", "\(home)/Library/Application Support/256isenough"), mountRoot: v("MOUNT_ROOT", "\(home)/Library/Caches/256isenough/mnt"), stubDir: v("STUB_DIR", "/Applications"))
         if let quota = env["ISENOUGH_QUOTA_BYTES"].flatMap(UInt64.init) { config.quotaBytes = quota }
         if let floor = env["ISENOUGH_MIN_FREE_BYTES"].flatMap(UInt64.init) { config.minFreeBytes = floor }
         if let identity = env["ISENOUGH_SIGN_IDENTITY"], !identity.isEmpty { config.signIdentity = identity }
         return config
+    }
+
+    /// `--config` replaces the file outright. Otherwise `<stateDir>/config.json` is
+    /// loaded and explicit `ISENOUGH_*` path overrides are applied on top. `backend`
+    /// stays as stored, so `init --backend icloud` is what `status` reports.
+    public static func resolved(environment env: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory(), stateDirOverride: String?, explicitConfig: String?) -> RuntimeConfig {
+        var config = environment(env, home: home)
+        if let stateDirOverride { config.stateDir = stateDirOverride }
+        if let explicitConfig {
+            let url = URL(fileURLWithPath: explicitConfig)
+            if let data = try? Data(contentsOf: url), let saved = try? JSONDecoder().decode(RuntimeConfig.self, from: data) {
+                config = saved
+            }
+            if let stateDirOverride { config.stateDir = stateDirOverride }
+            return config
+        }
+        let savedURL = URL(fileURLWithPath: config.stateDir).appendingPathComponent("config.json")
+        guard let data = try? Data(contentsOf: savedURL), let saved = try? JSONDecoder().decode(RuntimeConfig.self, from: data) else {
+            return config
+        }
+        var merged = saved
+        if env["ISENOUGH_REPO_PATH"] != nil { merged.repoPath = config.repoPath }
+        if env["ISENOUGH_CACHE_DIR"] != nil { merged.cacheDir = config.cacheDir }
+        if env["ISENOUGH_STATE_DIR"] != nil || stateDirOverride != nil { merged.stateDir = config.stateDir }
+        if env["ISENOUGH_MOUNT_ROOT"] != nil { merged.mountRoot = config.mountRoot }
+        if env["ISENOUGH_STUB_DIR"] != nil { merged.stubDir = config.stubDir }
+        if env["ISENOUGH_QUOTA_BYTES"] != nil { merged.quotaBytes = config.quotaBytes }
+        if env["ISENOUGH_MIN_FREE_BYTES"] != nil { merged.minFreeBytes = config.minFreeBytes }
+        if let identity = env["ISENOUGH_SIGN_IDENTITY"], !identity.isEmpty { merged.signIdentity = identity }
+        if let stateDirOverride { merged.stateDir = stateDirOverride }
+        return merged
     }
 
     public mutating func remember(_ endpoint: BackendEndpoint) {
@@ -116,7 +146,9 @@ public enum StubGenerator {
         for key in ["SUFeedURL","SUPublicEDKey","ElectronDefaultApp"] { p.removeValue(forKey:key) }
         return p
     }
-    public static func stubInfo(manifest: ImageManifest, cliPath: String) -> [String:Any] { ["schema":"stub/1", "appId":manifest.bundleId, "imageId":manifest.imageId, "isenoughPath":cliPath, "stubVersion":1] }
+    public static func stubInfo(manifest: ImageManifest, cliPath: String) -> [String:Any] {
+        ["schema":"stub/1", "appId":manifest.bundleId, "imageId":manifest.imageId, "isenoughPath":cliPath, "engineVersion":EngineInstall.version, "engineRevision":EngineInstall.revision, "stubVersion":1]
+    }
 
     public static func locateLauncher(cliExecutable: URL, environment: [String:String], isExecutable: (String)->Bool) throws -> URL {
         let cli=cliExecutable.resolvingSymlinksInPath().standardizedFileURL
@@ -193,7 +225,133 @@ public struct IsenoughEngine {
         }
         for p in ["images", "manifests", "catalog", "devices", "trash"] { try backend.ensureCollection(p) }
         try saveConfig()
+        if EngineInstall.runningExecutable().lastPathComponent == "isenough" {
+            try installEngine()
+        }
     }
+
+    /// Copy the running `isenough` to `<stateDir>/bin/isenough` and refresh the stamp.
+    /// Unit tests run under an xctest host, which is not an engine, so callers that
+    /// always want a copy pass `source`.
+    @discardableResult
+    public func installEngine(source: URL? = nil) throws -> URL {
+        let binary = source ?? EngineInstall.runningExecutable()
+        return try EngineInstall.install(stateDir: config.stateDir, source: binary)
+    }
+
+    /// Path written into new stubs. Prefers the stable copy once it exists.
+    public func installedEnginePath() throws -> String {
+        if EngineInstall.runningExecutable().lastPathComponent == "isenough" {
+            try installEngine()
+        }
+        let binary = EngineInstall.binary(stateDir: config.stateDir)
+        if FileManager.default.isExecutableFile(atPath: binary.path) { return binary.path }
+        return EngineInstall.runningExecutable().path
+    }
+
+    /// Rewrite `stub.json` in installed stubs so `isenoughPath` is the stable engine, then re-sign on macOS.
+    public func refreshStubs(appId: String) throws -> [String] {
+        let enginePath = try installedEnginePath()
+        let bundles = locatedStubs(matching: appId)
+        guard !bundles.isEmpty else { throw IsenoughError.usage("no installed stub for \(appId)") }
+        var updated: [String] = []
+        for bundle in bundles {
+            try rewriteStubEngine(bundle: bundle, enginePath: enginePath)
+            updated.append(bundle.path)
+        }
+        return updated
+    }
+
+    /// Warnings for `doctor`. A missing or older engine does not fail the command.
+    public func engineWarnings() -> [String] {
+        let fm = FileManager.default
+        var lines: [String] = []
+        let installed = EngineInstall.binary(stateDir: config.stateDir).path
+        switch EngineInstall.freshness(at: installed) {
+        case .current:
+            break
+        case .missing:
+            lines.append("installed engine is missing at \(installed); run isenough install-engine")
+        case .older(let detail):
+            lines.append("\(detail); run isenough install-engine")
+        }
+        guard case .missing = EngineInstall.freshness(at: installed) else { return lines }
+        for bundle in locatedStubs(matching: nil) {
+            let stubJSON = bundle.appendingPathComponent("Contents/Resources/stub.json")
+            guard let data = try? Data(contentsOf: stubJSON),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let recorded = object["isenoughPath"] as? String,
+                  !StubGenerator.pathsReferToSameLocation(recorded, installed) else { continue }
+            let app = object["appId"] as? String ?? bundle.deletingPathExtension().lastPathComponent
+            switch EngineInstall.freshness(at: recorded, fileManager: fm) {
+            case .current:
+                break
+            case .missing:
+                lines.append("stub \(bundle.path) engine is missing at \(recorded); run isenough stub refresh --app \(app)")
+            case .older(let detail):
+                lines.append("stub \(bundle.path) \(detail); run isenough stub refresh --app \(app)")
+            }
+        }
+        return lines
+    }
+
+    private func locatedStubs(matching appId: String?) -> [URL] {
+        let fm = FileManager.default
+        var urls: [URL] = []
+        func consider(_ url: URL) {
+            var isDir: ObjCBool = false
+            guard fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { return }
+            let stubJSON = url.appendingPathComponent("Contents/Resources/stub.json")
+            guard let data = try? Data(contentsOf: stubJSON),
+                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
+            if let appId {
+                let id = object["appId"] as? String ?? ""
+                let image = object["imageId"] as? String ?? ""
+                let info = (try? Data(contentsOf: url.appendingPathComponent("Contents/Info.plist"))).flatMap {
+                    try? PropertyListSerialization.propertyList(from: $0, options: [], format: nil) as? [String: Any]
+                }
+                let bundle = info?["CFBundleIdentifier"] as? String ?? ""
+                let names = [id, image, bundle, id + ".256stub"]
+                guard names.contains(appId) || id.caseInsensitiveCompare(appId) == .orderedSame else { return }
+            }
+            if !urls.contains(where: { StubGenerator.pathsReferToSameLocation($0.path, url.path) }) {
+                urls.append(url)
+            }
+        }
+        if let manifests = try? list() {
+            for manifest in manifests {
+                let wanted = appId == nil || manifest.bundleId == appId || manifest.imageId == appId || manifest.name.caseInsensitiveCompare(appId ?? "") == .orderedSame
+                if wanted { consider(URL(fileURLWithPath: manifest.app.originalPath)) }
+            }
+        }
+        let stubDir = URL(fileURLWithPath: config.stubDir)
+        if let names = try? fm.contentsOfDirectory(atPath: stubDir.path) {
+            for name in names where name.hasSuffix(".app") {
+                consider(stubDir.appendingPathComponent(name))
+            }
+        }
+        return urls
+    }
+
+    private func rewriteStubEngine(bundle: URL, enginePath: String) throws {
+        let stubJSON = bundle.appendingPathComponent("Contents/Resources/stub.json")
+        let data = try Data(contentsOf: stubJSON)
+        guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw IsenoughError.failure("stub.json in \(bundle.path) is not an object")
+        }
+        object["isenoughPath"] = enginePath
+        object["engineVersion"] = EngineInstall.version
+        object["engineRevision"] = EngineInstall.revision
+        if object["schema"] == nil { object["schema"] = "stub/1" }
+        if object["stubVersion"] == nil { object["stubVersion"] = 1 }
+        let encoded = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try encoded.write(to: stubJSON, options: .atomic)
+        #if os(macOS)
+        let identity = SigningIdentity.resolve(configured: config.signIdentity, environment: ProcessInfo.processInfo.environment)
+        try ProcessRunner.run("/usr/bin/codesign", ["--force", "--sign", identity, bundle.path])
+        #endif
+    }
+
     public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false) throws -> ImageManifest {
         #if !os(macOS)
         throw IsenoughError.unsupported("pack requires macOS hdiutil and codesign")
@@ -228,6 +386,7 @@ public struct IsenoughEngine {
         let facts=ImageManifest.App(originalPath:app.path,executable:info["CFBundleExecutable"] as? String ?? "",documentTypes:(info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },urlTypes:(info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },cdhash:cdhash,treeHash:treeHash)
         var manifest=ImageManifest(bundleId:bid,name:name,version:version,image:image,app:facts,mode:selected); manifest.image.file="images/\(manifest.imageId).dmg"; try manifest.validate()
         let backend=try repo; try backend.put(manifest.image.file, file: dmg); try backend.put("manifests/\(manifest.imageId).json",data:manifest.encode())
+        if EngineInstall.runningExecutable().lastPathComponent == "isenough" { try installEngine() }
         if !noStub { try installStub(info:info, manifest:manifest, path:app.path, keepOriginal:keepOriginal) }
         return manifest
         #endif
@@ -252,7 +411,8 @@ public struct IsenoughEngine {
             throw IsenoughError.failure("Refusing to install CLI binary as isenough-stub launcher")
         }
         try manifest.encode().write(to:temp.appendingPathComponent("Contents/Resources/manifest.json"))
-        try JSONSerialization.data(withJSONObject:StubGenerator.stubInfo(manifest:manifest,cliPath:cli.resolvingSymlinksInPath().path),options:[.prettyPrinted,.sortedKeys]).write(to:temp.appendingPathComponent("Contents/Resources/stub.json"))
+        let enginePath = try installedEnginePath()
+        try JSONSerialization.data(withJSONObject:StubGenerator.stubInfo(manifest:manifest,cliPath:enginePath),options:[.prettyPrinted,.sortedKeys]).write(to:temp.appendingPathComponent("Contents/Resources/stub.json"))
         // Signing the bundle re-signs its main executable isenough-stub in place.
         // No --deep is needed because there are no nested code items.
         let identity = SigningIdentity.resolve(configured: config.signIdentity, environment: ProcessInfo.processInfo.environment)
@@ -372,6 +532,9 @@ public struct IsenoughEngine {
     }
     public func launch(_ manifest:ImageManifest, documents:[String]=[], urls:[String]=[], arguments:[String]=[], wait:Bool=true) throws {
         restore.loadConfiguredFaults()
+        if EngineInstall.runningExecutable().lastPathComponent == "isenough" {
+            try installEngine()
+        }
         if manifest.mode == .restore {
             _ = try prefetch(manifest)
             try restore.launch(manifest, documents: documents, urls: urls, arguments: arguments, wait: wait)
