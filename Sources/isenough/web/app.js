@@ -25,6 +25,8 @@ const copy = {
     recommendUnavailable: "扫描已安装应用需要 macOS",
     recommendFailed: "未能加载建议",
     recommendSummary: (count, freed, min) => `${count} 个 · 大约可腾出 ${freed} · 至少 ${min}`,
+    leftoverBackups: (count, size) => `${count} 个残留备份（${size}）可以删除`,
+    leftoverAdmin: "删除需要管理员权限。",
     neverUsed: "从未使用",
     idleDays: (n) => n === 1 ? "1 天未使用" : `${n} 天未使用`,
     restoreNeeded: "含商店收据，需要还原模式",
@@ -108,6 +110,8 @@ const copy = {
     recommendUnavailable: "Scanning installed apps requires macOS",
     recommendFailed: "Could not load recommendations",
     recommendSummary: (count, freed, min) => `${count} · about ${freed} free · at least ${min}`,
+    leftoverBackups: (count, size) => `${count} leftover backup${count === 1 ? "" : "s"} (${size}) can be removed`,
+    leftoverAdmin: "Removing them needs an administrator.",
     neverUsed: "Never used",
     idleDays: (n) => n === 1 ? "Last used 1 day ago" : `Last used ${n} days ago`,
     restoreNeeded: "Mac App Store receipt, restore mode",
@@ -509,6 +513,28 @@ function modeLabel(mode) {
   return t("modeMount");
 }
 
+function renderLeftovers(report) {
+  const line = document.querySelector("#recommend-leftovers");
+  const paths = document.querySelector("#recommend-leftover-paths");
+  line.replaceChildren();
+  paths.replaceChildren();
+  const items = (report && report.leftoverBackups) || [];
+  if (!items.length) {
+    line.hidden = true;
+    paths.hidden = true;
+    return;
+  }
+  const total = items.reduce((sum, item) => sum + Number(item.sizeBytes || 0), 0);
+  line.hidden = false;
+  line.append(document.createTextNode(t("leftoverBackups")(items.length, bytes(total)) + " " + t("leftoverAdmin")));
+  paths.hidden = false;
+  for (const item of items) {
+    const row = el("li");
+    row.append(el("div", "path", item.path || ""));
+    paths.append(row);
+  }
+}
+
 function renderRecommend(report, failed) {
   const summary = document.querySelector("#recommend-summary");
   const list = document.querySelector("#recommend-list");
@@ -523,6 +549,7 @@ function renderRecommend(report, failed) {
     empty.append(el("strong", "", failed || t("recommendFailed")));
     list.append(empty);
     warnTitle.hidden = true;
+    renderLeftovers(null);
     return;
   }
   if (report.scan === "unavailable") {
@@ -556,6 +583,7 @@ function renderRecommend(report, failed) {
     item.append(top, el("div", "path", app.path || ""), el("p", "preview", recommendReason(app)));
     warnings.append(item);
   }
+  renderLeftovers(report);
 }
 
 function renderSessions(sessions) {

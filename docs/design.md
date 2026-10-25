@@ -506,6 +506,8 @@ Skipped before scoring:
 - stubs (bundle id suffix `.256stub`, executable `isenough-stub`, or `Contents/Resources/stub.json`) and the 256isenough app
 - apps whose path resolves under `/System`, and apps signed by Apple as macOS system code (`anchor apple`, not `anchor apple generic`)
 - apps whose main executable is currently running
+- every dot-prefixed entry, including `.isenough-original-<id>.app` and `.256isenough-staging`
+- bundles whose name starts with `.isenough-original-` or ends with `.256orig.app`
 
 For each remaining app the command records:
 
@@ -521,7 +523,9 @@ These are warnings, not recommendations, when they are at least `--min-size` (a 
 
 A login item is a non-empty `Contents/Library/LoginItems`, `Contents/Library/LaunchAgents`, or `Contents/Library/LaunchDaemons`, or a plist in `~/Library/LaunchAgents`, `/Library/LaunchAgents`, or `/Library/LaunchDaemons` whose `Program` or `ProgramArguments` path is the app or inside it. `SMAppService` is not used.
 
-`--json` prints one object with `ok`, `scan`, `recommendations`, `warnings`, and `estimatedFreedBytes`. `isenough ui` shows the same lists from `GET /api/recommend`.
+Those skipped backups are not recommendations and not warnings. When any are present, the text output and `isenough ui` add one line, `N leftover backups (X) can be removed`, and list their paths. The command does not delete them; copies under `/Applications` need an administrator. `--json` includes `leftoverBackups` (path, sizeBytes, sizeIncomplete) and `leftoverBackupBytes`.
+
+`--json` prints one object with `ok`, `scan`, `recommendations`, `warnings`, `estimatedFreedBytes`, `leftoverBackups`, and `leftoverBackupBytes`. `isenough ui` shows the same lists from `GET /api/recommend`.
 
 ---
 

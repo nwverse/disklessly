@@ -493,7 +493,9 @@ public struct IsenoughEngine {
             return RecommendRanking.rank([], options: options, scanAvailable: false)
         }
         let apps = RecommendDiscovery.collect(environment: environment, catalog: recommendCatalog())
-        return RecommendRanking.rank(apps, options: options, scanAvailable: true)
+        var report = RecommendRanking.rank(apps, options: options, scanAvailable: true)
+        report.leftovers = RecommendDiscovery.leftovers(environment: environment)
+        return report
     }
 
     private func recommendCatalog() -> RecommendCatalog {

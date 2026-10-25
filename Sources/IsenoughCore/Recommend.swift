@@ -159,7 +159,12 @@ public struct RecommendReport: Equatable {
     public var minIdleDays: Int?
     public var recommendations: [RecommendItem]
     public var warnings: [RecommendItem]
+    public var leftovers: [RecommendLeftover]
     public var estimatedFreedBytes: UInt64
+
+    public var leftoverBytes: UInt64 {
+        leftovers.reduce(0) { $0 + $1.sizeBytes }
+    }
 
     public func jsonObject() -> [String: Any] {
         [
@@ -172,6 +177,8 @@ public struct RecommendReport: Equatable {
             "estimatedFreedBytes": NSNumber(value: estimatedFreedBytes),
             "recommendations": recommendations.map { $0.jsonObject() },
             "warnings": warnings.map { $0.jsonObject() },
+            "leftoverBackups": leftovers.map { $0.jsonObject() },
+            "leftoverBackupBytes": NSNumber(value: leftoverBytes),
         ]
     }
 
@@ -192,7 +199,34 @@ public struct RecommendReport: Equatable {
             lines.append("  \(RecommendFormatting.byteText(item.sizeBytes))")
             lines.append("  \(item.reason)")
         }
+        if !leftovers.isEmpty {
+            lines.append(RecommendFormatting.leftoverLine(count: leftovers.count, bytes: leftoverBytes))
+            for item in leftovers {
+                lines.append("- \(item.path)")
+            }
+        }
         return lines.joined(separator: "\n") + "\n"
+    }
+}
+
+/// A backup the engine left beside an installed app. It is not scored.
+public struct RecommendLeftover: Equatable {
+    public var path: String
+    public var sizeBytes: UInt64
+    public var sizeIncomplete: Bool
+
+    public init(path: String, sizeBytes: UInt64, sizeIncomplete: Bool = false) {
+        self.path = path
+        self.sizeBytes = sizeBytes
+        self.sizeIncomplete = sizeIncomplete
+    }
+
+    public func jsonObject() -> [String: Any] {
+        [
+            "path": path,
+            "sizeBytes": NSNumber(value: sizeBytes),
+            "sizeIncomplete": sizeIncomplete,
+        ]
     }
 }
 
@@ -214,6 +248,12 @@ public enum RecommendFormatting {
 
     public static func scoreText(_ score: Double) -> String {
         String(Int(score.rounded()))
+    }
+
+    /// One summary line. Paths are printed under it. The command does not delete these.
+    public static func leftoverLine(count: Int, bytes: UInt64) -> String {
+        let noun = count == 1 ? "leftover backup" : "leftover backups"
+        return "\(count) \(noun) (\(byteText(bytes))) can be removed"
     }
 
     public static func warningText(_ code: String) -> String {
@@ -281,7 +321,7 @@ public enum RecommendRanking {
             recommendations = Array(recommendations.prefix(limit))
         }
         let freed = recommendations.reduce(UInt64(0)) { $0 + $1.estimatedFreedBytes }
-        return RecommendReport(scanAvailable: scanAvailable, minSizeBytes: options.minSizeBytes, limit: options.limit, minIdleDays: options.minIdleDays, recommendations: recommendations, warnings: warnings, estimatedFreedBytes: freed)
+        return RecommendReport(scanAvailable: scanAvailable, minSizeBytes: options.minSizeBytes, limit: options.limit, minIdleDays: options.minIdleDays, recommendations: recommendations, warnings: warnings, leftovers: [], estimatedFreedBytes: freed)
     }
 
     private static func warningCodes(_ app: RecommendApp) -> [String] {
@@ -499,6 +539,25 @@ public enum DirectoryMeasure {
 }
 
 public enum RecommendPaths {
+    /// Hidden entries are not apps to offload. Kept originals (`Foo.256orig.app`)
+    /// and `.isenough-original-` backups are not apps either, even when the name
+    /// has no leading dot.
+    public static func isIgnoredAppName(_ name: String) -> Bool {
+        if name.hasPrefix(".") { return true }
+        return isLeftoverBackupName(name)
+    }
+
+    /// Engine leftovers in an Applications directory. Ordinary hidden files
+    /// (`.DS_Store`, a user-hidden `.app`) are not leftovers.
+    public static func isLeftoverBackupName(_ name: String) -> Bool {
+        let lower = name.lowercased()
+        if lower.hasPrefix(".isenough-original-") { return true }
+        if lower.hasSuffix(".256orig.app") { return true }
+        if lower == ".256isenough-staging" { return true }
+        if lower.hasPrefix(".isenough-") && lower.hasSuffix(".app") { return true }
+        return false
+    }
+
     public static func isSystemLocation(_ path: String) -> Bool {
         let url = URL(fileURLWithPath: path)
         let candidates = [
@@ -509,8 +568,18 @@ public enum RecommendPaths {
     }
 
     public static func topLevelApps(in root: URL, fileManager: FileManager = .default) -> [URL] {
+        children(in: root, fileManager: fileManager).filter { url in
+            url.pathExtension.lowercased() == "app" && !isIgnoredAppName(url.lastPathComponent)
+        }
+    }
+
+    public static func leftoverBackups(in root: URL, fileManager: FileManager = .default) -> [URL] {
+        children(in: root, fileManager: fileManager).filter { isLeftoverBackupName($0.lastPathComponent) }
+    }
+
+    private static func children(in root: URL, fileManager: FileManager) -> [URL] {
         guard let children = try? fileManager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil, options: []) else { return [] }
-        return children.filter { $0.pathExtension.lowercased() == "app" }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+        return children.sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 }
 
@@ -599,6 +668,19 @@ public enum RecommendDiscovery {
             }
         }
         return apps
+    }
+
+    /// Sizes use the same deadline as the app walk. An expired deadline still lists the path.
+    public static func leftovers(environment: RecommendEnvironment, fileManager: FileManager = .default) -> [RecommendLeftover] {
+        guard environment.available else { return [] }
+        var found: [RecommendLeftover] = []
+        for root in environment.roots {
+            for url in RecommendPaths.leftoverBackups(in: root, fileManager: fileManager) {
+                let allocation = measure(url, environment: environment)
+                found.append(RecommendLeftover(path: url.standardizedFileURL.path, sizeBytes: allocation.bytes, sizeIncomplete: allocation.incomplete))
+            }
+        }
+        return found.sorted { $0.path < $1.path }
     }
 
     private static func inspect(_ url: URL, environment: RecommendEnvironment, catalog: RecommendCatalog, running: [String], fileManager: FileManager) -> RecommendApp? {

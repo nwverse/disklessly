@@ -120,6 +120,15 @@ final class RecommendTests: XCTestCase {
         XCTAssertTrue(text.contains("1.0 GiB, never used"))
         XCTAssertTrue(text.contains("mode mount"))
         XCTAssertTrue(text.contains("0 warnings"))
+        XCTAssertFalse(text.contains("leftover backup"))
+        var withLeftover = report
+        withLeftover.leftovers = [RecommendLeftover(path: "/Applications/.isenough-original-abc.app", sizeBytes: 1024 * mebi, sizeIncomplete: false)]
+        let leftoverText = withLeftover.text()
+        XCTAssertTrue(leftoverText.contains("1 leftover backup (1.0 GiB) can be removed"))
+        XCTAssertTrue(leftoverText.contains("/Applications/.isenough-original-abc.app"))
+        let leftoverObject = withLeftover.jsonObject()
+        XCTAssertEqual((leftoverObject["leftoverBackupBytes"] as? NSNumber)?.uint64Value, 1024 * mebi)
+        XCTAssertEqual((leftoverObject["leftoverBackups"] as? [[String: Any]])?.count, 1)
         let object = report.jsonObject()
         XCTAssertEqual(object["ok"] as? Bool, true)
         XCTAssertEqual(object["scan"] as? String, "ok")
@@ -221,6 +230,74 @@ final class RecommendTests: XCTestCase {
         XCTAssertFalse(ranked.recommendations.contains { $0.bundleId == "org.real.256stub" })
         XCTAssertFalse(ranked.recommendations.contains { $0.bundleId == "org.inner" })
         XCTAssertTrue(ranked.warnings.contains { $0.bundleId == "org.ext" && $0.warnings.contains("toolchain") })
+    }
+
+    func testLeftoverBackupsAreOmittedFromBothLists() throws {
+        XCTAssertTrue(RecommendPaths.isIgnoredAppName(".isenough-original-abc.app"))
+        XCTAssertTrue(RecommendPaths.isIgnoredAppName("Visible.256orig.app"))
+        XCTAssertTrue(RecommendPaths.isIgnoredAppName(".Hidden.app"))
+        XCTAssertTrue(RecommendPaths.isIgnoredAppName(".256isenough-staging"))
+        XCTAssertFalse(RecommendPaths.isIgnoredAppName("Visible.app"))
+        XCTAssertTrue(RecommendPaths.isLeftoverBackupName(".isenough-original-abc.app"))
+        XCTAssertTrue(RecommendPaths.isLeftoverBackupName(".isenough-deadbeef.app"))
+        XCTAssertTrue(RecommendPaths.isLeftoverBackupName("Visible.256orig.app"))
+        XCTAssertTrue(RecommendPaths.isLeftoverBackupName(".256isenough-staging"))
+        XCTAssertFalse(RecommendPaths.isLeftoverBackupName(".Hidden.app"))
+        XCTAssertFalse(RecommendPaths.isLeftoverBackupName(".DS_Store"))
+        XCTAssertFalse(RecommendPaths.isLeftoverBackupName("Visible.app"))
+
+        let root = temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let apps = root.appendingPathComponent("Applications")
+        try makeApp(apps.appendingPathComponent("Visible.app"), bundleId: "org.visible", name: "Visible", extra: [:])
+        try makeApp(apps.appendingPathComponent(".isenough-original-abc.app"), bundleId: "org.visible", name: "Visible", extra: [:])
+        try Data(repeating: 1, count: 256 * 1024).write(to: apps.appendingPathComponent(".isenough-original-abc.app/Contents/MacOS/payload"))
+        try makeApp(apps.appendingPathComponent("Visible.256orig.app"), bundleId: "org.visible", name: "Visible", extra: [:])
+        try makeApp(apps.appendingPathComponent(".256isenough-staging/txid/Visible.app"), bundleId: "org.visible", name: "Visible", extra: [:])
+        try makeApp(apps.appendingPathComponent(".Hidden.app"), bundleId: "org.hidden", name: "Hidden", extra: [:])
+        try Data("note".utf8).write(to: apps.appendingPathComponent(".DS_Store"))
+
+        let environment = RecommendEnvironment(
+            roots: [apps],
+            scanDeadline: Date().addingTimeInterval(30),
+            now: now
+        )
+        let found = RecommendDiscovery.collect(environment: environment, catalog: RecommendCatalog(packedBundleIds: ["org.visible", "org.hidden"]))
+        XCTAssertEqual(found.map(\.bundleId), ["org.visible"])
+        let visiblePath = apps.appendingPathComponent("Visible.app").standardizedFileURL.path
+        XCTAssertEqual(found.map(\.path), [visiblePath])
+        let ranked = RecommendRanking.rank(found, options: RecommendOptions(minSizeBytes: 1, now: now))
+        XCTAssertTrue(ranked.recommendations.isEmpty)
+        XCTAssertEqual(ranked.warnings.map(\.path), [visiblePath])
+        XCTAssertEqual(ranked.warnings.first?.warnings, ["alreadyPacked"])
+
+        let leftovers = RecommendDiscovery.leftovers(environment: environment)
+        XCTAssertEqual(Set(leftovers.map(\.path)), Set([
+            apps.appendingPathComponent(".256isenough-staging").standardizedFileURL.path,
+            apps.appendingPathComponent(".isenough-original-abc.app").standardizedFileURL.path,
+            apps.appendingPathComponent("Visible.256orig.app").standardizedFileURL.path,
+        ]))
+        let original = try XCTUnwrap(leftovers.first { $0.path.hasSuffix(".isenough-original-abc.app") })
+        XCTAssertGreaterThan(original.sizeBytes, 200 * 1024)
+        XCTAssertFalse(original.sizeIncomplete)
+
+        var engine = IsenoughEngine(config: RuntimeConfig(repoPath: root.appendingPathComponent("repo").path, cacheDir: root.appendingPathComponent("cache").path, stateDir: root.appendingPathComponent("state").path, mountRoot: root.appendingPathComponent("mounts").path, stubDir: apps.path), secrets: MemorySecretStore())
+        engine.recommendEnvironment = environment
+        let report = engine.recommend(options: RecommendOptions(minSizeBytes: 1, now: now))
+        XCTAssertEqual(report.recommendations.map(\.bundleId), ["org.visible"])
+        XCTAssertTrue(report.warnings.isEmpty)
+        XCTAssertEqual(report.leftovers.count, 3)
+        XCTAssertFalse(report.recommendations.contains { $0.path.contains(".isenough-original-") || $0.path.hasSuffix(".256orig.app") || $0.path.contains(".Hidden") })
+        XCTAssertTrue(report.text().contains("3 leftover backups"))
+        XCTAssertTrue(report.text().contains("can be removed"))
+        XCTAssertTrue(report.text().contains(".256isenough-staging"))
+        XCTAssertFalse(report.text().contains(".Hidden.app"))
+        XCTAssertFalse(report.text().contains(".DS_Store"))
+        let response = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/recommend", query: ["minSize": "1"], headers: [:], body: Data()))
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        XCTAssertEqual((object["leftoverBackups"] as? [[String: Any]])?.count, 3)
+        XCTAssertEqual((object["warnings"] as? [[String: Any]])?.count, 0)
+        XCTAssertEqual((object["recommendations"] as? [[String: Any]])?.count, 1)
     }
 
     func testEngineUsesInjectedScanAndCatalog() throws {
