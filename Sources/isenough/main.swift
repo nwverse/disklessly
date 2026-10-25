@@ -20,7 +20,8 @@ func usage() -> Never {
       ui | hooks list|enable|disable APP | doctor | version
     Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
       ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,
-      ISENOUGH_QUOTA_BYTES, ISENOUGH_MIN_FREE_BYTES, ISENOUGH_SIGN_IDENTITY
+      ISENOUGH_QUOTA_BYTES, ISENOUGH_MIN_FREE_BYTES, ISENOUGH_SIGN_IDENTITY,
+      ISENOUGH_DOCTOR_TIMEOUT
     """)
     exit(0)
 }
@@ -95,8 +96,14 @@ do {
     case "evict": guard let n=args.first else { throw IsenoughError.usage("evict requires app") }; try engine.evict(find(n)); emit(["ok":true])
     case "gc": emit(["ok":true,"removed":[] as [String],"recovered":try engine.gc()])
     case "doctor":
-        if args.first == "--fix" { _ = try engine.gc() }
-        emit(engine.doctor())
+        let fixing = args.first == "--fix"
+        let report = engine.doctor(fix: fixing) { check in
+            guard !json else { return }
+            fputs(DoctorFormatting.line(check) + "\n", stdout)
+            fflush(stdout)
+        }
+        if json { emit(report) }
+        exit((report["ok"] as? Bool) == true ? 0 : 1)
     case "hook":
         guard args.first == "watch" else { throw IsenoughError.usage("hook watch requires --app") }
         args.removeFirst()

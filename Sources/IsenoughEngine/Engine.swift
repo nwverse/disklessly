@@ -148,6 +148,9 @@ public struct IsenoughEngine {
     public var secrets: any SecretStore
     public var shareOpener: ShareOpener
     public var backendOverride: (any StorageBackend)?
+    /// Replaces `FileManager.fileExists` for the repository path. Tests use this to
+    /// prove a stuck probe cannot block `doctor`. Production leaves it nil.
+    var doctorRepositoryProbe: ((String) -> Bool)?
     public init(config: RuntimeConfig, services: RestoreServices? = nil, faults: FaultController? = nil, secrets: (any SecretStore)? = nil, shareOpener: ShareOpener = .system) {
         self.config=config
         let faults=faults ?? FaultController()
@@ -312,9 +315,10 @@ public struct IsenoughEngine {
         restore.loadConfiguredFaults()
         return try restore.recoverAll(shortLived: true)
     }
-    public func doctor() -> [String: Any] {
-        let issues=restore.diagnose()
-        return ["ok": issues.isEmpty, "platform": ProcessInfo.processInfo.operatingSystemVersionString, "repo": FileManager.default.fileExists(atPath: config.repoPath), "issues": issues]
+    /// Each check is bounded. `onCheck` runs on the caller as soon as that check finishes,
+    /// so a stuck iCloud `fileExists` cannot hide every later result.
+    public func doctor(checkTimeout: TimeInterval = DoctorLimits.timeout(), fix: Bool = false, onCheck: (([String: Any]) -> Void)? = nil) -> [String: Any] {
+        Doctor.run(engine: self, checkTimeout: checkTimeout, fix: fix, onCheck: onCheck)
     }
     public func resolve(_ manifest: ImageManifest, keepUpdated: Bool, trust: Bool, export: String?, discard: Bool) throws {
         guard let record=restore.needsResolution(manifest.bundleId), let path=record["retainedPath"] as? String, let tree=record["treeHash"] as? String else {
