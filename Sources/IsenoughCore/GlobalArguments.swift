@@ -126,3 +126,114 @@ public struct UnpackArguments: Equatable {
         return UnpackArguments(app: app, directory: directory)
     }
 }
+
+public struct SessionsArguments: Equatable {
+    public enum Command: Equatable { case tier, search, restore, reindex, migrate, verify, keyInit, keyStatus }
+    public var command: Command
+    public var apply: Bool
+    public var days: Int?
+    public var home: String?
+    public var encrypt: Bool
+    public var query: String?
+    public var limit: Int?
+    public var to: String?
+    public var legacy: Bool
+
+    public init(command: Command, apply: Bool = false, days: Int? = nil, home: String? = nil, encrypt: Bool = false, query: String? = nil, limit: Int? = nil, to: String? = nil, legacy: Bool = false) {
+        self.command = command
+        self.apply = apply
+        self.days = days
+        self.home = home
+        self.encrypt = encrypt
+        self.query = query
+        self.limit = limit
+        self.to = to
+        self.legacy = legacy
+    }
+
+    public static func parse(_ args: [String]) throws -> SessionsArguments {
+        var rest = args
+        func value(_ flag: String) throws -> String {
+            guard let next = rest.first, !next.hasPrefix("-") else { throw IsenoughError.usage("invalid \(flag)") }
+            rest.removeFirst()
+            return next
+        }
+        guard let head = rest.first else { return SessionsArguments(command: .tier) }
+        if head.hasPrefix("-") {
+            var apply = false
+            var days: Int?
+            var home: String?
+            var encrypt = false
+            while let flag = rest.first {
+                rest.removeFirst()
+                switch flag {
+                case "--apply": apply = true
+                case "--encrypt": encrypt = true
+                case "--days":
+                    let raw = try value("--days")
+                    guard let number = Int(raw) else { throw IsenoughError.usage("invalid --days \(raw)") }
+                    days = number
+                case "--home": home = try value("--home")
+                default: throw IsenoughError.usage("unknown sessions option \(flag)")
+                }
+            }
+            return SessionsArguments(command: .tier, apply: apply, days: days, home: home, encrypt: encrypt)
+        }
+        rest.removeFirst()
+        switch head {
+        case "search":
+            var limit: Int?
+            var words: [String] = []
+            while let token = rest.first {
+                rest.removeFirst()
+                if token == "--limit" {
+                    let raw = try value("--limit")
+                    guard let number = Int(raw), number > 0 else { throw IsenoughError.usage("invalid --limit \(raw)") }
+                    limit = number
+                } else if token.hasPrefix("-") {
+                    throw IsenoughError.usage("unknown sessions option \(token)")
+                } else {
+                    words.append(token)
+                }
+            }
+            guard !words.isEmpty else { throw IsenoughError.usage("sessions search requires a query") }
+            return SessionsArguments(command: .search, query: words.joined(separator: " "), limit: limit)
+        case "restore":
+            guard let query = rest.first, !query.hasPrefix("-") else { throw IsenoughError.usage("sessions restore requires an id or path") }
+            rest.removeFirst()
+            var to: String?
+            while let flag = rest.first {
+                rest.removeFirst()
+                if flag == "--to" { to = try value("--to") }
+                else { throw IsenoughError.usage("unknown sessions option \(flag)") }
+            }
+            return SessionsArguments(command: .restore, query: query, to: to)
+        case "reindex":
+            guard rest.isEmpty else { throw IsenoughError.usage("unknown sessions option \(rest[0])") }
+            return SessionsArguments(command: .reindex)
+        case "migrate":
+            guard rest.isEmpty else { throw IsenoughError.usage("unknown sessions option \(rest[0])") }
+            return SessionsArguments(command: .migrate)
+        case "verify":
+            var legacy = false
+            while let flag = rest.first {
+                rest.removeFirst()
+                if flag == "--legacy" { legacy = true }
+                else { throw IsenoughError.usage("unknown sessions option \(flag)") }
+            }
+            guard legacy else { throw IsenoughError.usage("sessions verify requires --legacy") }
+            return SessionsArguments(command: .verify, legacy: true)
+        case "key":
+            guard let action = rest.first else { throw IsenoughError.usage("sessions key requires init or status") }
+            rest.removeFirst()
+            guard rest.isEmpty else { throw IsenoughError.usage("unknown sessions option \(rest[0])") }
+            switch action {
+            case "init": return SessionsArguments(command: .keyInit)
+            case "status": return SessionsArguments(command: .keyStatus)
+            default: throw IsenoughError.usage("unknown sessions key command \(action)")
+            }
+        default:
+            throw IsenoughError.usage("unknown sessions command \(head)")
+        }
+    }
+}

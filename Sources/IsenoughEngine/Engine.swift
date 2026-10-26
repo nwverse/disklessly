@@ -29,10 +29,15 @@ public struct RuntimeConfig: Codable {
     public var sessionRoots: [SessionRoot] = []
     /// Home used to build the built-in session roots. Overrides `$HOME` when set. `--home` overrides this.
     public var sessionHome: String? = nil
+    public var sessionSegmentMaxBytes: UInt64 = 64 * 1024 * 1024
+    public var sessionSoloBytes: UInt64 = 8 * 1024 * 1024
+    public var sessionMaxFileBytes: UInt64 = 512 * 1024 * 1024
+    /// `off` or `aes-gcm`. Schema stays `config/1`.
+    public var sessionEncryption: String = "off"
     public init(repoPath: String, cacheDir: String, stateDir: String, mountRoot: String, stubDir: String) { self.repoPath=repoPath; self.cacheDir=cacheDir; self.stateDir=stateDir; self.mountRoot=mountRoot; self.stubDir=stubDir }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, restoreImageFormat, backends, activeBackendId, signIdentity, sessionColdDays, sessionRoots, sessionHome
+        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, restoreImageFormat, backends, activeBackendId, signIdentity, sessionColdDays, sessionRoots, sessionHome, sessionSegmentMaxBytes, sessionSoloBytes, sessionMaxFileBytes, sessionEncryption
     }
 
     public init(from decoder: Decoder) throws {
@@ -54,6 +59,10 @@ public struct RuntimeConfig: Codable {
         sessionColdDays = try container.decodeIfPresent(Int.self, forKey: .sessionColdDays) ?? 14
         sessionRoots = try container.decodeIfPresent([SessionRoot].self, forKey: .sessionRoots) ?? []
         sessionHome = try container.decodeIfPresent(String.self, forKey: .sessionHome)
+        sessionSegmentMaxBytes = try container.decodeIfPresent(UInt64.self, forKey: .sessionSegmentMaxBytes) ?? 64 * 1024 * 1024
+        sessionSoloBytes = try container.decodeIfPresent(UInt64.self, forKey: .sessionSoloBytes) ?? 8 * 1024 * 1024
+        sessionMaxFileBytes = try container.decodeIfPresent(UInt64.self, forKey: .sessionMaxFileBytes) ?? 512 * 1024 * 1024
+        sessionEncryption = try container.decodeIfPresent(String.self, forKey: .sessionEncryption) ?? "off"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -75,6 +84,10 @@ public struct RuntimeConfig: Codable {
         try container.encode(sessionColdDays, forKey: .sessionColdDays)
         try container.encode(sessionRoots, forKey: .sessionRoots)
         try container.encodeIfPresent(sessionHome, forKey: .sessionHome)
+        try container.encode(sessionSegmentMaxBytes, forKey: .sessionSegmentMaxBytes)
+        try container.encode(sessionSoloBytes, forKey: .sessionSoloBytes)
+        try container.encode(sessionMaxFileBytes, forKey: .sessionMaxFileBytes)
+        try container.encode(sessionEncryption, forKey: .sessionEncryption)
     }
 
     public static func environment(_ env: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory()) -> RuntimeConfig {

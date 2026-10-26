@@ -18,7 +18,9 @@ func usage() -> Never {
       pin APP | unpin APP | evict APP | evict-local | gc [--include-legacy] | cleanup-backups | restore APP | unpack APP [--to DIR]
       devices [list] | devices rename NAME | devices forget DEVICEID --yes
       backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
-      sessions [--apply] [--days N] [--home DIR] | sessions search QUERY | sessions restore ID|PATH
+      sessions [--apply] [--days N] [--home DIR] [--encrypt] | sessions search QUERY [--limit N]
+      sessions restore ID|PATH [--to PATH] | sessions reindex | sessions migrate | sessions verify [--legacy]
+      sessions key init | sessions key status
       recommend [--json] [--min-size SIZE] [--limit N] [--min-idle-days N]
       ui | hooks list|enable|disable APP | doctor | version | help
     help, --help, and -h print this text. --json keeps machine-readable output.
@@ -282,32 +284,34 @@ do {
         }
         try engine.resolve(find(name), keepUpdated: keep, trust: trust, export: export, discard: discard); emit(["ok":true])
     case "sessions":
-        var apply = false
-        var days: Int?
-        var home: String?
-        var rest = args
-        var filtered: [String] = []
-        while !rest.isEmpty {
-            let flag = rest.removeFirst()
-            if flag == "--apply" { apply = true }
-            else if flag == "--days", let raw = rest.first, let value = Int(raw) { days = value; rest.removeFirst() }
-            else if flag == "--home", let raw = rest.first { home = raw; rest.removeFirst() }
-            else { filtered.append(flag) }
-        }
-        if filtered.first == "search" {
-            let query = filtered.dropFirst().joined(separator: " ")
-            guard !query.isEmpty else { throw IsenoughError.usage("sessions search requires a query") }
-            let hits = try SessionArchive.search(config: config, query: query)
-            emit(hits.map { ["id": $0.id, "tool": $0.tool, "path": $0.path, "preview": $0.preview] })
-        } else if filtered.first == "restore" {
-            guard filtered.count >= 2 else { throw IsenoughError.usage("sessions restore requires an id or path") }
-            let path = try SessionArchive.restore(config: config, backend: engine.repo, query: filtered[1])
+        let parsed = try SessionsArguments.parse(args)
+        let secrets = engine.secrets
+        switch parsed.command {
+        case .tier:
+            let report = try SessionArchive.tier(config: config, backend: engine.repo, apply: parsed.apply, coldDays: parsed.days, home: parsed.home, isOpen: liveSessionOpen, secrets: secrets, encrypt: parsed.encrypt)
+            emit(["ok": true, "applied": report.applied, "cold": report.cold, "skipped": report.skipped.map { ["path": $0.0, "reason": $0.1] }, "keptLocal": report.keptLocal.map { ["path": $0.0, "reason": $0.1] }, "segments": report.segments])
+        case .search:
+            let hits = try SessionArchive.search(config: config, query: parsed.query ?? "")
+            let limited = parsed.limit.map { Array(hits.prefix($0)) } ?? hits
+            emit(limited.map { ["id": $0.id, "tool": $0.tool, "path": $0.path, "preview": $0.preview] })
+        case .restore:
+            let path = try SessionArchive.restore(config: config, backend: engine.repo, query: parsed.query ?? "", to: parsed.to, secrets: secrets)
             emit(["ok": true, "path": path])
-        } else if filtered.isEmpty {
-            let report = try SessionArchive.tier(config: config, backend: engine.repo, apply: apply, coldDays: days, home: home, isOpen: liveSessionOpen)
-            emit(["ok": true, "applied": report.applied, "cold": report.cold, "skipped": report.skipped.map { ["path": $0.0, "reason": $0.1] }])
-        } else {
-            throw IsenoughError.usage("Unknown sessions command: \(filtered[0])")
+        case .reindex:
+            let added = try SessionArchive.reindex(config: config, backend: engine.repo, secrets: secrets)
+            emit(["ok": true, "added": added])
+        case .migrate:
+            _ = try SessionArchive.search(config: config, query: " ")
+            emit(["ok": true, "migrated": FileManager.default.fileExists(atPath: URL(fileURLWithPath: config.stateDir).appendingPathComponent("sessions-index.json.migrated-v2").path)])
+        case .verify:
+            let missing = try SessionArchive.verifyLegacy(config: config, backend: engine.repo)
+            emit(["ok": true, "missing": missing])
+        case .keyInit:
+            let id = try SessionArchive.createSessionKey(secrets: secrets)
+            emit(["ok": true, "keyId": id])
+        case .keyStatus:
+            guard let id = try SessionArchive.sessionKeyId(secrets: secrets) else { throw IsenoughError.usage("no session key; run isenough sessions key init") }
+            emit(["ok": true, "keyId": id])
         }
     case "backend":
         guard let sub = args.first else { throw IsenoughError.usage("backend requires add, list, or use") }

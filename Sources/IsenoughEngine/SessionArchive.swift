@@ -1,17 +1,24 @@
 import Foundation
 import IsenoughCore
+import IsenoughSessions
 
 public struct SessionReport: Equatable {
     public var cold: [String]
     public var skipped: [(String, String)]
     public var applied: Bool
-    public init(cold: [String], skipped: [(String, String)], applied: Bool) {
+    public var keptLocal: [(String, String)]
+    public var segments: [String]
+    public init(cold: [String], skipped: [(String, String)], applied: Bool, keptLocal: [(String, String)] = [], segments: [String] = []) {
         self.cold = cold
         self.skipped = skipped
         self.applied = applied
+        self.keptLocal = keptLocal
+        self.segments = segments
     }
     public static func == (lhs: SessionReport, rhs: SessionReport) -> Bool {
-        lhs.cold == rhs.cold && lhs.applied == rhs.applied && lhs.skipped.elementsEqual(rhs.skipped, by: { $0.0 == $1.0 && $0.1 == $1.1 })
+        lhs.cold == rhs.cold && lhs.applied == rhs.applied && lhs.segments == rhs.segments
+            && lhs.skipped.elementsEqual(rhs.skipped, by: { $0.0 == $1.0 && $0.1 == $1.1 })
+            && lhs.keptLocal.elementsEqual(rhs.keptLocal, by: { $0.0 == $1.0 && $0.1 == $1.1 })
     }
 }
 
@@ -100,7 +107,7 @@ public enum SessionArchive {
 
     /// Without `apply`, nothing is uploaded or deleted. The first run is a dry run
     /// unless the caller passes `apply: true`.
-    public static func tier(config: RuntimeConfig, backend: any StorageBackend, now: Date = Date(), apply: Bool = false, coldDays: Int? = nil, home: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment, isOpen: (String) -> Bool = { _ in false }) throws -> SessionReport {
+    public static func tier(config: RuntimeConfig, backend: any StorageBackend, now: Date = Date(), apply: Bool = false, coldDays: Int? = nil, home: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment, isOpen: (String) -> Bool = { _ in false }, secrets: (any SecretStore)? = nil, encrypt: Bool = false, beforeDelete: ((String) -> Void)? = nil, afterIndexCommit: (() throws -> Void)? = nil) throws -> SessionReport {
         let days = coldDays ?? config.sessionColdDays
         let roots = configuredRoots(config: config, home: home, environment: environment)
         let candidates = try scan(roots: roots, isOpen: isOpen)
@@ -112,25 +119,34 @@ public enum SessionArchive {
         if !outside.isEmpty {
             throw IsenoughError.usage("refusing to apply session tiering; candidate is outside the configured roots: \(outside.sorted().joined(separator: ", "))")
         }
-        var index = try loadIndex(config.stateDir)
-        let groups = Dictionary(grouping: cold) { SessionTiering.archivePath(tool: $0.tool, month: SessionTiering.monthKey($0.modified)) }
-        for (archive, files) in groups {
-            try publish(archive: archive, files: files, backend: backend, index: &index)
-            for file in files {
-                if FileManager.default.fileExists(atPath: file.path) {
-                    try FileManager.default.removeItem(atPath: file.path)
-                }
-            }
-        }
-        try saveIndex(index, stateDir: config.stateDir)
-        return SessionReport(cold: cold.map(\.path), skipped: skipped, applied: true)
+        return try SessionTierV2.apply(config: config, backend: backend, now: now, cold: cold, skipped: skipped, secrets: secrets, encrypt: encrypt, isOpen: isOpen, beforeDelete: beforeDelete, afterIndexCommit: afterIndexCommit)
     }
 
     public static func search(config: RuntimeConfig, query: String) throws -> [SessionIndexEntry] {
-        try loadIndex(config.stateDir).search(query)
+        try SessionTierV2.search(config: config, query: query)
     }
 
-    public static func restore(config: RuntimeConfig, backend: any StorageBackend, query: String) throws -> String {
+    public static func restore(config: RuntimeConfig, backend: any StorageBackend, query: String, to: String? = nil, secrets: (any SecretStore)? = nil) throws -> String {
+        try SessionTierV2.restore(config: config, backend: backend, query: query, to: to, secrets: secrets)
+    }
+
+    public static func reindex(config: RuntimeConfig, backend: any StorageBackend, secrets: any SecretStore) throws -> Int {
+        try SessionTierV2.reindex(config: config, backend: backend, secrets: secrets)
+    }
+
+    public static func verifyLegacy(config: RuntimeConfig, backend: any StorageBackend) throws -> [String] {
+        try SessionTierV2.verifyLegacy(config: config, backend: backend)
+    }
+
+    public static func createSessionKey(secrets: any SecretStore) throws -> String {
+        try SessionKeyStore.create(secrets: secrets)
+    }
+
+    public static func sessionKeyId(secrets: any SecretStore) throws -> String? {
+        try SessionKeyStore.currentKeyId(secrets: secrets)
+    }
+
+    public static func restoreLegacy(config: RuntimeConfig, backend: any StorageBackend, query: String) throws -> String {
         let index = try loadIndex(config.stateDir)
         let matches = index.matches(query)
         guard let entry = matches.first else { throw IsenoughError.usage("no cold session matches \(query)") }
@@ -157,7 +173,8 @@ public enum SessionArchive {
         return restoredPath
     }
 
-    private static func publish(archive: String, files: [SessionCandidate], backend: any StorageBackend, index: inout SessionIndex) throws {
+    /// v1 monthly tar.gz writer. New tiering never calls this. Migration tests use it to seed an old archive.
+    public static func publishLegacy(archive: String, files: [SessionCandidate], backend: any StorageBackend, index: inout SessionIndex) throws {
         let staging = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-pack-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: staging) }
@@ -195,7 +212,7 @@ public enum SessionArchive {
         }
     }
 
-    private static func run(_ path: String, _ arguments: [String]) throws {
+    static func run(_ path: String, _ arguments: [String]) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = arguments

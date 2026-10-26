@@ -25,7 +25,8 @@ public final class FaultyBackend: StorageBackend {
 
     private func hits(_ set: Set<String>, _ path: String) -> Bool {
         set.contains { prefix in
-            path == prefix || path.hasPrefix(prefix + "/")
+            let directory = prefix.hasSuffix("/") ? String(prefix.dropLast()) : prefix
+            return path == prefix || path == directory || path.hasPrefix(directory + "/")
         }
     }
 

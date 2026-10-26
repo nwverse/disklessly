@@ -2,6 +2,29 @@ import CSQLite
 import Foundation
 import IsenoughCore
 
+public struct SessionSegmentRow: Equatable {
+    public var id: String
+    public var path: String
+    public var deviceId: String
+    public var tool: String
+    public var createdAt: String
+    public var bytes: Int64
+    public var codec: String
+    public var encrypted: Bool
+    public var keyId: String?
+    public init(id: String, path: String, deviceId: String, tool: String, createdAt: String, bytes: Int64, codec: String, encrypted: Bool, keyId: String?) {
+        self.id = id
+        self.path = path
+        self.deviceId = deviceId
+        self.tool = tool
+        self.createdAt = createdAt
+        self.bytes = bytes
+        self.codec = codec
+        self.encrypted = encrypted
+        self.keyId = keyId
+    }
+}
+
 public struct SessionEntryRow: Equatable {
     public var id: String
     public var segmentId: String?
@@ -95,6 +118,106 @@ public final class SessionIndexDB {
             try? exec("ROLLBACK")
             throw error
         }
+    }
+
+    public func allEntries() throws -> [SessionEntryRow] {
+        let sql = "SELECT id, segment_id, legacy_archive, member, device_id, tool, path, sha256, size, mtime_ns, ino, preview, archived_at, state FROM entries"
+        let statement = try prepare(sql)
+        defer { sqlite3_finalize(statement) }
+        var rows: [SessionEntryRow] = []
+        while sqlite3_step(statement) == SQLITE_ROW {
+            rows.append(read(statement))
+        }
+        return rows
+    }
+
+    public func segmentPaths() throws -> [String: String] {
+        let statement = try prepare("SELECT id, path FROM segments")
+        defer { sqlite3_finalize(statement) }
+        var paths: [String: String] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            guard let id = sqlite3_column_text(statement, 0), let path = sqlite3_column_text(statement, 1) else { continue }
+            paths[String(cString: id)] = String(cString: path)
+        }
+        return paths
+    }
+
+    public func setState(id: String, state: String) throws {
+        try exec("BEGIN IMMEDIATE")
+        do {
+            let statement = try prepare("UPDATE entries SET state = ? WHERE id = ?")
+            defer { sqlite3_finalize(statement) }
+            bind(statement, 1, state)
+            bind(statement, 2, id)
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw IsenoughError.failure("session index update failed: \(message())")
+            }
+            try exec("COMMIT")
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
+    }
+
+    public func hasEntry(id: String) throws -> Bool {
+        let statement = try prepare("SELECT 1 FROM entries WHERE id = ?")
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, id)
+        return sqlite3_step(statement) == SQLITE_ROW
+    }
+
+    public func commit(segment: SessionSegmentRow, entries: [SessionEntryRow]) throws {
+        try exec("BEGIN IMMEDIATE")
+        do {
+            let statement = try prepare("""
+            INSERT INTO segments(id, path, device_id, tool, created_at, bytes, codec, encrypted, key_id)
+            VALUES(?,?,?,?,?,?,?,?,?)
+            """)
+            defer { sqlite3_finalize(statement) }
+            bind(statement, 1, segment.id)
+            bind(statement, 2, segment.path)
+            bind(statement, 3, segment.deviceId)
+            bind(statement, 4, segment.tool)
+            bind(statement, 5, segment.createdAt)
+            bind(statement, 6, segment.bytes)
+            bind(statement, 7, segment.codec)
+            bind(statement, 8, segment.encrypted ? Int64(1) : 0)
+            bind(statement, 9, segment.keyId)
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw IsenoughError.failure("session segment insert failed: \(message())")
+            }
+            for entry in entries {
+                try insertOne(entry)
+            }
+            try exec("COMMIT")
+        } catch {
+            try? exec("ROLLBACK")
+            throw error
+        }
+    }
+
+    private func read(_ statement: OpaquePointer?) -> SessionEntryRow {
+        func text(_ index: Int32) -> String? {
+            guard let raw = sqlite3_column_text(statement, index) else { return nil }
+            return String(cString: raw)
+        }
+        let ino: Int64? = sqlite3_column_type(statement, 10) == SQLITE_NULL ? nil : sqlite3_column_int64(statement, 10)
+        return SessionEntryRow(
+            id: text(0) ?? "",
+            segmentId: text(1),
+            legacyArchive: text(2),
+            member: text(3) ?? "",
+            deviceId: text(4) ?? "",
+            tool: text(5) ?? "",
+            path: text(6) ?? "",
+            sha256: text(7) ?? "",
+            size: sqlite3_column_int64(statement, 8),
+            mtimeNs: sqlite3_column_int64(statement, 9),
+            ino: ino,
+            preview: text(11) ?? "",
+            archivedAt: text(12) ?? "",
+            state: text(13) ?? ""
+        )
     }
 
     public func search(query: String, limit: Int) throws -> [String] {
