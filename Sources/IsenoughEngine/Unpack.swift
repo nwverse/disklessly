@@ -15,6 +15,16 @@ extension IsenoughEngine {
         }
     }
 
+    /// Replay local unpack and restore journals. `doctor --fix` calls this.
+    /// Remote trash, legacy purge, and cache LRU stay on `gc`.
+    @discardableResult
+    public func recoverLocalJournals() throws -> [String] {
+        var lines = try recoverUnpackJournals()
+        restore.loadConfiguredFaults()
+        lines.append(contentsOf: try restore.recoverAll(shortLived: true))
+        return lines
+    }
+
     /// Replay open unpack journals. `gc` and the start of `unpack` both call this.
     /// A journal already marked `needsAttention` is left untouched.
     @discardableResult

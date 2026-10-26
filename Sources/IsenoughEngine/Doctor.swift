@@ -73,7 +73,7 @@ enum Doctor {
         }
 
         if fix {
-            switch bound(seconds: seconds, { try engine.gc() }) {
+            switch bound(seconds: seconds, { try engine.recoverLocalJournals() }) {
             case .value(let notes):
                 record("fix", "ok", notes.isEmpty ? "no open journals" : notes.joined(separator: " | "))
             case .failure(let message):

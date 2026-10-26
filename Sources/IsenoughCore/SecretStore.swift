@@ -90,6 +90,8 @@ public final class KeychainSecretStore: SecretStore {
         var add = query
         add[kSecValueData as String] = Data(secret.utf8)
         add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
+        // Session keys pass synchronizable: true and become iCloud Keychain items.
+        // Backend passwords use save() and do not set this attribute.
         if synchronizable {
             add[kSecAttrSynchronizable as String] = kCFBooleanTrue
         }

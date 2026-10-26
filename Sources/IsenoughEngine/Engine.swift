@@ -611,9 +611,15 @@ public struct IsenoughEngine {
         return lines
     }
 
-    /// Drop cached images until `quotaBytes` holds. `justUsed` is evicted last, and never when it alone exceeds the quota.
-    @discardableResult
-    public func enforceCacheQuota(justUsed: String?, now: Date = Date()) throws -> (plan: EvictionPlan, lines: [String]) {
+    struct CacheScan {
+        var items: [CacheItem]
+        var leftovers: [(path: String, bytes: UInt64)]
+        var recorded: [String: UInt64]
+        var fingers: [String: FileFingerprint]
+    }
+
+    /// Read the cache. Does not write state or delete files.
+    func scanCache(justUsed: String?, now: Date) -> CacheScan {
         let fm = FileManager.default
         let images = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images")
         let names = (try? fm.contentsOfDirectory(atPath: images.path)) ?? []
@@ -644,20 +650,29 @@ public struct IsenoughEngine {
             #endif
             items.append(CacheItem(imageId: id, bytes: bytes, lastUsed: loaded.cache[id]?.lastUsed ?? owners.values.compactMap(\.lastUsed).max(), pinned: pinned, mounted: mounted, inUse: inUse, protectedUntil: protected, needsResolution: needs, justUsed: id == justUsed))
         }
-        if !recorded.isEmpty {
+        return CacheScan(items: items, leftovers: cacheLeftovers(now: now), recorded: recorded, fingers: fingers)
+    }
+
+    /// Drop cached images until `quotaBytes` holds. `justUsed` is evicted last, and never when it alone exceeds the quota.
+    @discardableResult
+    public func enforceCacheQuota(justUsed: String?, now: Date = Date()) throws -> (plan: EvictionPlan, lines: [String]) {
+        let fm = FileManager.default
+        let images = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images")
+        let scan = scanCache(justUsed: justUsed, now: now)
+        if !scan.recorded.isEmpty {
             try StateStore(config.stateDir).update { state in
-                for (id, bytes) in recorded {
+                for (id, bytes) in scan.recorded {
                     var entry = state.cache[id] ?? CacheEntry()
                     entry.bytes = bytes
                     state.cache[id] = entry
                 }
             }
         }
-        let leftovers = cacheLeftovers(now: now)
-        let plan = CachePlanner.planEviction(items, leftovers: leftovers, quota: config.quotaBytes, now: now)
+        let plan = CachePlanner.planEviction(scan.items, leftovers: scan.leftovers, quota: config.quotaBytes, now: now)
         if plan.shortBy > 0 {
             FileHandle.standardError.write(Data("isenough: cache still exceeds quota by \(plan.shortBy) bytes\n".utf8))
         }
+        let loaded = StateStore(config.stateDir).load()
         var lines: [String] = []
         for victim in plan.victims {
             if victim.contains("/") {
@@ -666,7 +681,7 @@ public struct IsenoughEngine {
                 continue
             }
             guard let bundleId = loaded.apps.first(where: { $0.value.imageId == victim })?.key else {
-                try deleteCacheImage(victim, bytes: recorded[victim] ?? 0, lines: &lines)
+                try deleteCacheImage(victim, bytes: scan.recorded[victim] ?? 0, lines: &lines)
                 continue
             }
             let directory = URL(fileURLWithPath: config.stateDir).appendingPathComponent("locks/app")
@@ -678,9 +693,9 @@ public struct IsenoughEngine {
             if fresh.apps[bundleId]?.pinned == true { continue }
             if fresh.apps[bundleId]?.needsResolution != nil { continue }
             let url = images.appendingPathComponent(victim + ".dmg")
-            guard let before = fingers[victim] else { continue }
+            guard let before = scan.fingers[victim] else { continue }
             guard let again = try? FileFingerprint.of(url: url), again == before else { continue }
-            try deleteCacheImage(victim, bytes: recorded[victim] ?? 0, lines: &lines)
+            try deleteCacheImage(victim, bytes: scan.recorded[victim] ?? 0, lines: &lines)
         }
         return (plan, lines)
     }

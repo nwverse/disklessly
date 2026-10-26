@@ -14,8 +14,8 @@ enum SessionTierV2 {
         let device = try LocalDeviceStore.loadOrCreate(stateDir: URL(fileURLWithPath: config.stateDir), suggestedName: "mac")
         let database = try SessionIndexDB(stateDir: config.stateDir)
         _ = try SessionMigration.migrateIfNeeded(stateDir: config.stateDir, deviceId: device.deviceId, database: database)
-        var kept = try finishPending(database: database, isOpen: isOpen)
         let store = secrets ?? MemorySecretStore()
+        var kept = try finishPending(database: database, isOpen: isOpen, backend: backend, config: config, secrets: store)
         let wantsEncryption = encrypt || config.sessionEncryption == "aes-gcm"
         let key = try encryptionKey(secrets: store, enabled: wantsEncryption)
         var extraSkipped = skipped
@@ -25,6 +25,10 @@ enum SessionTierV2 {
         for group in groups {
             let built = try SegmentWriter.build(deviceId: device.deviceId, tool: group.tool, now: now, members: group.members, key: key)
             try publish(built, backend: backend)
+            // Round-trip the stored object before the index says pendingDelete.
+            // A later finishPending settles that state, so a failed check must
+            // leave the index alone and the local file in place.
+            try verifyMembers(relative: built.relativePath, members: group.members, backend: backend, config: config, secrets: store)
             let created = SegmentWriter.createdAt(now)
             let row = SessionSegmentRow(id: built.sha256, path: built.relativePath, deviceId: device.deviceId, tool: group.tool, createdAt: created, bytes: Int64(built.stored.count), codec: built.codec, encrypted: key != nil, keyId: built.keyId)
             let entries = group.members.map { member in
@@ -213,9 +217,23 @@ enum SessionTierV2 {
         }
     }
 
-    private static func finishPending(database: SessionIndexDB, isOpen: (String) -> Bool) throws -> [(String, String)] {
+    private static func finishPending(database: SessionIndexDB, isOpen: (String) -> Bool, backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore) throws -> [(String, String)] {
         var kept: [(String, String)] = []
-        for row in try database.allEntries() where row.state == "pendingDelete" {
+        let pending = try database.allEntries().filter { $0.state == "pendingDelete" }
+        let paths = try database.segmentPaths()
+        var verified = Set<String>()
+        for row in pending where FileManager.default.fileExists(atPath: row.path) {
+            guard let segmentId = row.segmentId else {
+                throw IsenoughError.integrity("session \(row.id) has no archive; local file kept")
+            }
+            if verified.insert(segmentId).inserted {
+                guard let relative = paths[segmentId] else {
+                    throw IsenoughError.integrity("session \(row.id) has no archive; local file kept")
+                }
+                try verifyIndexedSegment(relative: relative, segmentId: segmentId, database: database, backend: backend, config: config, secrets: secrets)
+            }
+        }
+        for row in pending {
             let member = SessionMemberDraft(entryId: row.id, path: row.path, sha256: row.sha256, size: row.size, mtimeNs: row.mtimeNs, ino: row.ino ?? 0, preview: row.preview, bytes: Data(), tool: row.tool)
             if let reason = try settle(member, database: database, isOpen: isOpen, txid: String(row.id.prefix(8))) {
                 kept.append((row.path, reason))
@@ -292,26 +310,23 @@ enum SessionTierV2 {
         try place(staging.appendingPathComponent(member), sha256: sha256, tool: tool, modified: modified, destination: destination)
     }
 
+    /// Solo files may be as large as `sessionMaxFileBytes`. The tar around that
+    /// member needs a little slack past the file itself.
+    static func decompressLimit(_ config: RuntimeConfig) -> Int {
+        let slack: UInt64 = 1_048_576
+        let base = max(config.sessionSegmentMaxBytes, config.sessionMaxFileBytes)
+        let cap = base > UInt64.max - slack ? UInt64.max : base + slack
+        if cap > UInt64(Int.max) { return Int.max }
+        return Int(cap)
+    }
+
     private static func restoreSegment(_ relative: String, member: String, sha256: String, tool: String, modified: Date, destination: String, backend: any StorageBackend, config: RuntimeConfig, secrets: (any SecretStore)?) throws {
-        let downloaded = try backend.get(relative, range: nil)
-        let segmentId = SHA256Digest.hex(downloaded)
-        guard let segmentRow = try SessionIndexDB(stateDir: config.stateDir).segmentPaths()[segmentId] ?? Optional(relative), segmentRow == relative || true else {
-            throw IsenoughError.integrity("session segment hash does not match the index")
-        }
-        let database = try SessionIndexDB(stateDir: config.stateDir)
-        let known = try database.segmentPaths()
-        guard known[segmentId] == relative || known.values.contains(relative) else {
-            throw IsenoughError.integrity("session segment hash does not match the index")
-        }
-        guard SHA256Digest.hex(downloaded) == segmentId else {
-            throw IsenoughError.integrity("session segment hash does not match the index")
-        }
-        let keyring = try secrets.map { try SessionKeyStore.keyring(secrets: $0) } ?? [:]
-        let compressed = try SegmentWriter.plaintext(stored: downloaded, relativePath: relative, keyring: keyring)
-        let tar = try Zstd.decompress(compressed, maxBytes: Int(config.sessionSegmentMaxBytes) * 2)
-        let entries = try TarReader.entries(tar)
+        let entries = try openSegment(relative, backend: backend, config: config, secrets: secrets, expectIndexed: true)
         guard let found = entries.first(where: { $0.name == member }) else {
             throw IsenoughError.integrity("session member \(member) is missing from \(relative)")
+        }
+        guard SHA256Digest.hex(found.data) == sha256 else {
+            throw IsenoughError.integrity("session member \(member) hash does not match the index")
         }
         let staging = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-member-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
@@ -319,6 +334,52 @@ enum SessionTierV2 {
         let file = staging.appendingPathComponent("member")
         try found.data.write(to: file)
         try place(file, sha256: sha256, tool: tool, modified: modified, destination: destination)
+    }
+
+    /// Decrypt, decompress, and untar a stored segment. When `expectIndexed` is
+    /// set, the sha of the stored bytes must be the segment id recorded for this path.
+    private static func openSegment(_ relative: String, backend: any StorageBackend, config: RuntimeConfig, secrets: (any SecretStore)?, expectIndexed: Bool) throws -> [(name: String, data: Data)] {
+        let downloaded = try backend.get(relative, range: nil)
+        if expectIndexed {
+            let segmentId = SHA256Digest.hex(downloaded)
+            let known = try SessionIndexDB(stateDir: config.stateDir).segmentPaths()
+            guard known[segmentId] == relative else {
+                throw IsenoughError.integrity("session segment hash does not match the index")
+            }
+        }
+        let keyring = try secrets.map { try SessionKeyStore.keyring(secrets: $0) } ?? [:]
+        let compressed = try SegmentWriter.plaintext(stored: downloaded, relativePath: relative, keyring: keyring)
+        let tar = try Zstd.decompress(compressed, maxBytes: decompressLimit(config))
+        return try TarReader.entries(tar)
+    }
+
+    private static func verifyMembers(relative: String, members: [SessionMemberDraft], backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore) throws {
+        let entries = try openSegment(relative, backend: backend, config: config, secrets: secrets, expectIndexed: false)
+        for member in members {
+            let name = "m/\(member.entryId).jsonl"
+            guard let found = entries.first(where: { $0.name == name }) else {
+                throw IsenoughError.integrity("session member \(name) is missing from \(relative); local file kept")
+            }
+            guard SHA256Digest.hex(found.data) == member.sha256 else {
+                throw IsenoughError.integrity("session member \(name) hash does not match the index; local file kept")
+            }
+        }
+    }
+
+    private static func verifyIndexedSegment(relative: String, segmentId: String, database: SessionIndexDB, backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore) throws {
+        let entries = try openSegment(relative, backend: backend, config: config, secrets: secrets, expectIndexed: true)
+        let rows = try database.allEntries().filter { $0.segmentId == segmentId }
+        guard !rows.isEmpty else {
+            throw IsenoughError.integrity("session segment \(relative) has no index rows; local file kept")
+        }
+        for row in rows {
+            guard let found = entries.first(where: { $0.name == row.member }) else {
+                throw IsenoughError.integrity("session member \(row.member) is missing from \(relative); local file kept")
+            }
+            guard SHA256Digest.hex(found.data) == row.sha256 else {
+                throw IsenoughError.integrity("session member \(row.member) hash does not match the index; local file kept")
+            }
+        }
     }
 
     private static func place(_ extracted: URL, sha256: String, tool: String, modified: Date, destination: String) throws {

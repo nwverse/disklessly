@@ -55,6 +55,8 @@ public enum SessionKeyStore {
         let key = SymmetricKey(size: .bits256)
         let id = SegmentCrypto.keyId(for: key)
         let raw = key.withUnsafeBytes { Data($0) }
+        // Session keys replicate through iCloud Keychain. Encryption stays off
+        // unless `sessionEncryption` is `aes-gcm` or the CLI passes `--encrypt`.
         try secrets.save(service: service, account: "segment-key-\(id)", secret: raw.base64EncodedString(), synchronizable: true)
         try secrets.save(service: service, account: "segment-key-current", secret: id, synchronizable: true)
         return id

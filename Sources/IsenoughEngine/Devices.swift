@@ -52,6 +52,43 @@ public struct PublishResult: Equatable {
     }
 }
 
+public struct GCDryRunReport: Equatable {
+    public var trash: [String]
+    public var restoreFromTrash: [String]
+    public var purge: [String]
+    public var legacy: [String]
+    public var warnings: [String]
+    public var lru: [String]
+    public var lruFreed: UInt64
+    public var lruShortBy: UInt64
+
+    public init(trash: [String], restoreFromTrash: [String], purge: [String], legacy: [String], warnings: [String], lru: [String], lruFreed: UInt64, lruShortBy: UInt64) {
+        self.trash = trash
+        self.restoreFromTrash = restoreFromTrash
+        self.purge = purge
+        self.legacy = legacy
+        self.warnings = warnings
+        self.lru = lru
+        self.lruFreed = lruFreed
+        self.lruShortBy = lruShortBy
+    }
+
+    public func text() -> String {
+        var lines: [String] = []
+        if trash.isEmpty { lines.append("trash candidates  (none)") }
+        else { lines.append(contentsOf: trash.map { "trash candidate  \($0)" }) }
+        if legacy.isEmpty { lines.append("legacy  (none)") }
+        else { lines.append(contentsOf: legacy.map { "legacy  \($0)" }) }
+        if lru.isEmpty { lines.append("lru  (none)") }
+        else { lines.append(contentsOf: lru.map { "lru  \($0)" }) }
+        lines.append(contentsOf: restoreFromTrash.map { "restore  \($0)" })
+        lines.append(contentsOf: purge.map { "purge  \($0)" })
+        if lruShortBy > 0 { lines.append("lru short by  \(lruShortBy)") }
+        lines.append(contentsOf: warnings.map { "warning  \($0)" })
+        return lines.joined(separator: "\n") + "\n"
+    }
+}
+
 public struct MaintenanceReport: Equatable {
     public var journals: [String]
     public var trashed: [String]
@@ -252,6 +289,21 @@ extension IsenoughEngine {
         if LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId == id {
             try? FileManager.default.removeItem(at: deviceMirrorURL)
         }
+    }
+
+    /// Trash candidates, legacy ids, and cache LRU victims. Reads the repo and the cache and changes neither.
+    public func gcDryRun(now: Date = Date(), includeLegacy: Bool = false) throws -> GCDryRunReport {
+        let backend = try repo
+        let devices = try loadDeviceFacts(backend)
+        let census = try imageCensus(backend)
+        let trash = try trashFacts(backend)
+        let legacy = try loadLegacyIds(backend)
+        let selfId = LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId
+        let plan = RepoGarbage.plan(liveImageIds: census.ids, trash: trash, devices: devices, now: now, legacyImageIds: legacy, includeLegacy: includeLegacy, selfDeviceId: selfId)
+        let scan = scanCache(justUsed: nil, now: now)
+        let eviction = CachePlanner.planEviction(scan.items, leftovers: scan.leftovers, quota: config.quotaBytes, now: now)
+        let trashed = plan.trash.filter { !census.placeholders.contains($0) }
+        return GCDryRunReport(trash: trashed, restoreFromTrash: plan.restoreFromTrash, purge: plan.purge, legacy: legacy.sorted(), warnings: plan.warnings, lru: eviction.victims, lruFreed: eviction.freed, lruShortBy: eviction.shortBy)
     }
 
     public func maintain(now: Date = Date(), includeLegacy: Bool = false) throws -> MaintenanceReport {

@@ -180,6 +180,72 @@ final class SessionsV2Tests: XCTestCase {
         }
     }
 
+    func testSoloMemberLargerThanTwiceSegmentMaxRoundTrips() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-v2-solo-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = Date(timeIntervalSince1970: 1_735_689_600)
+        let body = String(repeating: "Q", count: 200)
+        let planted = try plant(root, name: "wide.jsonl", body: body, now: now)
+        var configuration = config(root, name: "state", sessions: planted.sessions)
+        configuration.sessionSegmentMaxBytes = 32
+        configuration.sessionSoloBytes = 8
+        configuration.sessionMaxFileBytes = 1_000
+        XCTAssertGreaterThan(body.utf8.count, Int(configuration.sessionSegmentMaxBytes) * 2)
+        XCTAssertLessThanOrEqual(UInt64(body.utf8.count), configuration.sessionMaxFileBytes)
+        let backend = try LocalFolderBackend(root: root.appendingPathComponent("repo"))
+        let report = try SessionArchive.tier(config: configuration, backend: backend, now: now, apply: true)
+        XCTAssertEqual(report.segments.count, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: planted.path))
+        let restored = try SessionArchive.restore(config: configuration, backend: backend, query: planted.path)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: restored)), Data(body.utf8))
+    }
+
+    func testCorruptedStoredSegmentKeepsLocalFile() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-v2-corrupt-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let now = Date(timeIntervalSince1970: 1_735_689_600)
+        let body = "keep-me\n"
+        let planted = try plant(root, name: "cold.jsonl", body: body, now: now)
+        let configuration = config(root, name: "state", sessions: planted.sessions)
+        let repo = root.appendingPathComponent("repo")
+        let inner = try LocalFolderBackend(root: repo)
+        let backend = CorruptLaterGets(inner)
+        XCTAssertThrowsError(try SessionArchive.tier(config: configuration, backend: backend, now: now, apply: true)) { error in
+            XCTAssertEqual((error as? IsenoughError)?.exitCode, 5)
+        }
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: planted.path)), Data(body.utf8))
+        XCTAssertTrue(try SessionIndexDB(stateDir: configuration.stateDir).allEntries().isEmpty)
+        XCTAssertFalse(deletingSiblingExists(planted.path))
+
+        let honest = try LocalFolderBackend(root: repo)
+        XCTAssertThrowsError(try SessionArchive.tier(config: configuration, backend: honest, now: now, apply: true, afterIndexCommit: {
+            throw IsenoughError.failure("injected")
+        }))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: planted.path))
+        let database = try SessionIndexDB(stateDir: configuration.stateDir)
+        XCTAssertEqual(try database.allEntries().map(\.state), ["pendingDelete"])
+        let segment = try XCTUnwrap(storedSegment(repo))
+        var bytes = try Data(contentsOf: segment)
+        bytes[0] ^= 0xff
+        try bytes.write(to: segment)
+        XCTAssertThrowsError(try SessionArchive.tier(config: configuration, backend: honest, now: now, apply: true)) { error in
+            XCTAssertEqual((error as? IsenoughError)?.exitCode, 5)
+        }
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: planted.path)), Data(body.utf8))
+        XCTAssertEqual(try database.allEntries().map(\.state), ["pendingDelete"])
+        XCTAssertFalse(deletingSiblingExists(planted.path))
+    }
+
+    func testSessionKeysRequestSynchronizableKeychainAndEncryptionStaysOff() throws {
+        let secrets = MemorySecretStore()
+        let id = try SessionKeyStore.create(secrets: secrets)
+        let service = SessionKeyStore.service
+        XCTAssertEqual(secrets.synchronizable["\(service)\u{0}segment-key-\(id)"], true)
+        XCTAssertEqual(secrets.synchronizable["\(service)\u{0}segment-key-current"], true)
+        let config = RuntimeConfig(repoPath: "/tmp/repo", cacheDir: "/tmp/cache", stateDir: "/tmp/state", mountRoot: "/tmp/mnt", stubDir: "/tmp/apps")
+        XCTAssertEqual(config.sessionEncryption, "off")
+    }
+
     func testSessionsLockBusy() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-v2-lock-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: root) }
@@ -225,6 +291,21 @@ final class SessionsV2Tests: XCTestCase {
         return config
     }
 
+    private func storedSegment(_ repo: URL) throws -> URL? {
+        guard let enumerator = FileManager.default.enumerator(at: repo, includingPropertiesForKeys: nil) else { return nil }
+        for case let url as URL in enumerator where url.lastPathComponent.contains(".tar.zst") {
+            return url
+        }
+        return nil
+    }
+
+    private func deletingSiblingExists(_ path: String) -> Bool {
+        let parent = URL(fileURLWithPath: path).deletingLastPathComponent()
+        let prefix = URL(fileURLWithPath: path).lastPathComponent + ".isenough-deleting-"
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: parent.path)) ?? []
+        return names.contains { $0.hasPrefix(prefix) }
+    }
+
     private func plaintextHits(_ root: URL, needles: [String]) throws -> [String] {
         guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: nil) else { return [] }
         var hits: [String] = []
@@ -235,4 +316,26 @@ final class SessionsV2Tests: XCTestCase {
         }
         return hits
     }
+}
+
+/// The first get of a segment is the write-once hash check. Later gets are the
+/// pre-delete round trip, and those bytes are flipped.
+private final class CorruptLaterGets: StorageBackend {
+    let inner: LocalFolderBackend
+    var gets: [String: Int] = [:]
+    init(_ inner: LocalFolderBackend) { self.inner = inner }
+    func list(_ path: String) throws -> [String] { try inner.list(path) }
+    func stat(_ path: String) throws -> BackendStat? { try inner.stat(path) }
+    func get(_ path: String, range: Range<UInt64>?) throws -> Data {
+        let data = try inner.get(path, range: range)
+        let count = (gets[path] ?? 0) + 1
+        gets[path] = count
+        guard path.contains(".tar.zst"), count >= 2, !data.isEmpty else { return data }
+        var flipped = data
+        flipped[0] ^= 0xff
+        return flipped
+    }
+    func put(_ path: String, data: Data) throws { try inner.put(path, data: data) }
+    func delete(_ path: String) throws { try inner.delete(path) }
+    func localRoot() -> URL? { inner.localRoot() }
 }

@@ -15,14 +15,16 @@ func usage() -> Never {
       pack APP.app [--mode mount|restore] [--image-format ULMO|ULFO] [--no-stub] [--keep-original] [--stub-dir DIR]
       install-engine | stub refresh --app ID | stub rebuild APP | icons backfill [--app ID]
       list | status [APP] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
-      pin APP | unpin APP | evict APP | evict-local | gc [--include-legacy] | cleanup-backups | restore APP | unpack APP [--to DIR]
+      pin APP | unpin APP | evict APP | evict-local | gc [--dry-run] [--include-legacy] | cleanup-backups | restore APP | unpack APP [--to DIR]
       devices [list] | devices rename NAME | devices forget DEVICEID --yes
       backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
       sessions [--apply] [--days N] [--home DIR] [--encrypt] | sessions search QUERY [--limit N]
       sessions restore ID|PATH [--to PATH] | sessions reindex | sessions migrate | sessions verify [--legacy]
       sessions key init | sessions key status
       recommend [--json] [--all] [--min-size SIZE] [--limit N] [--min-idle-days N]
-      ui | hooks list|enable|disable APP | doctor | version | help
+      ui | hooks list|enable|disable APP | doctor [--fix] | version | help
+    doctor --fix replays local unpack and restore journals only. It does not run remote gc or cache LRU.
+    gc --dry-run prints trash candidates, legacy images, and cache LRU victims and does not delete or move anything.
     help, --help, and -h print this text. --json is accepted before or after the command.
     Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
       ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,
@@ -201,11 +203,22 @@ do {
         emit(["ok":true,"removed":cleaned.removed,"kept":cleaned.kept])
     case "gc":
         var includeLegacy = false
+        var dryRun = false
         while let flag = args.first {
             args.removeFirst()
             if flag == "--include-legacy" { includeLegacy = true }
+            else if flag == "--dry-run" { dryRun = true }
             else if flag == "--help" || flag == "-h" { usage() }
             else { throw IsenoughError.usage("Unknown option: \(flag)") }
+        }
+        if dryRun {
+            let plan = try engine.gcDryRun(includeLegacy: includeLegacy)
+            if json {
+                emit(["ok": true, "dryRun": true, "trash": plan.trash, "restore": plan.restoreFromTrash, "purge": plan.purge, "legacy": plan.legacy, "lru": plan.lru, "warnings": plan.warnings])
+            } else {
+                print(plan.text(), terminator: "")
+            }
+            break
         }
         let report = try engine.maintain(includeLegacy: includeLegacy)
         if json {
@@ -348,6 +361,7 @@ do {
             throw IsenoughError.usage("Unknown backend command: \(sub)")
         }
     case "icons":
+        if args.contains("--help") || args.contains("-h") { usage() }
         let parsed = try IconsArguments.parse(args)
         let report = try engine.backfillIcons(appId: parsed.app)
         for warning in report.warnings { fputs("isenough: \(warning)\n", stderr) }
