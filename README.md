@@ -17,7 +17,7 @@ swift test
 docker run --rm -v "$PWD":/src -w /src swift:6.1 swift test
 ```
 
-On macOS install Xcode Command Line Tools and build with Swift 5.9+ / Swift 6. The `isenough-stub`
+On Linux install `libsqlite3-dev` and `g++` before `swift test`. Session tiering links the system SQLite library, and swift-crypto compiles a C++ file that needs the standard library. On macOS install Xcode Command Line Tools and build with Swift 5.9+ / Swift 6. The `isenough-stub`
 product is copied into a generated stub and ad-hoc signed; a Developer ID signing flow is not yet provided.
 GUI recipe: `scripts/build-gui.sh` (Pake; see `gui/README.md`). Pake is GPL-3.0 and generated app distribution
 needs a licensing decision. This repository's own code is MIT (`LICENSE`).
@@ -43,9 +43,11 @@ copy this `isenough` binary to `<stateDir>/bin/isenough` and write `isenough.sta
 
 - `isenough init [--backend local|icloud] [--root DIR] [--cache-dir DIR]`: initialize repo and paths. `--backend` is stored in `config.json` and shown by `status`.
 - `isenough install-engine`: refresh `<stateDir>/bin/isenough` and `isenough.stamp` from the binary you just ran.
-- `isenough pack APP.app [--mode mount|restore] [--no-stub] [--keep-original] [--stub-dir DIR]`: on macOS,
-  create an ULMO image, hash it, publish manifest, and optionally replace the app with a signed stub.
-  The stub's `isenoughPath` is the stable engine copy, not the build-tree path.
+- `isenough pack APP.app [--mode mount|restore] [--image-format ULMO|ULFO] [--no-stub] [--keep-original] [--stub-dir DIR]`: on macOS,
+  create a disk image, hash it, publish the manifest, and optionally replace the app with a signed stub.
+  Mount mode publishes ULMO. Restore mode uses `--image-format` when it is set, otherwise `restoreImageFormat` (default ULMO, env `ISENOUGH_RESTORE_IMAGE_FORMAT`).
+  The format is not part of the image id. `UDZO` is rejected. The stub's `isenoughPath` is the stable engine copy, not the build-tree path.
+  When the shared image is missing or its cloud copy is not confirmed, pack refuses (exit 5) or keeps the original and prints `originalKept`. It does not replace an app with a stub until a verified image exists.
 - `isenough stub refresh --app ID`: rewrite installed stubs so they exec that stable engine, and re-sign them on macOS. `stub rebuild` is still a placeholder.
 - `isenough list [--json]`: list manifests.
 - `isenough status [APP] [--json]`: local paths and state summary, including the stored `backend`.
@@ -60,7 +62,10 @@ copy this `isenough` binary to `<stateDir>/bin/isenough` and write `isenough.sta
 - `isenough evict-local`: drop the local bytes of repo images that iCloud has fully uploaded, leaving the cloud copy in place. A file that is still uploading, mounted, or needed before the detach delay is left alone. "Cannot evict yet" is reported and is not an error. When iCloud does not report whether the upload finished, the line says `upload status is unavailable` instead of treating that as an unfinished upload, and it includes the upload percent when iCloud provides one. `pack` and `gc` run the same pass.
 - `isenough gc [--include-legacy]`: adopt journals whose owner has exited and finish a clean restore-out. A live app is handed to one detached `hook watch`. The same pass evicts uploaded iCloud copies that this Mac does not need. Images packed before device files existed are kept, and named, unless `--include-legacy` is passed.
 - `isenough cleanup-backups`: remove leftover `/Applications/.isenough-original-*.app` backups after checking each one against its stub and the repo image. Every verified path is deleted by one macOS administrator prompt (`osascript` … `with administrator privileges`). The command never asks for or stores a password. `.256orig.app` copies kept with `--keep-original` are not removed.
-- `isenough unpack APP`, `detach APP`: not available in this build. `resolve APP` keeps, exports, or discards a bundle that changed while it was restored.
+- `isenough unpack APP [--to DIR]`: put the real app back in place of the stub. The extracted tree hash and cdhash must match the manifest. `--to DIR` copies the verified app to `DIR/<Name>.app` and leaves the stub installed. `--delete-remote` is rejected. `detach APP` is not available in this build. `resolve APP` keeps, exports, or discards a bundle that changed while it was restored.
+- `isenough sessions [--apply] [--days N] [--home DIR] [--encrypt]`: dry-run by default. `--apply` packs cold JSONL into write-once zstd segments under `sessions/<deviceId>/<tool>/` and removes a local file only after the index commit. `--encrypt` seals that run with AES-256-GCM.
+- `isenough sessions search QUERY [--limit N]`, `sessions restore ID|PATH [--to PATH]`, `sessions reindex`, `sessions migrate`, `sessions verify --legacy`.
+- `isenough sessions key init` creates the current segment key. `sessions key status` prints only the key id. A second `key init` is rejected. Encrypting without a key is rejected and names `sessions key init`.
 - `isenough hooks list|enable|disable APP`: placeholder. Hook files under `stateDir/hooks/<bundleId>/` still run.
 - `isenough doctor [--fix]`: each check has a timeout and prints `ok`, `warn`, `fail`, or `timed out` as soon as it finishes. A slow or stuck iCloud repository cannot block the command. `ISENOUGH_DOCTOR_TIMEOUT` is the per-check wait in seconds (default 15). The process exits 1 when any check fails or times out. A missing or older engine is `engine` / `warn` and does not by itself fail the command. The `materialized` check reports how much of an iCloud repo is still stored on this Mac (`iCloud keeps full copies: repo occupies X locally of Y`). `--json` prints one object after the checks finish. `--fix` runs recovery inside the same kind of bound.
 - `isenough devices` / `devices list`: show every Mac registered in the shared repo, which images it packed, and which file is this Mac. This Mac is registered before the list is printed, and its file is filled from local stubs on that first run. Conflict copies and not-yet-downloaded device files are listed and not merged.
@@ -104,11 +109,10 @@ Packing an app that root owns can leave `/Applications/.isenough-original-<id>.a
 ## Hooks and lifecycle
 
 The target lifecycle is pre-launch materialize → verify SHA-256 → attach read-only → forward documents/URLs →
-watch app and dependents → post-quit hook → delayed detach → update LRU. In this implementation, pre/post hook
-execution, robust NSWorkspace Apple Event handling, leases, safe process probing, restore-mode transaction journal,
-crash recovery and full LRU accounting remain gaps. Do not use it to remove a production app until those safeguards
-are implemented and macOS acceptance-tested. The current `pack` default does not move the original unless stub
-creation succeeds; use `--keep-original` to retain it.
+watch app and dependents → post-quit hook → delayed detach → update LRU. Cache LRU eviction against `quotaBytes` is implemented.
+Admission claims, a secure stub control protocol, and process-wide dependent detection are not. Do not use it to remove a
+production app until the remaining safeguards are macOS acceptance-tested. The current `pack` default does not move the original unless stub
+creation succeeds; use `--keep-original` to retain it. A pack that reuses an image whose upload is not confirmed keeps the original next to the stub.
 
 ## Non-interactive cycle (current scope)
 
@@ -132,11 +136,15 @@ mount, and Applications directories. The restore cases launch the generated stub
 reach `restoredOut` after the fixture quits. That harness is not a substitute for trying this on an app you
 can reinstall.
 
+## Data safety
+
+- **P0-1, shared images.** `images/` and `manifests/` are write-once. A second Mac does not publish over an image that is missing, still a placeholder, or whose bytes do not match the manifest. Pack then exits 5 and leaves the original app in place, or it reuses a confirmed image. When the cloud copy exists but is not confirmed uploaded, pack reuses the image, keeps the original, and reports `originalKept` with the reason. `gc` does not delete an image that any visible device file still names, and a device file that has not downloaded blocks deletion.
+- **P0-2, sessions.** Cold transcripts are stored as per-device write-once zstd segments (`sessions/<deviceId>/<tool>/<stamp>-<sha8>.tar.zst`). A different byte string at that path is refused. The SQLite index is committed with state `pendingDelete` before the local file is removed. A file that changes after the snapshot is kept, with reason `modified after archiving`.
+- **Old session archives.** `sessions/<tool>/<yyyy-MM>.tar.gz` from the v1 layout is never overwritten and never deleted. `sessions verify --legacy` only reports members that are missing from those archives. `sessions migrate` renames the local `sessions-index.json` to `sessions-index.json.migrated-v2` and leaves the tar.gz in the repo.
+
 ## Limitations
 
-No reliable iCloud materialization, capacity claims/locking in the engine, cache LRU eviction, a secure
-stub control protocol, or process-wide dependent detection. Restore mode has a journal and a detached
-post-quit watcher; it is still young.
+iCloud materialization is still best-effort. Capacity admission claims from the design are not implemented. Cache LRU eviction is implemented. There is no secure stub control protocol and no process-wide dependent detection. Restore mode has a journal and a detached post-quit watcher; it is still young.
+`TreeFingerprint` can miss a content change that does not change size or mtime. Set `ISENOUGH_PARANOID_INSPECT=1` to force a full tree hash on inspect. `ISENOUGH_PARANOID_VERIFY=1` forces a full image hash even when the cache stamp matches.
 ULMO creation and hdiutil attach have not been run on this Linux host. Mount and restore modes must be validated on
-macOS. Never attach a dataless iCloud DMG: implement FileManager startDownloadingUbiquitousItem and wait for a fully
-materialized/current file before hashing/attach. No session tiering is included (future design only).
+macOS. Never attach a dataless iCloud DMG: wait until the file is fully materialized before hashing or attaching.

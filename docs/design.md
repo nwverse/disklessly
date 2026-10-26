@@ -403,9 +403,10 @@ hooks/<bundleId>/pre-launch[.d/*], post-quit[.d/*]        local user hooks
 logs/isenough.log
 ```
 JSON file (not SQLite) is chosen: small (≤ few hundred apps), human-debuggable, Linux-testable, no dependency.
+The implemented file uses schema `state/2`. A missing schema or `state/1` migrates on the first update: the previous bytes are copied to `state.json.v1.bak` when that backup is absent, then the file is rewritten. Corrupt JSON is not overwritten. `load` returns an empty state, and `update` throws integrity (exit 5) after renaming the file to `state.json.corrupt-<timestamp>`.
 ```json
 {
-  "schema": "state/1", "deviceId": "6F1C…",
+  "schema": "state/2", "deviceId": "6F1C…",
   "apps": {
     "com.blender.blender": {
       "imageId": "com.blender.blender-4.2.1_b4.2.1-1a2b3c4d", "mode": "mount",
@@ -457,7 +458,7 @@ when a restored/updated bundle was retained and awaits a user decision (§5.8.7)
 `{ "retainedPath": "retained/<appId>/<ts>-Foo.app", "treeHash": "sha256:…", "cdhash": "…", "teamId": "…",
 "fromImageId": "…", "txid": "…", "since": "…" }` — the durable identity snapshot of the retained bundle. While it
 is set, `launch` **refuses** with `EX_RESOLUTION` (14) and `evict/unpack/gc` refuse the app (§5.8.7). Additional local directories:
-`journals/` (swap/pack/install transactions, §5.8), `locks/` (§5.6), `retained/` (never auto-deleted bundles, §5.8).
+`journals/` (swap/pack/install transactions, §5.8), `unpack-journals/` (in-place unpack, schema `unpack/1`, §5.8.5), `locks/` (§5.6), `retained/` (never auto-deleted bundles, §5.8).
 
 ### 3.6 Config (`config.json`)
 ```json
@@ -478,15 +479,12 @@ Backend types: `local` (`root` = any directory; tests use a temp dir as fake iCl
 (=`local` on a mounted path + `mountURL`), `webdav` (`url`, `user`, keychain item), `openlist` (`url`, `user`,
 token in keychain, `basePath`, `connections`). `forceDetachAfterSeconds: 0` = never force.
 
-**Image formats are fixed, not options (B1).** Remote images are always `ULMO` (best ratio, smallest transfer and
-iCloud footprint); there is no `pack.remoteFormat` and no `pack --format`. `cache.localFormat` accepts only `ULFO`
-(default: LZFSE, ~1.2–1.4× the ULMO size, fast random-read decompression at launch) or `UDRO` (uncompressed, fastest,
-largest; for very slow CPUs or test fixtures). `ULMO` as a local format is rejected at config load (`EX_USAGE`), as is
-any other value, and a remote manifest whose `image.format != "ULMO"` is refused at fetch (`EX_INTEGRITY`). Conversion
-cost (one `hdiutil convert` per fetched version, CPU-bound, roughly seconds per 100 MB on Apple silicon, plus
-temporary space, §6) is paid once per fetch and amortized over every later launch; that is the justification for not
-attaching ULMO locally. Unit tests: config with `localFormat: "ULMO"` or `"UDZO"` → `EX_USAGE`; manifest with
-`format: "ULFO"` → refused; `pack --format` → unknown option.
+**Image format flag.** `pack --image-format ULMO|ULFO` (case insensitive) selects the disk image `hdiutil create` writes.
+Mount mode publishes ULMO unless the flag says otherwise. Restore mode uses the flag when it is present, otherwise
+config `restoreImageFormat` (default `ULMO`, env `ISENOUGH_RESTORE_IMAGE_FORMAT`). The format is not part of the image id.
+`UDZO` and any other value are `EX_USAGE`. `pack --format` is still an unknown option. A manifest is accepted when
+`image.format` is `ULMO` or `ULFO`. The older design note that remote images are always ULMO, and that a local cache is
+converted to ULFO on fetch, is not what this build does: the cached file is the published image.
 
 ---
 
@@ -1018,6 +1016,12 @@ rename stub → dest) → originalDisposed (Trash or --keep-original; Trash does
 N3) → closed`. A crash before `swapped` leaves the original untouched; after it, recovery finishes or reverses by
 renames. unpack: `extracted (from cache/image to staging, verified) → stubParked → installed → stubDeleted → closed`.
 
+**Implemented unpack journal.** In-place `unpack` writes `stateDir/unpack-journals/<txid>.json` with schema `unpack/1`.
+That directory is not `journals/`. Phases are `prepared`, `extracted`, `stubParked`, `installed`, `stubDeleted`; the file
+is removed at `closed`. `gc` and the next `unpack` recover an open journal. A layout that cannot be finished safely is
+saved as `needsAttention`. `doctor` reports that on the existing `journals` check and exits 14. `--to` copies the verified
+app and does not write this journal. `--delete-remote` is rejected.
+
 #### 5.8.6 Fault-injection tests
 `TxRunner` takes an injectable `FaultPoint` (`beforeJournal(phase)`, `afterJournal(phase)`, `afterMutation(phase)`,
 `hookFailure`, `selfUpdate(simulated tree change)`). Engine tests (fake FS on Linux; real APFS on macOS CI) enumerate
@@ -1159,6 +1163,8 @@ returned instance's path (§5.2.6); LS's preferred URL for the bundle id is only
 ---
 
 ## 6. Cache & LRU
+
+**Implementation status.** Local cache LRU is implemented. `CachePlanner.planEviction` orders leftovers first, then the oldest `lastUsed`, and evicts until `quotaBytes`. Pinned, mounted, in-use, and `protectedUntil` images are skipped. The image passed as just-used is considered last and is not evicted when it alone exceeds the quota. A pass that is still over quota warns `cache still exceeds quota by N bytes` and does not fail the command. The admission claims in §6.1 (final-size quota admission plus transient free-space claims, persisted before the first byte) are **not** implemented. Pack and prefetch still refuse with `EX_NOSPACE` when free space is below the preflight floor.
 
 - **Location**: `~/Library/Caches/256isenough/` (configurable): `images/` (verified, ready), `partial/` (`.part` +
   `.part.json` resume metadata: imageId, expected size/sha, bytes, partial hash state is *not* persisted → on resume
@@ -1906,7 +1912,7 @@ extra diagnostic, not a substitute.
 
 ## 13. Agent session file offloading with hot/cold tiering
 
-The command is `isenough sessions` (`docs/sessions.md`). A run without `--apply` is a dry run. Cold files are a monthly gzip tar on the active backend. The notes below are the original roadmap; the command, the 24 hour guard, and the index are what the code does.
+The command is `isenough sessions` (`docs/sessions.md`). A run without `--apply` is a dry run. Cold files are write-once per-device zstd segments (`sessions/<deviceId>/<tool>/…tar.zst`), indexed in `stateDir/sessions/index.sqlite`. v1 monthly `sessions/<tool>/<yyyy-MM>.tar.gz` archives are kept and are never overwritten. The notes below are the original roadmap, not the v2 layout.
 
 ## 13.1 Original roadmap notes
 
