@@ -433,11 +433,13 @@ enum LiveDeviceFacts {
     }
 
     #if os(macOS)
+    /// `utsname` fields are fixed C-string tuples. Read them as bytes so the
+    /// conversion does not depend on the tuple's exact arity.
     private static func text<T>(_ field: T) -> String {
-        withUnsafePointer(to: field) { pointer in
-            pointer.withMemoryRebound(to: CChar.self, capacity: MemoryLayout<T>.size) {
-                String(cString: $0)
-            }
+        withUnsafeBytes(of: field) { raw in
+            let bytes = raw.bindMemory(to: UInt8.self)
+            let end = bytes.firstIndex(of: 0) ?? bytes.count
+            return String(decoding: bytes.prefix(end), as: UTF8.self)
         }
     }
     #endif

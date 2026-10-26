@@ -545,7 +545,7 @@ public struct IsenoughEngine {
             if cdhash != manifest.app.cdhash && !trust { throw IsenoughError.usage("updated bundle cdhash differs from the packed image; pass --trust to approve it") }
             #if os(macOS)
             let packed=try pack(path, mode: manifest.mode, keepOriginal: true, noStub: true)
-            try restore.switchImage(appId: manifest.bundleId, imageId: packed.imageId, cdhash: cdhash)
+            try restore.switchImage(appId: manifest.bundleId, imageId: packed.manifest.imageId, cdhash: cdhash)
             try restore.trash(url)
             try restore.clearResolution(appId: manifest.bundleId)
             return
