@@ -12,7 +12,7 @@ func usage() -> Never {
     isenough — remote app image manager
     Usage: isenough [--json] [--config PATH] [--state-dir PATH] [--help] <command>
       init [--backend local|icloud] [--root DIR] [--cache-dir DIR]
-      pack APP.app [--mode mount|restore] [--no-stub] [--keep-original] [--stub-dir DIR]
+      pack APP.app [--mode mount|restore] [--image-format ULMO|ULFO] [--no-stub] [--keep-original] [--stub-dir DIR]
       install-engine | stub refresh --app ID | stub rebuild APP
       list | status [APP] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
       pin APP | unpin APP | evict APP | evict-local | gc [--include-legacy] | cleanup-backups | restore APP | unpack APP
@@ -149,9 +149,10 @@ do {
         while !args.isEmpty { let a=args.removeFirst(); if a=="--backend", !args.isEmpty { config.backend=args.removeFirst() } else if a=="--root", !args.isEmpty { config.repoPath=args.removeFirst() } else if a=="--cache-dir", !args.isEmpty { config.cacheDir=args.removeFirst() } }
         try IsenoughEngine(config:config).initialize(); emit(["ok":true,"repo":config.repoPath])
     case "pack":
-        guard let path=args.first else { throw IsenoughError.usage("pack requires an .app path") }; args.removeFirst(); var mode:ImageManifest.Mode?; var keep=false; var noStub=false
-        while !args.isEmpty { let a=args.removeFirst(); if a=="--mode", !args.isEmpty { mode=ImageManifest.Mode(rawValue:args.removeFirst()) } else if a=="--keep-original" { keep=true } else if a=="--no-stub" { noStub=true } else if a=="--stub-dir", !args.isEmpty { config.stubDir=args.removeFirst() } }
-        let published=try engine.pack(path,mode:mode,keepOriginal:keep,noStub:noStub); let m=published.manifest
+        let parsed = try PackArguments.parse(args)
+        if let stubDir = parsed.stubDir { config.stubDir = stubDir }
+        let published=try engine.pack(parsed.app,mode:parsed.mode,keepOriginal:parsed.keepOriginal,noStub:parsed.noStub,imageFormat:parsed.imageFormat); let m=published.manifest
+        let path = parsed.app
         for warning in published.warnings { fputs("isenough: \(warning)\n", stderr) }
         for path in published.evicted { fputs("isenough: evicted local iCloud copy \(path)\n", stderr) }
         if let kept = published.originalKept {

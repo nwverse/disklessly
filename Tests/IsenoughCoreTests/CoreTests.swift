@@ -9,7 +9,8 @@ final class CoreTests: XCTestCase {
         let app=ImageManifest.App(originalPath:"/Applications/A.app",executable:"A",documentTypes:[],urlTypes:[])
         let m=ImageManifest(bundleId:"com.test.a",name:"A",version:"1.0",image:image,app:app,createdAt:Date(timeIntervalSince1970:1_700_000_000))
         XCTAssertEqual(try ImageManifest.decode(m.encode()),m)
-        var bad=m; bad.image.format="ULFO"; XCTAssertThrowsError(try bad.validate())
+        var bad=m; bad.image.format="UDZO"; XCTAssertThrowsError(try bad.validate())
+        var ulfo=m; ulfo.image.format="ULFO"; XCTAssertNoThrow(try ulfo.validate())
     }
     func testLRUAndPins() {
         let now=Date(); let xs=[PolicyCacheEntry(id:"new",size:8,lastUsed:now),PolicyCacheEntry(id:"old",size:8,lastUsed:now.addingTimeInterval(-5)),PolicyCacheEntry(id:"pin",size:40,lastUsed:now.addingTimeInterval(-10),pinned:true)]

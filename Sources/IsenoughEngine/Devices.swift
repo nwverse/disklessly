@@ -16,8 +16,9 @@ public struct PublishRequest: Equatable {
     public var appPathInVolume: String
     public var documentTypes: [[String: AnyCodable]]
     public var urlTypes: [[String: AnyCodable]]
+    public var imageFormat: String
 
-    public init(name: String, identity: ImageIdentity, mode: ImageManifest.Mode, executable: String, originalPath: String, cdhash: String? = nil, postImageTreeHash: String? = nil, volumeName: String, appPathInVolume: String, documentTypes: [[String: AnyCodable]] = [], urlTypes: [[String: AnyCodable]] = []) {
+    public init(name: String, identity: ImageIdentity, mode: ImageManifest.Mode, executable: String, originalPath: String, cdhash: String? = nil, postImageTreeHash: String? = nil, volumeName: String, appPathInVolume: String, documentTypes: [[String: AnyCodable]] = [], urlTypes: [[String: AnyCodable]] = [], imageFormat: String = "ULMO") {
         self.name = name
         self.identity = identity
         self.mode = mode
@@ -29,6 +30,7 @@ public struct PublishRequest: Equatable {
         self.appPathInVolume = appPathInVolume
         self.documentTypes = documentTypes
         self.urlTypes = urlTypes
+        self.imageFormat = imageFormat
     }
 }
 
@@ -189,7 +191,7 @@ extension IsenoughEngine {
             let sha = try SHA256Digest.hexFile(imageFile)
             let size = try ChunkedIO.byteCount(imageFile)
             guard size > 0 else { throw IsenoughError.integrity("image file is empty") }
-            let image = ImageManifest.Image(file: "images/\(imageId).dmg", format: "ULMO", sha256: sha, size: size, volumeName: request.volumeName, appPathInVolume: request.appPathInVolume)
+            let image = ImageManifest.Image(file: "images/\(imageId).dmg", format: request.imageFormat, sha256: sha, size: size, volumeName: request.volumeName, appPathInVolume: request.appPathInVolume)
             let app = ImageManifest.App(originalPath: request.originalPath, executable: request.executable, documentTypes: request.documentTypes, urlTypes: request.urlTypes, cdhash: request.cdhash, treeHash: request.postImageTreeHash ?? request.identity.treeHash)
             let manifest = ImageManifest(bundleId: request.identity.bundleId, name: request.name, version: request.identity.version, image: image, app: app, mode: request.mode, createdAt: now, build: request.identity.build, architectures: request.identity.architectures, contentTreeHash: request.identity.treeHash, imageId: imageId)
             try manifest.validate()

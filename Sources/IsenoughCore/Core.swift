@@ -86,7 +86,7 @@ public struct ImageManifest: Equatable {
     }
     public func validate() throws {
         guard schema == "image/1" else { throw IsenoughError.failure("Unsupported manifest schema: \(schema)") }
-        guard image.format == "ULMO", image.sha256.count == 64, image.size > 0 else { throw IsenoughError.integrity("Invalid image metadata") }
+        guard ["ULMO", "ULFO"].contains(image.format), image.sha256.count == 64, image.size > 0 else { throw IsenoughError.integrity("Invalid image metadata") }
     }
     public func encode() throws -> Data { let e = JSONEncoder(); e.outputFormatting = [.sortedKeys, .prettyPrinted]; e.dateEncodingStrategy = .iso8601; return try e.encode(self) }
     public static func decode(_ data: Data) throws -> Self { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; let m = try d.decode(Self.self, from: data); try m.validate(); return m }

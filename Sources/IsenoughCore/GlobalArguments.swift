@@ -37,3 +37,62 @@ public struct GlobalArguments: Equatable {
         return GlobalArguments(json: json, configPath: configPath, stateDir: stateDir, rest: rest)
     }
 }
+
+public struct PackArguments: Equatable {
+    public var app: String
+    public var mode: ImageManifest.Mode?
+    public var imageFormat: String?
+    public var keepOriginal: Bool
+    public var noStub: Bool
+    public var stubDir: String?
+
+    public init(app: String, mode: ImageManifest.Mode?, imageFormat: String?, keepOriginal: Bool, noStub: Bool, stubDir: String?) {
+        self.app = app
+        self.mode = mode
+        self.imageFormat = imageFormat
+        self.keepOriginal = keepOriginal
+        self.noStub = noStub
+        self.stubDir = stubDir
+    }
+
+    public static func parse(_ args: [String]) throws -> PackArguments {
+        guard let app = args.first, !app.hasPrefix("-") else { throw IsenoughError.usage("pack requires an .app path") }
+        var mode: ImageManifest.Mode?
+        var imageFormat: String?
+        var keepOriginal = false
+        var noStub = false
+        var stubDir: String?
+        var rest = Array(args.dropFirst())
+        while let flag = rest.first {
+            rest.removeFirst()
+            switch flag {
+            case "--mode":
+                guard let value = rest.first else { throw IsenoughError.usage("invalid --mode; expected mount or restore") }
+                rest.removeFirst()
+                guard let parsed = ImageManifest.Mode(rawValue: value) else {
+                    throw IsenoughError.usage("invalid --mode \(value); expected mount or restore")
+                }
+                mode = parsed
+            case "--image-format":
+                guard let value = rest.first else { throw IsenoughError.usage("invalid --image-format; expected ULMO or ULFO") }
+                rest.removeFirst()
+                let upper = value.uppercased()
+                guard upper == "ULMO" || upper == "ULFO" else {
+                    throw IsenoughError.usage("invalid --image-format \(value); expected ULMO or ULFO")
+                }
+                imageFormat = upper
+            case "--keep-original":
+                keepOriginal = true
+            case "--no-stub":
+                noStub = true
+            case "--stub-dir":
+                guard let value = rest.first else { throw IsenoughError.usage("invalid --stub-dir; expected a directory") }
+                rest.removeFirst()
+                stubDir = value
+            default:
+                throw IsenoughError.usage("unknown pack option \(flag)")
+            }
+        }
+        return PackArguments(app: app, mode: mode, imageFormat: imageFormat, keepOriginal: keepOriginal, noStub: noStub, stubDir: stubDir)
+    }
+}

@@ -1,5 +1,8 @@
 import Foundation
 import IsenoughCore
+#if canImport(Darwin)
+import Darwin
+#endif
 
 public struct RuntimeConfig: Codable {
     public var schema = "config/1"
@@ -12,6 +15,8 @@ public struct RuntimeConfig: Codable {
     public var quotaBytes: UInt64 = 20 * 1024 * 1024 * 1024
     public var minFreeBytes: UInt64 = 15 * 1024 * 1024 * 1024
     public var detachDelaySeconds: UInt64 = 120
+    /// Image format used when `pack --mode restore` does not pass `--image-format`.
+    public var restoreImageFormat: String = "ULMO"
     public var backends: [BackendEndpoint] = []
     public var activeBackendId: String?
     /// codesign identity. `-` is ad-hoc. `ISENOUGH_SIGN_IDENTITY` overrides this at pack time.
@@ -25,7 +30,7 @@ public struct RuntimeConfig: Codable {
     public init(repoPath: String, cacheDir: String, stateDir: String, mountRoot: String, stubDir: String) { self.repoPath=repoPath; self.cacheDir=cacheDir; self.stateDir=stateDir; self.mountRoot=mountRoot; self.stubDir=stubDir }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, backends, activeBackendId, signIdentity, sessionColdDays, sessionRoots, sessionHome
+        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, restoreImageFormat, backends, activeBackendId, signIdentity, sessionColdDays, sessionRoots, sessionHome
     }
 
     public init(from decoder: Decoder) throws {
@@ -40,6 +45,7 @@ public struct RuntimeConfig: Codable {
         quotaBytes = try container.decodeIfPresent(UInt64.self, forKey: .quotaBytes) ?? 20 * 1024 * 1024 * 1024
         minFreeBytes = try container.decodeIfPresent(UInt64.self, forKey: .minFreeBytes) ?? 15 * 1024 * 1024 * 1024
         detachDelaySeconds = try container.decodeIfPresent(UInt64.self, forKey: .detachDelaySeconds) ?? 120
+        restoreImageFormat = try container.decodeIfPresent(String.self, forKey: .restoreImageFormat) ?? "ULMO"
         backends = try container.decodeIfPresent([BackendEndpoint].self, forKey: .backends) ?? []
         activeBackendId = try container.decodeIfPresent(String.self, forKey: .activeBackendId)
         signIdentity = try container.decodeIfPresent(String.self, forKey: .signIdentity) ?? "-"
@@ -60,6 +66,7 @@ public struct RuntimeConfig: Codable {
         try container.encode(quotaBytes, forKey: .quotaBytes)
         try container.encode(minFreeBytes, forKey: .minFreeBytes)
         try container.encode(detachDelaySeconds, forKey: .detachDelaySeconds)
+        try container.encode(restoreImageFormat, forKey: .restoreImageFormat)
         try container.encode(backends, forKey: .backends)
         try container.encodeIfPresent(activeBackendId, forKey: .activeBackendId)
         try container.encode(signIdentity, forKey: .signIdentity)
@@ -74,6 +81,7 @@ public struct RuntimeConfig: Codable {
         if let quota = env["ISENOUGH_QUOTA_BYTES"].flatMap(UInt64.init) { config.quotaBytes = quota }
         if let floor = env["ISENOUGH_MIN_FREE_BYTES"].flatMap(UInt64.init) { config.minFreeBytes = floor }
         if let identity = env["ISENOUGH_SIGN_IDENTITY"], !identity.isEmpty { config.signIdentity = identity }
+        if let format = env["ISENOUGH_RESTORE_IMAGE_FORMAT"], !format.isEmpty { config.restoreImageFormat = format }
         return config
     }
 
@@ -182,6 +190,8 @@ public struct IsenoughEngine {
     public var stubRootsOverride: [URL]?
     /// Replaces iCloud/stat evidence during publish. Nil uses `imageEvidence`.
     public var imageEvidenceOverride: ((String) -> ImageEvidence)?
+    /// Replaces the process probe during pack. Nil asks `ps`.
+    public var packUsageOverride: ((String) -> UsageClass)?
     public init(config: RuntimeConfig, services: RestoreServices? = nil, faults: FaultController? = nil, secrets: (any SecretStore)? = nil, shareOpener: ShareOpener = .system) {
         self.config=config
         let faults=faults ?? FaultController()
@@ -199,6 +209,7 @@ public struct IsenoughEngine {
         self.backupFactsOverride = nil
         self.stubRootsOverride = nil
         self.imageEvidenceOverride = nil
+        self.packUsageOverride = nil
     }
     public func openBackend() throws -> any StorageBackend {
         if let backendOverride { return backendOverride }
@@ -358,18 +369,47 @@ public struct IsenoughEngine {
         #endif
     }
 
-    public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false) throws -> PublishResult {
+    public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false, imageFormat requestedFormat: String? = nil) throws -> PublishResult {
         #if !os(macOS)
+        _ = requestedFormat
         throw IsenoughError.unsupported("pack requires macOS hdiutil and codesign")
         #else
         let app=URL(fileURLWithPath:appPath).standardizedFileURL, plistURL=app.appendingPathComponent("Contents/Info.plist")
         guard let info=NSDictionary(contentsOf:plistURL) as? [String:Any], let bid=info["CFBundleIdentifier"] as? String else { throw IsenoughError.usage("Not a valid .app bundle") }
         let name=info["CFBundleName"] as? String ?? app.deletingPathExtension().lastPathComponent, version=info["CFBundleShortVersionString"] as? String ?? "0"
         let selected=mode ?? ((FileManager.default.fileExists(atPath:app.appendingPathComponent("Contents/_MASReceipt/receipt").path) ? .restore : .mount))
+        let requested = requestedFormat ?? (selected == .restore ? config.restoreImageFormat : "ULMO")
+        let imageFormat = requested.uppercased()
+        guard imageFormat == "ULMO" || imageFormat == "ULFO" else {
+            throw IsenoughError.usage("invalid --image-format \(requested); expected ULMO or ULFO")
+        }
+        let usage = packUsageOverride?(app.path) ?? ProcessProbe.usage(roots: [app.path])
+        if let blocked = PackPreflight.running(usage, name: name) { throw blocked }
+        let allocated = AllocatedSize.tree(app)
+        let free = try VolumeSpace.availableBytes(at: config.cacheDir)
+        let cacheDevice = PackPreflight.deviceID(config.cacheDir)
+        let cloneSupported = cacheDevice != nil && cacheDevice == PackPreflight.deviceID(app.path)
+        let repoDevice = PackPreflight.deviceID(config.repoPath)
+        let localRoot = (try? openBackend().localRoot()) != nil
+        let repoOnSameVolume = localRoot && cacheDevice != nil && cacheDevice == repoDevice
+        let room = PackPreflight.space(appAllocated: allocated, free: free, cloneSupported: cloneSupported, repoOnSameVolume: repoOnSameVolume, minFree: config.minFreeBytes, volume: config.cacheDir)
+        if let blocked = room.error { throw blocked }
         let staging=URL(fileURLWithPath:config.cacheDir).appendingPathComponent("pack-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at:staging.appendingPathComponent("src"),withIntermediateDirectories:true); defer { try? FileManager.default.removeItem(at:staging) }
         let stagedApp=staging.appendingPathComponent("src").appendingPathComponent(app.lastPathComponent)
-        try run("/usr/bin/ditto",[app.path,stagedApp.path])
+        if cloneSupported {
+            let cloned = clonefile(app.path, stagedApp.path, CLONE_NOFOLLOW)
+            if cloned != 0 {
+                if errno == EEXIST {
+                    throw IsenoughError.failure("refusing to replace an existing staged copy at \(stagedApp.path)")
+                }
+                let again = PackPreflight.space(appAllocated: allocated, free: free, cloneSupported: false, repoOnSameVolume: repoOnSameVolume, minFree: config.minFreeBytes, volume: config.cacheDir)
+                if let blocked = again.error { throw blocked }
+                try run("/usr/bin/ditto",[app.path,stagedApp.path])
+            }
+        } else {
+            try run("/usr/bin/ditto",[app.path,stagedApp.path])
+        }
         BundleHasher.removeMetadataSidecars(stagedApp)
         let executableName = info["CFBundleExecutable"] as? String ?? ""
         let build = info["CFBundleVersion"] as? String ?? "0"
@@ -398,7 +438,7 @@ public struct IsenoughEngine {
             throw IsenoughError.integrity(message)
         }
         let dmg=staging.appendingPathComponent("image.dmg")
-        try run("/usr/bin/hdiutil",["create","-quiet","-srcfolder",staging.appendingPathComponent("src").path,"-format","ULMO","-volname",name,"-o",dmg.deletingPathExtension().path])
+        try run("/usr/bin/hdiutil",["create","-quiet","-srcfolder",staging.appendingPathComponent("src").path,"-format",imageFormat,"-volname",name,"-o",dmg.deletingPathExtension().path])
         // Hash the ditto restore will verify, not the pre-image staged app. hdiutil
         // can change modes and materialize AppleDouble files; the manifest has to
         // describe that tree. The content hash above is what other Macs compare.
@@ -417,7 +457,7 @@ public struct IsenoughEngine {
         detachedPackMount=true
         let docs = (info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) }
         let urls = (info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) }
-        let request = PublishRequest(name: name, identity: identity, mode: selected, executable: executableName, originalPath: app.path, cdhash: cdhash, postImageTreeHash: treeHash, volumeName: name, appPathInVolume: app.lastPathComponent, documentTypes: docs, urlTypes: urls)
+        let request = PublishRequest(name: name, identity: identity, mode: selected, executable: executableName, originalPath: app.path, cdhash: cdhash, postImageTreeHash: treeHash, volumeName: name, appPathInVolume: app.lastPathComponent, documentTypes: docs, urlTypes: urls, imageFormat: imageFormat)
         let published = try publish(request, imageFile: dmg)
         if EngineInstall.runningExecutable().lastPathComponent == "isenough" { try installEngine() }
         let stubWarning = noStub ? nil : try installStub(info: info, manifest: published.manifest, path: app.path, keepOriginal: keepOriginal)
