@@ -45,6 +45,7 @@ enum Doctor {
         var checks: [[String: Any]] = []
         var issues: [String] = []
         var repoPresent = false
+        var unpackNeedsAttention = false
 
         func record(_ name: String, _ status: String, _ detail: String) {
             let check: [String: Any] = ["name": name, "status": status, "detail": detail]
@@ -82,13 +83,18 @@ enum Doctor {
             }
         }
 
-        switch bound(seconds: seconds, { engine.restore.diagnose() }) {
+        switch bound(seconds: seconds, { () -> (lines: [String], attention: Bool) in
+            let found = engine.restore.diagnose()
+            let attention = engine.unpackAttentionLines()
+            return (found + attention, !attention.isEmpty)
+        }) {
         case .value(let found):
-            issues = found
-            if found.isEmpty {
+            issues = found.lines
+            unpackNeedsAttention = found.attention
+            if found.lines.isEmpty {
                 record("journals", "ok", "")
             } else {
-                record("journals", "fail", found.joined(separator: " | "))
+                record("journals", "fail", found.lines.joined(separator: " | "))
             }
         case .failure(let message):
             record("journals", "fail", message)
@@ -138,6 +144,7 @@ enum Doctor {
         }
         return [
             "ok": !failed,
+            "needsAttention": unpackNeedsAttention,
             "platform": ProcessInfo.processInfo.operatingSystemVersionString,
             "repo": repoPresent,
             "issues": issues,

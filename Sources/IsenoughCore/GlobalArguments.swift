@@ -96,3 +96,33 @@ public struct PackArguments: Equatable {
         return PackArguments(app: app, mode: mode, imageFormat: imageFormat, keepOriginal: keepOriginal, noStub: noStub, stubDir: stubDir)
     }
 }
+
+public struct UnpackArguments: Equatable {
+    public var app: String
+    public var directory: String?
+
+    public init(app: String, directory: String?) {
+        self.app = app
+        self.directory = directory
+    }
+
+    public static func parse(_ args: [String]) throws -> UnpackArguments {
+        guard let app = args.first, !app.hasPrefix("-") else { throw IsenoughError.usage("unpack requires an app") }
+        var directory: String?
+        var rest = Array(args.dropFirst())
+        while let flag = rest.first {
+            rest.removeFirst()
+            switch flag {
+            case "--delete-remote":
+                throw IsenoughError.usage("unpack keeps the repository image; --delete-remote is not a command")
+            case "--to":
+                guard let value = rest.first, !value.hasPrefix("-") else { throw IsenoughError.usage("invalid --to; expected a directory") }
+                rest.removeFirst()
+                directory = value
+            default:
+                throw IsenoughError.usage("unknown unpack option \(flag)")
+            }
+        }
+        return UnpackArguments(app: app, directory: directory)
+    }
+}

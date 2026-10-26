@@ -554,7 +554,8 @@ public struct IsenoughEngine {
         if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
     }
     public func gc(now: Date = Date(), includeLegacy: Bool = false) throws -> [String] {
-        var lines = try maintain(now: now, includeLegacy: includeLegacy).lines
+        var lines = try recoverUnpackJournals()
+        lines.append(contentsOf: try maintain(now: now, includeLegacy: includeLegacy).lines)
         let enforced = try enforceCacheQuota(justUsed: nil, now: now)
         lines.append(contentsOf: enforced.lines)
         return lines

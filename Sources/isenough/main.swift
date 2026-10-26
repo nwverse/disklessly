@@ -15,7 +15,7 @@ func usage() -> Never {
       pack APP.app [--mode mount|restore] [--image-format ULMO|ULFO] [--no-stub] [--keep-original] [--stub-dir DIR]
       install-engine | stub refresh --app ID | stub rebuild APP
       list | status [APP] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
-      pin APP | unpin APP | evict APP | evict-local | gc [--include-legacy] | cleanup-backups | restore APP | unpack APP
+      pin APP | unpin APP | evict APP | evict-local | gc [--include-legacy] | cleanup-backups | restore APP | unpack APP [--to DIR]
       devices [list] | devices rename NAME | devices forget DEVICEID --yes
       backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
       sessions [--apply] [--days N] [--home DIR] | sessions search QUERY | sessions restore ID|PATH
@@ -176,6 +176,10 @@ do {
         var manifest=try find(parsed.app)
         manifest.mode = .restore
         try engine.launch(manifest,documents:parsed.documents,urls:parsed.urls,arguments:parsed.arguments,wait:parsed.wait); emit(["ok":true])
+    case "unpack":
+        let parsed = try UnpackArguments.parse(args)
+        try engine.unpack(try find(parsed.app), to: parsed.directory)
+        emit(["ok": true])
     case "pin", "unpin": guard let n=args.first else { throw IsenoughError.usage("\(command) requires app") }; try engine.setPinned(try find(n), pinned: command=="pin"); emit(["ok":true,"pinned":command=="pin"])
     case "evict": guard let n=args.first else { throw IsenoughError.usage("evict requires app") }; try engine.evict(find(n)); emit(["ok":true])
     case "evict-local":
@@ -257,6 +261,7 @@ do {
             fflush(stdout)
         }
         if json { emit(report) }
+        if (report["needsAttention"] as? Bool) == true { exit(14) }
         exit((report["ok"] as? Bool) == true ? 0 : 1)
     case "hook":
         guard args.first == "watch" else { throw IsenoughError.usage("hook watch requires --app") }
@@ -356,7 +361,7 @@ do {
         serveUntilSignaled(ui)
     case "serve": emit(["ok":false,"message":"HTTP server not yet available; use isenough ui" ])
     case "daemon": emit(["ok":false,"message":"Daemon management is not implemented in MVP build"])
-    case "detach", "unpack", "trust": throw IsenoughError.unsupported("\(command) is not available in this MVP build")
+    case "detach", "trust": throw IsenoughError.unsupported("\(command) is not available in this MVP build")
     default: throw IsenoughError.usage(command.hasPrefix("--") ? "Unknown option: \(command)" : "Unknown command: \(command)")
     }
 } catch let e as IsenoughError { if json { emit(["ok":false,"error":["code":e.exitCode,"message":e.errorDescription ?? String(describing: e)]]) } else { fputs("isenough: \(e.errorDescription ?? String(describing:e))\n",stderr) }; exit(Int32(e.exitCode)) } catch {
