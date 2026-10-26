@@ -14,6 +14,8 @@ public enum ManagementUI {
         var appsError = ""
         let state = StateStore(engine.config.stateDir).read()
         let stored = state["apps"] as? [String: [String: Any]] ?? [:]
+        let listing = try? engine.deviceListing()
+        let deviceRows = listing?.devices ?? []
         do {
             for manifest in try engine.list() {
                 let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
@@ -22,11 +24,16 @@ public enum ManagementUI {
                 let restoredMap = state["restored"] as? [String: Any] ?? [:]
                 let appState = stored[manifest.bundleId]?["state"] as? String ?? ""
                 let restored = restoredMap[manifest.bundleId] != nil || appState == "restored" || appState == "needsResolution"
+                let holders = deviceRows.filter { device in
+                    device.images.contains { $0.imageId == manifest.imageId }
+                }.map(\.displayName)
                 apps.append([
                     "imageId": manifest.imageId,
                     "bundleId": manifest.bundleId,
                     "name": manifest.name,
                     "version": manifest.version,
+                    "build": manifest.build,
+                    "architectures": manifest.architectures,
                     "mode": manifest.mode.rawValue,
                     "pinned": stored[manifest.bundleId]?["pinned"] as? Bool ?? false,
                     "cached": exists,
@@ -34,6 +41,7 @@ public enum ManagementUI {
                     "restored": restored,
                     "state": appState,
                     "cachedBytes": NSNumber(value: size),
+                    "devices": holders,
                 ])
             }
         } catch {
@@ -80,6 +88,20 @@ public enum ManagementUI {
             ] as [String: Any],
             "apps": apps,
             "appsError": appsError,
+            "devices": deviceRows.map { device in
+                [
+                    "deviceId": device.deviceId,
+                    "displayName": device.displayName,
+                    "hostname": device.hostname,
+                    "arch": device.arch,
+                    "osVersion": device.osVersion,
+                    "lastSeen": formatter.string(from: device.lastSeen),
+                    "self": device.deviceId == listing?.localDeviceId,
+                    "images": device.images.map { ["imageId": $0.imageId, "bundleId": $0.bundleId, "version": $0.version, "architectures": $0.architectures, "mode": $0.mode] },
+                ] as [String: Any]
+            },
+            "devicePlaceholders": listing?.placeholders ?? [],
+            "deviceConflicts": listing?.conflicts ?? [],
             "sessions": [
                 "coldDays": NSNumber(value: engine.config.sessionColdDays),
                 "offloaded": sessions,

@@ -661,6 +661,10 @@ public final class RestoreCoordinator {
             guard cdhash == journal.manifestCdhash, tree == journal.manifestTreeHash else {
                 throw IsenoughError.integrity("extracted bundle does not match manifest cdhash and tree hash (cdhash \(cdhash) vs \(journal.manifestCdhash), tree \(tree) vs \(journal.manifestTreeHash))")
             }
+            if manifest.mode == .restore, let warning = try MASReceiptStore.reconcile(app: appNew, bundleId: manifest.bundleId, stateDir: URL(fileURLWithPath: config.stateDir)) {
+                events.append("masReceipt")
+                FileHandle.standardError.write(Data("isenough: \(warning)\n".utf8))
+            }
             try Data("\(cdhash) \(tree)".utf8).write(to: staging.appendingPathComponent(".extracted-ok"))
             try services.detach(mounted)
             events.append("detach")

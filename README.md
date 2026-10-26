@@ -61,7 +61,10 @@ copy this `isenough` binary to `<stateDir>/bin/isenough` and write `isenough.sta
 - `isenough unpack APP`, `detach APP`: not available in this build. `resolve APP` keeps, exports, or discards a bundle that changed while it was restored.
 - `isenough hooks list|enable|disable APP`: placeholder. Hook files under `stateDir/hooks/<bundleId>/` still run.
 - `isenough doctor [--fix]`: each check has a timeout and prints `ok`, `warn`, `fail`, or `timed out` as soon as it finishes. A slow or stuck iCloud repository cannot block the command. `ISENOUGH_DOCTOR_TIMEOUT` is the per-check wait in seconds (default 15). The process exits 1 when any check fails or times out. A missing or older engine is `engine` / `warn` and does not by itself fail the command. `--json` prints one object after the checks finish. `--fix` runs recovery inside the same kind of bound.
-- `isenough recommend [--min-size SIZE] [--limit N] [--min-idle-days N]`: rank installed apps in `/Applications` and `~/Applications` that are worth offloading. Only top-level `.app` bundles are considered. Stubs, the 256isenough app, macOS system apps, Apple-signed apps under `/System`, and apps that are running are skipped. Size is allocated blocks (the same basis as `du`) with a time limit. Last use is the Spotlight attribute `kMDItemLastUsedDate` read through `NSMetadataItem`; a null date means never used. Localized tool output is not parsed. A Mac App Store receipt selects restore mode. Score is size in MiB times days idle, with a never-used bonus. The default minimum size is 100 MiB. `--json` prints `recommendations`, `warnings`, and `estimatedFreedBytes`. Poor candidates (login items, menu bar agents, running helpers, system or kernel extensions, and the toolchain, including Xcode) are warnings, as are pinned and already-packed apps. Login items are a non-empty bundled LoginItems or launchd directory, or a LaunchAgent or LaunchDaemon plist whose program is inside the app. Dot-prefixed entries, `.isenough-original-` backups, `.256orig.app` bundles, and `.256isenough-staging` directories are omitted from both lists. When those leftovers exist, the output adds one line, `N leftover backups (X) can be removed`, plus their paths. The command does not delete them.
+- `isenough devices` / `devices list`: show every Mac registered in the shared repo, which images it packed, and which file is this Mac. Conflict copies and not-yet-downloaded device files are listed and not merged.
+- `isenough devices rename NAME`: set this Mac's display name. A Mac does not rename another Mac's device file.
+- `isenough devices forget DEVICEID --yes`: delete that device file. `--yes` is required. A placeholder that has not downloaded is left in place.
+- `isenough recommend [--min-size SIZE] [--limit N] [--min-idle-days N]`: rank installed apps in `/Applications` and `~/Applications` that are worth offloading. Only top-level `.app` bundles are considered. Stubs, the 256isenough app, macOS system apps, Apple-signed apps under `/System`, and apps that are running are skipped. Size is allocated blocks (the same basis as `du`) with a time limit. Last use is the Spotlight attribute `kMDItemLastUsedDate` read through `NSMetadataItem`; a null date means never used. Localized tool output is not parsed. A Mac App Store receipt selects restore mode. Score is size in MiB times days idle, with a never-used bonus. The default minimum size is 100 MiB. `--json` prints `recommendations`, `warnings`, and `estimatedFreedBytes`. Poor candidates (login items, menu bar agents, running helpers, system or kernel extensions, and the toolchain, including Xcode) are warnings, as are pinned and already-packed apps. Login items are a non-empty bundled LoginItems or launchd directory, or a LaunchAgent or LaunchDaemon plist whose program is inside the app. Dot-prefixed entries, `.isenough-original-` backups, `.256orig.app` bundles, and `.256isenough-staging` directories are omitted from both lists. When those leftovers exist, the output adds one line, `N leftover backups (X) can be removed`, plus their paths. The command does not delete them. When the same bundle id, version, and architecture are already in the repo, the reason includes `already in repo, packing is instant, no upload` and the other Macs that have the image.
 - `isenough backend add smb|nfs|webdav ...` / `backend list` / `backend use ID`: register a share or WebDAV repository. Passwords come from `--password-stdin` and are stored in the Keychain, not in `config.json`. See `docs/backends.md`.
 - `isenough ui` serves the management page on `127.0.0.1` with a random token. The page includes the recommend list from `GET /api/recommend`. `scripts/build-ui.sh` copies the page and, when Pake is installed, builds `256isenough.app`.
 - `isenough serve`, `daemon install|uninstall|status`: placeholders.
@@ -69,6 +72,28 @@ copy this `isenough` binary to `<stateDir>/bin/isenough` and write `isenough.sta
 - `isenough version`: version/schema.
 
 Errors use stable numeric codes where implemented; `--json` emits `{ "ok": false, "error": {"code", "message"} }`.
+
+## Two Macs, one repo
+
+The iCloud Drive folder (`…/CloudDocs/256isenough`, or any LocalFolder used the same way) is the shared repo.
+`catalog/` and `devices/` are part of that layout. Two Macs of the same user can point at it.
+
+Shared, and safe for more than one Mac to see:
+
+- `images/` and `manifests/` are write-once. The image id is the bundle id, version, build, architecture slices, and the content tree hash (the same `BundleHasher` digest as before). The same app and version on both Macs is one image. `pack` on the second Mac verifies the stored image and does not upload again.
+- `devices/<deviceId>.json` is the only file a Mac writes for itself. `deviceId` is a UUID kept in that Mac's state directory, not the hostname.
+- `catalog/manifest.json` is a derived index. Manifests remain the source of truth.
+- `trash/` holds images `gc` has decided are unreferenced. They stay there for 7 days.
+
+Machine-local, and not shared through the repo:
+
+- The device id, pins, launch state, and saved Mac App Store receipts live under the state directory (`~/Library/Application Support/256isenough/` by default).
+- The image cache and mount directory stay on that Mac.
+- A receipt inside an app (`Contents/_MASReceipt`) is not copied into the shared image. Restore puts back the receipt this Mac saved, and says so when it has none.
+
+`gc` will not delete an image that any device file still names. A Mac that has not checked in for 90 days is reported and still protects its images. A device file iCloud has not downloaded, including a `.icloud` placeholder, also protects every image. `doctor` reports conflict copies such as `devices/<id> 2.json` and does not merge them. A stub opens only the image id this Mac recorded. If the requested image is another version or architecture, launch stops with a diagnostic instead of starting that image.
+
+`recommend` says `already in repo, packing is instant, no upload` when the installed app's bundle id, version, and architecture are already in the repo, and it names the other Macs that have that image. `isenough ui` shows the same devices next to the app list.
 
 ## Hooks and lifecycle
 

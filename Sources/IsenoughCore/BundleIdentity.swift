@@ -181,6 +181,14 @@ public enum BundleHasher {
     /// Drop AppleDouble sidecars and `__MACOSX` directories left by a disk-image round trip.
     /// Their bytes can include a per-copy `com.apple.provenance` value, so they must not
     /// be part of the tree that is hashed or installed. Real bundle files stay.
+    /// Remove `Contents/_MASReceipt` so a shared image does not carry another Mac's receipt.
+    public static func removeMachineReceipt(_ root: URL) {
+        let receipt = root.appendingPathComponent(MASReceiptPaths.directory)
+        if FileManager.default.fileExists(atPath: receipt.path) {
+            try? FileManager.default.removeItem(at: receipt)
+        }
+    }
+
     public static func removeMetadataSidecars(_ root: URL) {
         var files: [URL] = []
         guard (try? collect(root.resolvingSymlinksInPath(), &files)) != nil else { return }

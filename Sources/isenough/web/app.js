@@ -17,6 +17,13 @@ const copy = {
     cache: "缓存用量",
     backend: "后端",
     apps: "应用",
+    devices: "设备",
+    devicesEmpty: "还没有登记的 Mac",
+    devicesSummary: (n) => `${n} 台 Mac 共用这个仓库`,
+    thisMac: "本机",
+    onDevices: (names) => `也在 ${names}`,
+    conflictCopies: (n) => `${n} 个 iCloud 冲突副本，未合并`,
+    placeholders: (n) => `${n} 个设备文件还没下载`,
     sessions: "冷会话",
     recommend: "值得卸载",
     recommendWarn: "不建议卸载",
@@ -43,6 +50,7 @@ const copy = {
     warntoolchain: "引擎使用的工具链",
     warnpinned: "已固定",
     warnalreadyPacked: "已经打包",
+    alreadyInRepo: "仓库里已有相同版本，打包无需上传",
     warnsizeTimedOut: "体积扫描超时",
     usedCaption: "已用",
     ofQuota: "配额",
@@ -102,6 +110,13 @@ const copy = {
     cache: "Cache",
     backend: "Backend",
     apps: "Apps",
+    devices: "Devices",
+    devicesEmpty: "No Macs have registered yet",
+    devicesSummary: (n) => `${n} ${n === 1 ? "Mac shares" : "Macs share"} this repo`,
+    thisMac: "This Mac",
+    onDevices: (names) => `Also on ${names}`,
+    conflictCopies: (n) => `${n} iCloud conflict ${n === 1 ? "copy" : "copies"}, not merged`,
+    placeholders: (n) => `${n} device ${n === 1 ? "file is" : "files are"} not downloaded`,
     sessions: "Cold sessions",
     recommend: "Worth offloading",
     recommendWarn: "Poor candidates",
@@ -128,6 +143,7 @@ const copy = {
     warntoolchain: "Toolchain used by the engine",
     warnpinned: "Pinned",
     warnalreadyPacked: "Already packed",
+    alreadyInRepo: "already in repo, packing is instant, no upload",
     warnsizeTimedOut: "Size scan timed out",
     usedCaption: "Used",
     ofQuota: "Quota",
@@ -246,6 +262,8 @@ function applyChrome() {
   document.querySelector("#health-title").textContent = t("backend");
   const count = (lastStatus && lastStatus.apps && lastStatus.apps.length) || 0;
   document.querySelector("#apps-title").textContent = lastStatus ? `${t("apps")} ${count}` : t("apps");
+  const devicesTitle = document.querySelector("#devices-title");
+  if (devicesTitle) devicesTitle.textContent = t("devices");
   document.querySelector("#sessions-title").textContent = t("sessions");
   document.querySelector("#recommend-title").textContent = t("recommend");
   document.querySelector("#recommend-warn-title").textContent = t("recommendWarn");
@@ -467,7 +485,9 @@ function renderApps(list, failed) {
     nameRow.append(chips);
     const mode = app.mode === "restore" ? t("restoreMode") : t("mount");
     const size = app.cached ? bytes(app.cachedBytes) : t("notCached");
-    main.append(nameRow, el("div", "meta", `${app.version || ""} · ${mode} · ${size}`));
+    const holders = (app.devices || []).filter(Boolean);
+    const shared = holders.length ? ` · ${t("onDevices")(holders.join(", "))}` : "";
+    main.append(nameRow, el("div", "meta", `${app.version || ""} · ${mode} · ${size}${shared}`));
     if (app.cached && quota > 0) {
       const sharePct = Math.max(0, Math.min(100, (Number(app.cachedBytes || 0) / quota) * 100));
       const shown = sharePct >= 10 ? Math.round(sharePct) : Math.round(sharePct * 10) / 10;
@@ -503,6 +523,11 @@ function recommendReason(app) {
   let text = parts.join(", ");
   if (app.macAppStore) text += "; " + t("restoreNeeded");
   if (app.sizeIncomplete) text += "; " + t("sizeBound");
+  if (app.alreadyInRepo) {
+    text += "; " + t("alreadyInRepo");
+    const devices = app.otherDevices || [];
+    if (devices.length) text += " (" + devices.join(", ") + ")";
+  }
   return text;
 }
 
@@ -586,6 +611,38 @@ function renderRecommend(report, failed) {
   renderLeftovers(report);
 }
 
+function renderDevices(status) {
+  const summary = document.querySelector("#devices-summary");
+  const list = document.querySelector("#devices");
+  if (!summary || !list) return;
+  list.replaceChildren();
+  const devices = (status && status.devices) || [];
+  const conflicts = (status && status.deviceConflicts) || [];
+  const pending = (status && status.devicePlaceholders) || [];
+  const notes = [];
+  if (status) notes.push(t("devicesSummary")(devices.length));
+  if (conflicts.length) notes.push(t("conflictCopies")(conflicts.length));
+  if (pending.length) notes.push(t("placeholders")(pending.length));
+  summary.textContent = notes.join(" · ");
+  if (!devices.length) {
+    list.append(el("li", "empty", status ? t("devicesEmpty") : t("loadFailed")));
+    return;
+  }
+  for (const device of devices) {
+    const item = el("li");
+    const top = el("div", "session-top");
+    const label = device.displayName || device.hostname || device.deviceId || "";
+    top.append(el("div", "name", label));
+    if (device.self) top.append(chip("cached", t("thisMac")));
+    item.append(top);
+    const images = device.images || [];
+    const detail = images.map((image) => `${image.bundleId || image.imageId} ${image.version || ""}`.trim()).join(", ");
+    item.append(el("div", "path", [device.hostname, device.arch, device.osVersion].filter(Boolean).join(" · ")));
+    if (detail) item.append(el("p", "preview", detail));
+    list.append(item);
+  }
+}
+
 function renderSessions(sessions) {
   const summary = document.querySelector("#sessions-summary");
   const list = document.querySelector("#sessions");
@@ -614,6 +671,7 @@ function render(status) {
   const failed = Boolean(status.appsError);
   if (failed) showBanner(status.appsError);
   renderApps(status.apps || [], failed);
+  renderDevices(status);
   renderSessions(status.sessions || {});
 }
 
@@ -622,6 +680,7 @@ function renderFailure() {
   renderCache(null);
   renderHealth(null, lastLatency);
   renderApps([], true);
+  renderDevices(null);
   renderSessions(null);
 }
 

@@ -28,12 +28,19 @@ public enum IsenoughError: Error, LocalizedError, Equatable {
     }
 }
 
-public struct ImageManifest: Codable, Equatable {
+public struct ImageManifest: Equatable {
     public let schema: String
     public var imageId: String
     public var bundleId: String
     public var name: String
     public var version: String
+    /// `CFBundleVersion`. Empty on manifests written before multi-machine identity.
+    public var build: String
+    /// Mach-O slices the packed app contains, sorted. Empty on older manifests.
+    public var architectures: [String]
+    /// Tree hash that identifies the app across machines. Receipt bytes are not part of it.
+    /// When nil, `app.treeHash` is the only recorded digest.
+    public var contentTreeHash: String?
     public var image: Image
     public var app: App
     public var mode: Mode
@@ -50,16 +57,32 @@ public struct ImageManifest: Codable, Equatable {
         public var urlTypes: [[String: AnyCodable]]
         /// Code-directory hash recorded at pack. On macOS this is `codesign`'s CDHash when the bundle is signed; otherwise it is the sha256 of the main executable.
         public var cdhash: String?
-        /// Canonical tree hash from `BundleHasher`, recorded at pack.
+        /// Canonical tree hash from `BundleHasher`, recorded at pack. This is the post-image tree
+        /// restore verifies. It uses the same digest format as `contentTreeHash`.
         public var treeHash: String?
         public init(originalPath: String, executable: String, documentTypes: [[String: AnyCodable]], urlTypes: [[String: AnyCodable]], cdhash: String? = nil, treeHash: String? = nil) {
             self.originalPath=originalPath; self.executable=executable; self.documentTypes=documentTypes; self.urlTypes=urlTypes; self.cdhash=cdhash; self.treeHash=treeHash
         }
     }
-    public init(bundleId: String, name: String, version: String, image: Image, app: App, mode: Mode = .mount, createdAt: Date = Date()) {
+    public init(bundleId: String, name: String, version: String, image: Image, app: App, mode: Mode = .mount, createdAt: Date = Date(), build: String = "", architectures: [String] = [], contentTreeHash: String? = nil, imageId explicitImageId: String? = nil) {
         self.schema = "image/1"; self.bundleId = bundleId; self.name = name; self.version = version; self.image = image; self.app = app; self.mode = mode; self.createdAt = createdAt
-        self.imageId = "\(bundleId)-\(version)-\(String(image.sha256.prefix(8)))"
+        self.build = build
+        self.architectures = ImageIdentity.normalize(architectures)
+        self.contentTreeHash = contentTreeHash
+        if let explicitImageId {
+            self.imageId = explicitImageId
+        } else if let contentTreeHash, !contentTreeHash.isEmpty {
+            self.imageId = ImageIdentity(bundleId: bundleId, version: version, build: build, architectures: architectures, treeHash: contentTreeHash).imageId()
+        } else {
+            self.imageId = "\(bundleId)-\(version)-\(String(image.sha256.prefix(8)))"
+        }
         if self.image.file.isEmpty { self.image.file = "images/\(self.imageId).dmg" }
+    }
+    /// Identity used to recognize the same app on another Mac. Prefers the content hash.
+    public var resolvedIdentity: ImageIdentity? {
+        let hash = contentTreeHash ?? app.treeHash
+        guard let hash, !hash.isEmpty else { return nil }
+        return ImageIdentity(bundleId: bundleId, version: version, build: build, architectures: architectures, treeHash: hash)
     }
     public func validate() throws {
         guard schema == "image/1" else { throw IsenoughError.failure("Unsupported manifest schema: \(schema)") }
@@ -67,6 +90,44 @@ public struct ImageManifest: Codable, Equatable {
     }
     public func encode() throws -> Data { let e = JSONEncoder(); e.outputFormatting = [.sortedKeys, .prettyPrinted]; e.dateEncodingStrategy = .iso8601; return try e.encode(self) }
     public static func decode(_ data: Data) throws -> Self { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; let m = try d.decode(Self.self, from: data); try m.validate(); return m }
+}
+
+extension ImageManifest: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case schema, imageId, bundleId, name, version, build, architectures, contentTreeHash, image, app, mode, createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try container.decodeIfPresent(String.self, forKey: .schema) ?? "image/1"
+        imageId = try container.decode(String.self, forKey: .imageId)
+        bundleId = try container.decode(String.self, forKey: .bundleId)
+        name = try container.decode(String.self, forKey: .name)
+        version = try container.decode(String.self, forKey: .version)
+        build = try container.decodeIfPresent(String.self, forKey: .build) ?? ""
+        architectures = try container.decodeIfPresent([String].self, forKey: .architectures) ?? []
+        contentTreeHash = try container.decodeIfPresent(String.self, forKey: .contentTreeHash)
+        image = try container.decode(Image.self, forKey: .image)
+        app = try container.decode(App.self, forKey: .app)
+        mode = try container.decode(Mode.self, forKey: .mode)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schema, forKey: .schema)
+        try container.encode(imageId, forKey: .imageId)
+        try container.encode(bundleId, forKey: .bundleId)
+        try container.encode(name, forKey: .name)
+        try container.encode(version, forKey: .version)
+        try container.encode(build, forKey: .build)
+        try container.encode(architectures, forKey: .architectures)
+        try container.encodeIfPresent(contentTreeHash, forKey: .contentTreeHash)
+        try container.encode(image, forKey: .image)
+        try container.encode(app, forKey: .app)
+        try container.encode(mode, forKey: .mode)
+        try container.encode(createdAt, forKey: .createdAt)
+    }
 }
 
 public struct AnyCodable: Codable, Equatable {

@@ -103,8 +103,17 @@ enum Doctor {
         if repoStatus != "ok" {
             let why = repoStatus == "timed out" ? "the repository check timed out" : "the repository path was not confirmed"
             record("backend", "warn", "skipped because \(why)")
+            record("conflicts", "warn", "skipped because \(why)")
         } else {
             backendCheck(engine: engine, seconds: seconds, record: record, timedOut: timedOut)
+            switch bound(seconds: seconds, { engine.syncReport() }) {
+            case .value(let report):
+                record("conflicts", report.status, report.detail)
+            case .failure(let message):
+                record("conflicts", "fail", message)
+            case .timedOut:
+                record("conflicts", "timed out", timedOut("checking iCloud conflict copies", path: config.repoPath))
+            }
         }
 
         freeSpaceCheck(config: config, seconds: seconds, record: record, timedOut: timedOut)

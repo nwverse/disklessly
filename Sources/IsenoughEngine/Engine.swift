@@ -183,6 +183,8 @@ public struct IsenoughEngine {
     /// Replaces the live `/Applications` scan. Tests inject roots and Spotlight dates.
     /// Production leaves it nil, which uses the macOS probes.
     public var recommendEnvironment: RecommendEnvironment?
+    /// Tests inject hostname, architecture, and OS version. Nil uses the live Mac facts.
+    public var deviceFactsOverride: DeviceFacts?
     /// Replaces `FileManager.fileExists` for the repository path. Tests use this to
     /// prove a stuck probe cannot block `doctor`. Production leaves it nil.
     var doctorRepositoryProbe: ((String) -> Bool)?
@@ -197,6 +199,7 @@ public struct IsenoughEngine {
         self.shareOpener = shareOpener
         self.backendOverride = nil
         self.recommendEnvironment = nil
+        self.deviceFactsOverride = nil
     }
     public func openBackend() throws -> any StorageBackend {
         if let backendOverride { return backendOverride }
@@ -356,7 +359,7 @@ public struct IsenoughEngine {
         #endif
     }
 
-    public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false) throws -> ImageManifest {
+    public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false) throws -> PublishResult {
         #if !os(macOS)
         throw IsenoughError.unsupported("pack requires macOS hdiutil and codesign")
         #else
@@ -368,13 +371,30 @@ public struct IsenoughEngine {
         try FileManager.default.createDirectory(at:staging.appendingPathComponent("src"),withIntermediateDirectories:true); defer { try? FileManager.default.removeItem(at:staging) }
         let stagedApp=staging.appendingPathComponent("src").appendingPathComponent(app.lastPathComponent)
         try run("/usr/bin/ditto",[app.path,stagedApp.path])
+        BundleHasher.removeMetadataSidecars(stagedApp)
+        let executableName = info["CFBundleExecutable"] as? String ?? ""
+        let build = info["CFBundleVersion"] as? String ?? "0"
+        _ = try MASReceiptStore.preserve(from: stagedApp, bundleId: bid, stateDir: URL(fileURLWithPath: config.stateDir))
+        BundleHasher.removeMachineReceipt(stagedApp)
+        let contentHash = try BundleHasher.treeHash(of: stagedApp)
+        let architectures = MachArchitectures.slices(at: stagedApp.appendingPathComponent("Contents/MacOS/\(executableName)"))
+        let identity = ImageIdentity(bundleId: bid, version: version, build: build, architectures: architectures.isEmpty ? ["unknown"] : architectures, treeHash: contentHash)
+        let backend = try repo
+        let decision = PublishPlanner.decide(identity: identity, manifests: try readManifests(backend)) { path in
+            (try? WriteOnce.probe(backend, path)) ?? .absent
+        }
+        if case .reuse(let existing) = decision {
+            try register(existing, backend: backend, now: Date())
+            if EngineInstall.runningExecutable().lastPathComponent == "isenough" { try installEngine() }
+            if !noStub { try installStub(info: info, manifest: existing, path: app.path, keepOriginal: keepOriginal) }
+            return PublishResult(manifest: existing, reused: true, uploaded: false)
+        }
+        if case .refuse(let message) = decision { throw IsenoughError.integrity(message) }
         let dmg=staging.appendingPathComponent("image.dmg")
         try run("/usr/bin/hdiutil",["create","-quiet","-srcfolder",staging.appendingPathComponent("src").path,"-format","ULMO","-volname",name,"-o",dmg.deletingPathExtension().path])
-        let sha=try Hashing.sha256(dmg), attrs=try FileManager.default.attributesOfItem(atPath:dmg.path), size=(attrs[.size] as? NSNumber)?.uint64Value ?? 0
-        let image=ImageManifest.Image(file:"",format:"ULMO",sha256:sha,size:size,volumeName:name,appPathInVolume:app.lastPathComponent)
         // Hash the ditto restore will verify, not the pre-image staged app. hdiutil
         // can change modes and materialize AppleDouble files; the manifest has to
-        // describe that tree.
+        // describe that tree. The content hash above is what other Macs compare.
         let mount=staging.appendingPathComponent("mount")
         try FileManager.default.createDirectory(at:mount,withIntermediateDirectories:true)
         try LiveDiskImage.attach(image: dmg, mountPoint: mount)
@@ -383,16 +403,18 @@ public struct IsenoughEngine {
         let checked=staging.appendingPathComponent("checked-\(app.lastPathComponent)")
         try run("/usr/bin/ditto",[mount.appendingPathComponent(app.lastPathComponent).path,checked.path])
         BundleHasher.removeMetadataSidecars(checked)
+        BundleHasher.removeMachineReceipt(checked)
         let treeHash=try BundleHasher.treeHash(of: checked)
         let cdhash=try BundleHasher.cdhash(of: checked)
         try LiveDiskImage.detach(mountPoint: mount, force: false)
         detachedPackMount=true
-        let facts=ImageManifest.App(originalPath:app.path,executable:info["CFBundleExecutable"] as? String ?? "",documentTypes:(info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },urlTypes:(info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },cdhash:cdhash,treeHash:treeHash)
-        var manifest=ImageManifest(bundleId:bid,name:name,version:version,image:image,app:facts,mode:selected); manifest.image.file="images/\(manifest.imageId).dmg"; try manifest.validate()
-        let backend=try repo; try backend.put(manifest.image.file, file: dmg); try backend.put("manifests/\(manifest.imageId).json",data:manifest.encode())
+        let docs = (info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) }
+        let urls = (info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) }
+        let request = PublishRequest(name: name, identity: identity, mode: selected, executable: executableName, originalPath: app.path, cdhash: cdhash, postImageTreeHash: treeHash, volumeName: name, appPathInVolume: app.lastPathComponent, documentTypes: docs, urlTypes: urls)
+        let published = try publish(request, imageFile: dmg)
         if EngineInstall.runningExecutable().lastPathComponent == "isenough" { try installEngine() }
-        if !noStub { try installStub(info:info, manifest:manifest, path:app.path, keepOriginal:keepOriginal) }
-        return manifest
+        if !noStub { try installStub(info: info, manifest: published.manifest, path: app.path, keepOriginal: keepOriginal) }
+        return published
         #endif
     }
     #if os(macOS)
@@ -448,7 +470,7 @@ public struct IsenoughEngine {
         }
     }
     #endif
-    public func list() throws -> [ImageManifest] { let b=try repo; return try b.list("manifests").filter{$0.hasSuffix(".json")}.compactMap { try? ImageManifest.decode(b.get("manifests/\($0)",range:nil)) } }
+    public func list() throws -> [ImageManifest] { try readManifests(try repo) }
     public func status() -> [String:Any] {
         let state=StateStore(config.stateDir).read()
         return ["backend":config.backend,"activeBackendId":config.activeBackendId ?? "","repoPath":config.repoPath,"cacheDir":config.cacheDir,"quotaBytes":NSNumber(value: config.quotaBytes),"minFreeBytes":NSNumber(value: config.minFreeBytes),"detachDelaySeconds":NSNumber(value: config.detachDelaySeconds),"apps":state["apps"] ?? [:],"cache":state["cache"] ?? [:],"restored":state["restored"] ?? [:]]
@@ -457,7 +479,9 @@ public struct IsenoughEngine {
         if let exact=manifests.first(where: { $0.imageId == name }) { return exact }
         let apps=StateStore(config.stateDir).read()["apps"] as? [String:[String:Any]] ?? [:]
         if let imageId=apps[name]?["imageId"] as? String, let pinned=manifests.first(where: { $0.imageId == imageId }) { return pinned }
-        return manifests.first(where: { $0.bundleId == name || $0.name.caseInsensitiveCompare(name) == .orderedSame })
+        if let record = try? ownDeviceRecord(), let imageId = record.currentImage(bundleId: name)?.imageId ?? record.images.first(where: { $0.bundleId.caseInsensitiveCompare(name) == .orderedSame })?.imageId, let recorded = manifests.first(where: { $0.imageId == imageId }) { return recorded }
+        let matches = manifests.filter { $0.bundleId == name || $0.name.caseInsensitiveCompare(name) == .orderedSame }
+        return matches.count == 1 ? matches[0] : nil
     }
     public func setPinned(_ manifest: ImageManifest, pinned: Bool) throws {
         var state = StateStore(config.stateDir).read()
@@ -475,9 +499,8 @@ public struct IsenoughEngine {
         let path=URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
         if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
     }
-    public func gc() throws -> [String] {
-        restore.loadConfiguredFaults()
-        return try restore.recoverAll(shortLived: true)
+    public func gc(now: Date = Date()) throws -> [String] {
+        try maintain(now: now).lines
     }
     /// Each check is bounded. `onCheck` runs on the caller as soon as that check finishes,
     /// so a stuck iCloud `fileExists` cannot hide every later result.
@@ -489,11 +512,13 @@ public struct IsenoughEngine {
     /// live scan is unavailable unless `recommendEnvironment` injects facts.
     public func recommend(options: RecommendOptions) -> RecommendReport {
         let environment = recommendEnvironment ?? LiveRecommendScan.environment(home: NSHomeDirectory(), now: options.now)
+        var ranked = options
+        ranked.repoImages = repoImagePresences()
         guard environment.available else {
-            return RecommendRanking.rank([], options: options, scanAvailable: false)
+            return RecommendRanking.rank([], options: ranked, scanAvailable: false)
         }
         let apps = RecommendDiscovery.collect(environment: environment, catalog: recommendCatalog())
-        var report = RecommendRanking.rank(apps, options: options, scanAvailable: true)
+        var report = RecommendRanking.rank(apps, options: ranked, scanAvailable: true)
         report.leftovers = RecommendDiscovery.leftovers(environment: environment)
         return report
     }
@@ -558,6 +583,7 @@ public struct IsenoughEngine {
         return cache
     }
     public func launch(_ manifest:ImageManifest, documents:[String]=[], urls:[String]=[], arguments:[String]=[], wait:Bool=true) throws {
+        try assertDeviceLaunch(manifest)
         restore.loadConfiguredFaults()
         if EngineInstall.runningExecutable().lastPathComponent == "isenough" {
             try installEngine()

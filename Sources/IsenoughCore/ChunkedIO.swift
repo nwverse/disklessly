@@ -75,14 +75,30 @@ public enum ChunkedIO {
         try streamCopy(from: source, to: destination)
     }
 
+    /// Replace `destination` with `source`. Same-directory publishes use `rename`,
+    /// which overwrites an existing file. `FileManager.replaceItemAt` reports a
+    /// missing file on Linux even when both paths exist, so it is not used.
     public static func replaceFile(_ destination: URL, with source: URL) throws {
         let fm = FileManager.default
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if fm.fileExists(atPath: destination.path) {
-            _ = try fm.replaceItemAt(destination, withItemAt: source)
-        } else {
-            try fm.moveItem(at: source, to: destination)
+        var errorCode: Int32 = 0
+        let renamed = source.path.withCString { src in
+            destination.path.withCString { dst -> Bool in
+                if rename(src, dst) == 0 { return true }
+                errorCode = errno
+                return false
+            }
         }
+        if renamed { return }
+        if errorCode == EXDEV {
+            if fm.fileExists(atPath: destination.path) {
+                try fm.removeItem(at: destination)
+            }
+            try copyFile(from: source, to: destination)
+            try fm.removeItem(at: source)
+            return
+        }
+        throw IsenoughError.failure("cannot replace \(destination.path) (errno \(errorCode))")
     }
 
     public static func appendFile(_ source: URL, to destination: URL) throws {

@@ -338,13 +338,35 @@ processes matching it as potential dependents (§5.9 pass 3). Empty for typical 
 
 ### 3.4 Device file (`devices/<deviceId>.json`)
 ```json
-{ "schema": "device/1", "deviceId": "6F1C…", "host": "mini", "model": "Mac16,10", "os": "15.6",
-  "updatedAt": "…",
-  "apps": { "com.blender.blender": { "imageId": "com.blender.blender-4.2.1_b4.2.1-1a2b3c4d",
-            "stubPath": "/Applications/Blender.app", "pinned": false, "lastUsedAt": "…", "launchCount": 7 } } }
+{ "schema": "device/1", "deviceId": "6F1C…", "hostname": "mini", "displayName": "Mac mini",
+  "arch": "arm64", "osVersion": "15.6.1", "lastSeen": "2026-10-25T00:00:00Z",
+  "images": [ { "imageId": "com.blender.blender-4.2.1_b4.2.1-arm64-1a2b3c4d",
+                "bundleId": "com.blender.blender", "version": "4.2.1", "build": "4.2.1",
+                "architectures": ["arm64"], "mode": "mount", "packedAt": "2026-10-25T00:00:00Z" } ] }
 ```
-Used for multi-Mac visibility ("which Macs use which version") and safe trash/purge (`gc --remote` never deletes
-an image referenced by any device file updated within 90 days).
+`deviceId` is a UUID stored in the machine-local state directory (`device.json`). It is not derived from the
+hostname. Each Mac writes only `devices/<its own deviceId>.json`, atomically (temp file, fsync, rename). Pins and
+the image cache stay in that Mac's state and cache directories.
+
+Image identity is `bundleId + version + build + architecture slices + content tree hash`. The tree hash keeps the
+existing `BundleHasher` digest. The same app, version, build, and slices on two Macs resolve to one `imageId`.
+`pack` on the second Mac compares that hash, verifies the stored image sha256 when the file is downloaded, skips
+the upload, and only registers itself. A different version, build, or architecture is a new image. Manifests and
+images are write-once: differing bytes are refused, never overwritten. A stub launches the image id recorded for
+its own Mac and refuses a different version or architecture with an explicit diagnostic.
+
+`Contents/_MASReceipt` is per Apple ID and per Mac. It is excluded from the tree hash and stripped from the shared
+image. Each Mac keeps a copy under `<stateDir>/receipts/<bundleId>/receipt` and restore installs that copy.
+Restore does not trust a receipt found inside the image. If this Mac has no saved receipt, restore continues and
+warns that the App Store may need to refresh it.
+
+An image is deletable only when no `devices/*.json` references it. A device whose `lastSeen` is older than 90 days
+produces a warning and is still a reference. `gc` moves unreferenced images to `trash/` and purges them only after
+a 7 day grace period. A device file that is not downloaded, including an evicted `.icloud` placeholder, is treated
+as present, and nothing is deleted while one exists. Conflict copies (`file 2.json`, names containing
+`conflicted copy`) are reported by `doctor` and are never merged. `isenough devices` lists devices, renames this
+Mac, and forgets a device only with `--yes`. `recommend` marks a candidate that already matches bundle id, version,
+and architecture as already in the repo.
 
 ### 3.5 Local state (`~/Library/Application Support/256isenough/`)
 ```
