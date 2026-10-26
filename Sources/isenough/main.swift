@@ -166,7 +166,7 @@ do {
         emit(packed)
     case "list":
         let manifests = try engine.list()
-        if json { emit(manifests.map { ["imageId":$0.imageId,"bundleId":$0.bundleId,"name":$0.name,"version":$0.version,"mode":$0.mode.rawValue] }) }
+        if json { emit(manifests.map { ["imageId":$0.imageId,"bundleId":$0.bundleId,"name":$0.name,"version":$0.version,"mode":$0.mode.rawValue,"iconPath": AppIcon.existingPath(stateDir: config.stateDir, repoPath: config.repoPath, imageId: $0.imageId) ?? ""] }) }
         else { printImageList(manifests) }
     case "status": emit(engine.status())
     case "prefetch": guard let n=args.first else { throw IsenoughError.usage("prefetch requires app") }; let m=try find(n); emit(["ok":true,"path":try engine.prefetch(m).path])

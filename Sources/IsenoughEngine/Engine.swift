@@ -382,10 +382,34 @@ public struct IsenoughEngine {
         let encoded = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
         try encoded.write(to: stubJSON, options: .atomic)
         #if os(macOS)
+        let imageId = object["imageId"] as? String ?? ""
+        if AppIcon.isSafeImageId(imageId) {
+            let recorded = (try? list())?.first { $0.imageId == imageId }?.app.originalPath
+            StubIcon.backfill(stub: bundle, imageId: imageId, stateDir: config.stateDir, originals: StubIcon.originals(mountRoot: config.mountRoot, imageId: imageId, stub: bundle, recordedPath: recorded), publish: { data in
+                self.publishIcon(imageId, data: data)
+            })
+        }
         let identity = SigningIdentity.resolve(configured: config.signIdentity, environment: ProcessInfo.processInfo.environment)
         try ProcessRunner.run("/usr/bin/codesign", ["--force", "--sign", identity, bundle.path])
+        StubIcon.touch(bundle)
+        StubIcon.register(bundle)
         #endif
     }
+
+    #if os(macOS)
+    private func publishIcon(_ imageId: String, data: Data) {
+        do {
+            guard let relative = AppIcon.repoRelativePath(imageId: imageId) else { return }
+            let backend = try repo
+            if try backend.stat(relative) == nil {
+                try backend.ensureCollection("icons")
+                try backend.put(relative, data: data)
+            }
+        } catch {
+            FileHandle.standardError.write(Data("isenough: could not publish the icon: \(error.localizedDescription)\n".utf8))
+        }
+    }
+    #endif
 
     public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false, imageFormat requestedFormat: String? = nil) throws -> PublishResult {
         #if !os(macOS)
@@ -504,6 +528,9 @@ public struct IsenoughEngine {
         try manifest.encode().write(to:temp.appendingPathComponent("Contents/Resources/manifest.json"))
         let enginePath = try installedEnginePath()
         try JSONSerialization.data(withJSONObject:StubGenerator.stubInfo(manifest:manifest,cliPath:enginePath),options:[.prettyPrinted,.sortedKeys]).write(to:temp.appendingPathComponent("Contents/Resources/stub.json"))
+        StubIcon.capture(from: source, into: temp, imageId: manifest.imageId, stateDir: config.stateDir, publish: { data in
+            self.publishIcon(manifest.imageId, data: data)
+        })
         // Signing the bundle re-signs its main executable isenough-stub in place.
         // No --deep is needed because there are no nested code items.
         let identity = SigningIdentity.resolve(configured: config.signIdentity, environment: ProcessInfo.processInfo.environment)
@@ -521,6 +548,8 @@ public struct IsenoughEngine {
             try? FileManager.default.moveItem(at:backup,to:source)
             throw IsenoughError.failure("Could not install signed stub at \(dest.path): \(error.localizedDescription)")
         }
+        StubIcon.touch(dest)
+        StubIcon.register(dest)
         if keepOriginal {
             let retained=dest.deletingLastPathComponent().appendingPathComponent(source.deletingPathExtension().lastPathComponent+".256orig.app")
             do { try FileManager.default.moveItem(at:backup,to:retained) }

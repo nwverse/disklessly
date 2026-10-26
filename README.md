@@ -148,3 +148,12 @@ iCloud materialization is still best-effort. Capacity admission claims from the 
 `TreeFingerprint` can miss a content change that does not change size or mtime. Set `ISENOUGH_PARANOID_INSPECT=1` to force a full tree hash on inspect. `ISENOUGH_PARANOID_VERIFY=1` forces a full image hash even when the cache stamp matches.
 ULMO creation and hdiutil attach have not been run on this Linux host. Mount and restore modes must be validated on
 macOS. Never attach a dataless iCloud DMG: wait until the file is fully materialized before hashing or attaching.
+
+## Manual macOS checks
+
+1. `swift build`, `swift test`, and `bash scripts/e2e.sh` pass.
+2. On a real iCloud repo, Mac A packs and the network drops before the upload finishes. Mac B packs the same version: expect `originalKept` or exit 5, and the original app still present. After the network returns, B packs again and reuses the image.
+3. Xcode in restore mode with `--image-format ULFO`: post-quit within 90 seconds, and the watcher hashes the DMG at most once.
+4. `sessions key init` and `sessions --apply --encrypt`: another Mac can `reindex` and `restore --to`.
+5. A sample of 1699 real session files compresses at least 2.4×, and `sessions search` returns in under 100 ms.
+6. Finder, the Dock, and the `isenough ui` app list show the original icons for Keynote, Xcode, and Obsidian stubs. A stub that is removed and later installed again still has its icon (`stub refresh` backfills one that is missing).

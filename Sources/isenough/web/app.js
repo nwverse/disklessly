@@ -312,7 +312,7 @@ const iconPin = "M12 2.2c.5 0 .9.4.9.9v1.2A5.1 5.1 0 0 1 17 9.2c0 1.2-.4 2.3-1.1
 const iconTrash = "M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM8 9h2v9H8V9z";
 const iconRestore = "M12 4a7 7 0 1 1-6.2 3.7H8a5 5 0 1 0 1.2-2.4L7.5 7H3.2V2.7L5 4.5A7 7 0 0 1 12 4z";
 
-function appIcon(name) {
+function letterIcon(name) {
   const letter = (name || "?").trim().charAt(0).toUpperCase() || "?";
   const tones = ["#0f6b4c", "#0c4f8a", "#8a3d12", "#8f1d3a", "#3d4a2a", "#4a3f8a"];
   let hash = 0;
@@ -320,6 +320,20 @@ function appIcon(name) {
   const node = el("div", "app-icon", letter);
   node.style.background = tones[hash];
   node.setAttribute("aria-hidden", "true");
+  return node;
+}
+
+function appIcon(name, imageId) {
+  if (!imageId) return letterIcon(name);
+  const node = document.createElement("img");
+  node.className = "app-icon";
+  node.alt = "";
+  node.width = 44;
+  node.height = 44;
+  node.src = String(url("/api/icon/" + encodeURIComponent(imageId)));
+  node.addEventListener("error", () => {
+    node.replaceWith(letterIcon(name));
+  });
   return node;
 }
 
@@ -509,7 +523,7 @@ function renderApps(list, failed) {
     if (!app.cached) evict.disabled = true;
     actions.append(evict);
     actions.append(iconButton(t("restore"), t("restore"), iconRestore, () => act("/api/restore", app.name)));
-    card.append(appIcon(app.name), main, actions);
+    card.append(appIcon(app.name, app.imageId), main, actions);
     root.append(card);
   }
 }

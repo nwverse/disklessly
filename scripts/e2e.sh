@@ -203,7 +203,8 @@ export ISENOUGH_MOUNT_ROOT="$MOUNT_ROOT"
 export ISENOUGH_STUB_DIR="$TMP/Applications"
 export ISENOUGH_DETACH_DELAY=1
 FIXTURE_BUNDLE_ID=io.github.s546126.256isenough.e2efixture
-mkdir -p "$TMP/Applications/Fixture.app/Contents/MacOS" "$TMP/docs"
+mkdir -p "$TMP/Applications/Fixture.app/Contents/MacOS" "$TMP/Applications/Fixture.app/Contents/Resources" "$TMP/docs"
+printf 'icns' > "$TMP/Applications/Fixture.app/Contents/Resources/AppIcon.icns"
 run_cli init --backend local
 pass 'isolated local-folder repository initialized'
 
@@ -217,6 +218,7 @@ cat > "$TMP/Applications/Fixture.app/Contents/Info.plist" <<PLIST
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>IsenoughE2EOutput</key><string>$TMP/received-argv</string>
 <key>IsenoughE2EPidFile</key><string>$TMP/fixture.pid</string>
 <key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeExtensions</key><array><string>txt</string></array><key>CFBundleTypeRole</key><string>Viewer</string></dict></array>
@@ -264,7 +266,11 @@ if ! cmp -s <(code_text "$STUB/Contents/MacOS/isenough-stub") <(code_text "$ROOT
 pass 'stub contains launcher binary'
 if cmp -s <(code_text "$STUB/Contents/MacOS/isenough-stub") <(code_text "$ROOT/.build/debug/isenough"); then stub_code_diagnostics; fail 'stub is not CLI binary'; fi
 pass 'stub is not CLI binary'
-assert_file "$STUB/Contents/Resources/stub.json" 'stub CLI metadata exists' 
+assert_file "$STUB/Contents/Resources/stub.json" 'stub CLI metadata exists'
+assert_file "$STUB/Contents/Resources/AppIcon.icns" 'stub icon copied from the original app'
+ICON_KEY="$(/usr/bin/plutil -extract CFBundleIconFile raw -o - "$STUB/Contents/Info.plist" 2>/dev/null || true)"
+[[ "$ICON_KEY" == "AppIcon" ]] || fail "stub Info.plist CFBundleIconFile is '$ICON_KEY'"
+pass 'stub Info.plist names the copied icon' 
 /usr/bin/codesign --verify --strict "$STUB" >>"$LOG" 2>&1 || fail 'codesign --verify --strict generated stub'
 pass 'generated stub passes codesign verification'
 MANIFEST="$(find "$ISENOUGH_REPO_PATH/manifests" -name '*.json' -print -quit)"

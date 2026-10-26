@@ -325,7 +325,15 @@ enum StubRebuilder {
         let stubData = try JSONSerialization.data(withJSONObject: stubInfo, options: [.prettyPrinted, .sortedKeys])
         try stubData.write(to: dest.appendingPathComponent("Contents/Resources/stub.json"))
         #if os(macOS)
+        StubIcon.backfill(stub: dest, imageId: journal.imageId, stateDir: config.stateDir, originals: StubIcon.originals(mountRoot: config.mountRoot, imageId: journal.imageId, stub: dest, recordedPath: nil), publish: { data in
+            guard let relative = AppIcon.repoRelativePath(imageId: journal.imageId) else { return }
+            let url = URL(fileURLWithPath: config.repoPath).appendingPathComponent(relative)
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: url)
+        })
         try? ProcessRunner.run("/usr/bin/codesign", ["--force", "--sign", "-", dest.path])
+        StubIcon.touch(dest)
+        StubIcon.register(dest)
         #endif
         try DurableIO.syncItem(dest.deletingLastPathComponent())
     }

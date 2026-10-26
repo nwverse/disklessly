@@ -1380,6 +1380,7 @@ Implemented on the synchronous `StorageBackend` (`docs/backends.md`): SMB/NFS vi
     PkgInfo                                "APPL????"
     MacOS/isenough-stub                       universal (arm64+x86_64) launcher, identical bytes for every stub
     Resources/
+      AppIcon.icns                         copied from CFBundleIconFile, or rendered from the asset catalog
       <iconFile>.icns / Assets.car         copied from the real app (and doc-type icons)
       stub.json                            {"schema":"stub/1","appId":"com.blender.blender","imageId":"…",
                                             "isenoughPath":"/Users/me/.local/bin/isenough","stubVersion":1,"createdAt":"…"}

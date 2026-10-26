@@ -43,6 +43,7 @@ public enum ManagementUI {
                     "state": appState,
                     "cachedBytes": NSNumber(value: size),
                     "devices": holders,
+                    "iconPath": AppIcon.existingPath(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: manifest.imageId) ?? "",
                 ])
             }
         } catch {
@@ -111,6 +112,11 @@ public enum ManagementUI {
     }
 
     private static func api(engine: IsenoughEngine, request: UIRequest) -> UIResponse {
+        if request.method == "GET", request.path.hasPrefix("/api/icon/") {
+            guard let imageId = AppIcon.imageId(apiPath: request.path) else { return .text(404, "not found") }
+            let body = AppIcon.png(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: imageId)
+            return UIResponse(status: 200, contentType: "image/png", body: body)
+        }
         switch (request.method, request.path) {
         case ("GET", "/api/status"):
             return .json(dashboard(engine))
