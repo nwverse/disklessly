@@ -188,6 +188,12 @@ public struct IsenoughEngine {
     /// Replaces `FileManager.fileExists` for the repository path. Tests use this to
     /// prove a stuck probe cannot block `doctor`. Production leaves it nil.
     var doctorRepositoryProbe: ((String) -> Bool)?
+    /// Replaces the iCloud materialization probe. Tests pass file facts directly.
+    public var materialFilesOverride: [MaterialFile]?
+    /// Replaces `FileManager.evictUbiquitousItem`. Nil uses the macOS API.
+    public var ubiquityEvictor: ((MaterialFile) -> UbiquityEvictOutcome)?
+    /// Replaces the Applications scan for `cleanup-backups`.
+    public var backupFactsOverride: [BackupFact]?
     public init(config: RuntimeConfig, services: RestoreServices? = nil, faults: FaultController? = nil, secrets: (any SecretStore)? = nil, shareOpener: ShareOpener = .system) {
         self.config=config
         let faults=faults ?? FaultController()
@@ -200,6 +206,9 @@ public struct IsenoughEngine {
         self.backendOverride = nil
         self.recommendEnvironment = nil
         self.deviceFactsOverride = nil
+        self.materialFilesOverride = nil
+        self.ubiquityEvictor = nil
+        self.backupFactsOverride = nil
     }
     public func openBackend() throws -> any StorageBackend {
         if let backendOverride { return backendOverride }
@@ -386,8 +395,8 @@ public struct IsenoughEngine {
         if case .reuse(let existing) = decision {
             try register(existing, backend: backend, now: Date())
             if EngineInstall.runningExecutable().lastPathComponent == "isenough" { try installEngine() }
-            if !noStub { try installStub(info: info, manifest: existing, path: app.path, keepOriginal: keepOriginal) }
-            return PublishResult(manifest: existing, reused: true, uploaded: false)
+            let stubWarning = noStub ? nil : try installStub(info: info, manifest: existing, path: app.path, keepOriginal: keepOriginal)
+            return finishPublished(PublishResult(manifest: existing, reused: true, uploaded: false), stubWarning: stubWarning)
         }
         if case .refuse(let message) = decision { throw IsenoughError.integrity(message) }
         let dmg=staging.appendingPathComponent("image.dmg")
@@ -413,12 +422,12 @@ public struct IsenoughEngine {
         let request = PublishRequest(name: name, identity: identity, mode: selected, executable: executableName, originalPath: app.path, cdhash: cdhash, postImageTreeHash: treeHash, volumeName: name, appPathInVolume: app.lastPathComponent, documentTypes: docs, urlTypes: urls)
         let published = try publish(request, imageFile: dmg)
         if EngineInstall.runningExecutable().lastPathComponent == "isenough" { try installEngine() }
-        if !noStub { try installStub(info: info, manifest: published.manifest, path: app.path, keepOriginal: keepOriginal) }
-        return published
+        let stubWarning = noStub ? nil : try installStub(info: info, manifest: published.manifest, path: app.path, keepOriginal: keepOriginal)
+        return finishPublished(published, stubWarning: stubWarning)
         #endif
     }
     #if os(macOS)
-    private func installStub(info:[String:Any],manifest:ImageManifest,path:String,keepOriginal:Bool) throws {
+    private func installStub(info:[String:Any],manifest:ImageManifest,path:String,keepOriginal:Bool) throws -> String? {
         let source=URL(fileURLWithPath:path).standardizedFileURL
         let dest=URL(fileURLWithPath:config.stubDir).standardizedFileURL.appendingPathComponent(source.lastPathComponent)
         let temp=dest.deletingLastPathComponent().appendingPathComponent(".isenough-\(UUID().uuidString).app")
@@ -465,9 +474,10 @@ public struct IsenoughEngine {
                 throw IsenoughError.failure("Could not retain original app at \(retained.path): \(error.localizedDescription)")
             }
         } else {
-            do { try FileManager.default.removeItem(at:backup) }
-            catch { throw IsenoughError.failure("Stub installed, but could not remove backup \(backup.path): \(error.localizedDescription)") }
+            do { try FileManager.default.removeItem(at: backup) }
+            catch { return BackupRemoval.warning(backupPath: backup.path) }
         }
+        return nil
     }
     #endif
     public func list() throws -> [ImageManifest] { try readManifests(try repo) }

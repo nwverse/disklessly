@@ -26,12 +26,14 @@ final class DoctorTests: XCTestCase {
         let engine = try preparedEngine(root: root, writeRepoJSON: true)
         let names = box()
         let report = engine.doctor { check in names.items.append(check["name"] as? String ?? "") }
-        XCTAssertEqual(names.items, ["config", "journals", "repo", "backend", "conflicts", "free-space", "mounts", "engine", "disk-image"])
+        XCTAssertEqual(names.items, ["config", "journals", "repo", "backend", "conflicts", "materialized", "free-space", "mounts", "engine", "disk-image"])
         let checks = try checksByName(report)
         XCTAssertEqual(checks["config"]?["status"] as? String, "ok")
         XCTAssertEqual(checks["journals"]?["status"] as? String, "ok")
         XCTAssertEqual(checks["repo"]?["status"] as? String, "ok")
         XCTAssertEqual(checks["backend"]?["status"] as? String, "ok")
+        XCTAssertEqual(checks["materialized"]?["status"] as? String, "ok")
+        XCTAssertTrue((checks["materialized"]?["detail"] as? String ?? "").contains("not in iCloud"))
         XCTAssertEqual(checks["mounts"]?["status"] as? String, "ok")
         let free = checks["free-space"]?["status"] as? String
         XCTAssertTrue(free == "ok" || free == "warn")

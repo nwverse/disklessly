@@ -15,7 +15,7 @@ func usage() -> Never {
       pack APP.app [--mode mount|restore] [--no-stub] [--keep-original] [--stub-dir DIR]
       install-engine | stub refresh --app ID | stub rebuild APP
       list [--json] | status [APP] [--json] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
-      pin APP | unpin APP | evict APP | gc | restore APP | unpack APP
+      pin APP | unpin APP | evict APP | evict-local | gc | cleanup-backups | restore APP | unpack APP
       devices [list] | devices rename NAME | devices forget DEVICEID --yes
       backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
       sessions [--apply] [--days N] [--home DIR] | sessions search QUERY | sessions restore ID|PATH
@@ -91,7 +91,10 @@ do {
     case "pack":
         guard let path=args.first else { throw IsenoughError.usage("pack requires an .app path") }; args.removeFirst(); var mode:ImageManifest.Mode?; var keep=false; var noStub=false
         while !args.isEmpty { let a=args.removeFirst(); if a=="--mode", !args.isEmpty { mode=ImageManifest.Mode(rawValue:args.removeFirst()) } else if a=="--keep-original" { keep=true } else if a=="--no-stub" { noStub=true } else if a=="--stub-dir", !args.isEmpty { config.stubDir=args.removeFirst() } }
-        let published=try engine.pack(path,mode:mode,keepOriginal:keep,noStub:noStub); let m=published.manifest; emit(["ok":true,"imageId":m.imageId,"bundleId":m.bundleId,"mode":m.mode.rawValue,"sha256":m.image.sha256,"reused":published.reused,"uploaded":published.uploaded])
+        let published=try engine.pack(path,mode:mode,keepOriginal:keep,noStub:noStub); let m=published.manifest
+        for warning in published.warnings { fputs("isenough: \(warning)\n", stderr) }
+        for path in published.evicted { fputs("isenough: evicted local iCloud copy \(path)\n", stderr) }
+        emit(["ok":true,"imageId":m.imageId,"bundleId":m.bundleId,"mode":m.mode.rawValue,"sha256":m.image.sha256,"reused":published.reused,"uploaded":published.uploaded,"warnings":published.warnings,"evicted":published.evicted])
     case "list": emit(try engine.list().map { ["imageId":$0.imageId,"bundleId":$0.bundleId,"name":$0.name,"version":$0.version,"mode":$0.mode.rawValue] })
     case "status": emit(engine.status())
     case "prefetch": guard let n=args.first else { throw IsenoughError.usage("prefetch requires app") }; let m=try find(n); emit(["ok":true,"path":try engine.prefetch(m).path])
@@ -105,9 +108,20 @@ do {
         try engine.launch(manifest,documents:parsed.documents,urls:parsed.urls,arguments:parsed.arguments,wait:parsed.wait); emit(["ok":true])
     case "pin", "unpin": guard let n=args.first else { throw IsenoughError.usage("\(command) requires app") }; try engine.setPinned(try find(n), pinned: command=="pin"); emit(["ok":true,"pinned":command=="pin"])
     case "evict": guard let n=args.first else { throw IsenoughError.usage("evict requires app") }; try engine.evict(find(n)); emit(["ok":true])
+    case "evict-local":
+        let eviction = engine.evictLocalCopies()
+        for path in eviction.evicted { fputs("isenough: evicted local iCloud copy \(path)\n", stderr) }
+        for line in eviction.retryLater { fputs("isenough: \(line)\n", stderr) }
+        emit(["ok":true,"evicted":eviction.evicted,"retryLater":eviction.retryLater,"skipped":eviction.skipped])
+    case "cleanup-backups":
+        let cleaned = try engine.cleanupBackups()
+        for path in cleaned.removed { fputs("isenough: removed \(path)\n", stderr) }
+        for line in cleaned.kept { fputs("isenough: kept \(line)\n", stderr) }
+        emit(["ok":true,"removed":cleaned.removed,"kept":cleaned.kept])
     case "gc":
         let report = try engine.maintain()
-        emit(["ok":true,"removed":report.purged,"trashed":report.trashed,"restored":report.restored,"warnings":report.warnings,"recovered":report.journals])
+        for path in report.evictedLocal { fputs("isenough: evicted local iCloud copy \(path)\n", stderr) }
+        emit(["ok":true,"removed":report.purged,"trashed":report.trashed,"restored":report.restored,"warnings":report.warnings,"recovered":report.journals,"evicted":report.evictedLocal])
     case "devices":
         let sub = args.first ?? "list"
         if !args.isEmpty { args.removeFirst() }

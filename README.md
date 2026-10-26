@@ -56,11 +56,13 @@ copy this `isenough` binary to `<stateDir>/bin/isenough` and write `isenough.sta
   `--no-wait` returns after that watcher is installed; it does not wait for quit.
 - `isenough restore APP`: same launch path with restore mode forced.
 - `isenough pin APP` / `unpin APP`: persist the pin state (pin also prefetches).
-- `isenough evict APP`: remove cached image.
-- `isenough gc`: adopt journals whose owner has exited and finish a clean restore-out. A live app is handed to one detached `hook watch`.
+- `isenough evict APP`: remove the cached image. This does not touch the copy in iCloud Drive.
+- `isenough evict-local`: drop the local bytes of repo images that iCloud has fully uploaded, leaving the cloud copy in place. A file that is still uploading, mounted, or needed before the detach delay is left alone. "Cannot evict yet" is reported and is not an error. `pack` and `gc` run the same pass.
+- `isenough gc`: adopt journals whose owner has exited and finish a clean restore-out. A live app is handed to one detached `hook watch`. The same pass evicts uploaded iCloud copies that this Mac does not need.
+- `isenough cleanup-backups`: remove leftover `/Applications/.isenough-original-*.app` backups after checking each one against its stub and the repo image. Every verified path is deleted by one macOS administrator prompt (`osascript` … `with administrator privileges`). The command never asks for or stores a password. `.256orig.app` copies kept with `--keep-original` are not removed.
 - `isenough unpack APP`, `detach APP`: not available in this build. `resolve APP` keeps, exports, or discards a bundle that changed while it was restored.
 - `isenough hooks list|enable|disable APP`: placeholder. Hook files under `stateDir/hooks/<bundleId>/` still run.
-- `isenough doctor [--fix]`: each check has a timeout and prints `ok`, `warn`, `fail`, or `timed out` as soon as it finishes. A slow or stuck iCloud repository cannot block the command. `ISENOUGH_DOCTOR_TIMEOUT` is the per-check wait in seconds (default 15). The process exits 1 when any check fails or times out. A missing or older engine is `engine` / `warn` and does not by itself fail the command. `--json` prints one object after the checks finish. `--fix` runs recovery inside the same kind of bound.
+- `isenough doctor [--fix]`: each check has a timeout and prints `ok`, `warn`, `fail`, or `timed out` as soon as it finishes. A slow or stuck iCloud repository cannot block the command. `ISENOUGH_DOCTOR_TIMEOUT` is the per-check wait in seconds (default 15). The process exits 1 when any check fails or times out. A missing or older engine is `engine` / `warn` and does not by itself fail the command. The `materialized` check reports how much of an iCloud repo is still stored on this Mac (`iCloud keeps full copies: repo occupies X locally of Y`). `--json` prints one object after the checks finish. `--fix` runs recovery inside the same kind of bound.
 - `isenough devices` / `devices list`: show every Mac registered in the shared repo, which images it packed, and which file is this Mac. Conflict copies and not-yet-downloaded device files are listed and not merged.
 - `isenough devices rename NAME`: set this Mac's display name. A Mac does not rename another Mac's device file.
 - `isenough devices forget DEVICEID --yes`: delete that device file. `--yes` is required. A placeholder that has not downloaded is left in place.
@@ -92,6 +94,10 @@ Machine-local, and not shared through the repo:
 - A receipt inside an app (`Contents/_MASReceipt`) is not copied into the shared image. Restore puts back the receipt this Mac saved, and says so when it has none.
 
 `gc` will not delete an image that any device file still names. A Mac that has not checked in for 90 days is reported and still protects its images. A device file iCloud has not downloaded, including a `.icloud` placeholder, also protects every image. `doctor` reports conflict copies such as `devices/<id> 2.json` and does not merge them. A stub opens only the image id this Mac recorded. If the requested image is another version or architecture, launch stops with a diagnostic instead of starting that image.
+
+After `pack`, iCloud Drive still has a full local copy of each uploaded image until that copy is evicted. `pack` and `gc` call `FileManager.evictUbiquitousItem` (not `brctl`, which macOS 14 removed) for images whose upload has finished and that this Mac is not using. A file that is still uploading is never evicted. If the system cannot evict it yet, the command says so and exits successfully. `isenough evict-local` runs that pass on its own.
+
+Packing an app that root owns can leave `/Applications/.isenough-original-<id>.app` behind when the last delete is denied. The image and the stub are already in place, so `pack` prints that path and tells you to run `isenough cleanup-backups`, and it exits 0. That command checks the stub and the image hash, then removes every verified backup with a single administrator prompt.
 
 `recommend` says `already in repo, packing is instant, no upload` when the installed app's bundle id, version, and architecture are already in the repo, and it names the other Macs that have that image. `isenough ui` shows the same devices next to the app list.
 

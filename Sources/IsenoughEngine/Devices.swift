@@ -36,10 +36,14 @@ public struct PublishResult: Equatable {
     public var manifest: ImageManifest
     public var reused: Bool
     public var uploaded: Bool
-    public init(manifest: ImageManifest, reused: Bool, uploaded: Bool) {
+    public var warnings: [String]
+    public var evicted: [String]
+    public init(manifest: ImageManifest, reused: Bool, uploaded: Bool, warnings: [String] = [], evicted: [String] = []) {
         self.manifest = manifest
         self.reused = reused
         self.uploaded = uploaded
+        self.warnings = warnings
+        self.evicted = evicted
     }
 }
 
@@ -50,17 +54,19 @@ public struct MaintenanceReport: Equatable {
     public var purged: [String]
     public var warnings: [String]
     public var kept: [String]
-    public init(journals: [String], trashed: [String], restored: [String], purged: [String], warnings: [String], kept: [String]) {
+    public var evictedLocal: [String]
+    public init(journals: [String], trashed: [String], restored: [String], purged: [String], warnings: [String], kept: [String], evictedLocal: [String] = []) {
         self.journals = journals
         self.trashed = trashed
         self.restored = restored
         self.purged = purged
         self.warnings = warnings
         self.kept = kept
+        self.evictedLocal = evictedLocal
     }
 
     public var lines: [String] {
-        journals + warnings + trashed.map { "trashed \($0)" } + restored.map { "restored \($0)" } + purged.map { "purged \($0)" }
+        journals + warnings + trashed.map { "trashed \($0)" } + restored.map { "restored \($0)" } + purged.map { "purged \($0)" } + evictedLocal.map { "evicted \($0)" }
     }
 }
 
@@ -162,7 +168,10 @@ extension IsenoughEngine {
         restore.loadConfiguredFaults()
         let journals = try restore.recoverAll(shortLived: true)
         let remote = try remoteMaintenance(now: now)
-        return MaintenanceReport(journals: journals, trashed: remote.trash, restored: remote.restoreFromTrash, purged: remote.purge, warnings: remote.warnings, kept: remote.kept)
+        let eviction = evictLocalCopies(now: now)
+        var warnings = remote.warnings
+        warnings.append(contentsOf: eviction.retryLater)
+        return MaintenanceReport(journals: journals, trashed: remote.trash, restored: remote.restoreFromTrash, purged: remote.purge, warnings: warnings, kept: remote.kept, evictedLocal: eviction.evicted)
     }
 
     public func syncReport(now: Date = Date()) -> SyncReport {

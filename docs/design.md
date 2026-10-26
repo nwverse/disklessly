@@ -368,6 +368,18 @@ as present, and nothing is deleted while one exists. Conflict copies (`file 2.js
 Mac, and forgets a device only with `--yes`. `recommend` marks a candidate that already matches bundle id, version,
 and architecture as already in the repo.
 
+After a successful `pack`, and again from `gc` and `isenough evict-local`, local bytes of uploaded
+iCloud images are dropped with `FileManager.evictUbiquitousItem`. `brctl` is not used. An unfinished
+upload is never evicted. A mounted image, an open restore, or a detach deadline that has not elapsed
+is skipped. "Cannot evict yet" is reported and is not an error. `doctor`'s `materialized` check states
+how much of the repo is still stored on this Mac.
+
+If removing `.isenough-original-<id>.app` fails after the stub is installed, `pack` exits 0 and names
+`isenough cleanup-backups`. That command verifies the stub manifest against the repo image, and when
+the local image bytes are readable it checks their sha256 too. Every verified backup is removed by one
+`osascript` administrator prompt. The tool never handles a password. `--keep-original` copies
+(`.256orig.app`) are not part of that cleanup.
+
 ### 3.5 Local state (`~/Library/Application Support/256isenough/`)
 ```
 config.json         user config (§3.6)
