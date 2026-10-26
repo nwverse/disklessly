@@ -10,12 +10,23 @@ let package = Package(
         .executable(name: "isenough", targets: ["isenough"]),
         .executable(name: "isenough-stub", targets: ["isenough-stub"]),
     ],
+    dependencies: [
+        .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"4.0.0"),
+        .package(url: "https://github.com/facebook/zstd.git", exact: "1.5.6"),
+    ],
     targets: [
         .target(name: "IsenoughCore"),
         .target(name: "IsenoughStubSupport"),
-        .target(name: "IsenoughEngine", dependencies: ["IsenoughCore", "IsenoughStubSupport"]),
+        .systemLibrary(name: "CSQLite", path: "Sources/CSQLite", pkgConfig: "sqlite3", providers: [.apt(["libsqlite3-dev"]), .brew(["sqlite"])]),
+        .target(name: "IsenoughSessions", dependencies: [
+            "IsenoughCore",
+            "CSQLite",
+            .product(name: "libzstd", package: "zstd"),
+            .product(name: "Crypto", package: "swift-crypto"),
+        ]),
+        .target(name: "IsenoughEngine", dependencies: ["IsenoughCore", "IsenoughStubSupport", "IsenoughSessions"]),
         .executableTarget(name: "isenough", dependencies: ["IsenoughCore", "IsenoughEngine"], resources: [.copy("web")]),
         .executableTarget(name: "isenough-stub", dependencies: ["IsenoughStubSupport"]),
-        .testTarget(name: "IsenoughCoreTests", dependencies: ["IsenoughCore", "IsenoughEngine", "IsenoughStubSupport"]),
+        .testTarget(name: "IsenoughCoreTests", dependencies: ["IsenoughCore", "IsenoughEngine", "IsenoughStubSupport", "IsenoughSessions"]),
     ]
 )
