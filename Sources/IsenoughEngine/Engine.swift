@@ -1,6 +1,8 @@
 import Foundation
 import IsenoughCore
-#if canImport(Darwin)
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
 import Darwin
 #endif
 
@@ -552,7 +554,129 @@ public struct IsenoughEngine {
         if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
     }
     public func gc(now: Date = Date(), includeLegacy: Bool = false) throws -> [String] {
-        try maintain(now: now, includeLegacy: includeLegacy).lines
+        var lines = try maintain(now: now, includeLegacy: includeLegacy).lines
+        let enforced = try enforceCacheQuota(justUsed: nil, now: now)
+        lines.append(contentsOf: enforced.lines)
+        return lines
+    }
+
+    /// Drop cached images until `quotaBytes` holds. `justUsed` is evicted last, and never when it alone exceeds the quota.
+    @discardableResult
+    public func enforceCacheQuota(justUsed: String?, now: Date = Date()) throws -> (plan: EvictionPlan, lines: [String]) {
+        let fm = FileManager.default
+        let images = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images")
+        let names = (try? fm.contentsOfDirectory(atPath: images.path)) ?? []
+        let loaded = StateStore(config.stateDir).load()
+        #if os(macOS)
+        let usage = LiveMaterialProbe.usageMap(config: config, now: now)
+        let imageListing = Data(ProcessRunner.capture("/usr/bin/hdiutil", ["info", "-plist"]).utf8)
+        #endif
+        var items: [CacheItem] = []
+        var recorded: [String: UInt64] = [:]
+        var fingers: [String: FileFingerprint] = [:]
+        for name in names where name.hasSuffix(".dmg") {
+            let url = images.appendingPathComponent(name)
+            let id = (name as NSString).deletingPathExtension
+            let bytes = allocatedBlocks(url)
+            recorded[id] = bytes
+            if let finger = try? FileFingerprint.of(url: url) { fingers[id] = finger }
+            let owners = loaded.apps.filter { $0.value.imageId == id }
+            let pinned = owners.values.contains { $0.pinned }
+            let needs = owners.values.contains { $0.needsResolution != nil }
+            var mounted = fm.fileExists(atPath: URL(fileURLWithPath: config.mountRoot).appendingPathComponent(id).path)
+            var inUse = owners.values.contains { ($0.state == "running" || $0.state == "detaching") }
+            var protected: Date? = nil
+            #if os(macOS)
+            if usage.inUse.contains(id) { inUse = true }
+            protected = usage.until[id]
+            if DiskImageTool.plistListsMountPoint(imageListing, url.path) { mounted = true }
+            #endif
+            items.append(CacheItem(imageId: id, bytes: bytes, lastUsed: loaded.cache[id]?.lastUsed ?? owners.values.compactMap(\.lastUsed).max(), pinned: pinned, mounted: mounted, inUse: inUse, protectedUntil: protected, needsResolution: needs, justUsed: id == justUsed))
+        }
+        if !recorded.isEmpty {
+            try StateStore(config.stateDir).update { state in
+                for (id, bytes) in recorded {
+                    var entry = state.cache[id] ?? CacheEntry()
+                    entry.bytes = bytes
+                    state.cache[id] = entry
+                }
+            }
+        }
+        let leftovers = cacheLeftovers(now: now)
+        let plan = CachePlanner.planEviction(items, leftovers: leftovers, quota: config.quotaBytes, now: now)
+        if plan.shortBy > 0 {
+            FileHandle.standardError.write(Data("isenough: cache still exceeds quota by \(plan.shortBy) bytes\n".utf8))
+        }
+        var lines: [String] = []
+        for victim in plan.victims {
+            if victim.contains("/") {
+                let url = URL(fileURLWithPath: config.cacheDir).appendingPathComponent(victim)
+                if fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }
+                continue
+            }
+            guard let bundleId = loaded.apps.first(where: { $0.value.imageId == victim })?.key else {
+                try deleteCacheImage(victim, bytes: recorded[victim] ?? 0, lines: &lines)
+                continue
+            }
+            let directory = URL(fileURLWithPath: config.stateDir).appendingPathComponent("locks/app")
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            var lock = FileLock(path: directory.appendingPathComponent(bundleId + ".lock").path)
+            guard try lock.tryLock() else { continue }
+            defer { lock.unlock() }
+            let fresh = StateStore(config.stateDir).load()
+            if fresh.apps[bundleId]?.pinned == true { continue }
+            if fresh.apps[bundleId]?.needsResolution != nil { continue }
+            let url = images.appendingPathComponent(victim + ".dmg")
+            guard let before = fingers[victim] else { continue }
+            guard let again = try? FileFingerprint.of(url: url), again == before else { continue }
+            try deleteCacheImage(victim, bytes: recorded[victim] ?? 0, lines: &lines)
+        }
+        return (plan, lines)
+    }
+
+    private func cacheLeftovers(now: Date) -> [(path: String, bytes: UInt64)] {
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: config.cacheDir)
+        var found: [(path: String, bytes: UInt64)] = []
+        let partial = root.appendingPathComponent("partial")
+        let cutoff = now.addingTimeInterval(-7 * 24 * 60 * 60)
+        if let names = try? fm.contentsOfDirectory(atPath: partial.path) {
+            for name in names {
+                let url = partial.appendingPathComponent(name)
+                let modified = (try? fm.attributesOfItem(atPath: url.path)[.modificationDate] as? Date) ?? now
+                if modified < cutoff {
+                    found.append((path: "partial/\(name)", bytes: allocatedBlocks(url)))
+                }
+            }
+        }
+        let bad = root.appendingPathComponent("bad")
+        if let names = try? fm.contentsOfDirectory(atPath: bad.path) {
+            for name in names {
+                let url = bad.appendingPathComponent(name)
+                found.append((path: "bad/\(name)", bytes: allocatedBlocks(url)))
+            }
+        }
+        return found
+    }
+
+    private func allocatedBlocks(_ url: URL) -> UInt64 {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_blocks > 0 else { return 0 }
+        return UInt64(info.st_blocks) * 512
+    }
+
+    private func deleteCacheImage(_ id: String, bytes: UInt64, lines: inout [String]) throws {
+        let url = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(id).dmg")
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+        }
+        try StateStore(config.stateDir).update { state in
+            guard var entry = state.cache[id] else { return }
+            entry.verified = nil
+            entry.bytes = nil
+            state.cache[id] = entry
+        }
+        lines.append("evicted cache \(id) (\(bytes))")
     }
     /// Each check is bounded. `onCheck` runs on the caller as soon as that check finishes,
     /// so a stuck iCloud `fileExists` cannot hide every later result.
@@ -628,10 +752,12 @@ public struct IsenoughEngine {
             if !paranoid, let stamp = StateStore(config.stateDir).load().cache[manifest.imageId]?.verified,
                stamp.sha256 == manifest.image.sha256,
                let finger = try? FileFingerprint.of(url: cache), finger == stamp.fingerprint {
+                _ = try enforceCacheQuota(justUsed: manifest.imageId)
                 return cache
             }
             if (try? hashCached(cache)) == manifest.image.sha256 {
                 try rememberVerified(manifest.imageId, file: cache)
+                _ = try enforceCacheQuota(justUsed: manifest.imageId)
                 return cache
             }
         }
@@ -644,6 +770,7 @@ public struct IsenoughEngine {
         // invalidates that identity and relies on hdiutil's output-name conventions.
         try CacheFetcher.materialize(backend: backend, remote: manifest.image.file, destination: cache, partial: paths.partial(manifest.imageId), expectedSize: manifest.image.size, expectedSHA256: manifest.image.sha256)
         try rememberVerified(manifest.imageId, file: cache)
+        _ = try enforceCacheQuota(justUsed: manifest.imageId)
         return cache
     }
 
@@ -670,6 +797,7 @@ public struct IsenoughEngine {
         if manifest.mode == .restore {
             _ = try prefetch(manifest)
             try restore.launch(manifest, documents: documents, urls: urls, arguments: arguments, wait: wait)
+            _ = try enforceCacheQuota(justUsed: manifest.imageId)
             return
         }
         let image=try prefetch(manifest)
@@ -711,6 +839,7 @@ public struct IsenoughEngine {
             do {
                 try LiveDiskImage.detach(mountPoint: mount, force: false)
                 try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"cached")
+                _ = try enforceCacheQuota(justUsed: manifest.imageId)
                 break
             } catch {
                 try? state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"backoff",mountPoint:mount.path)

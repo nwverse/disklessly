@@ -130,12 +130,12 @@ enum LiveMaterialProbe {
         return .evicted
     }
 
-    private struct Usage {
+    struct Usage {
         var inUse: Set<String>
         var until: [String: Date]
     }
 
-    private static func usageMap(config: RuntimeConfig, now: Date) -> Usage {
+    static func usageMap(config: RuntimeConfig, now: Date) -> Usage {
         var inUse = Set<String>()
         var until: [String: Date] = [:]
         let delay = TimeInterval(config.detachDelaySeconds)
