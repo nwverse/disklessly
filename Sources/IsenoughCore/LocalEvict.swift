@@ -16,8 +16,12 @@ public struct MaterialFile: Equatable {
     public var inUse: Bool
     /// When set and still in the future, this Mac may need the repo bytes before detach.
     public var protectedUntil: Date?
+    /// False when neither upload flag was reported. A missing flag is not "not uploaded".
+    public var uploadKnown: Bool
+    /// 0...100 when iCloud reported `NSURLUbiquitousItemPercentUploadedKey`. Nil when it did not.
+    public var uploadPercent: Double?
 
-    public init(relativePath: String, logicalBytes: UInt64, allocatedBytes: UInt64, ubiquitous: Bool, uploaded: Bool, uploading: Bool, uploadFailed: Bool, pinned: Bool, dataless: Bool, inUse: Bool, protectedUntil: Date?) {
+    public init(relativePath: String, logicalBytes: UInt64, allocatedBytes: UInt64, ubiquitous: Bool, uploaded: Bool, uploading: Bool, uploadFailed: Bool, pinned: Bool, dataless: Bool, inUse: Bool, protectedUntil: Date?, uploadKnown: Bool = true, uploadPercent: Double? = nil) {
         self.relativePath = relativePath
         self.logicalBytes = logicalBytes
         self.allocatedBytes = allocatedBytes
@@ -29,6 +33,8 @@ public struct MaterialFile: Equatable {
         self.dataless = dataless
         self.inUse = inUse
         self.protectedUntil = protectedUntil
+        self.uploadKnown = uploadKnown
+        self.uploadPercent = uploadPercent
     }
 
     public var imageId: String {
@@ -102,11 +108,24 @@ public enum LocalEviction {
         if let until = file.protectedUntil, now < until {
             return .skip("needed until the detach delay elapses")
         }
+        if !file.uploadKnown {
+            return .retryLater(Self.uploadStatus(known: false, percent: file.uploadPercent))
+        }
         if file.uploading || file.uploadFailed || !file.uploaded {
-            return .retryLater("upload is not finished")
+            return .retryLater(Self.uploadStatus(known: true, percent: file.uploadPercent))
         }
         if file.pinned { return .skip("kept downloaded on this Mac") }
         return .evict
+    }
+
+    /// `known` false is "iCloud did not say", which is a different state from an upload still in progress.
+    public static func uploadStatus(known: Bool, percent: Double?) -> String {
+        let base = known ? "upload is not finished" : "upload status is unavailable"
+        guard let percent, percent.isFinite else { return base }
+        let clamped = min(100, max(0, percent))
+        let whole = abs(clamped.rounded() - clamped) < 0.05
+        let text = String(format: whole ? "%.0f" : "%.1f", locale: Locale(identifier: "en_US_POSIX"), clamped)
+        return "\(base) (\(text)% uploaded)"
     }
 
     public static func plan(_ files: [MaterialFile], now: Date) -> LocalEvictPlan {

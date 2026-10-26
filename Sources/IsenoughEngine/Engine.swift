@@ -194,6 +194,9 @@ public struct IsenoughEngine {
     public var ubiquityEvictor: ((MaterialFile) -> UbiquityEvictOutcome)?
     /// Replaces the Applications scan for `cleanup-backups`.
     public var backupFactsOverride: [BackupFact]?
+    /// Replaces `/Applications`, `~/Applications`, and `stubDir` when backfilling this Mac's device file.
+    /// Nil uses those folders. An empty array scans nowhere.
+    public var stubRootsOverride: [URL]?
     public init(config: RuntimeConfig, services: RestoreServices? = nil, faults: FaultController? = nil, secrets: (any SecretStore)? = nil, shareOpener: ShareOpener = .system) {
         self.config=config
         let faults=faults ?? FaultController()
@@ -209,6 +212,7 @@ public struct IsenoughEngine {
         self.materialFilesOverride = nil
         self.ubiquityEvictor = nil
         self.backupFactsOverride = nil
+        self.stubRootsOverride = nil
     }
     public func openBackend() throws -> any StorageBackend {
         if let backendOverride { return backendOverride }
@@ -480,7 +484,10 @@ public struct IsenoughEngine {
         return nil
     }
     #endif
-    public func list() throws -> [ImageManifest] { try readManifests(try repo) }
+    public func list() throws -> [ImageManifest] {
+        try ensureDevice()
+        return try readManifests(try repo)
+    }
     public func status() -> [String:Any] {
         let state=StateStore(config.stateDir).read()
         return ["backend":config.backend,"activeBackendId":config.activeBackendId ?? "","repoPath":config.repoPath,"cacheDir":config.cacheDir,"quotaBytes":NSNumber(value: config.quotaBytes),"minFreeBytes":NSNumber(value: config.minFreeBytes),"detachDelaySeconds":NSNumber(value: config.detachDelaySeconds),"apps":state["apps"] ?? [:],"cache":state["cache"] ?? [:],"restored":state["restored"] ?? [:]]
@@ -509,8 +516,8 @@ public struct IsenoughEngine {
         let path=URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
         if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
     }
-    public func gc(now: Date = Date()) throws -> [String] {
-        try maintain(now: now).lines
+    public func gc(now: Date = Date(), includeLegacy: Bool = false) throws -> [String] {
+        try maintain(now: now, includeLegacy: includeLegacy).lines
     }
     /// Each check is bounded. `onCheck` runs on the caller as soon as that check finishes,
     /// so a stuck iCloud `fileExists` cannot hide every later result.

@@ -368,6 +368,18 @@ as present, and nothing is deleted while one exists. Conflict copies (`file 2.js
 Mac, and forgets a device only with `--yes`. `recommend` marks a candidate that already matches bundle id, version,
 and architecture as already in the repo.
 
+The first repo command on a Mac (`devices`, `list`, `doctor`, `gc`, `pack`, and the other commands that read the
+repo) registers that Mac before it lists or deletes anything. It fills gaps in this Mac's device file from local
+stubs (`stub.json`'s `imageId`, or the manifest stored beside it) and from journals whose destination is a stub
+on this Mac. Images that are still unreferenced at that moment are written once to `catalog/legacy.json`. `gc`
+does not delete those images unless `--include-legacy` is passed, and it names each one it kept. A later forget
+of an image this Mac registered after that snapshot can still move it to trash.
+
+`devices`, `list`, `version`, `evict-local`, and `gc` print one line per item. Sizes use GiB or MiB. `--json` is
+unchanged. `help`, `--help`, and `-h` print the usage text. `evict-local` says `upload status is unavailable`
+when iCloud does not report `NSURLUbiquitousItemIsUploadedKey` or `IsUploadingKey`, and it appends the upload
+percent when `NSURLUbiquitousItemPercentUploadedKey` is present, so a slow upload is distinct from a missing status.
+
 After a successful `pack`, and again from `gc` and `isenough evict-local`, local bytes of uploaded
 iCloud images are dropped with `FileManager.evictUbiquitousItem`. `brctl` is not used. An unfinished
 upload is never evicted. A mounted image, an open restore, or a detach deadline that has not elapsed

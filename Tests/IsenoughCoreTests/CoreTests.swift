@@ -278,7 +278,7 @@ final class CoreTests: XCTestCase {
         }
     }
 
-    func testCLITopLevelUnknownOptionIsUsageError() {
+    func testCLITopLevelUnknownOptionIsUsageError() throws {
         XCTAssertThrowsError(try GlobalArguments.parse(["--doc", "x"])) { error in
             XCTAssertEqual((error as? IsenoughError)?.errorDescription, "Unknown option: --doc")
             XCTAssertEqual((error as? IsenoughError)?.exitCode, 2)
@@ -286,6 +286,13 @@ final class CoreTests: XCTestCase {
         XCTAssertThrowsError(try GlobalArguments.parse(["--config"])) { error in
             XCTAssertEqual((error as? IsenoughError)?.exitCode, 2)
         }
+        let help = try GlobalArguments.parse(["--help"])
+        XCTAssertEqual(help.rest, ["help"])
+        let short = try GlobalArguments.parse(["-h"])
+        XCTAssertEqual(short.rest, ["-h"])
+        let jsonHelp = try GlobalArguments.parse(["--json", "--help"])
+        XCTAssertEqual(jsonHelp.json, true)
+        XCTAssertEqual(jsonHelp.rest, ["help"])
         let parsed = try? GlobalArguments.parse(["--json", "--state-dir", "/tmp/state", "launch", "com.a"])
         XCTAssertEqual(parsed?.json, true)
         XCTAssertEqual(parsed?.stateDir, "/tmp/state")

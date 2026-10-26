@@ -90,7 +90,8 @@ extension IsenoughEngine {
 
     public func publish(_ request: PublishRequest, imageFile: URL?, now: Date = Date()) throws -> PublishResult {
         let backend = try repo
-        try ensureRepoCollections(backend)
+        // Snapshot legacy ids before this image exists, so a brand-new publish is not frozen as legacy.
+        try ensureDevice(now: now)
         let manifests = try readManifests(backend)
         let decision = PublishPlanner.decide(identity: request.identity, manifests: manifests) { path in
             (try? WriteOnce.probe(backend, path)) ?? .absent
@@ -121,8 +122,11 @@ extension IsenoughEngine {
 
     public func deviceListing(createLocal: Bool = true, now: Date = Date()) throws -> DeviceListing {
         let backend = try repo
+        if createLocal {
+            try ensureDevice(now: now)
+        }
         let facts = try loadDeviceFacts(backend)
-        let local = try localIdentity(create: createLocal, now: now, backend: backend)
+        let local = try localIdentity(create: false, now: now, backend: backend)
         return DeviceListing(
             devices: facts.compactMap(\.record).sorted { $0.displayName < $1.displayName },
             placeholders: facts.filter(\.placeholder).map(\.name).sorted(),
@@ -164,10 +168,11 @@ extension IsenoughEngine {
         try backend.delete(path)
     }
 
-    public func maintain(now: Date = Date()) throws -> MaintenanceReport {
+    public func maintain(now: Date = Date(), includeLegacy: Bool = false) throws -> MaintenanceReport {
         restore.loadConfiguredFaults()
         let journals = try restore.recoverAll(shortLived: true)
-        let remote = try remoteMaintenance(now: now)
+        try ensureDevice(now: now)
+        let remote = try remoteMaintenance(now: now, includeLegacy: includeLegacy)
         let eviction = evictLocalCopies(now: now)
         var warnings = remote.warnings
         warnings.append(contentsOf: eviction.retryLater)
@@ -234,13 +239,29 @@ extension IsenoughEngine {
         try rememberLocal(manifest)
     }
 
+    /// Creates this Mac's device file, fills gaps from local stubs, then freezes
+    /// still-unreferenced images as legacy. Later runs do not recompute that set.
+    func ensureDevice(now: Date = Date()) throws {
+        let backend = try repo
+        try ensureRepoCollections(backend)
+        let local = try LocalDeviceStore.loadOrCreate(stateDir: stateDirectory, suggestedName: currentDeviceFacts().hostname)
+        let claims = stubClaims(backend: backend, now: now)
+        _ = try upsertDevice(local: local, manifest: nil, claims: claims, backend: backend, now: now)
+        try snapshotLegacyIfAbsent(backend)
+    }
+
     /// Writes only `devices/<this Mac's id>.json`.
-    private func upsertDevice(local: LocalDevice, manifest: ImageManifest?, backend: any StorageBackend, now: Date) throws -> DeviceRecord {
+    /// Stub claims fill bundle ids this file does not already name. A pack that
+    /// already recorded the bundle is left in place.
+    private func upsertDevice(local: LocalDevice, manifest: ImageManifest?, claims: [DeviceImageRef] = [], backend: any StorageBackend, now: Date) throws -> DeviceRecord {
         guard local.deviceId == LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId else {
             throw IsenoughError.integrity("refusing to write a device file for another Mac")
         }
         let facts = currentDeviceFacts()
-        var images = (try? ownDeviceRecord())?.images ?? []
+        var images = (try ownDeviceRecord())?.images ?? []
+        for claim in claims where !images.contains(where: { $0.bundleId == claim.bundleId }) {
+            images.append(claim)
+        }
         if let manifest {
             let reference = DeviceImageRef(imageId: manifest.imageId, bundleId: manifest.bundleId, version: manifest.version, build: manifest.build, architectures: manifest.architectures, mode: manifest.mode.rawValue, packedAt: now)
             images.removeAll { $0.bundleId == manifest.bundleId }
@@ -316,7 +337,7 @@ extension IsenoughEngine {
         try backend.put("catalog/manifest.json", data: data)
     }
 
-    private func remoteMaintenance(now: Date) throws -> GCPlan {
+    private func remoteMaintenance(now: Date, includeLegacy: Bool) throws -> GCPlan {
         let backend = try repo
         try ensureRepoCollections(backend)
         if LocalDeviceStore.load(stateDir: stateDirectory) != nil {
@@ -325,7 +346,8 @@ extension IsenoughEngine {
         let devices = try loadDeviceFacts(backend)
         let census = try imageCensus(backend)
         let trash = try trashFacts(backend)
-        let plan = RepoGarbage.plan(liveImageIds: census.ids, trash: trash, devices: devices, now: now)
+        let legacy = try loadLegacyIds(backend)
+        let plan = RepoGarbage.plan(liveImageIds: census.ids, trash: trash, devices: devices, now: now, legacyImageIds: legacy, includeLegacy: includeLegacy)
         for imageId in plan.restoreFromTrash {
             try restoreTrashed(imageId, backend: backend)
         }
@@ -336,11 +358,97 @@ extension IsenoughEngine {
             try purgeTrash(imageId, backend: backend)
         }
         let trashed = plan.trash.filter { !census.placeholders.contains($0) }
+        if includeLegacy {
+            let gone = Set(trashed).union(plan.purge)
+            if !gone.isEmpty {
+                try storeLegacy(legacy.subtracting(gone), backend)
+            }
+        }
         var warnings = plan.warnings
         for imageId in census.placeholders where plan.trash.contains(imageId) {
             warnings.append("\(imageId) is an iCloud placeholder, so it was not deleted.")
         }
         return GCPlan(trash: trashed, restoreFromTrash: plan.restoreFromTrash, purge: plan.purge, warnings: warnings, kept: plan.kept + census.placeholders.filter { plan.trash.contains($0) }.sorted())
+    }
+
+    private func stubSearchRoots() -> [URL] {
+        if let stubRootsOverride { return stubRootsOverride }
+        return BackupScanner.defaultRoots(stubDir: config.stubDir, home: NSHomeDirectory())
+    }
+
+    /// Stubs in the Applications folders, plus journals whose destination is a stub on this Mac.
+    private func stubClaims(backend: any StorageBackend, now: Date) -> [DeviceImageRef] {
+        let manifests = (try? readManifests(backend)) ?? []
+        let byId = Dictionary(manifests.map { ($0.imageId, $0) }, uniquingKeysWith: { current, _ in current })
+        var claims: [DeviceImageRef] = []
+        var seen = Set<String>()
+        for root in stubSearchRoots() {
+            for app in RecommendPaths.topLevelApps(in: root) {
+                guard let claim = stubClaim(app: app, manifests: byId, now: now) else { continue }
+                if seen.insert(claim.bundleId).inserted { claims.append(claim) }
+            }
+        }
+        let journals = (try? JournalStore.loadAll(stateDir: config.stateDir)) ?? []
+        for journal in journals {
+            guard !journal.dest.isEmpty else { continue }
+            let dest = URL(fileURLWithPath: journal.dest)
+            guard FileManager.default.fileExists(atPath: dest.appendingPathComponent("Contents/Resources/stub.json").path) else { continue }
+            let claim = stubClaim(app: dest, manifests: byId, now: journal.createdAt)
+                ?? byId[journal.imageId].map(deviceRef)
+            guard let claim, seen.insert(claim.bundleId).inserted else { continue }
+            claims.append(claim)
+        }
+        return claims
+    }
+
+    private func stubClaim(app: URL, manifests: [String: ImageManifest], now: Date) -> DeviceImageRef? {
+        let resources = app.appendingPathComponent("Contents/Resources")
+        guard let data = try? Data(contentsOf: resources.appendingPathComponent("stub.json"), options: []),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        let embedded: ImageManifest?
+        if let bytes = try? Data(contentsOf: resources.appendingPathComponent("manifest.json"), options: []),
+           let manifest = try? ImageManifest.decode(bytes) {
+            embedded = manifest
+        } else {
+            embedded = nil
+        }
+        let stated = object["imageId"] as? String
+        let resolvedId = (stated?.isEmpty == false ? stated : nil) ?? embedded?.imageId
+        guard let resolvedId, !resolvedId.isEmpty else { return nil }
+        if let manifest = embedded, manifest.imageId == resolvedId { return deviceRef(manifest) }
+        if let manifest = manifests[resolvedId] { return deviceRef(manifest) }
+        let appId = object["appId"] as? String
+        let bundleId = (appId?.isEmpty == false ? appId : nil) ?? embedded?.bundleId ?? ""
+        guard !bundleId.isEmpty else { return nil }
+        return DeviceImageRef(imageId: resolvedId, bundleId: bundleId, version: embedded?.version ?? "", build: embedded?.build ?? "", architectures: embedded?.architectures ?? [], mode: embedded?.mode.rawValue ?? "mount", packedAt: embedded?.createdAt ?? now)
+    }
+
+    private func deviceRef(_ manifest: ImageManifest) -> DeviceImageRef {
+        DeviceImageRef(imageId: manifest.imageId, bundleId: manifest.bundleId, version: manifest.version, build: manifest.build, architectures: manifest.architectures, mode: manifest.mode.rawValue, packedAt: manifest.createdAt)
+    }
+
+    private func snapshotLegacyIfAbsent(_ backend: any StorageBackend) throws {
+        if try backend.stat(LegacyImages.path) != nil { return }
+        let census = try imageCensus(backend)
+        let devices = try loadDeviceFacts(backend)
+        var referenced = Set<String>()
+        for file in devices {
+            guard let record = file.record else { continue }
+            referenced.formUnion(record.images.map(\.imageId))
+        }
+        let legacy = census.ids.filter { !referenced.contains($0) }.sorted()
+        try storeLegacy(Set(legacy), backend)
+    }
+
+    private func loadLegacyIds(_ backend: any StorageBackend) throws -> Set<String> {
+        guard try backend.stat(LegacyImages.path) != nil else { return [] }
+        let data = try backend.get(LegacyImages.path, range: nil)
+        if let ids = LegacyImages.decode(data) { return Set(ids) }
+        return Set(try imageCensus(backend).ids)
+    }
+
+    private func storeLegacy(_ ids: Set<String>, _ backend: any StorageBackend) throws {
+        try backend.put(LegacyImages.path, data: try LegacyImages.encode(ids.sorted()))
     }
 
     private func imageCensus(_ backend: any StorageBackend) throws -> (ids: [String], placeholders: Set<String>) {

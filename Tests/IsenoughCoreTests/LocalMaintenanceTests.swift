@@ -31,6 +31,18 @@ final class LocalMaintenanceTests: XCTestCase {
         XCTAssertEqual(LocalEviction.decide(elapsed, now: now), .evict)
     }
 
+    func testMissingUploadStatusIsNotAnUnfinishedUpload() {
+        let unknown = file("images/claude.dmg", ubiquitous: true, uploaded: false, logical: 333 * 1_048_576, allocated: 333 * 1_048_576, uploadKnown: false)
+        XCTAssertEqual(LocalEviction.decide(unknown, now: now), .retryLater("upload status is unavailable"))
+        let partial = file("images/wechat.dmg", ubiquitous: true, uploaded: false, uploading: true, logical: 502 * 1_048_576, allocated: 502 * 1_048_576, uploadPercent: 42)
+        XCTAssertEqual(LocalEviction.decide(partial, now: now), .retryLater("upload is not finished (42% uploaded)"))
+        let reported = file("images/chengguang.dmg", ubiquitous: true, uploaded: false, logical: 1_400 * 1_048_576, allocated: 1_400 * 1_048_576, uploadKnown: false, uploadPercent: 0)
+        XCTAssertEqual(LocalEviction.decide(reported, now: now), .retryLater("upload status is unavailable (0% uploaded)"))
+        let plan = LocalEviction.plan([unknown, partial, reported], now: now)
+        XCTAssertTrue(plan.evict.isEmpty)
+        XCTAssertEqual(plan.retryLater.count, 3)
+    }
+
     func testOpenRestoreAndDetachDelayProtectTheImage() {
         let active = LocalEviction.protects(phase: .active, outcome: nil, detachAfter: nil, now: now)
         XCTAssertTrue(active.inUse)
@@ -167,8 +179,8 @@ final class LocalMaintenanceTests: XCTestCase {
         XCTAssertTrue(report.kept.isEmpty)
     }
 
-    private func file(_ path: String, ubiquitous: Bool, uploaded: Bool, uploading: Bool = false, uploadFailed: Bool = false, logical: UInt64, allocated: UInt64, pinned: Bool = false, dataless: Bool = false, inUse: Bool = false, protectedUntil: Date? = nil) -> MaterialFile {
-        MaterialFile(relativePath: path, logicalBytes: logical, allocatedBytes: allocated, ubiquitous: ubiquitous, uploaded: uploaded, uploading: uploading, uploadFailed: uploadFailed, pinned: pinned, dataless: dataless, inUse: inUse, protectedUntil: protectedUntil)
+    private func file(_ path: String, ubiquitous: Bool, uploaded: Bool, uploading: Bool = false, uploadFailed: Bool = false, logical: UInt64, allocated: UInt64, pinned: Bool = false, dataless: Bool = false, inUse: Bool = false, protectedUntil: Date? = nil, uploadKnown: Bool = true, uploadPercent: Double? = nil) -> MaterialFile {
+        MaterialFile(relativePath: path, logicalBytes: logical, allocatedBytes: allocated, ubiquitous: ubiquitous, uploaded: uploaded, uploading: uploading, uploadFailed: uploadFailed, pinned: pinned, dataless: dataless, inUse: inUse, protectedUntil: protectedUntil, uploadKnown: uploadKnown, uploadPercent: uploadPercent)
     }
 
     private func writeStub(_ url: URL, manifest: ImageManifest) throws {

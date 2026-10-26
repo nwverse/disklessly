@@ -5,7 +5,7 @@ import Darwin
 #endif
 
 extension IsenoughEngine {
-    func materialFiles(now: Date = Date()) -> [MaterialFile] {
+    public func materialFiles(now: Date = Date()) -> [MaterialFile] {
         if let materialFilesOverride { return materialFilesOverride }
         #if os(macOS)
         return LiveMaterialProbe.collect(config: config, now: now)
@@ -23,6 +23,7 @@ extension IsenoughEngine {
     /// Drop local bytes of iCloud images that are fully uploaded and not needed on this Mac.
     /// A file that is still uploading, or that the system will not evict, is reported and left in place.
     public func evictLocalCopies(now: Date = Date()) -> LocalEvictReport {
+        try? ensureDevice(now: now)
         let files = materialFiles(now: now)
         let plan = LocalEviction.plan(files, now: now)
         let chosen = Set(plan.evict)
@@ -49,6 +50,7 @@ extension IsenoughEngine {
 
     /// Remove verified `.isenough-original-` backups. One remover call covers every path.
     public func cleanupBackups(roots: [URL]? = nil, remover: (([String]) throws -> Void)? = nil) throws -> BackupCleanupReport {
+        try? ensureDevice()
         let facts: [BackupFact]
         if let backupFactsOverride {
             facts = backupFactsOverride
@@ -185,25 +187,57 @@ enum LiveMaterialProbe {
         let values = try? url.resourceValues(forKeys: keys)
         let fallback = (try? ChunkedIO.byteCount(url)) ?? 0
         guard let values else {
-            return MaterialFile(relativePath: relativePath, logicalBytes: fallback, allocatedBytes: fallback, ubiquitous: icloudRoot, uploaded: false, uploading: icloudRoot, uploadFailed: false, pinned: finderPinned(url), dataless: false, inUse: usage.inUse.contains(imageId), protectedUntil: usage.until[imageId])
+            return MaterialFile(relativePath: relativePath, logicalBytes: fallback, allocatedBytes: fallback, ubiquitous: icloudRoot, uploaded: false, uploading: false, uploadFailed: false, pinned: finderPinned(url), dataless: false, inUse: usage.inUse.contains(imageId), protectedUntil: usage.until[imageId], uploadKnown: false, uploadPercent: nil)
         }
         let ubiquitous = values.isUbiquitousItem == true
         let logical = UInt64(max(0, values.fileSize ?? Int(fallback)))
         let allocatedRaw = values.fileAllocatedSize.map { UInt64(max(0, $0)) } ?? logical
         let dataless = ubiquitous && (values.ubiquitousItemDownloadingStatus == .notDownloaded || (allocatedRaw == 0 && logical > 0))
+        // A null NSURLUbiquitousItemIsUploadedKey is "not reported", not false.
+        // Reading allValues keeps that distinction if the typed Bool is ever non-optional.
+        let uploaded = optionalBool(values, .ubiquitousItemIsUploadedKey)
+        let uploading = optionalBool(values, .ubiquitousItemIsUploadingKey)
+        let failed = values.ubiquitousItemUploadingError != nil
         return MaterialFile(
             relativePath: relativePath,
             logicalBytes: logical,
             allocatedBytes: dataless ? 0 : allocatedRaw,
             ubiquitous: ubiquitous,
-            uploaded: values.ubiquitousItemIsUploaded == true,
-            uploading: values.ubiquitousItemIsUploading == true,
-            uploadFailed: values.ubiquitousItemUploadingError != nil,
+            uploaded: uploaded == true,
+            uploading: uploading == true,
+            uploadFailed: failed,
             pinned: finderPinned(url),
             dataless: dataless,
             inUse: usage.inUse.contains(imageId),
-            protectedUntil: usage.until[imageId]
+            protectedUntil: usage.until[imageId],
+            uploadKnown: uploaded != nil || uploading != nil || failed,
+            uploadPercent: uploadPercent(of: url)
         )
+    }
+
+    private static func optionalBool(_ values: URLResourceValues, _ key: URLResourceKey) -> Bool? {
+        guard let raw = values.allValues[key] else { return nil }
+        if raw is NSNull { return nil }
+        if let number = raw as? NSNumber { return number.boolValue }
+        if let flag = raw as? Bool { return flag }
+        return nil
+    }
+
+    /// Percent is read on its own. A missing key must not fail the upload-state read above.
+    /// `NSURLUbiquitousItemPercentUploadedKey` is not a typed property on every SDK, so the
+    /// raw resource key (and the NSMetadata name for the same percentage) are requested directly.
+    private static func uploadPercent(of url: URL) -> Double? {
+        let keys: Set<URLResourceKey> = [
+            URLResourceKey(rawValue: "NSURLUbiquitousItemPercentUploadedKey"),
+            URLResourceKey(rawValue: "NSMetadataUbiquitousItemPercentUploadedKey"),
+        ]
+        guard let values = try? url.resourceValues(forKeys: keys) else { return nil }
+        for key in keys {
+            guard let raw = values.allValues[key] else { continue }
+            if let number = raw as? NSNumber { return number.doubleValue }
+            if let number = raw as? Double { return number }
+        }
+        return nil
     }
 
     private static func stillMaterialized(_ url: URL) -> Bool {

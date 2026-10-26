@@ -202,6 +202,54 @@ final class MultiMachineTests: XCTestCase {
         XCTAssertThrowsError(try world.engineB.forgetDevice(id: "pending", confirmed: true))
     }
 
+    func testLegacyRepoGCDeletesNothingUntilIncludeLegacy() throws {
+        let world = try World()
+        defer { world.cleanup() }
+        let manifest = try installImage(world, bundleId: "com.legacy.App", name: "Legacy")
+        let kept = try world.engineA.maintain(now: world.now)
+        XCTAssertTrue(kept.trashed.isEmpty)
+        XCTAssertTrue(kept.purged.isEmpty)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: world.repo.appendingPathComponent(manifest.image.file).path))
+        XCTAssertTrue(kept.warnings.contains { $0.contains(manifest.imageId) && $0.contains("no owner") && $0.contains("--include-legacy") })
+        let legacy = try Data(contentsOf: world.repo.appendingPathComponent(LegacyImages.path))
+        XCTAssertEqual(LegacyImages.decode(legacy), [manifest.imageId])
+        let listing = try world.engineA.deviceListing(now: world.now)
+        XCTAssertEqual(listing.devices.map(\.deviceId), [listing.localDeviceId])
+        XCTAssertTrue(listing.devices[0].images.isEmpty)
+        let removed = try world.engineA.maintain(now: world.now.addingTimeInterval(10), includeLegacy: true)
+        XCTAssertTrue(removed.trashed.contains(manifest.imageId))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: world.repo.appendingPathComponent(manifest.image.file).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: world.repo.appendingPathComponent("trash/images/\(manifest.imageId).dmg").path))
+    }
+
+    func testBackfillFromStubsAndJournalsShowsSelfOnTheFirstListing() throws {
+        let world = try World()
+        defer { world.cleanup() }
+        let stateDir = URL(fileURLWithPath: world.engineA.config.stateDir, isDirectory: true)
+        let local = try LocalDeviceStore.loadOrCreate(stateDir: stateDir, suggestedName: "Air")
+        let empty = DeviceRecord(deviceId: local.deviceId, hostname: "air", displayName: "Air", arch: "arm64", osVersion: "15.6", lastSeen: world.now, images: [])
+        try FileManager.default.createDirectory(at: world.repo.appendingPathComponent("devices"), withIntermediateDirectories: true)
+        try AtomicFile.write(try empty.encode(), to: world.repo.appendingPathComponent("devices/\(local.deviceId).json"))
+        let stubbed = try installImage(world, bundleId: "com.example.Stubbed", name: "Stubbed")
+        let journaled = try installImage(world, bundleId: "com.example.Journaled", name: "Journaled")
+        try writeStub(URL(fileURLWithPath: world.engineA.config.stubDir).appendingPathComponent("Stubbed.app"), manifest: stubbed)
+        let outside = world.root.appendingPathComponent("outside/Journaled.app")
+        try writeStub(outside, manifest: journaled)
+        let journal = RestoreJournal(txid: "tx-journaled", appId: journaled.bundleId, imageId: journaled.imageId, owner: ProcessOwner(pid: 1, start: 1), dest: outside.path, staging: world.root.appendingPathComponent("staging").path, imagePath: world.repo.appendingPathComponent(journaled.image.file).path, imageFile: journaled.image.file, appName: journaled.name, stubBundleId: "\(journaled.bundleId).256stub", executable: journaled.name, manifestCdhash: "cd", manifestTreeHash: world.hash, imageSha256: journaled.image.sha256)
+        try JournalStore.save(journal, stateDir: world.engineA.config.stateDir)
+        let listing = try world.engineA.deviceListing(now: world.now)
+        XCTAssertEqual(listing.devices.count, 1)
+        XCTAssertEqual(listing.localDeviceId, local.deviceId)
+        let ids = Set(listing.devices[0].images.map(\.imageId))
+        XCTAssertTrue(ids.contains(stubbed.imageId))
+        XCTAssertTrue(ids.contains(journaled.imageId))
+        let kept = try world.engineA.maintain(now: world.now)
+        XCTAssertFalse(kept.trashed.contains(stubbed.imageId))
+        XCTAssertFalse(kept.trashed.contains(journaled.imageId))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: world.repo.appendingPathComponent(stubbed.image.file).path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: world.repo.appendingPathComponent(journaled.image.file).path))
+    }
+
     func testRecommendNamesOtherDevicesWhenTheImageIsAlreadyInTheRepo() throws {
         let options = RecommendOptions(minSizeBytes: 1, now: Date(timeIntervalSince1970: 1_800_000_000), repoImages: [
             RepoImagePresence(bundleId: "com.example.App", version: "1.0", build: "10", architectures: ["arm64"], imageId: "com.example.App-1.0_b10-arm64-abcdef01", devices: ["Mac mini"])
@@ -233,6 +281,26 @@ final class MultiMachineTests: XCTestCase {
         formatter.formatOptions = [.withInternetDateTime]
         let object: [String: Any] = ["schema": "trash/1", "imageId": imageId, "trashedAt": formatter.string(from: date)]
         try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]).write(to: url)
+    }
+
+    private func installImage(_ world: World, bundleId: String, name: String) throws -> ImageManifest {
+        let bytes = Data(name.utf8)
+        let image = ImageManifest.Image(file: "", format: "ULMO", sha256: SHA256Digest.hex(bytes), size: UInt64(bytes.count), volumeName: name, appPathInVolume: "\(name).app")
+        let manifest = ImageManifest(bundleId: bundleId, name: name, version: "1.0", image: image, app: .init(originalPath: "/Applications/\(name).app", executable: name, documentTypes: [], urlTypes: []), mode: .mount, createdAt: world.now, build: "1", architectures: ["arm64"])
+        try FileManager.default.createDirectory(at: world.repo.appendingPathComponent("images"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: world.repo.appendingPathComponent("manifests"), withIntermediateDirectories: true)
+        try bytes.write(to: world.repo.appendingPathComponent(manifest.image.file))
+        try manifest.encode().write(to: world.repo.appendingPathComponent("manifests/\(manifest.imageId).json"))
+        return manifest
+    }
+
+    private func writeStub(_ url: URL, manifest: ImageManifest) throws {
+        try FileManager.default.createDirectory(at: url.appendingPathComponent("Contents/Resources"), withIntermediateDirectories: true)
+        let plist: [String: Any] = ["CFBundleIdentifier": "\(manifest.bundleId).256stub", "CFBundleExecutable": "isenough-stub", "CFBundleName": manifest.name]
+        try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0).write(to: url.appendingPathComponent("Contents/Info.plist"))
+        let stub: [String: Any] = ["schema": "stub/1", "appId": manifest.bundleId, "imageId": manifest.imageId]
+        try JSONSerialization.data(withJSONObject: stub).write(to: url.appendingPathComponent("Contents/Resources/stub.json"))
+        try manifest.encode().write(to: url.appendingPathComponent("Contents/Resources/manifest.json"))
     }
 
     private func temporaryRoot() -> URL {
@@ -282,6 +350,7 @@ final class MultiMachineTests: XCTestCase {
             )
             var engine = IsenoughEngine(config: config, secrets: MemorySecretStore())
             engine.deviceFactsOverride = facts
+            engine.stubRootsOverride = [URL(fileURLWithPath: config.stubDir, isDirectory: true)]
             return engine
         }
     }

@@ -475,18 +475,39 @@ public struct GCPlan: Equatable {
     }
 }
 
+/// Images that already lived in the repo when this Mac first wrote device files.
+/// The set is snapshotted once (`catalog/legacy.json`) after stub backfill. It is
+/// not recomputed: a later forget must still be able to trash an image this Mac
+/// registered and then dropped.
+public enum LegacyImages {
+    public static let path = "catalog/legacy.json"
+
+    public static func encode(_ imageIds: [String]) throws -> Data {
+        let object: [String: Any] = ["schema": "legacy/1", "imageIds": imageIds]
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    public static func decode(_ data: Data) -> [String]? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              (object["schema"] as? String) == "legacy/1",
+              let ids = object["imageIds"] as? [String] else { return nil }
+        return ids
+    }
+}
+
 public enum RepoGarbage {
     /// A device that has not checked in for this long is reported. Its images stay.
     public static let staleInterval: TimeInterval = 90 * 24 * 60 * 60
     /// Trash is kept at least this long so a device file that has not synced yet can still reference it.
     public static let graceInterval: TimeInterval = 7 * 24 * 60 * 60
 
-    public static func plan(liveImageIds: [String], trash: [TrashFact], devices: [DeviceFileFact], now: Date, staleInterval: TimeInterval = RepoGarbage.staleInterval, graceInterval: TimeInterval = RepoGarbage.graceInterval) -> GCPlan {
+    public static func plan(liveImageIds: [String], trash: [TrashFact], devices: [DeviceFileFact], now: Date, staleInterval: TimeInterval = RepoGarbage.staleInterval, graceInterval: TimeInterval = RepoGarbage.graceInterval, legacyImageIds: Set<String> = [], includeLegacy: Bool = false) -> GCPlan {
         let live = Array(Set(liveImageIds)).sorted()
         let trashed = trash.sorted { $0.imageId < $1.imageId }
         var warnings: [String] = []
         var referenced = Set<String>()
         let blocked = devices.contains { $0.placeholder || $0.notDownloaded }
+        let protected = includeLegacy ? Set<String>() : legacyImageIds
         for file in devices {
             if file.placeholder || file.notDownloaded {
                 warnings.append("\(file.name) is not downloaded. Treating it as present, so no image is deleted.")
@@ -501,18 +522,21 @@ public enum RepoGarbage {
                 warnings.append("device \(record.displayName) (\(record.deviceId)) was last seen \(days) days ago. Its images are kept. Forget it with isenough devices forget \(record.deviceId) --yes if that Mac is gone.")
             }
         }
+        for id in live where protected.contains(id) && !referenced.contains(id) {
+            warnings.append("\(id) predates device files and has no owner. It was not deleted. Pass --include-legacy to include it.")
+        }
         if blocked {
             return GCPlan(trash: [], restoreFromTrash: trashed.map(\.imageId), purge: [], warnings: warnings, kept: live)
         }
         let trashIds = trashed.filter { referenced.contains($0.imageId) }.map(\.imageId)
         let purgeIds = trashed.filter { fact in
-            !referenced.contains(fact.imageId) && now.timeIntervalSince(fact.trashedAt) >= graceInterval
+            !referenced.contains(fact.imageId) && !protected.contains(fact.imageId) && now.timeIntervalSince(fact.trashedAt) >= graceInterval
         }.map(\.imageId)
-        for fact in trashed where !referenced.contains(fact.imageId) && now.timeIntervalSince(fact.trashedAt) < graceInterval {
+        for fact in trashed where !referenced.contains(fact.imageId) && !protected.contains(fact.imageId) && now.timeIntervalSince(fact.trashedAt) < graceInterval {
             warnings.append("\(fact.imageId) is in trash and still inside the grace period, so it is not purged.")
         }
-        let trashNow = live.filter { !referenced.contains($0) }
-        let kept = live.filter { referenced.contains($0) }
+        let trashNow = live.filter { !referenced.contains($0) && !protected.contains($0) }
+        let kept = live.filter { referenced.contains($0) || protected.contains($0) }
         return GCPlan(trash: trashNow, restoreFromTrash: trashIds, purge: purgeIds, warnings: warnings, kept: kept)
     }
 }

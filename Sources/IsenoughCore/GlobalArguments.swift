@@ -16,7 +16,10 @@ public struct GlobalArguments: Equatable {
         var stateDir: String?
         var rest = args
         while let first = rest.first, first.hasPrefix("--") {
-            if first == "--json" {
+            if first == "--help" {
+                rest = ["help"]
+                break
+            } else if first == "--json" {
                 json = true
                 rest.removeFirst()
             } else if first == "--config" {
