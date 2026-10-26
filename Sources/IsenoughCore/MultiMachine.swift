@@ -106,40 +106,70 @@ public enum ExistingImage: Equatable {
     case sha256(String)
 }
 
+public enum ImageEvidence: Equatable {
+    /// The object does not exist and there is no placeholder.
+    case absent
+    /// Dataless or `.icloud`. `cloudConfirmed` means the cloud copy's size matches the manifest.
+    case placeholder(cloudConfirmed: Bool)
+    /// Bytes are on this Mac. `uploaded == nil` is unknown or not iCloud; `false` is still uploading.
+    case local(sha256: String, uploaded: Bool?)
+    /// stat or resource values failed.
+    case unreadable(String)
+}
+
+public enum OriginalDisposition: Equatable {
+    case dispose
+    case keep(reason: String)
+}
+
 public enum PublishDecision: Equatable {
     case create(imageId: String)
-    case reuse(ImageManifest)
-    case refuse(String)
+    case reuse(ImageManifest, OriginalDisposition)
+    case refuse(String, code: Int)
 }
 
 public enum PublishPlanner {
-    /// Same identity reuses the manifest and does not upload. A different version,
+    /// Same identity reuses the manifest and does not upload. A manifest whose image
+    /// is absent is refused so the original app is left in place. A different version,
     /// build, architecture, or tree hash is a new image. An existing object is never replaced.
-    public static func decide(identity: ImageIdentity, manifests: [ImageManifest], probe: (String) -> ExistingImage) -> PublishDecision {
+    public static func decide(identity: ImageIdentity, manifests: [ImageManifest], evidence: (String) -> ImageEvidence, inTrash: (String) -> Bool) -> PublishDecision {
         if let manifest = manifests.first(where: { $0.resolvedIdentity?.matches(identity) == true }) {
-            switch probe(manifest.image.file) {
-            case .absent, .placeholder:
-                return .reuse(manifest)
-            case .sha256(let sha) where sha == manifest.image.sha256:
-                return .reuse(manifest)
-            case .sha256:
-                return .refuse("image \(manifest.image.file) is already in the repo but its sha256 does not match the manifest. Refusing to overwrite it.")
+            switch evidence(manifest.image.file) {
+            case .absent:
+                if inTrash(manifest.imageId) {
+                    return .refuse("image \(manifest.imageId) is in the trash. Run isenough gc before packing again; a reference restores it. The original app was not changed.", code: 5)
+                }
+                return .refuse("manifest \(manifest.imageId) exists but its image is missing and may still be syncing from another Mac. The original app was not changed. Retry later.", code: 5)
+            case .placeholder(true):
+                return .reuse(manifest, .dispose)
+            case .placeholder(false):
+                return .reuse(manifest, .keep(reason: "cloud copy not confirmed"))
+            case .local(let sha, let uploaded) where sha == manifest.image.sha256 && uploaded != false:
+                return .reuse(manifest, .dispose)
+            case .local(let sha, _) where sha == manifest.image.sha256:
+                return .reuse(manifest, .keep(reason: "image is still uploading"))
+            case .local:
+                return .refuse("image \(manifest.image.file) is already in the repo but its sha256 does not match the manifest. Refusing to overwrite it.", code: 5)
+            case .unreadable(let message):
+                return .refuse(message, code: 4)
             }
         }
         let imageId = identity.imageId { id in
             manifests.first { $0.imageId == id }?.resolvedIdentity
         }
         if let clash = manifests.first(where: { $0.imageId == imageId }) {
-            return .refuse("image \(imageId) already exists for \(clash.bundleId) \(clash.version) and does not match this app. Refusing to overwrite the manifest.")
+            return .refuse("image \(imageId) already exists for \(clash.bundleId) \(clash.version) and does not match this app. Refusing to overwrite the manifest.", code: 5)
         }
         let path = "images/\(imageId).dmg"
-        switch probe(path) {
+        switch evidence(path) {
         case .absent:
             return .create(imageId: imageId)
         case .placeholder:
-            return .refuse("\(path) is an iCloud placeholder. Refusing to overwrite it.")
-        case .sha256:
-            return .refuse("\(path) already exists. Refusing to overwrite it.")
+            return .refuse("\(path) is an iCloud placeholder. Refusing to overwrite it.", code: 5)
+        case .local:
+            return .refuse("\(path) already exists. Refusing to overwrite it.", code: 5)
+        case .unreadable(let message):
+            return .refuse(message, code: 4)
         }
     }
 }

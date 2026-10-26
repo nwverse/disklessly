@@ -180,6 +180,8 @@ public struct IsenoughEngine {
     /// Replaces `/Applications`, `~/Applications`, and `stubDir` when backfilling this Mac's device file.
     /// Nil uses those folders. An empty array scans nowhere.
     public var stubRootsOverride: [URL]?
+    /// Replaces iCloud/stat evidence during publish. Nil uses `imageEvidence`.
+    public var imageEvidenceOverride: ((String) -> ImageEvidence)?
     public init(config: RuntimeConfig, services: RestoreServices? = nil, faults: FaultController? = nil, secrets: (any SecretStore)? = nil, shareOpener: ShareOpener = .system) {
         self.config=config
         let faults=faults ?? FaultController()
@@ -196,6 +198,7 @@ public struct IsenoughEngine {
         self.ubiquityEvictor = nil
         self.backupFactsOverride = nil
         self.stubRootsOverride = nil
+        self.imageEvidenceOverride = nil
     }
     public func openBackend() throws -> any StorageBackend {
         if let backendOverride { return backendOverride }
@@ -376,16 +379,24 @@ public struct IsenoughEngine {
         let architectures = MachArchitectures.slices(at: stagedApp.appendingPathComponent("Contents/MacOS/\(executableName)"))
         let identity = ImageIdentity(bundleId: bid, version: version, build: build, architectures: architectures.isEmpty ? ["unknown"] : architectures, treeHash: contentHash)
         let backend = try repo
-        let decision = PublishPlanner.decide(identity: identity, manifests: try readManifests(backend)) { path in
-            (try? WriteOnce.probe(backend, path)) ?? .absent
-        }
-        if case .reuse(let existing) = decision {
+        let manifests = try readManifests(backend)
+        let decision = PublishPlanner.decide(identity: identity, manifests: manifests, evidence: { path in
+            self.imageEvidence(backend, path, expectedSize: manifests.first { $0.image.file == path }?.image.size)
+        }, inTrash: { id in
+            (try? backend.stat("trash/images/\(id).dmg")) != nil
+        })
+        if case .reuse(let existing, let disposition) = decision {
             try register(existing, backend: backend, now: Date())
             if EngineInstall.runningExecutable().lastPathComponent == "isenough" { try installEngine() }
-            let stubWarning = noStub ? nil : try installStub(info: info, manifest: existing, path: app.path, keepOriginal: keepOriginal)
-            return finishPublished(PublishResult(manifest: existing, reused: true, uploaded: false), stubWarning: stubWarning)
+            let forcedKeep = { if case .keep = disposition { return true }; return false }()
+            let stubWarning = noStub ? nil : try installStub(info: info, manifest: existing, path: app.path, keepOriginal: keepOriginal || forcedKeep)
+            let kept: String? = { if case .keep(let reason) = disposition { return reason }; return nil }()
+            return finishPublished(PublishResult(manifest: existing, reused: true, uploaded: false, originalKept: kept), stubWarning: stubWarning)
         }
-        if case .refuse(let message) = decision { throw IsenoughError.integrity(message) }
+        if case .refuse(let message, let code) = decision {
+            if code == 4 { throw IsenoughError.backend(message) }
+            throw IsenoughError.integrity(message)
+        }
         let dmg=staging.appendingPathComponent("image.dmg")
         try run("/usr/bin/hdiutil",["create","-quiet","-srcfolder",staging.appendingPathComponent("src").path,"-format","ULMO","-volname",name,"-o",dmg.deletingPathExtension().path])
         // Hash the ditto restore will verify, not the pre-image staged app. hdiutil

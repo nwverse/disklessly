@@ -45,7 +45,7 @@ extension IsenoughEngine {
         if let stubWarning { warnings.append(stubWarning) }
         let eviction = evictLocalCopies()
         warnings.append(contentsOf: eviction.retryLater)
-        return PublishResult(manifest: published.manifest, reused: published.reused, uploaded: published.uploaded, warnings: warnings, evicted: eviction.evicted)
+        return PublishResult(manifest: published.manifest, reused: published.reused, uploaded: published.uploaded, warnings: warnings, evicted: eviction.evicted, originalKept: published.originalKept)
     }
 
     /// Remove verified `.isenough-original-` backups. One remover call covers every path.

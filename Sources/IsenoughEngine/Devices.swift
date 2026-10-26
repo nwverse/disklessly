@@ -38,12 +38,15 @@ public struct PublishResult: Equatable {
     public var uploaded: Bool
     public var warnings: [String]
     public var evicted: [String]
-    public init(manifest: ImageManifest, reused: Bool, uploaded: Bool, warnings: [String] = [], evicted: [String] = []) {
+    /// Set when the original app must stay because the cloud copy is not confirmed.
+    public var originalKept: String?
+    public init(manifest: ImageManifest, reused: Bool, uploaded: Bool, warnings: [String] = [], evicted: [String] = [], originalKept: String? = nil) {
         self.manifest = manifest
         self.reused = reused
         self.uploaded = uploaded
         self.warnings = warnings
         self.evicted = evicted
+        self.originalKept = originalKept
     }
 }
 
@@ -88,22 +91,98 @@ extension IsenoughEngine {
         deviceFactsOverride ?? LiveDeviceFacts.current()
     }
 
+    /// Evidence for one repo object. Dataless iCloud files are not hashed.
+    /// A failure here is reported as `.unreadable`; it does not throw.
+    func imageEvidence(_ backend: any StorageBackend, _ path: String, expectedSize: UInt64?) -> ImageEvidence {
+        if let imageEvidenceOverride { return imageEvidenceOverride(path) }
+        #if os(macOS)
+        if let root = backend.localRoot() {
+            let url = root.appendingPathComponent(path)
+            if let cloud = Self.ubiquitousEvidence(url, expectedSize: expectedSize) {
+                return cloud
+            }
+        }
+        #endif
+        do {
+            switch try WriteOnce.probe(backend, path) {
+            case .absent:
+                return .absent
+            case .placeholder:
+                return .placeholder(cloudConfirmed: false)
+            case .sha256(let sha):
+                return .local(sha256: sha, uploaded: nil)
+            }
+        } catch {
+            return .unreadable(error.localizedDescription)
+        }
+    }
+
+    #if os(macOS)
+    /// Nil means the file is not an iCloud item, so the caller should hash it normally.
+    private static func ubiquitousEvidence(_ url: URL, expectedSize: UInt64?) -> ImageEvidence? {
+        let folder = url.deletingLastPathComponent()
+        let hidden = folder.appendingPathComponent("." + url.lastPathComponent + ".icloud")
+        let visible = folder.appendingPathComponent(url.lastPathComponent + ".icloud")
+        let fm = FileManager.default
+        if !fm.fileExists(atPath: url.path) && (fm.fileExists(atPath: hidden.path) || fm.fileExists(atPath: visible.path)) {
+            return .placeholder(cloudConfirmed: false)
+        }
+        let keys: Set<URLResourceKey> = [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey, .ubiquitousItemIsUploadedKey, .fileSizeKey]
+        let values: URLResourceValues
+        do {
+            values = try url.resourceValues(forKeys: keys)
+        } catch {
+            if fm.fileExists(atPath: url.path) { return .unreadable(error.localizedDescription) }
+            return nil
+        }
+        guard values.isUbiquitousItem == true else { return nil }
+        if values.ubiquitousItemDownloadingStatus == .notDownloaded {
+            let size = values.fileSize.map { UInt64(max(0, $0)) }
+            let confirmed = size != nil && expectedSize != nil && size == expectedSize
+            return .placeholder(cloudConfirmed: confirmed)
+        }
+        do {
+            let sha = try SHA256Digest.hexFile(url)
+            return .local(sha256: sha, uploaded: uploadedFlag(values))
+        } catch {
+            return .unreadable(error.localizedDescription)
+        }
+    }
+
+    private static func uploadedFlag(_ values: URLResourceValues) -> Bool? {
+        guard let raw = values.allValues[.ubiquitousItemIsUploadedKey] else { return nil }
+        if raw is NSNull { return nil }
+        if let number = raw as? NSNumber { return number.boolValue }
+        if let flag = raw as? Bool { return flag }
+        return nil
+    }
+    #endif
+
     public func publish(_ request: PublishRequest, imageFile: URL?, now: Date = Date()) throws -> PublishResult {
         let backend = try repo
         // Lists must succeed before any put. A failed manifest listing writes nothing.
         try ensureRepoCollections(backend)
         let manifests = try readManifests(backend)
+        let decision = PublishPlanner.decide(identity: request.identity, manifests: manifests, evidence: { path in
+            self.imageEvidence(backend, path, expectedSize: manifests.first { $0.image.file == path }?.image.size)
+        }, inTrash: { id in
+            (try? backend.stat("trash/images/\(id).dmg")) != nil
+        })
+        if case .refuse(let message, let code) = decision {
+            if code == 4 { throw IsenoughError.backend(message) }
+            throw IsenoughError.integrity(message)
+        }
         // Snapshot legacy ids before this image exists, so a brand-new publish is not frozen as legacy.
         try ensureDevice(now: now)
-        let decision = PublishPlanner.decide(identity: request.identity, manifests: manifests) { path in
-            (try? WriteOnce.probe(backend, path)) ?? .absent
-        }
         switch decision {
-        case .reuse(let manifest):
+        case .reuse(let manifest, let disposition):
             try register(manifest, backend: backend, now: now)
             try rewriteCatalog(backend, now: now)
-            return PublishResult(manifest: manifest, reused: true, uploaded: false)
-        case .refuse(let message):
+            let kept: String?
+            if case .keep(let reason) = disposition { kept = reason } else { kept = nil }
+            return PublishResult(manifest: manifest, reused: true, uploaded: false, originalKept: kept)
+        case .refuse(let message, let code):
+            if code == 4 { throw IsenoughError.backend(message) }
             throw IsenoughError.integrity(message)
         case .create(let imageId):
             guard let imageFile else { throw IsenoughError.usage("publishing \(imageId) needs an image file") }

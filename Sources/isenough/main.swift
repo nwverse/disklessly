@@ -154,7 +154,13 @@ do {
         let published=try engine.pack(path,mode:mode,keepOriginal:keep,noStub:noStub); let m=published.manifest
         for warning in published.warnings { fputs("isenough: \(warning)\n", stderr) }
         for path in published.evicted { fputs("isenough: evicted local iCloud copy \(path)\n", stderr) }
-        emit(["ok":true,"imageId":m.imageId,"bundleId":m.bundleId,"mode":m.mode.rawValue,"sha256":m.image.sha256,"reused":published.reused,"uploaded":published.uploaded,"warnings":published.warnings,"evicted":published.evicted])
+        if let kept = published.originalKept {
+            let retained = URL(fileURLWithPath: config.stubDir).appendingPathComponent(URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent + ".256orig.app")
+            fputs("isenough: kept original at \(retained.path): \(kept)\n", stderr)
+        }
+        var packed: [String: Any] = ["ok":true,"imageId":m.imageId,"bundleId":m.bundleId,"mode":m.mode.rawValue,"sha256":m.image.sha256,"reused":published.reused,"uploaded":published.uploaded,"warnings":published.warnings,"evicted":published.evicted]
+        if let kept = published.originalKept { packed["originalKept"] = kept }
+        emit(packed)
     case "list":
         let manifests = try engine.list()
         if json { emit(manifests.map { ["imageId":$0.imageId,"bundleId":$0.bundleId,"name":$0.name,"version":$0.version,"mode":$0.mode.rawValue] }) }
