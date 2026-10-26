@@ -22,7 +22,7 @@ public struct RestoreServices {
     public var probe: ([String]) -> UsageClass
     public var isAlive: (ProcessOwner) -> Bool
     public var spawnWatch: (String) throws -> ProcessOwner
-    public var openApp: (URL, [String], [String], [String]) throws -> Void
+    public var openApp: (URL, [String], [String], [String], Bool) throws -> Void
     public var cdhash: (URL) throws -> String
     public var treeHash: (URL) throws -> String
     public var signatureValid: (URL) -> Bool
@@ -67,23 +67,23 @@ public struct RestoreServices {
             probe: { roots in ProcessProbe.usage(roots: roots) },
             isAlive: { ProcessStart.isAlive($0) },
             spawnWatch: { appId in try ProcessRunner.spawnWatch(appId: appId, stateDir: config.stateDir) },
-            openApp: { app, docs, urls, arguments in
+            openApp: { app, docs, urls, arguments, alreadyRunning in
                 #if os(macOS)
-                var args = ["/usr/bin/open", "-n", "-a", app.path]
-                args += docs
-                args += urls
-                if !arguments.isEmpty { args.append("--args"); args += arguments }
+                let built = OpenInvocation.arguments(app: app.path, documents: docs, urls: urls, arguments: arguments, alreadyRunning: alreadyRunning)
+                for warning in built.warnings {
+                    FileHandle.standardError.write(Data("isenough: \(warning)\n".utf8))
+                }
                 // `open` without a bound waits forever when the stub never checks in
                 // with Launch Services. The watcher must not sit inside that wait:
                 // the journal is already `active`, and a later manual `hook watch`
                 // is what used to finish it. A still-running `open` is ignored by
                 // the usage probe.
-                let pid = try DetachedProcess.spawn(executable: "/usr/bin/open", arguments: args, redirectOutput: nil, newSession: true)
+                let pid = try DetachedProcess.spawn(executable: built.argv[0], arguments: built.argv, redirectOutput: nil, newSession: true)
                 if let status = DetachedProcess.wait(pid: pid, timeout: 30), status != 0 {
                     throw IsenoughError.failure("open exited \(status)")
                 }
                 #else
-                _ = (app, docs, urls, arguments)
+                _ = (app, docs, urls, arguments, alreadyRunning)
                 throw IsenoughError.unsupported("opening an app requires macOS Launch Services")
                 #endif
             },
@@ -363,12 +363,16 @@ public final class RestoreCoordinator {
         }
     }
 
+    private func launchAlreadyRunning(_ journal: RestoreJournal) -> Bool {
+        journal.phase == .active && services.probe(probeRoots(journal)) == .busy
+    }
+
     public func launch(_ manifest: ImageManifest, documents: [String], urls: [String], arguments: [String], wait: Bool) throws {
         guard let cdhash = manifest.app.cdhash, let tree = manifest.app.treeHash, !cdhash.isEmpty, !tree.isEmpty else {
             throw IsenoughError.integrity("restore manifest is missing app.cdhash or app.treeHash")
         }
         if let journal = openJournal(manifest.bundleId), foreignOwnerAlive(journal) {
-            try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments)
+            try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments, launchAlreadyRunning(journal))
             return
         }
         let existing = try recover(appId: manifest.bundleId, wait: false, shortLived: false)
@@ -377,13 +381,13 @@ public final class RestoreCoordinator {
             throw IsenoughError.busy(message)
         case .waiting:
             guard let journal = openJournal(manifest.bundleId) else { break }
-            try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments)
+            try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments, launchAlreadyRunning(journal))
             try markLaunched(manifest.bundleId)
             try handoffOrWait(manifest.bundleId, wait: wait)
             return
         case .noop:
             if let journal = openJournal(manifest.bundleId) {
-                try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments)
+                try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments, launchAlreadyRunning(journal))
             }
             return
         case .idle, .terminal:
@@ -401,7 +405,7 @@ public final class RestoreCoordinator {
             throw IsenoughError.hook("pre-launch hook failed")
         }
         guard let journal = openJournal(manifest.bundleId) else { throw IsenoughError.failure("restore journal disappeared before launch") }
-        try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments)
+        try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments, launchAlreadyRunning(journal))
         try markLaunched(manifest.bundleId)
         try handoffOrWait(manifest.bundleId, wait: wait)
     }
@@ -1335,7 +1339,7 @@ public final class RestoreCoordinator {
         return fm.fileExists(atPath: url.path, isDirectory: &isDir) && !isDir.boolValue
     }
 
-    private func withLock<T>(_ appId: String, _ body: () throws -> T) throws -> T {
+    func withLock<T>(_ appId: String, _ body: () throws -> T) throws -> T {
         let directory = URL(fileURLWithPath: config.stateDir).appendingPathComponent("locks/app")
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         var lock = FileLock(path: directory.appendingPathComponent(appId + ".lock").path)

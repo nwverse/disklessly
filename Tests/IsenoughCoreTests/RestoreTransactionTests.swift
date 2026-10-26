@@ -99,7 +99,10 @@ final class RestoreWorld {
                 trace.alive.insert(owner.pid)
                 return owner
             },
-            openApp: { url, _, _, _ in trace.opened.append(url.path) },
+            openApp: { url, docs, urls, _, _ in
+                trace.opened.append(url.path)
+                trace.openedDocuments.append(docs + urls)
+            },
             cdhash: { try BundleHasher.cdhash(of: $0) },
             treeHash: {
                 trace.treeHashed.append($0.path)
@@ -229,6 +232,7 @@ final class RestoreTrace {
     var alive: Set<Int32> = []
     var spawned: [ProcessOwner] = []
     var opened: [String] = []
+    var openedDocuments: [[String]] = []
     var treeHashed: [String] = []
     var attached: [URL] = []
     var detached: [URL] = []
@@ -875,6 +879,21 @@ final class RestoreTransactionTests: XCTestCase {
         try world.launch(wait: false)
         XCTAssertEqual(world.trace.spawned.count, 1)
         XCTAssertEqual(world.trace.opened.count, 2)
+        XCTAssertEqual(world.journals().first?.owner.pid, 4242)
+        XCTAssertEqual(world.bundleID(at: world.dest), world.bundleID)
+    }
+
+    func testSecondLaunchWhileActiveForwardsDocuments() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        world.engine.restore.services.detachWatcher = true
+        try world.launch(wait: false)
+        world.trace.probe = .busy
+        try world.engine.launch(world.manifest, documents: ["/tmp/x.txt"], wait: false)
+        XCTAssertEqual(world.trace.opened.count, 2)
+        XCTAssertEqual(world.trace.attached.count, 1)
+        XCTAssertEqual(world.journals().count, 1)
+        XCTAssertEqual(world.trace.openedDocuments.last, ["/tmp/x.txt"])
         XCTAssertEqual(world.journals().first?.owner.pid, 4242)
         XCTAssertEqual(world.bundleID(at: world.dest), world.bundleID)
     }

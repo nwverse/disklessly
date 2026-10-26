@@ -679,24 +679,39 @@ public struct IsenoughEngine {
         let rawMount=URL(fileURLWithPath:config.mountRoot).appendingPathComponent(manifest.imageId)
         try FileManager.default.createDirectory(at:rawMount,withIntermediateDirectories:true)
         let mount=rawMount.resolvingSymlinksInPath().standardizedFileURL
-        try LiveDiskImage.attach(image: image, mountPoint: mount)
-        let state=StateStore(config.stateDir)
-        try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"running",mountPoint:mount.path)
         let app=mount.appendingPathComponent(manifest.image.appPathInVolume)
-        var args=["-n","-a",app.path]; args += documents; args += urls
-        if !arguments.isEmpty { args.append("--args"); args += arguments }
-        try run("/usr/bin/open",args)
-        if wait {
-            while true {
-                Thread.sleep(forTimeInterval:0.5)
-                let p=Process(); p.executableURL=URL(fileURLWithPath:"/usr/bin/pgrep"); p.arguments=["-f",app.appendingPathComponent("Contents/MacOS/"+manifest.app.executable).path]
-                try? p.run(); p.waitUntilExit(); if p.terminationStatus != 0 { break }
+        let state=StateStore(config.stateDir)
+        var handOff = false
+        try restore.withLock(manifest.bundleId) {
+            let recorded = state.load().apps[manifest.bundleId]?.mountPoint
+            let info = ProcessRunner.capture("/usr/bin/hdiutil", ["info", "-plist"])
+            let listed = recorded.map { DiskImageTool.plistListsMountPoint(Data(info.utf8), $0) } ?? false
+            if listed, let recorded, FileManager.default.fileExists(atPath: recorded) {
+                let busy = ProcessProbe.usage(roots: [recorded]) == .busy
+                let built = OpenInvocation.arguments(app: app.path, documents: documents, urls: urls, arguments: arguments, alreadyRunning: busy)
+                for warning in built.warnings { FileHandle.standardError.write(Data("isenough: \(warning)\n".utf8)) }
+                try run(built.argv[0], Array(built.argv.dropFirst()))
+                if busy { handOff = true }
+                return
             }
+            try LiveDiskImage.attach(image: image, mountPoint: mount)
+            try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"running",mountPoint:mount.path)
+            let built = OpenInvocation.arguments(app: app.path, documents: documents, urls: urls, arguments: arguments, alreadyRunning: false)
+            try run(built.argv[0], Array(built.argv.dropFirst()))
+        }
+        if handOff || !wait { return }
+        while true {
+            Thread.sleep(forTimeInterval:0.5)
+            let p=Process(); p.executableURL=URL(fileURLWithPath:"/usr/bin/pgrep"); p.arguments=["-f",app.appendingPathComponent("Contents/MacOS/"+manifest.app.executable).path]
+            try? p.run(); p.waitUntilExit()
+            if p.terminationStatus == 0 { continue }
             Thread.sleep(forTimeInterval:Double(config.detachDelaySeconds))
+            if ProcessProbe.usage(roots: [mount.path]) == .busy { continue }
             try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"detaching",mountPoint:mount.path)
             do {
                 try LiveDiskImage.detach(mountPoint: mount, force: false)
                 try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"cached")
+                break
             } catch {
                 try? state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"backoff",mountPoint:mount.path)
                 FileHandle.standardError.write(Data("isenough: detach failed: \(error)\n".utf8))
