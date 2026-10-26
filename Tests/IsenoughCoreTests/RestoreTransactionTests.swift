@@ -17,7 +17,7 @@ final class RestoreWorld {
     let bundleID = "com.example.foo"
     var stubBundleID: String { bundleID + ".256stub" }
     let manifest: ImageManifest
-    let engine: IsenoughEngine
+    var engine: IsenoughEngine
     let trace: RestoreTrace
     var probe: UsageClass = .clean
 
@@ -101,7 +101,10 @@ final class RestoreWorld {
             },
             openApp: { url, _, _, _ in trace.opened.append(url.path) },
             cdhash: { try BundleHasher.cdhash(of: $0) },
-            treeHash: { try BundleHasher.treeHash(of: $0) },
+            treeHash: {
+                trace.treeHashed.append($0.path)
+                return try BundleHasher.treeHash(of: $0)
+            },
             signatureValid: { trace.signatureValid($0) },
             archiveVerified: { RestoreArchive.verified($0, config: config) },
             buildStub: { dest, journal in try StubRebuilder.write(at: dest, journal: journal, config: config) },
@@ -226,6 +229,7 @@ final class RestoreTrace {
     var alive: Set<Int32> = []
     var spawned: [ProcessOwner] = []
     var opened: [String] = []
+    var treeHashed: [String] = []
     var attached: [URL] = []
     var detached: [URL] = []
     var plantSidecar = false
@@ -702,7 +706,7 @@ final class RestoreTransactionTests: XCTestCase {
         case .idle, .terminal: break
         default: XCTFail("expected restore-out to finish, got \(done) \(world.debugDump())")
         }
-        XCTAssertGreaterThan(hashes, 1, "quitting still tree-hashes once to decide whether the bundle changed")
+        XCTAssertEqual(hashes, 1, "an unchanged tree fingerprint skips the content hash on quit")
         XCTAssertEqual(world.outcomeName, "restoredOut")
     }
 

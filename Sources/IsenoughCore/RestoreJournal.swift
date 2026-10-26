@@ -14,8 +14,10 @@ public struct InspectionSnapshot: Codable, Equatable {
     public var bundleId: String
     public var changed: Bool
     public var inode: InodeId?
-    public init(cdhash: String, treeHash: String, bundleId: String, changed: Bool, inode: InodeId? = nil) {
-        self.cdhash = cdhash; self.treeHash = treeHash; self.bundleId = bundleId; self.changed = changed; self.inode = inode
+    /// Stat-only tree digest recorded with this snapshot. Nil on older journals.
+    public var fingerprint: String?
+    public init(cdhash: String, treeHash: String, bundleId: String, changed: Bool, inode: InodeId? = nil, fingerprint: String? = nil) {
+        self.cdhash = cdhash; self.treeHash = treeHash; self.bundleId = bundleId; self.changed = changed; self.inode = inode; self.fingerprint = fingerprint
     }
 }
 
@@ -68,6 +70,8 @@ public struct RestoreJournal: Codable, Equatable {
     public var detachedImage: Bool
     public var detachAfter: Date?
     public var didLaunch: Bool
+    /// Stat-only digest of `dest` after `app.new` was renamed into place. Nil on older journals.
+    public var installedFingerprint: String?
 
     public init(txid: String, appId: String, imageId: String, owner: ProcessOwner, dest: String, staging: String, imagePath: String, imageFile: String, appName: String, stubBundleId: String, executable: String, manifestCdhash: String, manifestTreeHash: String, imageSha256: String, createdAt: Date = Date()) {
         self.schema = "tx/1"
@@ -104,6 +108,7 @@ public struct RestoreJournal: Codable, Equatable {
         self.detachedImage = false
         self.detachAfter = nil
         self.didLaunch = false
+        self.installedFingerprint = nil
     }
 
     public func encode() throws -> Data {

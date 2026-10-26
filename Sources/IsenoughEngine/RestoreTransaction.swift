@@ -244,15 +244,33 @@ enum ProcessRunner {
 }
 
 enum RestoreArchive {
+    /// The repo object is included only when reading it will not start an iCloud download.
+    static func candidates(config: RuntimeConfig, journal: RestoreJournal, isLocal: (URL) -> Bool) -> [URL] {
+        var urls = [URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(journal.imageId).dmg")]
+        let repo = URL(fileURLWithPath: config.repoPath).appendingPathComponent(journal.imageFile)
+        if isLocal(repo) { urls.append(repo) }
+        return urls
+    }
+
     static func verified(_ journal: RestoreJournal, config: RuntimeConfig) -> Bool {
-        let candidates = [
-            URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(journal.imageId).dmg"),
-            URL(fileURLWithPath: config.repoPath).appendingPathComponent(journal.imageFile),
-        ]
-        for url in candidates {
-            if (try? SHA256Digest.hexFile(url)) == journal.imageSha256 { return true }
+        let urls = candidates(config: config, journal: journal, isLocal: repoIsHashedLocally)
+        for url in urls {
+            if ArchiveVerificationCache.shared.verify(url: url, expected: journal.imageSha256, hasher: { try SHA256Digest.hexFile($0) }) {
+                return true
+            }
         }
         return false
+    }
+
+    private static func repoIsHashedLocally(_ url: URL) -> Bool {
+        #if os(macOS)
+        let keys: Set<URLResourceKey> = [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
+        guard let values = try? url.resourceValues(forKeys: keys), values.isUbiquitousItem == true else { return true }
+        return values.ubiquitousItemDownloadingStatus == .current
+        #else
+        _ = url
+        return true
+        #endif
     }
 }
 
@@ -678,6 +696,10 @@ public final class RestoreCoordinator {
             try fm.moveItem(at: appNew, to: dest)
             try DurableIO.syncItem(dest.deletingLastPathComponent())
         }
+        if fm.fileExists(atPath: dest.path) {
+            journal.installedFingerprint = try? TreeFingerprint.of(dest)
+            try JournalStore.save(journal, stateDir: config.stateDir)
+        }
         try faults.hit("installed", "afterMutation")
         events.append("installed")
     }
@@ -802,11 +824,18 @@ public final class RestoreCoordinator {
 
     private func inspect(_ journal: inout RestoreJournal) throws {
         let url = inspectURL(journal)
-        guard let ident = BundleFacts.identity(url, cdhash: services.cdhash, treeHash: services.treeHash) else {
-            throw IsenoughError.integrity("cannot inspect bundle at \(url.path)")
+        let fingerprint = try? TreeFingerprint.of(url)
+        let paranoid = ProcessInfo.processInfo.environment["ISENOUGH_PARANOID_INSPECT"] == "1"
+        let snapshot: InspectionSnapshot
+        if let fingerprint, fingerprint == journal.installedFingerprint, !paranoid {
+            snapshot = InspectionSnapshot(cdhash: journal.manifestCdhash, treeHash: journal.manifestTreeHash, bundleId: journal.appId, changed: false, inode: DurableIO.inode(url), fingerprint: fingerprint)
+        } else {
+            guard let ident = BundleFacts.identity(url, cdhash: services.cdhash, treeHash: services.treeHash) else {
+                throw IsenoughError.integrity("cannot inspect bundle at \(url.path)")
+            }
+            let changed = ident.cdhash != journal.manifestCdhash || ident.treeHash != journal.manifestTreeHash || ident.bundleId != journal.appId
+            snapshot = InspectionSnapshot(cdhash: ident.cdhash, treeHash: ident.treeHash, bundleId: ident.bundleId, changed: changed, inode: ident.inode, fingerprint: fingerprint)
         }
-        let changed = ident.cdhash != journal.manifestCdhash || ident.treeHash != journal.manifestTreeHash || ident.bundleId != journal.appId
-        let snapshot = InspectionSnapshot(cdhash: ident.cdhash, treeHash: ident.treeHash, bundleId: ident.bundleId, changed: changed, inode: ident.inode)
         if journal.phase.index < RestorePhase.inspected.index {
             try journalNext(.inspected, &journal) { $0.inspection = snapshot }
         } else {
@@ -1112,9 +1141,9 @@ public final class RestoreCoordinator {
         // app on every probe repeated the same multi-gigabyte walk and did not feed
         // the decision.
         var memo = IdentityMemo()
-        let hashDestination = journal.phase == .inspected
+        let destination = destinationNode(journal, memo: &memo)
         return RestoreLayout(
-            destination: node(URL(fileURLWithPath: journal.dest), journal, full: hashDestination, memo: &memo),
+            destination: destination,
             appNew: node(appNew, journal, full: true, memo: &memo),
             appOld: node(appOld, journal, full: false, memo: &memo),
             parkedStub: node(parked, journal, full: false, memo: &memo),
@@ -1143,6 +1172,16 @@ public final class RestoreCoordinator {
             }
             return value
         }
+    }
+
+    private func destinationNode(_ journal: RestoreJournal, memo: inout IdentityMemo) -> BundleNode {
+        let url = URL(fileURLWithPath: journal.dest)
+        let paranoid = ProcessInfo.processInfo.environment["ISENOUGH_PARANOID_INSPECT"] == "1"
+        if journal.phase == .inspected, let snap = journal.inspection, !paranoid,
+           let current = try? TreeFingerprint.of(url), current == snap.fingerprint {
+            return .app(bundleId: snap.bundleId, cdhash: snap.cdhash, treeHash: snap.treeHash, inode: snap.inode)
+        }
+        return node(url, journal, full: journal.phase == .inspected, memo: &memo)
     }
 
     private func node(_ url: URL, _ journal: RestoreJournal, full: Bool, memo: inout IdentityMemo) -> BundleNode {

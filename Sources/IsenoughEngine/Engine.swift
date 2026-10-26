@@ -192,6 +192,8 @@ public struct IsenoughEngine {
     public var imageEvidenceOverride: ((String) -> ImageEvidence)?
     /// Replaces the process probe during pack. Nil asks `ps`.
     public var packUsageOverride: ((String) -> UsageClass)?
+    /// Replaces `SHA256Digest.hexFile` for prefetch. Nil hashes the file.
+    public var hasherOverride: ((URL) throws -> String)?
     public init(config: RuntimeConfig, services: RestoreServices? = nil, faults: FaultController? = nil, secrets: (any SecretStore)? = nil, shareOpener: ShareOpener = .system) {
         self.config=config
         let faults=faults ?? FaultController()
@@ -210,6 +212,7 @@ public struct IsenoughEngine {
         self.stubRootsOverride = nil
         self.imageEvidenceOverride = nil
         self.packUsageOverride = nil
+        self.hasherOverride = nil
     }
     public func openBackend() throws -> any StorageBackend {
         if let backendOverride { return backendOverride }
@@ -620,7 +623,18 @@ public struct IsenoughEngine {
         let paths = CachePaths(cacheDir: config.cacheDir, mountRoot: config.mountRoot)
         let cache = paths.image(manifest.imageId)
         try FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: cache.path), (try? SHA256Digest.hexFile(cache)) == manifest.image.sha256 { return cache }
+        if FileManager.default.fileExists(atPath: cache.path) {
+            let paranoid = ProcessInfo.processInfo.environment["ISENOUGH_PARANOID_VERIFY"] == "1"
+            if !paranoid, let stamp = StateStore(config.stateDir).load().cache[manifest.imageId]?.verified,
+               stamp.sha256 == manifest.image.sha256,
+               let finger = try? FileFingerprint.of(url: cache), finger == stamp.fingerprint {
+                return cache
+            }
+            if (try? hashCached(cache)) == manifest.image.sha256 {
+                try rememberVerified(manifest.imageId, file: cache)
+                return cache
+            }
+        }
         let free = try VolumeSpace.availableBytes(at: config.cacheDir)
         guard SpaceFloor.admits(freeBytes: free, incoming: manifest.image.size, floor: config.minFreeBytes) else {
             throw IsenoughError.noSpace("free space \(free) bytes would fall below the \(config.minFreeBytes) byte floor after fetching \(manifest.image.size) bytes")
@@ -629,7 +643,23 @@ public struct IsenoughEngine {
         // The manifest hashes the remote ULMO image; converting it on download both
         // invalidates that identity and relies on hdiutil's output-name conventions.
         try CacheFetcher.materialize(backend: backend, remote: manifest.image.file, destination: cache, partial: paths.partial(manifest.imageId), expectedSize: manifest.image.size, expectedSHA256: manifest.image.sha256)
+        try rememberVerified(manifest.imageId, file: cache)
         return cache
+    }
+
+    private func hashCached(_ url: URL) throws -> String {
+        if let hasherOverride { return try hasherOverride(url) }
+        return try SHA256Digest.hexFile(url)
+    }
+
+    private func rememberVerified(_ imageId: String, file: URL) throws {
+        guard let finger = try? FileFingerprint.of(url: file) else { return }
+        let sha = try hashCached(file)
+        try StateStore(config.stateDir).update { state in
+            var entry = state.cache[imageId] ?? CacheEntry()
+            entry.verified = VerifiedStamp(sha256: sha, fingerprint: finger)
+            state.cache[imageId] = entry
+        }
     }
     public func launch(_ manifest:ImageManifest, documents:[String]=[], urls:[String]=[], arguments:[String]=[], wait:Bool=true) throws {
         try assertDeviceLaunch(manifest)
