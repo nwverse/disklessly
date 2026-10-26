@@ -90,9 +90,11 @@ extension IsenoughEngine {
 
     public func publish(_ request: PublishRequest, imageFile: URL?, now: Date = Date()) throws -> PublishResult {
         let backend = try repo
+        // Lists must succeed before any put. A failed manifest listing writes nothing.
+        try ensureRepoCollections(backend)
+        let manifests = try readManifests(backend)
         // Snapshot legacy ids before this image exists, so a brand-new publish is not frozen as legacy.
         try ensureDevice(now: now)
-        let manifests = try readManifests(backend)
         let decision = PublishPlanner.decide(identity: request.identity, manifests: manifests) { path in
             (try? WriteOnce.probe(backend, path)) ?? .absent
         }
@@ -166,6 +168,9 @@ extension IsenoughEngine {
             throw IsenoughError.integrity("devices/\(id).json is not downloaded. Refusing to delete a placeholder.")
         }
         try backend.delete(path)
+        if LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId == id {
+            try? FileManager.default.removeItem(at: deviceMirrorURL)
+        }
     }
 
     public func maintain(now: Date = Date(), includeLegacy: Bool = false) throws -> MaintenanceReport {
@@ -204,7 +209,14 @@ extension IsenoughEngine {
         guard let local = LocalDeviceStore.load(stateDir: stateDirectory) else { return nil }
         let backend = try repo
         let facts = try loadDeviceFacts(backend)
-        return facts.first { $0.record?.deviceId == local.deviceId && !$0.conflictCopy && !$0.placeholder }?.record
+        let fileName = "\(local.deviceId).json"
+        guard let fact = facts.first(where: { RepoFileNames.logicalName($0.name) == fileName && !$0.conflictCopy }) else {
+            return nil
+        }
+        if fact.placeholder || fact.notDownloaded || fact.record == nil {
+            throw IsenoughError.backend("cannot read devices/\(local.deviceId).json in the repo; nothing was changed: file is not a readable device record")
+        }
+        return fact.record
     }
 
     func repoImagePresences() -> [RepoImagePresence] {
@@ -239,13 +251,20 @@ extension IsenoughEngine {
         try rememberLocal(manifest)
     }
 
+    /// Drops one bundle from this Mac's device file. Only `unpack` calls this.
+    func unregister(bundleId: String, now: Date = Date()) throws {
+        let backend = try repo
+        let local = try LocalDeviceStore.loadOrCreate(stateDir: stateDirectory, suggestedName: currentDeviceFacts().hostname)
+        _ = try upsertDevice(local: local, manifest: nil, unregisterBundleId: bundleId, backend: backend, now: now)
+    }
+
     /// Creates this Mac's device file, fills gaps from local stubs, then freezes
     /// still-unreferenced images as legacy. Later runs do not recompute that set.
     func ensureDevice(now: Date = Date()) throws {
         let backend = try repo
         try ensureRepoCollections(backend)
         let local = try LocalDeviceStore.loadOrCreate(stateDir: stateDirectory, suggestedName: currentDeviceFacts().hostname)
-        let claims = stubClaims(backend: backend, now: now)
+        let claims = try stubClaims(backend: backend, now: now)
         _ = try upsertDevice(local: local, manifest: nil, claims: claims, backend: backend, now: now)
         try snapshotLegacyIfAbsent(backend)
     }
@@ -253,12 +272,17 @@ extension IsenoughEngine {
     /// Writes only `devices/<this Mac's id>.json`.
     /// Stub claims fill bundle ids this file does not already name. A pack that
     /// already recorded the bundle is left in place.
-    private func upsertDevice(local: LocalDevice, manifest: ImageManifest?, claims: [DeviceImageRef] = [], backend: any StorageBackend, now: Date) throws -> DeviceRecord {
+    /// The image set may shrink only when `manifest` replaces the same bundle id
+    /// or `unregisterBundleId` drops one bundle. Every other write must be a superset.
+    private func upsertDevice(local: LocalDevice, manifest: ImageManifest?, claims: [DeviceImageRef] = [], unregisterBundleId: String? = nil, backend: any StorageBackend, now: Date) throws -> DeviceRecord {
         guard local.deviceId == LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId else {
             throw IsenoughError.integrity("refusing to write a device file for another Mac")
         }
         let facts = currentDeviceFacts()
-        var images = (try ownDeviceRecord())?.images ?? []
+        let remote = try ownDeviceRecord()
+        let mirror = loadDeviceMirror()
+        var images = mergeDeviceImages(remote?.images ?? [], mirror?.images ?? [])
+        let previousIds = Set(images.map(\.imageId))
         for claim in claims where !images.contains(where: { $0.bundleId == claim.bundleId }) {
             images.append(claim)
         }
@@ -267,7 +291,15 @@ extension IsenoughEngine {
             images.removeAll { $0.bundleId == manifest.bundleId }
             images.append(reference)
         }
-        let record = DeviceRecord(deviceId: local.deviceId, hostname: facts.hostname, displayName: local.displayName, arch: facts.arch, osVersion: facts.osVersion, lastSeen: now, images: images.sorted { $0.imageId < $1.imageId })
+        if let unregisterBundleId {
+            images.removeAll { $0.bundleId == unregisterBundleId }
+        }
+        let explicitShrink = manifest != nil || unregisterBundleId != nil
+        if !explicitShrink && !previousIds.isSubset(of: Set(images.map(\.imageId))) {
+            throw IsenoughError.integrity("device record would shrink")
+        }
+        let generation = max(remote?.generation ?? 0, mirror?.generation ?? 0) + 1
+        let record = DeviceRecord(deviceId: local.deviceId, hostname: facts.hostname, displayName: local.displayName, arch: facts.arch, osVersion: facts.osVersion, lastSeen: now, images: images.sorted { $0.imageId < $1.imageId }, generation: generation, writer: EngineInstall.version)
         let data = try record.encode()
         let relative = "devices/\(local.deviceId).json"
         if let root = backend.localRoot() {
@@ -275,7 +307,23 @@ extension IsenoughEngine {
         } else {
             try backend.put(relative, data: data)
         }
+        try AtomicFile.write(data, to: deviceMirrorURL)
         return record
+    }
+
+    private var deviceMirrorURL: URL { stateDirectory.appendingPathComponent("device-record.json") }
+
+    private func loadDeviceMirror() -> DeviceRecord? {
+        guard let data = try? Data(contentsOf: deviceMirrorURL) else { return nil }
+        return try? DeviceRecord.decode(data)
+    }
+
+    /// Union by image id. The remote copy wins when both sides name the same id.
+    private func mergeDeviceImages(_ remote: [DeviceImageRef], _ mirror: [DeviceImageRef]) -> [DeviceImageRef] {
+        var byId: [String: DeviceImageRef] = [:]
+        for image in mirror { byId[image.imageId] = image }
+        for image in remote { byId[image.imageId] = image }
+        return Array(byId.values)
     }
 
     private func rememberLocal(_ manifest: ImageManifest) throws {
@@ -294,17 +342,26 @@ extension IsenoughEngine {
     }
 
     func readManifests(_ backend: any StorageBackend) throws -> [ImageManifest] {
-        let names = (try? backend.list("manifests")) ?? []
+        let names = try listRepo(backend, "manifests")
         var manifests: [ImageManifest] = []
         for name in names where name.hasSuffix(".json") && !RepoFileNames.isConflictCopy(name) && !RepoFileNames.isPlaceholder(name) {
-            let data = try backend.get("manifests/\(name)", range: nil)
-            if let manifest = try? ImageManifest.decode(data) { manifests.append(manifest) }
+            let data: Data
+            do {
+                data = try backend.get("manifests/\(name)", range: nil)
+            } catch {
+                throw IsenoughError.backend("cannot read manifests/\(name) in the repo; nothing was changed: \(error)")
+            }
+            if let manifest = try? ImageManifest.decode(data) {
+                manifests.append(manifest)
+            } else {
+                FileHandle.standardError.write(Data("isenough: warning: skipping undecodable manifest \(name)\n".utf8))
+            }
         }
         return manifests
     }
 
     private func loadDeviceFacts(_ backend: any StorageBackend) throws -> [DeviceFileFact] {
-        let names = (try? backend.list("devices")) ?? []
+        let names = try listRepo(backend, "devices")
         var facts: [DeviceFileFact] = []
         for name in names {
             let placeholder = RepoFileNames.isPlaceholder(name)
@@ -342,15 +399,16 @@ extension IsenoughEngine {
         let census = try imageCensus(backend)
         let trash = try trashFacts(backend)
         let legacy = try loadLegacyIds(backend)
-        let plan = RepoGarbage.plan(liveImageIds: census.ids, trash: trash, devices: devices, now: now, legacyImageIds: legacy, includeLegacy: includeLegacy)
+        let selfId = LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId
+        let plan = RepoGarbage.plan(liveImageIds: census.ids, trash: trash, devices: devices, now: now, legacyImageIds: legacy, includeLegacy: includeLegacy, selfDeviceId: selfId)
         for imageId in plan.restoreFromTrash {
-            try restoreTrashed(imageId, backend: backend)
+            try stopOnMoveFailure { try restoreTrashed(imageId, backend: backend) }
         }
         for imageId in plan.trash where !census.placeholders.contains(imageId) {
-            try moveToTrash(imageId, backend: backend, now: now)
+            try stopOnMoveFailure { try moveToTrash(imageId, backend: backend, now: now) }
         }
         for imageId in plan.purge {
-            try purgeTrash(imageId, backend: backend)
+            try stopOnMoveFailure { try purgeTrash(imageId, backend: backend) }
         }
         let trashed = plan.trash.filter { !census.placeholders.contains($0) }
         if includeLegacy {
@@ -372,8 +430,8 @@ extension IsenoughEngine {
     }
 
     /// Stubs in the Applications folders, plus journals whose destination is a stub on this Mac.
-    private func stubClaims(backend: any StorageBackend, now: Date) -> [DeviceImageRef] {
-        let manifests = (try? readManifests(backend)) ?? []
+    private func stubClaims(backend: any StorageBackend, now: Date) throws -> [DeviceImageRef] {
+        let manifests = try readManifests(backend)
         let byId = Dictionary(manifests.map { ($0.imageId, $0) }, uniquingKeysWith: { current, _ in current })
         var claims: [DeviceImageRef] = []
         var seen = Set<String>()
@@ -447,7 +505,7 @@ extension IsenoughEngine {
     }
 
     private func imageCensus(_ backend: any StorageBackend) throws -> (ids: [String], placeholders: Set<String>) {
-        let names = (try? backend.list("images")) ?? []
+        let names = try listRepo(backend, "images")
         var ids: [String] = []
         var placeholders = Set<String>()
         for name in names {
@@ -470,17 +528,50 @@ extension IsenoughEngine {
     }
 
     private func trashFacts(_ backend: any StorageBackend) throws -> [TrashFact] {
-        let names = (try? backend.list("trash/meta")) ?? []
+        let names = try listRepo(backend, "trash/meta")
         var facts: [TrashFact] = []
         for name in names where name.hasSuffix(".json") && !RepoFileNames.isConflictCopy(name) && !RepoFileNames.isPlaceholder(name) {
-            guard let data = try? backend.get("trash/meta/\(name)", range: nil),
-                  let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let data: Data
+            do {
+                data = try backend.get("trash/meta/\(name)", range: nil)
+            } catch {
+                throw IsenoughError.backend("cannot read trash/meta/\(name) in the repo; nothing was changed: \(error)")
+            }
+            guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let imageId = object["imageId"] as? String,
                   let stamp = object["trashedAt"] as? String,
                   let date = Self.parseStamp(stamp) else { continue }
             facts.append(TrashFact(imageId: imageId, trashedAt: date))
         }
         return facts
+    }
+
+    /// A missing collection is an empty list. Any other list error aborts before a write or delete.
+    private func listRepo(_ backend: any StorageBackend, _ dir: String) throws -> [String] {
+        do {
+            return try backend.list(dir)
+        } catch let error as IsenoughError {
+            throw IsenoughError.backend("cannot list \(dir)/ in the repo; nothing was changed: \(error.errorDescription ?? String(describing: error))")
+        } catch {
+            let ns = error as NSError
+            if ns.domain == NSCocoaErrorDomain && (ns.code == NSFileReadNoSuchFileError || ns.code == NSFileNoSuchFileError) {
+                return []
+            }
+            if ns.domain == NSPOSIXErrorDomain && ns.code == Int(ENOENT) {
+                return []
+            }
+            throw IsenoughError.backend("cannot list \(dir)/ in the repo; nothing was changed: \(error)")
+        }
+    }
+
+    private func stopOnMoveFailure(_ body: () throws -> Void) throws {
+        do {
+            try body()
+        } catch let error as IsenoughError where error.exitCode == 4 {
+            throw error
+        } catch {
+            throw IsenoughError.backend("repo move failed; later moves were not attempted: \(error)")
+        }
     }
 
     private func moveToTrash(_ imageId: String, backend: any StorageBackend, now: Date) throws {

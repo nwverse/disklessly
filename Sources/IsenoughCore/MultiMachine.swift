@@ -245,8 +245,12 @@ public struct DeviceRecord: Equatable, Codable {
     public var osVersion: String
     public var lastSeen: Date
     public var images: [DeviceImageRef]
+    /// Monotonic write counter. Nil on records written before this field existed.
+    public var generation: UInt64?
+    /// `EngineInstall.version` of the writer. Nil on older records.
+    public var writer: String?
 
-    public init(deviceId: String, hostname: String, displayName: String, arch: String, osVersion: String, lastSeen: Date, images: [DeviceImageRef]) {
+    public init(deviceId: String, hostname: String, displayName: String, arch: String, osVersion: String, lastSeen: Date, images: [DeviceImageRef], generation: UInt64? = nil, writer: String? = nil) {
         self.schema = "device/1"
         self.deviceId = deviceId
         self.hostname = hostname
@@ -255,6 +259,8 @@ public struct DeviceRecord: Equatable, Codable {
         self.osVersion = osVersion
         self.lastSeen = lastSeen
         self.images = images
+        self.generation = generation
+        self.writer = writer
     }
 
     public func encode() throws -> Data {
@@ -501,10 +507,19 @@ public enum RepoGarbage {
     /// Trash is kept at least this long so a device file that has not synced yet can still reference it.
     public static let graceInterval: TimeInterval = 7 * 24 * 60 * 60
 
-    public static func plan(liveImageIds: [String], trash: [TrashFact], devices: [DeviceFileFact], now: Date, staleInterval: TimeInterval = RepoGarbage.staleInterval, graceInterval: TimeInterval = RepoGarbage.graceInterval, legacyImageIds: Set<String> = [], includeLegacy: Bool = false) -> GCPlan {
+    public static func plan(liveImageIds: [String], trash: [TrashFact], devices: [DeviceFileFact], now: Date, staleInterval: TimeInterval = RepoGarbage.staleInterval, graceInterval: TimeInterval = RepoGarbage.graceInterval, legacyImageIds: Set<String> = [], includeLegacy: Bool = false, selfDeviceId: String? = nil) -> GCPlan {
         let live = Array(Set(liveImageIds)).sorted()
         let trashed = trash.sorted { $0.imageId < $1.imageId }
         var warnings: [String] = []
+        if let selfDeviceId {
+            let visible = devices.contains { file in
+                file.record?.deviceId == selfDeviceId && !file.conflictCopy && !file.placeholder && !file.notDownloaded
+            }
+            if !visible {
+                warnings.append("this Mac's device file is not visible in devices/; gc moved nothing")
+                return GCPlan(trash: [], restoreFromTrash: [], purge: [], warnings: warnings, kept: live)
+            }
+        }
         var referenced = Set<String>()
         let blocked = devices.contains { $0.placeholder || $0.notDownloaded }
         let protected = includeLegacy ? Set<String>() : legacyImageIds

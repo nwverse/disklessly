@@ -307,6 +307,67 @@ final class MultiMachineTests: XCTestCase {
         FileManager.default.temporaryDirectory.appendingPathComponent("isenough-mm-\(UUID().uuidString)")
     }
 
+    func testGcAbortsWhenDevicesListingFails() throws {
+        var world = try World()
+        defer { world.cleanup() }
+        let published = try world.engineA.publish(world.request(version: "1.0", build: "10", arch: ["arm64"], hash: world.hash), imageFile: try world.imageFile("kept"), now: world.now)
+        let faulty = try FaultyBackend(root: world.repo, failList: ["devices"])
+        world.engineA.backendOverride = faulty
+        XCTAssertThrowsError(try world.engineA.maintain(now: world.now)) { error in
+            XCTAssertEqual((error as? IsenoughError)?.exitCode, 4)
+        }
+        XCTAssertFalse(faulty.calls.contains { $0.hasPrefix("put:trash/") || $0.hasPrefix("delete:") })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: world.repo.appendingPathComponent(published.manifest.image.file).path))
+    }
+
+    func testUpsertAbortsWhenOwnDeviceFileUnreadable() throws {
+        var world = try World()
+        defer { world.cleanup() }
+        _ = try world.engineA.publish(world.request(version: "1.0", build: "10", arch: ["arm64"], hash: world.hash), imageFile: try world.imageFile("kept"), now: world.now)
+        let id = world.deviceId(world.engineA)
+        let url = world.repo.appendingPathComponent("devices/\(id).json")
+        let before = try Data(contentsOf: url)
+        let faulty = try FaultyBackend(root: world.repo, failGet: ["devices/\(id).json"])
+        world.engineA.backendOverride = faulty
+        XCTAssertThrowsError(try world.engineA.ensureDevice(now: world.now.addingTimeInterval(5))) { error in
+            XCTAssertEqual((error as? IsenoughError)?.exitCode, 4)
+        }
+        XCTAssertEqual(try Data(contentsOf: url), before)
+    }
+
+    func testDeviceRecordDoesNotShrinkWhenRemoteIsMissing() throws {
+        let world = try World()
+        defer { world.cleanup() }
+        let published = try world.engineA.publish(world.request(version: "1.0", build: "10", arch: ["arm64"], hash: world.hash), imageFile: try world.imageFile("kept"), now: world.now)
+        let id = world.deviceId(world.engineA)
+        let url = world.repo.appendingPathComponent("devices/\(id).json")
+        let first = try DeviceRecord.decode(Data(contentsOf: url))
+        XCTAssertEqual(first.images.map(\.imageId), [published.manifest.imageId])
+        try FileManager.default.removeItem(at: url)
+        try world.engineA.ensureDevice(now: world.now.addingTimeInterval(5))
+        let second = try DeviceRecord.decode(Data(contentsOf: url))
+        XCTAssertTrue(second.images.contains { $0.imageId == published.manifest.imageId })
+        XCTAssertGreaterThan(second.generation ?? 0, first.generation ?? 0)
+    }
+
+    func testGcMovesNothingWhenSelfRecordInvisible() {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let plan = RepoGarbage.plan(liveImageIds: ["img-a"], trash: [], devices: [], now: now, selfDeviceId: "self-id")
+        XCTAssertTrue(plan.trash.isEmpty)
+        XCTAssertTrue(plan.warnings.contains("this Mac's device file is not visible in devices/; gc moved nothing"))
+    }
+
+    func testPublishAbortsWhenManifestListingFails() throws {
+        var world = try World()
+        defer { world.cleanup() }
+        let faulty = try FaultyBackend(root: world.repo, failList: ["manifests"])
+        world.engineA.backendOverride = faulty
+        XCTAssertThrowsError(try world.engineA.publish(world.request(version: "1.0", build: "10", arch: ["arm64"], hash: world.hash), imageFile: try world.imageFile("kept"), now: world.now)) { error in
+            XCTAssertEqual((error as? IsenoughError)?.exitCode, 4)
+        }
+        XCTAssertFalse(faulty.calls.contains { $0.hasPrefix("put:") })
+    }
+
     private struct World {
         var root: URL
         var repo: URL
