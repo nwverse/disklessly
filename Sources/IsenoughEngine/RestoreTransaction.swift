@@ -313,45 +313,6 @@ enum StubRebuilder {
     }
 }
 
-extension StateStore {
-    public func writeDurable(_ object: [String: Any]) throws {
-        try write(object)
-        try DurableIO.syncItem(dir.appendingPathComponent("state.json"))
-        try DurableIO.syncItem(dir)
-    }
-
-    public func applyRetirement(appId: String, imageId: String, outcome: String, at: Date, txid: String, needsResolution: [String: Any]?, updateLastUsed: Bool) throws {
-        var object = read()
-        var restored = object["restored"] as? [String: Any] ?? [:]
-        restored.removeValue(forKey: appId)
-        object["restored"] = restored
-        var apps = object["apps"] as? [String: [String: Any]] ?? [:]
-        var app = apps[appId] ?? [:]
-        let iso = ISO8601DateFormatter().string(from: at)
-        app["imageId"] = imageId
-        app["state"] = needsResolution == nil ? "cached" : "needsResolution"
-        app["lastOutcome"] = ["name": outcome, "at": iso, "txid": txid]
-        app.removeValue(forKey: "mountPoint")
-        if updateLastUsed { app["lastUsed"] = iso }
-        if let needsResolution {
-            app["needsResolution"] = needsResolution
-        } else {
-            app.removeValue(forKey: "needsResolution")
-        }
-        apps[appId] = app
-        object["apps"] = apps
-        if updateLastUsed {
-            var cache = object["cache"] as? [String: [String: Any]] ?? [:]
-            var entry = cache[imageId] ?? [:]
-            entry["lastUsed"] = iso
-            cache[imageId] = entry
-            object["cache"] = cache
-        }
-        if object["schema"] == nil { object["schema"] = "state/1" }
-        try writeDurable(object)
-    }
-}
-
 public final class RestoreCoordinator {
     public let config: RuntimeConfig
     public var services: RestoreServices
@@ -466,9 +427,7 @@ public final class RestoreCoordinator {
 
     public func recoverAll(shortLived: Bool) throws -> [String] {
         var ids = Set(try JournalStore.loadAll(stateDir: config.stateDir).map(\.appId))
-        let state = StateStore(config.stateDir).read()
-        let restored = state["restored"] as? [String: Any] ?? [:]
-        ids.formUnion(restored.keys)
+        ids.formUnion(StateStore(config.stateDir).load().restored.keys)
         var notes: [String] = []
         for appId in ids.sorted() {
             let result = try recover(appId: appId, wait: false, shortLived: shortLived)
@@ -486,14 +445,12 @@ public final class RestoreCoordinator {
                 if case .reject(let message) = decision.action { issues.append(message) }
             }
         }
-        let state = StateStore(config.stateDir).read()
-        let restored = state["restored"] as? [String: Any] ?? [:]
-        for (appId, _) in restored where openJournal(appId) == nil {
+        let state = StateStore(config.stateDir).load()
+        for appId in state.restored.keys where openJournal(appId) == nil {
             issues.append("restored mirror for \(appId) has no journal. Run isenough gc to retire it when the destination is the stub, or restore the missing journal before deleting anything.")
         }
-        let apps = state["apps"] as? [String: [String: Any]] ?? [:]
-        for (appId, app) in apps where app["needsResolution"] != nil {
-            let path = (app["needsResolution"] as? [String: Any])?["retainedPath"] as? String ?? ""
+        for (appId, app) in state.apps where app.needsResolution != nil {
+            let path = app.needsResolution?["retainedPath"]?.string ?? ""
             issues.append("\(appId) needs resolution before launch. Retained bundle: \(path). Use isenough resolve --discard, --export, or --keep-updated --trust.")
         }
         return issues
@@ -558,33 +515,29 @@ public final class RestoreCoordinator {
     }
 
     public func clearResolution(appId: String) throws {
-        var object = StateStore(config.stateDir).read()
-        var apps = object["apps"] as? [String: [String: Any]] ?? [:]
-        var app = apps[appId] ?? [:]
-        app.removeValue(forKey: "needsResolution")
-        if app["state"] as? String == "needsResolution" { app["state"] = "cached" }
-        apps[appId] = app
-        object["apps"] = apps
-        try StateStore(config.stateDir).writeDurable(object)
+        try StateStore(config.stateDir).update { state in
+            var app = state.apps[appId] ?? AppState()
+            app.needsResolution = nil
+            if app.state == "needsResolution" { app.state = "cached" }
+            state.apps[appId] = app
+        }
     }
 
     public func switchImage(appId: String, imageId: String, cdhash: String) throws {
-        var object = StateStore(config.stateDir).read()
-        var apps = object["apps"] as? [String: [String: Any]] ?? [:]
-        var app = apps[appId] ?? [:]
-        app["imageId"] = imageId
-        var trusted = app["trusted"] as? [String: Any] ?? [:]
-        trusted["cdhash"] = cdhash
-        trusted["approvedBy"] = "resolve"
-        app["trusted"] = trusted
-        apps[appId] = app
-        object["apps"] = apps
-        try StateStore(config.stateDir).writeDurable(object)
+        try StateStore(config.stateDir).update { state in
+            var app = state.apps[appId] ?? AppState()
+            app.imageId = imageId
+            var trusted = app.extra["trusted"]?.object ?? [:]
+            trusted["cdhash"] = .string(cdhash)
+            trusted["approvedBy"] = .string("resolve")
+            app.extra["trusted"] = .object(trusted)
+            state.apps[appId] = app
+        }
     }
 
     public func needsResolution(_ appId: String) -> [String: Any]? {
-        let apps = StateStore(config.stateDir).read()["apps"] as? [String: [String: Any]]
-        return apps?[appId]?["needsResolution"] as? [String: Any]
+        guard let needs = StateStore(config.stateDir).load().apps[appId]?.needsResolution else { return nil }
+        return needs.mapValues { $0.foundation() }
     }
 
     private func forward(_ manifest: ImageManifest, image: URL) throws {
@@ -1090,40 +1043,35 @@ public final class RestoreCoordinator {
     }
 
     private func writeMirror(_ journal: RestoreJournal) throws {
-        var object = StateStore(config.stateDir).read()
-        var restored = object["restored"] as? [String: [String: Any]] ?? [:]
-        restored[journal.appId] = [
-            "journal": "journals/\(journal.txid).json",
-            "txid": journal.txid,
-            "phase": journal.waitReason == nil ? "running" : "waiting",
-            "waitReason": journal.waitReason ?? "",
-            "dest": journal.dest,
-            "staging": journal.staging,
-            "epoch": journal.epoch,
-            "postQuitRanForEpoch": journal.postQuitRanForEpoch,
-            "owner": ["pid": Int(journal.owner.pid), "start": journal.owner.start],
-        ]
-        object["restored"] = restored
-        if object["schema"] == nil { object["schema"] = "state/1" }
-        try StateStore(config.stateDir).writeDurable(object)
+        try StateStore(config.stateDir).update { state in
+            state.restored[journal.appId] = RestoredMirror(
+                journal: "journals/\(journal.txid).json",
+                txid: journal.txid,
+                phase: journal.waitReason == nil ? "running" : "waiting",
+                waitReason: journal.waitReason ?? "",
+                dest: journal.dest,
+                staging: journal.staging,
+                epoch: journal.epoch,
+                postQuitRanForEpoch: journal.postQuitRanForEpoch,
+                owner: journal.owner
+            )
+        }
     }
 
     private func retireStaleMirror(_ appId: String) throws -> RecoverResult {
-        let state = StateStore(config.stateDir).read()
-        guard let restored = state["restored"] as? [String: [String: Any]], let mirror = restored[appId] else { return .idle }
-        let dest = mirror["dest"] as? String ?? ""
-        let staging = mirror["staging"] as? String ?? ""
+        let state = StateStore(config.stateDir).load()
+        guard let mirror = state.restored[appId] else { return .idle }
+        let dest = mirror.dest
+        let staging = mirror.staging
         let stubId = "\(appId).256stub"
         let destURL = URL(fileURLWithPath: dest)
         let stagingExists = !staging.isEmpty && fm.fileExists(atPath: staging)
         let info = BundleFacts.readInfo(destURL)
         let isStub = (info?["CFBundleIdentifier"] as? String) == stubId
         if isStub && !stagingExists {
-            var object = state
-            var copy = restored
-            copy.removeValue(forKey: appId)
-            object["restored"] = copy
-            try StateStore(config.stateDir).writeDurable(object)
+            try StateStore(config.stateDir).update { state in
+                state.restored.removeValue(forKey: appId)
+            }
             return .terminal("mirrorRetired")
         }
         return .rejected("stale restored mirror for \(appId) has no journal and the destination is not the stub. Nothing was deleted. Repair: restore the stub at \(dest) or put the journal back, then run isenough gc.")
@@ -1306,8 +1254,7 @@ public final class RestoreCoordinator {
     }
 
     private func outcomeTxid(_ appId: String) -> String? {
-        let apps = StateStore(config.stateDir).read()["apps"] as? [String: [String: Any]]
-        return (apps?[appId]?["lastOutcome"] as? [String: Any])?["txid"] as? String
+        StateStore(config.stateDir).load().apps[appId]?.lastOutcome?.txid
     }
 
     private func runHooks(_ phase: String, appId: String) throws -> Int32 {

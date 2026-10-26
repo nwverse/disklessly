@@ -12,7 +12,7 @@ final class CoreTests: XCTestCase {
         var bad=m; bad.image.format="ULFO"; XCTAssertThrowsError(try bad.validate())
     }
     func testLRUAndPins() {
-        let now=Date(); let xs=[CacheEntry(id:"new",size:8,lastUsed:now),CacheEntry(id:"old",size:8,lastUsed:now.addingTimeInterval(-5)),CacheEntry(id:"pin",size:40,lastUsed:now.addingTimeInterval(-10),pinned:true)]
+        let now=Date(); let xs=[PolicyCacheEntry(id:"new",size:8,lastUsed:now),PolicyCacheEntry(id:"old",size:8,lastUsed:now.addingTimeInterval(-5)),PolicyCacheEntry(id:"pin",size:40,lastUsed:now.addingTimeInterval(-10),pinned:true)]
         XCTAssertEqual(CachePolicy.evictionPlan(xs,quota:10),["old","new"])
     }
     func testStateMachineRejectsIllegalTransitions() throws {

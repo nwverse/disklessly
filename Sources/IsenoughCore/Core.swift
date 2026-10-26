@@ -159,9 +159,10 @@ public struct StateMachine {
     }
 }
 
-public struct CacheEntry: Codable, Equatable { public var id: String; public var size: UInt64; public var lastUsed: Date; public var pinned: Bool; public var mounted: Bool; public init(id: String, size: UInt64, lastUsed: Date, pinned: Bool = false, mounted: Bool = false) { self.id=id; self.size=size; self.lastUsed=lastUsed; self.pinned=pinned; self.mounted=mounted } }
+/// Input to the original quota planner. The state file uses `CacheEntry` (`state/2`).
+public struct PolicyCacheEntry: Codable, Equatable { public var id: String; public var size: UInt64; public var lastUsed: Date; public var pinned: Bool; public var mounted: Bool; public init(id: String, size: UInt64, lastUsed: Date, pinned: Bool = false, mounted: Bool = false) { self.id=id; self.size=size; self.lastUsed=lastUsed; self.pinned=pinned; self.mounted=mounted } }
 public enum CachePolicy {
-    public static func evictionPlan(_ entries: [CacheEntry], quota: UInt64) -> [String] {
+    public static func evictionPlan(_ entries: [PolicyCacheEntry], quota: UInt64) -> [String] {
         var total = entries.reduce(UInt64(0)) { $0 + $1.size }; guard total > quota else { return [] }
         var victims: [String] = []
         for entry in entries.filter({ !$0.pinned && !$0.mounted }).sorted(by: { $0.lastUsed < $1.lastUsed }) { victims.append(entry.id); total = total >= entry.size ? total - entry.size : 0; if total <= quota { break } }

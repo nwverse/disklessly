@@ -123,23 +123,6 @@ public enum Hashing {
     }
 }
 
-public struct StateStore {
-    public let dir: URL
-    public init(_ path: String) { dir=URL(fileURLWithPath:path); try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories:true) }
-    public func read() -> [String: Any] { (try? JSONSerialization.jsonObject(with: Data(contentsOf: dir.appendingPathComponent("state.json")))) as? [String:Any] ?? ["schema":"state/1", "apps":[:], "cache":[:]] }
-    public func write(_ object: [String:Any]) throws { let d=try JSONSerialization.data(withJSONObject:object, options:[.prettyPrinted,.sortedKeys]); try d.write(to:dir.appendingPathComponent("state.json"),options:.atomic) }
-    public func setAppState(bundleId: String, imageId: String, state: String, mountPoint: String? = nil, lastUsed: Date = Date()) throws {
-        var object=read(), apps=object["apps"] as? [String:[String:Any]] ?? [:]
-        var app: [String:Any] = ["imageId":imageId,"state":state,"lastUsed":ISO8601DateFormatter().string(from:lastUsed)]
-        if let mountPoint { app["mountPoint"]=mountPoint }
-        apps[bundleId]=app; object["apps"]=apps
-        var cache=object["cache"] as? [String:[String:Any]] ?? [:]
-        var entry=cache[imageId] ?? [:]; entry["lastUsed"]=ISO8601DateFormatter().string(from:lastUsed); cache[imageId]=entry
-        object["cache"]=cache
-        try write(object)
-    }
-}
-
 public enum StubGenerator {
     public static func infoPlist(source: [String:Any], appId: String, executable: String = "isenough-stub") -> [String:Any] {
         var p=source; p["CFBundleIdentifier"]="\(appId).256stub"; p["CFBundleExecutable"]=executable; p["LSUIElement"]=true
@@ -489,26 +472,24 @@ public struct IsenoughEngine {
         return try readManifests(try repo)
     }
     public func status() -> [String:Any] {
-        let state=StateStore(config.stateDir).read()
+        let state=StateStore(config.stateDir).load().dictionary()
         return ["backend":config.backend,"activeBackendId":config.activeBackendId ?? "","repoPath":config.repoPath,"cacheDir":config.cacheDir,"quotaBytes":NSNumber(value: config.quotaBytes),"minFreeBytes":NSNumber(value: config.minFreeBytes),"detachDelaySeconds":NSNumber(value: config.detachDelaySeconds),"apps":state["apps"] ?? [:],"cache":state["cache"] ?? [:],"restored":state["restored"] ?? [:]]
     }
     public func manifest(named name: String, in manifests: [ImageManifest]) -> ImageManifest? {
         if let exact=manifests.first(where: { $0.imageId == name }) { return exact }
-        let apps=StateStore(config.stateDir).read()["apps"] as? [String:[String:Any]] ?? [:]
-        if let imageId=apps[name]?["imageId"] as? String, let pinned=manifests.first(where: { $0.imageId == imageId }) { return pinned }
+        let apps=StateStore(config.stateDir).load().apps
+        if let imageId=apps[name]?.imageId, let pinned=manifests.first(where: { $0.imageId == imageId }) { return pinned }
         if let record = try? ownDeviceRecord(), let imageId = record.currentImage(bundleId: name)?.imageId ?? record.images.first(where: { $0.bundleId.caseInsensitiveCompare(name) == .orderedSame })?.imageId, let recorded = manifests.first(where: { $0.imageId == imageId }) { return recorded }
         let matches = manifests.filter { $0.bundleId == name || $0.name.caseInsensitiveCompare(name) == .orderedSame }
         return matches.count == 1 ? matches[0] : nil
     }
     public func setPinned(_ manifest: ImageManifest, pinned: Bool) throws {
-        var state = StateStore(config.stateDir).read()
-        var apps = state["apps"] as? [String: [String: Any]] ?? [:]
-        var item = apps[manifest.bundleId] ?? [:]
-        item["imageId"] = manifest.imageId
-        item["pinned"] = pinned
-        apps[manifest.bundleId] = item
-        state["apps"] = apps
-        try StateStore(config.stateDir).write(state)
+        try StateStore(config.stateDir).update { state in
+            var item = state.apps[manifest.bundleId] ?? AppState()
+            item.imageId = manifest.imageId
+            item.pinned = pinned
+            state.apps[manifest.bundleId] = item
+        }
         if pinned { _ = try prefetch(manifest) }
     }
     public func evict(_ manifest: ImageManifest) throws {
@@ -542,9 +523,9 @@ public struct IsenoughEngine {
 
     private func recommendCatalog() -> RecommendCatalog {
         let manifests = (try? list()) ?? []
-        let stored = StateStore(config.stateDir).read()["apps"] as? [String: [String: Any]] ?? [:]
+        let stored = StateStore(config.stateDir).load().apps
         var pinned = Set<String>()
-        for (bundleId, item) in stored where item["pinned"] as? Bool == true {
+        for (bundleId, item) in stored where item.pinned {
             pinned.insert(bundleId)
         }
         return RecommendCatalog(pinnedBundleIds: pinned, packedBundleIds: Set(manifests.map(\.bundleId)), packedPaths: Set(manifests.map(\.app.originalPath)))

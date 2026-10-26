@@ -12,7 +12,8 @@ public enum ManagementUI {
     public static func dashboard(_ engine: IsenoughEngine) -> [String: Any] {
         var apps: [[String: Any]] = []
         var appsError = ""
-        let state = StateStore(engine.config.stateDir).read()
+        let loaded = StateStore(engine.config.stateDir).load()
+        let state = loaded.dictionary()
         let stored = state["apps"] as? [String: [String: Any]] ?? [:]
         let listing = try? engine.deviceListing()
         let deviceRows = listing?.devices ?? []

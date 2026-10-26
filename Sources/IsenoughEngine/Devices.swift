@@ -279,17 +279,12 @@ extension IsenoughEngine {
     }
 
     private func rememberLocal(_ manifest: ImageManifest) throws {
-        var state = StateStore(config.stateDir).read()
-        var apps = state["apps"] as? [String: [String: Any]] ?? [:]
-        var item = apps[manifest.bundleId] ?? [:]
-        let pinned = item["pinned"] as? Bool ?? false
-        item["imageId"] = manifest.imageId
-        item["mode"] = manifest.mode.rawValue
-        item["pinned"] = pinned
-        apps[manifest.bundleId] = item
-        state["apps"] = apps
-        if state["schema"] == nil { state["schema"] = "state/1" }
-        try StateStore(config.stateDir).write(state)
+        try StateStore(config.stateDir).update { state in
+            var item = state.apps[manifest.bundleId] ?? AppState()
+            item.imageId = manifest.imageId
+            item.mode = manifest.mode.rawValue
+            state.apps[manifest.bundleId] = item
+        }
     }
 
     private func ensureRepoCollections(_ backend: any StorageBackend) throws {

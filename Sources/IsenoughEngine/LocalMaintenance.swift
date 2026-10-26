@@ -139,18 +139,15 @@ enum LiveMaterialProbe {
         var inUse = Set<String>()
         var until: [String: Date] = [:]
         let delay = TimeInterval(config.detachDelaySeconds)
-        let state = StateStore(config.stateDir).read()
-        let apps = state["apps"] as? [String: [String: Any]] ?? [:]
-        let parser = ISO8601DateFormatter()
-        parser.formatOptions = [.withInternetDateTime]
+        let apps = StateStore(config.stateDir).load().apps
         for item in apps.values {
-            guard let imageId = item["imageId"] as? String, !imageId.isEmpty else { continue }
-            let name = item["state"] as? String ?? ""
+            guard let imageId = item.imageId, !imageId.isEmpty else { continue }
+            let name = item.state ?? ""
             if name == "running" || name == "detaching" { inUse.insert(imageId) }
-            if let mount = item["mountPoint"] as? String, !mount.isEmpty, FileManager.default.fileExists(atPath: mount) {
+            if let mount = item.mountPoint, !mount.isEmpty, FileManager.default.fileExists(atPath: mount) {
                 inUse.insert(imageId)
             }
-            if let stamp = item["lastUsed"] as? String, let used = parser.date(from: stamp) ?? ISO8601DateFormatter().date(from: stamp) {
+            if let used = item.lastUsed {
                 let deadline = used.addingTimeInterval(delay)
                 let cache = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(imageId).dmg")
                 if deadline > now, !FileManager.default.fileExists(atPath: cache.path) {
