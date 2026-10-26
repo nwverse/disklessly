@@ -12,6 +12,13 @@ public struct UIRequest: Equatable {
     public var query: [String: String]
     public var headers: [String: String]
     public var body: Data
+    public init(method: String, path: String, query: [String: String] = [:], headers: [String: String] = [:], body: Data = Data()) {
+        self.method = method
+        self.path = path
+        self.query = query
+        self.headers = headers
+        self.body = body
+    }
     public var token: String? {
         if let value = query["token"], !value.isEmpty { return value }
         if let header = headers["authorization"] ?? headers["Authorization"] {

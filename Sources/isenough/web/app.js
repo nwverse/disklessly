@@ -18,6 +18,32 @@ const copy = {
     backend: "后端",
     apps: "应用",
     sessions: "冷会话",
+    recommend: "值得卸载",
+    recommendWarn: "不建议卸载",
+    recommendEmpty: "没有达到大小阈值的应用",
+    recommendEmptyHint: "较大且久未使用的应用会显示在这里",
+    recommendUnavailable: "扫描已安装应用需要 macOS",
+    recommendFailed: "未能加载建议",
+    recommendSummary: (count, freed, min) => `${count} 个 · 大约可腾出 ${freed} · 至少 ${min}`,
+    leftoverBackups: (count, size) => `${count} 个残留备份（${size}）可以删除`,
+    leftoverAdmin: "删除需要管理员权限。",
+    neverUsed: "从未使用",
+    idleDays: (n) => n === 1 ? "1 天未使用" : `${n} 天未使用`,
+    restoreNeeded: "含商店收据，需要还原模式",
+    sizeBound: "大小是下限（扫描超时）",
+    modeMount: "挂载",
+    modeRestore: "还原",
+    modeSkip: "跳过",
+    modeUnsupported: "不支持",
+    warnloginItem: "登录项",
+    warnmenuBarAgent: "菜单栏代理",
+    warnbackgroundHelper: "后台辅助进程在运行",
+    warnsystemExtension: "带系统扩展",
+    warnkernelExtension: "带内核扩展",
+    warntoolchain: "引擎使用的工具链",
+    warnpinned: "已固定",
+    warnalreadyPacked: "已经打包",
+    warnsizeTimedOut: "体积扫描超时",
     usedCaption: "已用",
     ofQuota: "配额",
     remaining: "剩余空间",
@@ -77,6 +103,32 @@ const copy = {
     backend: "Backend",
     apps: "Apps",
     sessions: "Cold sessions",
+    recommend: "Worth offloading",
+    recommendWarn: "Poor candidates",
+    recommendEmpty: "No apps above the size threshold",
+    recommendEmptyHint: "Large apps that have sat unused show up here",
+    recommendUnavailable: "Scanning installed apps requires macOS",
+    recommendFailed: "Could not load recommendations",
+    recommendSummary: (count, freed, min) => `${count} · about ${freed} free · at least ${min}`,
+    leftoverBackups: (count, size) => `${count} leftover backup${count === 1 ? "" : "s"} (${size}) can be removed`,
+    leftoverAdmin: "Removing them needs an administrator.",
+    neverUsed: "Never used",
+    idleDays: (n) => n === 1 ? "Last used 1 day ago" : `Last used ${n} days ago`,
+    restoreNeeded: "Mac App Store receipt, restore mode",
+    sizeBound: "Size is a lower bound (scan timed out)",
+    modeMount: "Mount",
+    modeRestore: "Restore",
+    modeSkip: "Skip",
+    modeUnsupported: "Unsupported",
+    warnloginItem: "Login item",
+    warnmenuBarAgent: "Menu bar agent",
+    warnbackgroundHelper: "Background helper is running",
+    warnsystemExtension: "Bundles a system extension",
+    warnkernelExtension: "Bundles a kernel extension",
+    warntoolchain: "Toolchain used by the engine",
+    warnpinned: "Pinned",
+    warnalreadyPacked: "Already packed",
+    warnsizeTimedOut: "Size scan timed out",
     usedCaption: "Used",
     ofQuota: "Quota",
     remaining: "Remaining",
@@ -127,6 +179,8 @@ const copy = {
 
 let lang = document.documentElement.lang === "en" ? "en" : "zh";
 let lastStatus = null;
+let lastRecommend = null;
+let recommendError = "";
 let lastLatency = null;
 let loadFailed = false;
 let busy = false;
@@ -193,6 +247,8 @@ function applyChrome() {
   const count = (lastStatus && lastStatus.apps && lastStatus.apps.length) || 0;
   document.querySelector("#apps-title").textContent = lastStatus ? `${t("apps")} ${count}` : t("apps");
   document.querySelector("#sessions-title").textContent = t("sessions");
+  document.querySelector("#recommend-title").textContent = t("recommend");
+  document.querySelector("#recommend-warn-title").textContent = t("recommendWarn");
 }
 
 function el(tag, className, text) {
@@ -438,6 +494,98 @@ function renderApps(list, failed) {
   }
 }
 
+function recommendReason(app) {
+  const warnings = app.warnings || [];
+  if (warnings.length) return warnings.map((code) => t("warn" + code) || code).join("; ");
+  const parts = [bytes(app.sizeBytes)];
+  if (app.neverUsed) parts.push(t("neverUsed"));
+  else if (app.daysIdle != null) parts.push(t("idleDays")(Number(app.daysIdle)));
+  let text = parts.join(", ");
+  if (app.macAppStore) text += "; " + t("restoreNeeded");
+  if (app.sizeIncomplete) text += "; " + t("sizeBound");
+  return text;
+}
+
+function modeLabel(mode) {
+  if (mode === "restore") return t("modeRestore");
+  if (mode === "unsupported") return t("modeUnsupported");
+  if (mode === "skip") return t("modeSkip");
+  return t("modeMount");
+}
+
+function renderLeftovers(report) {
+  const line = document.querySelector("#recommend-leftovers");
+  const paths = document.querySelector("#recommend-leftover-paths");
+  line.replaceChildren();
+  paths.replaceChildren();
+  const items = (report && report.leftoverBackups) || [];
+  if (!items.length) {
+    line.hidden = true;
+    paths.hidden = true;
+    return;
+  }
+  const total = items.reduce((sum, item) => sum + Number(item.sizeBytes || 0), 0);
+  line.hidden = false;
+  line.append(document.createTextNode(t("leftoverBackups")(items.length, bytes(total)) + " " + t("leftoverAdmin")));
+  paths.hidden = false;
+  for (const item of items) {
+    const row = el("li");
+    row.append(el("div", "path", item.path || ""));
+    paths.append(row);
+  }
+}
+
+function renderRecommend(report, failed) {
+  const summary = document.querySelector("#recommend-summary");
+  const list = document.querySelector("#recommend-list");
+  const warnTitle = document.querySelector("#recommend-warn-title");
+  const warnings = document.querySelector("#recommend-warnings");
+  list.replaceChildren();
+  warnings.replaceChildren();
+  list.removeAttribute("aria-busy");
+  if (!report) {
+    summary.textContent = failed || t("recommendFailed");
+    const empty = el("div", "empty");
+    empty.append(el("strong", "", failed || t("recommendFailed")));
+    list.append(empty);
+    warnTitle.hidden = true;
+    renderLeftovers(null);
+    return;
+  }
+  if (report.scan === "unavailable") {
+    summary.textContent = report.detail || t("recommendUnavailable");
+  } else {
+    summary.textContent = t("recommendSummary")((report.recommendations || []).length, bytes(report.estimatedFreedBytes || 0), bytes(report.minSizeBytes || 0));
+  }
+  const apps = report.recommendations || [];
+  if (!apps.length && report.scan !== "unavailable") {
+    const empty = el("div", "empty");
+    empty.append(el("strong", "", t("recommendEmpty")));
+    empty.append(el("span", "", t("recommendEmptyHint")));
+    list.append(empty);
+  }
+  for (const app of apps) {
+    const card = el("article", "app");
+    const main = el("div", "app-main");
+    const nameRow = el("div", "name-row");
+    nameRow.append(el("div", "name", app.name || ""));
+    nameRow.append(chip(app.macAppStore ? "restored" : "cached", modeLabel(app.suggestedMode)));
+    main.append(nameRow, el("div", "meta", `${bytes(app.sizeBytes)} · ${app.bundleId || ""}`), el("div", "recommend-reason", recommendReason(app)));
+    card.append(appIcon(app.name), main);
+    list.append(card);
+  }
+  const poor = report.warnings || [];
+  warnTitle.hidden = poor.length === 0;
+  for (const app of poor) {
+    const item = el("li");
+    const top = el("div", "session-top");
+    top.append(el("div", "name", app.name || ""), chip("warn", modeLabel(app.suggestedMode)));
+    item.append(top, el("div", "path", app.path || ""), el("p", "preview", recommendReason(app)));
+    warnings.append(item);
+  }
+  renderLeftovers(report);
+}
+
 function renderSessions(sessions) {
   const summary = document.querySelector("#sessions-summary");
   const list = document.querySelector("#sessions");
@@ -477,6 +625,18 @@ function renderFailure() {
   renderSessions(null);
 }
 
+async function loadRecommendations() {
+  try {
+    const report = await api("/api/recommend");
+    lastRecommend = report;
+    recommendError = "";
+    renderRecommend(report, "");
+  } catch (error) {
+    recommendError = error.message || String(error);
+    if (!lastRecommend) renderRecommend(null, recommendError);
+  }
+}
+
 async function load() {
   const started = performance.now();
   try {
@@ -497,7 +657,7 @@ async function load() {
 async function refresh() {
   if (busy) return;
   busy = true;
-  try { await load(); }
+  try { await Promise.all([load(), loadRecommendations()]); }
   finally { busy = false; }
 }
 
@@ -523,6 +683,8 @@ document.querySelector("#lang").addEventListener("click", () => {
   if (lastStatus) render(lastStatus);
   else if (loadFailed) renderFailure();
   else applyChrome();
+  if (lastRecommend) renderRecommend(lastRecommend, "");
+  else if (recommendError) renderRecommend(null, recommendError);
   if (!document.querySelector("#banner").hidden) document.querySelector("#retry").textContent = t("retry");
 });
 document.querySelector("#theme").addEventListener("click", () => {

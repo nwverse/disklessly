@@ -180,6 +180,9 @@ public struct IsenoughEngine {
     public var secrets: any SecretStore
     public var shareOpener: ShareOpener
     public var backendOverride: (any StorageBackend)?
+    /// Replaces the live `/Applications` scan. Tests inject roots and Spotlight dates.
+    /// Production leaves it nil, which uses the macOS probes.
+    public var recommendEnvironment: RecommendEnvironment?
     /// Replaces `FileManager.fileExists` for the repository path. Tests use this to
     /// prove a stuck probe cannot block `doctor`. Production leaves it nil.
     var doctorRepositoryProbe: ((String) -> Bool)?
@@ -193,6 +196,7 @@ public struct IsenoughEngine {
         self.secrets = secrets ?? KeychainSecretStore()
         self.shareOpener = shareOpener
         self.backendOverride = nil
+        self.recommendEnvironment = nil
     }
     public func openBackend() throws -> any StorageBackend {
         if let backendOverride { return backendOverride }
@@ -479,6 +483,29 @@ public struct IsenoughEngine {
     /// so a stuck iCloud `fileExists` cannot hide every later result.
     public func doctor(checkTimeout: TimeInterval = DoctorLimits.timeout(), fix: Bool = false, onCheck: (([String: Any]) -> Void)? = nil) -> [String: Any] {
         Doctor.run(engine: self, checkTimeout: checkTimeout, fix: fix, onCheck: onCheck)
+    }
+
+    /// Rank installed apps worth offloading. The scan is read-only. On Linux the
+    /// live scan is unavailable unless `recommendEnvironment` injects facts.
+    public func recommend(options: RecommendOptions) -> RecommendReport {
+        let environment = recommendEnvironment ?? LiveRecommendScan.environment(home: NSHomeDirectory(), now: options.now)
+        guard environment.available else {
+            return RecommendRanking.rank([], options: options, scanAvailable: false)
+        }
+        let apps = RecommendDiscovery.collect(environment: environment, catalog: recommendCatalog())
+        var report = RecommendRanking.rank(apps, options: options, scanAvailable: true)
+        report.leftovers = RecommendDiscovery.leftovers(environment: environment)
+        return report
+    }
+
+    private func recommendCatalog() -> RecommendCatalog {
+        let manifests = (try? list()) ?? []
+        let stored = StateStore(config.stateDir).read()["apps"] as? [String: [String: Any]] ?? [:]
+        var pinned = Set<String>()
+        for (bundleId, item) in stored where item["pinned"] as? Bool == true {
+            pinned.insert(bundleId)
+        }
+        return RecommendCatalog(pinnedBundleIds: pinned, packedBundleIds: Set(manifests.map(\.bundleId)), packedPaths: Set(manifests.map(\.app.originalPath)))
     }
     public func resolve(_ manifest: ImageManifest, keepUpdated: Bool, trust: Bool, export: String?, discard: Bool) throws {
         guard let record=restore.needsResolution(manifest.bundleId), let path=record["retainedPath"] as? String, let tree=record["treeHash"] as? String else {
