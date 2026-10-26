@@ -67,7 +67,7 @@ public enum ChunkedIO {
         #if os(macOS)
         let cloned = source.path.withCString { src in
             destination.path.withCString { dst in
-                clonefile(src, dst, 0)
+                clonefile(src, dst, UInt32(0))
             }
         }
         if cloned == 0 { return }

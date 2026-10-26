@@ -17,6 +17,7 @@ const copy = {
     cache: "缓存用量",
     backend: "后端",
     apps: "应用",
+    backfillIcons: "补齐图标",
     devices: "设备",
     devicesEmpty: "还没有登记的 Mac",
     devicesSummary: (n) => `${n} 台 Mac 共用这个仓库`,
@@ -110,6 +111,7 @@ const copy = {
     cache: "Cache",
     backend: "Backend",
     apps: "Apps",
+    backfillIcons: "Backfill icons",
     devices: "Devices",
     devicesEmpty: "No Macs have registered yet",
     devicesSummary: (n) => `${n} ${n === 1 ? "Mac shares" : "Macs share"} this repo`,
@@ -262,6 +264,8 @@ function applyChrome() {
   document.querySelector("#health-title").textContent = t("backend");
   const count = (lastStatus && lastStatus.apps && lastStatus.apps.length) || 0;
   document.querySelector("#apps-title").textContent = lastStatus ? `${t("apps")} ${count}` : t("apps");
+  const backfill = document.querySelector("#icon-backfill");
+  if (backfill) backfill.textContent = t("backfillIcons");
   const devicesTitle = document.querySelector("#devices-title");
   if (devicesTitle) devicesTitle.textContent = t("devices");
   document.querySelector("#sessions-title").textContent = t("sessions");
@@ -749,6 +753,21 @@ async function act(path, app) {
 }
 
 document.querySelector("#refresh").addEventListener("click", refresh);
+document.querySelector("#icon-backfill").addEventListener("click", async () => {
+  if (busy) return;
+  busy = true;
+  try {
+    const report = await api("/api/icons/backfill", { method: "POST" });
+    const warnings = report.warnings || [];
+    if (warnings.length) showBanner(warnings.join("; "));
+    else hideBanner();
+    await load();
+  } catch (error) {
+    showBanner(error.message || String(error));
+  } finally {
+    busy = false;
+  }
+});
 document.querySelector("#retry").addEventListener("click", refresh);
 document.querySelector("#lang").addEventListener("click", () => {
   lang = lang === "zh" ? "en" : "zh";

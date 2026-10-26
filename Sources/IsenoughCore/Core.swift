@@ -317,13 +317,16 @@ public struct LocalFolderBackend: StorageBackend {
     /// Download evicted ubiquitous items before reading them.
     public var materializeReads: Bool
     public var materializeTimeout: TimeInterval
+    /// Device files and catalog JSON. Image downloads keep `materializeTimeout`.
+    public var metadataTimeout: TimeInterval
 
-    public init(root: URL, boundsListing: Bool = false, listTimeout: TimeInterval = 20, materializeReads: Bool = false, materializeTimeout: TimeInterval = 900) throws {
+    public init(root: URL, boundsListing: Bool = false, listTimeout: TimeInterval = 20, materializeReads: Bool = false, materializeTimeout: TimeInterval = 900, metadataTimeout: TimeInterval = 20) throws {
         self.root = root.standardizedFileURL
         self.boundsListing = boundsListing
         self.listTimeout = listTimeout
         self.materializeReads = materializeReads
         self.materializeTimeout = materializeTimeout
+        self.metadataTimeout = metadataTimeout
         try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
     }
 
@@ -359,7 +362,7 @@ public struct LocalFolderBackend: StorageBackend {
 
     public func get(_ path: String, range: Range<UInt64>? = nil) throws -> Data {
         let file = try url(path)
-        try UbiquitousMaterializer.beforeRead(file, timeout: materializeTimeout, enabled: materializeReads)
+        try UbiquitousMaterializer.beforeRead(file, path: path, downloadTimeout: materializeTimeout, metadataTimeout: metadataTimeout, enabled: materializeReads)
         if let range {
             let length = range.upperBound > range.lowerBound ? range.upperBound - range.lowerBound : 0
             var data = Data()
@@ -393,7 +396,7 @@ public struct LocalFolderBackend: StorageBackend {
         guard FileManager.default.fileExists(atPath: file.path) else {
             throw IsenoughError.backend("remote object is missing: \(path)")
         }
-        try UbiquitousMaterializer.beforeRead(file, timeout: materializeTimeout, enabled: materializeReads)
+        try UbiquitousMaterializer.beforeRead(file, path: path, downloadTimeout: materializeTimeout, metadataTimeout: metadataTimeout, enabled: materializeReads)
         let size = try ChunkedIO.byteCount(file)
         if offset > size { throw IsenoughError.integrity("cached partial is larger than the remote object") }
         if offset == size { return ResumableFile(restart: false, bytesWritten: 0) }

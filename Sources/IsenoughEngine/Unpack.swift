@@ -30,6 +30,7 @@ extension IsenoughEngine {
     /// Replace the stub at `manifest.app.originalPath` with the verified app.
     /// `to` copies the verified app into that directory and leaves the stub in place.
     public func unpack(_ manifest: ImageManifest, to directory: String? = nil) throws {
+        try ensureDevice()
         let notes = try recoverUnpackJournals()
         let attention = notes.filter { $0.contains("needs attention") }
         if !attention.isEmpty {

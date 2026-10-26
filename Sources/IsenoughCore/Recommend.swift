@@ -48,16 +48,19 @@ public struct RecommendOptions: Equatable {
     public var minSizeBytes: UInt64
     public var limit: Int?
     public var minIdleDays: Int?
+    /// When set, idle-day and zero-score filters are not applied. `.apk` packages are still excluded.
+    public var includeAll: Bool
     public var now: Date
     public var neverUsedIdleDays: Int
     public var neverUsedBonusDays: Int
     /// Images already stored in the shared repo, with the other devices that reference them.
     public var repoImages: [RepoImagePresence]
 
-    public init(minSizeBytes: UInt64 = RecommendLimits.defaultMinSizeBytes, limit: Int? = nil, minIdleDays: Int? = nil, now: Date = Date(), neverUsedIdleDays: Int = RecommendScore.neverUsedIdleDays, neverUsedBonusDays: Int = RecommendScore.neverUsedBonusDays, repoImages: [RepoImagePresence] = []) {
+    public init(minSizeBytes: UInt64 = RecommendLimits.defaultMinSizeBytes, limit: Int? = nil, minIdleDays: Int? = nil, includeAll: Bool = false, now: Date = Date(), neverUsedIdleDays: Int = RecommendScore.neverUsedIdleDays, neverUsedBonusDays: Int = RecommendScore.neverUsedBonusDays, repoImages: [RepoImagePresence] = []) {
         self.minSizeBytes = minSizeBytes
         self.limit = limit
         self.minIdleDays = minIdleDays
+        self.includeAll = includeAll
         self.now = now
         self.neverUsedIdleDays = neverUsedIdleDays
         self.neverUsedBonusDays = neverUsedBonusDays
@@ -320,6 +323,7 @@ public enum RecommendRanking {
         var warnings: [RecommendItem] = []
         for app in apps {
             if app.stub || app.isenoughProduct || app.running { continue }
+            if RecommendPaths.isNonMacPackage(path: app.path, name: app.name) { continue }
             if (app.systemLocation || app.appleSystemSigned) && !app.toolchain { continue }
             let codes = warningCodes(app)
             let neverUsed = app.lastUsed == nil
@@ -334,9 +338,12 @@ public enum RecommendRanking {
                 continue
             }
             guard app.sizeBytes >= options.minSizeBytes else { continue }
-            if let minimum = options.minIdleDays {
-                let idleEnough = neverUsed || (days ?? 0) >= minimum
-                if !idleEnough { continue }
+            if !options.includeAll {
+                if score <= 0 { continue }
+                if let minimum = options.minIdleDays {
+                    let idleEnough = neverUsed || (days ?? 0) >= minimum
+                    if !idleEnough { continue }
+                }
             }
             recommendations.append(item(app, days: days, neverUsed: neverUsed, score: score, warnings: [], freed: app.sizeBytes, presence: presence))
         }
@@ -416,18 +423,21 @@ public struct RecommendArguments: Equatable {
     public var minSizeBytes: UInt64
     public var limit: Int?
     public var minIdleDays: Int?
+    /// Skip the idle-day and zero-score filters. `.apk` packages stay excluded.
+    public var includeAll: Bool
     /// Accepted here as well as before the command, matching `isenough --json recommend`.
     public var json: Bool
 
-    public init(minSizeBytes: UInt64 = RecommendLimits.defaultMinSizeBytes, limit: Int? = nil, minIdleDays: Int? = nil, json: Bool = false) {
+    public init(minSizeBytes: UInt64 = RecommendLimits.defaultMinSizeBytes, limit: Int? = nil, minIdleDays: Int? = 30, includeAll: Bool = false, json: Bool = false) {
         self.minSizeBytes = minSizeBytes
         self.limit = limit
         self.minIdleDays = minIdleDays
+        self.includeAll = includeAll
         self.json = json
     }
 
     public func options(now: Date = Date()) -> RecommendOptions {
-        RecommendOptions(minSizeBytes: minSizeBytes, limit: limit, minIdleDays: minIdleDays, now: now)
+        RecommendOptions(minSizeBytes: minSizeBytes, limit: limit, minIdleDays: minIdleDays, includeAll: includeAll, now: now)
     }
 
     public static func parse(_ args: [String]) throws -> RecommendArguments {
@@ -438,6 +448,8 @@ public struct RecommendArguments: Equatable {
             switch flag {
             case "--json":
                 result.json = true
+            case "--all":
+                result.includeAll = true
             case "--min-size":
                 guard let raw = rest.first else { throw IsenoughError.usage("Unknown option or missing value: --min-size") }
                 rest.removeFirst()
@@ -467,6 +479,9 @@ public struct RecommendArguments: Equatable {
         }
         if let raw = query["minIdleDays"] ?? query["min-idle-days"] {
             result.minIdleDays = try parseCount(raw, name: "minIdleDays")
+        }
+        if let raw = query["all"] ?? query["includeAll"] {
+            result.includeAll = raw == "1" || raw.lowercased() == "true" || raw.lowercased() == "yes"
         }
         return result
     }
@@ -574,6 +589,17 @@ public enum RecommendPaths {
     /// Hidden entries are not apps to offload. Kept originals (`Foo.256orig.app`)
     /// and `.isenough-original-` backups are not apps either, even when the name
     /// has no leading dot.
+    /// Android packages and other non-macOS bundles are not pack candidates.
+    public static func isNonMacPackage(path: String, name: String) -> Bool {
+        func marked(_ value: String) -> Bool {
+            let lower = value.lowercased()
+            if lower.contains(".apk") { return true }
+            let ext = (lower as NSString).pathExtension
+            return ext == "apk" || ext == "aab" || ext == "exe" || ext == "msi"
+        }
+        return marked(path) || marked(name)
+    }
+
     public static func isIgnoredAppName(_ name: String) -> Bool {
         if name.hasPrefix(".") { return true }
         return isLeftoverBackupName(name)

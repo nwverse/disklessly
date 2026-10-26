@@ -266,6 +266,12 @@ extension IsenoughEngine {
     }
 
     public func syncReport(now: Date = Date()) -> SyncReport {
+        UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) {
+            self.syncReportUnbudgeted(now: now)
+        }
+    }
+
+    private func syncReportUnbudgeted(now: Date) -> SyncReport {
         guard let backend = try? repo else {
             return SyncReport(conflicts: [], placeholders: [], stale: [])
         }
@@ -442,6 +448,12 @@ extension IsenoughEngine {
     }
 
     private func loadDeviceFacts(_ backend: any StorageBackend) throws -> [DeviceFileFact] {
+        try UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) {
+            try self.deviceFacts(backend)
+        }
+    }
+
+    private func deviceFacts(_ backend: any StorageBackend) throws -> [DeviceFileFact] {
         let names = try listRepo(backend, "devices")
         var facts: [DeviceFileFact] = []
         for name in names {

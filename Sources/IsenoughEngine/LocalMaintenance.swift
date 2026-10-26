@@ -23,7 +23,6 @@ extension IsenoughEngine {
     /// Drop local bytes of iCloud images that are fully uploaded and not needed on this Mac.
     /// A file that is still uploading, or that the system will not evict, is reported and left in place.
     public func evictLocalCopies(now: Date = Date()) -> LocalEvictReport {
-        try? ensureDevice(now: now)
         let files = materialFiles(now: now)
         let plan = LocalEviction.plan(files, now: now)
         let chosen = Set(plan.evict)
@@ -50,7 +49,6 @@ extension IsenoughEngine {
 
     /// Remove verified `.isenough-original-` backups. One remover call covers every path.
     public func cleanupBackups(roots: [URL]? = nil, remover: (([String]) throws -> Void)? = nil) throws -> BackupCleanupReport {
-        try? ensureDevice()
         let facts: [BackupFact]
         if let backupFactsOverride {
             facts = backupFactsOverride

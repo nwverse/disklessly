@@ -9,6 +9,17 @@ enum StubIcon {
     static let resourceName = "AppIcon.icns"
 
     #if os(macOS)
+    /// Writes the PNG cache without a stub bundle. A failure is a warning.
+    static func cacheOnly(from app: URL, imageId: String, stateDir: String, publish: (Data) -> Void) {
+        let info = readPlist(app.appendingPathComponent("Contents/Info.plist")) ?? [:]
+        let keys = AppIcon.plistKeys(info)
+        if let file = keys.file, let icns = AppIcon.icnsURL(app: app, fileKey: file), let image = NSImage(contentsOf: icns) {
+            storePNG(image, imageId: imageId, stateDir: stateDir, publish: publish)
+        } else {
+            storePNG(NSWorkspace.shared.icon(forFile: app.path), imageId: imageId, stateDir: stateDir, publish: publish)
+        }
+    }
+
     /// Best-effort. A failure is a warning and does not fail pack or refresh.
     static func capture(from app: URL, into stub: URL, imageId: String, stateDir: String, publish: (Data) -> Void) {
         do {

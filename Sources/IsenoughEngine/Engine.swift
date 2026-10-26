@@ -271,7 +271,9 @@ public struct IsenoughEngine {
     @discardableResult
     public func installEngine(source: URL? = nil) throws -> URL {
         let binary = source ?? EngineInstall.runningExecutable()
-        return try EngineInstall.install(stateDir: config.stateDir, source: binary)
+        let installed = try EngineInstall.install(stateDir: config.stateDir, source: binary)
+        try ensureDevice()
+        return installed
     }
 
     /// Path written into new stubs. Prefers the stable copy once it exists.
@@ -286,6 +288,7 @@ public struct IsenoughEngine {
 
     /// Rewrite `stub.json` in installed stubs so `isenoughPath` is the stable engine, then re-sign on macOS.
     public func refreshStubs(appId: String) throws -> [String] {
+        try ensureDevice()
         let enginePath = try installedEnginePath()
         let bundles = locatedStubs(matching: appId)
         guard !bundles.isEmpty else { throw IsenoughError.usage("no installed stub for \(appId)") }
@@ -293,6 +296,10 @@ public struct IsenoughEngine {
         for bundle in bundles {
             try rewriteStubEngine(bundle: bundle, enginePath: enginePath)
             updated.append(bundle.path)
+        }
+        let icons = try backfillIcons(appId: appId)
+        for warning in icons.warnings {
+            FileHandle.standardError.write(Data("isenough: \(warning)\n".utf8))
         }
         return updated
     }
@@ -396,8 +403,7 @@ public struct IsenoughEngine {
         #endif
     }
 
-    #if os(macOS)
-    private func publishIcon(_ imageId: String, data: Data) {
+    func publishIcon(_ imageId: String, data: Data) {
         do {
             guard let relative = AppIcon.repoRelativePath(imageId: imageId) else { return }
             let backend = try repo
@@ -409,7 +415,6 @@ public struct IsenoughEngine {
             FileHandle.standardError.write(Data("isenough: could not publish the icon: \(error.localizedDescription)\n".utf8))
         }
     }
-    #endif
 
     public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false, imageFormat requestedFormat: String? = nil) throws -> PublishResult {
         #if !os(macOS)
@@ -440,7 +445,7 @@ public struct IsenoughEngine {
         try FileManager.default.createDirectory(at:staging.appendingPathComponent("src"),withIntermediateDirectories:true); defer { try? FileManager.default.removeItem(at:staging) }
         let stagedApp=staging.appendingPathComponent("src").appendingPathComponent(app.lastPathComponent)
         if cloneSupported {
-            let cloned = clonefile(app.path, stagedApp.path, CLONE_NOFOLLOW)
+            let cloned = clonefile(app.path, stagedApp.path, UInt32(CLONE_NOFOLLOW))
             if cloned != 0 {
                 if errno == EEXIST {
                     throw IsenoughError.failure("refusing to replace an existing staged copy at \(stagedApp.path)")
@@ -565,9 +570,12 @@ public struct IsenoughEngine {
         return nil
     }
     #endif
+    /// Read-only. Uses manifests already in the repo and does not register this Mac.
+    /// iCloud metadata waits share one short budget for this call.
     public func list() throws -> [ImageManifest] {
-        try ensureDevice()
-        return try readManifests(try repo)
+        try UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) {
+            try readManifests(try repo)
+        }
     }
     public func status() -> [String:Any] {
         let state=StateStore(config.stateDir).load().dictionary()
@@ -732,11 +740,14 @@ public struct IsenoughEngine {
     public func recommend(options: RecommendOptions) -> RecommendReport {
         let environment = recommendEnvironment ?? LiveRecommendScan.environment(home: NSHomeDirectory(), now: options.now)
         var ranked = options
-        ranked.repoImages = repoImagePresences()
+        let catalog = UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> RecommendCatalog in
+            ranked.repoImages = self.repoImagePresences()
+            return self.recommendCatalog()
+        }
         guard environment.available else {
             return RecommendRanking.rank([], options: ranked, scanAvailable: false)
         }
-        let apps = RecommendDiscovery.collect(environment: environment, catalog: recommendCatalog())
+        let apps = RecommendDiscovery.collect(environment: environment, catalog: catalog)
         var report = RecommendRanking.rank(apps, options: ranked, scanAvailable: true)
         report.leftovers = RecommendDiscovery.leftovers(environment: environment)
         return report
@@ -755,6 +766,7 @@ public struct IsenoughEngine {
         guard let record=restore.needsResolution(manifest.bundleId), let path=record["retainedPath"] as? String, let tree=record["treeHash"] as? String else {
             throw IsenoughError.usage("no retained bundle to resolve for \(manifest.bundleId)")
         }
+        try ensureDevice()
         let url=URL(fileURLWithPath: path)
         let actual=try restore.services.treeHash(url)
         guard actual == tree else { throw IsenoughError.integrity("retained bundle tree hash does not match the resolution record") }

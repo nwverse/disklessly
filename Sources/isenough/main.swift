@@ -13,7 +13,7 @@ func usage() -> Never {
     Usage: isenough [--json] [--config PATH] [--state-dir PATH] [--help] <command>
       init [--backend local|icloud] [--root DIR] [--cache-dir DIR]
       pack APP.app [--mode mount|restore] [--image-format ULMO|ULFO] [--no-stub] [--keep-original] [--stub-dir DIR]
-      install-engine | stub refresh --app ID | stub rebuild APP
+      install-engine | stub refresh --app ID | stub rebuild APP | icons backfill [--app ID]
       list | status [APP] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
       pin APP | unpin APP | evict APP | evict-local | gc [--include-legacy] | cleanup-backups | restore APP | unpack APP [--to DIR]
       devices [list] | devices rename NAME | devices forget DEVICEID --yes
@@ -21,9 +21,9 @@ func usage() -> Never {
       sessions [--apply] [--days N] [--home DIR] [--encrypt] | sessions search QUERY [--limit N]
       sessions restore ID|PATH [--to PATH] | sessions reindex | sessions migrate | sessions verify [--legacy]
       sessions key init | sessions key status
-      recommend [--json] [--min-size SIZE] [--limit N] [--min-idle-days N]
+      recommend [--json] [--all] [--min-size SIZE] [--limit N] [--min-idle-days N]
       ui | hooks list|enable|disable APP | doctor | version | help
-    help, --help, and -h print this text. --json keeps machine-readable output.
+    help, --help, and -h print this text. --json is accepted before or after the command.
     Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
       ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,
       ISENOUGH_QUOTA_BYTES, ISENOUGH_MIN_FREE_BYTES, ISENOUGH_SIGN_IDENTITY,
@@ -262,6 +262,9 @@ do {
             fputs(DoctorFormatting.line(check) + "\n", stdout)
             fflush(stdout)
         }
+        if let hint = report["iconHint"] as? String, !json {
+            fputs(hint + "\n", stdout)
+        }
         if json { emit(report) }
         if (report["needsAttention"] as? Bool) == true { exit(14) }
         exit((report["ok"] as? Bool) == true ? 0 : 1)
@@ -344,6 +347,11 @@ do {
         default:
             throw IsenoughError.usage("Unknown backend command: \(sub)")
         }
+    case "icons":
+        let parsed = try IconsArguments.parse(args)
+        let report = try engine.backfillIcons(appId: parsed.app)
+        for warning in report.warnings { fputs("isenough: \(warning)\n", stderr) }
+        emit(["ok": true, "updated": report.updated, "skipped": report.skipped, "warnings": report.warnings])
     case "install-engine":
         let installed=try engine.installEngine()
         emit(["ok":true,"path":installed.path,"version":EngineInstall.version,"revision":EngineInstall.revision])

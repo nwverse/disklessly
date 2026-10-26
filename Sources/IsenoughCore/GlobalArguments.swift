@@ -9,19 +9,21 @@ public struct GlobalArguments: Equatable {
         self.json = json; self.configPath = configPath; self.stateDir = stateDir; self.rest = rest
     }
 
-    /// Global flags must precede the command. An unknown flag is `EX_USAGE`, not an unknown command.
+    /// `--json` is accepted anywhere in argv. Other global flags still precede the command.
+    /// An unknown flag is `EX_USAGE`, not an unknown command.
     public static func parse(_ args: [String]) throws -> GlobalArguments {
         var json = false
         var configPath: String?
         var stateDir: String?
-        var rest = args
+        var rest: [String] = []
+        for arg in args {
+            if arg == "--json" { json = true }
+            else { rest.append(arg) }
+        }
         while let first = rest.first, first.hasPrefix("--") {
             if first == "--help" {
                 rest = ["help"]
                 break
-            } else if first == "--json" {
-                json = true
-                rest.removeFirst()
             } else if first == "--config" {
                 guard rest.count > 1 else { throw IsenoughError.usage("Unknown option or missing value: --config") }
                 configPath = rest[1]

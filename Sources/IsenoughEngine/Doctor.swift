@@ -113,8 +113,7 @@ enum Doctor {
         } else {
             backendCheck(engine: engine, seconds: seconds, record: record, timedOut: timedOut)
             switch bound(seconds: seconds, {
-                try engine.ensureDevice()
-                return engine.syncReport()
+                engine.syncReport()
             }) {
             case .value(let report):
                 record("conflicts", report.status, report.detail)
@@ -142,7 +141,7 @@ enum Doctor {
             let status = check["status"] as? String
             return status == "fail" || status == "timed out"
         }
-        return [
+        var report: [String: Any] = [
             "ok": !failed,
             "needsAttention": unpackNeedsAttention,
             "platform": ProcessInfo.processInfo.operatingSystemVersionString,
@@ -150,6 +149,10 @@ enum Doctor {
             "issues": issues,
             "checks": checks,
         ]
+        if repoPresent, let hint = IconBackfill.doctorHint(missing: engine.missingIconCount()) {
+            report["iconHint"] = hint
+        }
+        return report
     }
 
     private static func repositoryCheck(engine: IsenoughEngine, seconds: TimeInterval, record: (String, String, String) -> Void, timedOut: (String, String) -> String) -> String {

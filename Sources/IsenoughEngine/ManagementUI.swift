@@ -15,10 +15,19 @@ public enum ManagementUI {
         let loaded = StateStore(engine.config.stateDir).load()
         let state = loaded.dictionary()
         let stored = state["apps"] as? [String: [String: Any]] ?? [:]
-        let listing = try? engine.deviceListing()
+        let loadedApps = UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> (DeviceListing?, [ImageManifest], String) in
+            let listing = try? engine.deviceListing(createLocal: false)
+            do {
+                return (listing, try engine.list(), "")
+            } catch {
+                return (listing, [], (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            }
+        }
+        let listing = loadedApps.0
         let deviceRows = listing?.devices ?? []
-        do {
-            for manifest in try engine.list() {
+        let manifests = loadedApps.1
+        appsError = loadedApps.2
+        for manifest in manifests {
                 let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
                 let exists = FileManager.default.fileExists(atPath: cached.path)
                 let size = exists ? ((try? cached.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init) ?? 0) : 0
@@ -45,9 +54,6 @@ public enum ManagementUI {
                     "devices": holders,
                     "iconPath": AppIcon.existingPath(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: manifest.imageId) ?? "",
                 ])
-            }
-        } catch {
-            appsError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
         let index = (try? SessionArchive.loadIndex(engine.config.stateDir)) ?? SessionIndex()
         let formatter = ISO8601DateFormatter()
@@ -128,6 +134,15 @@ public enum ManagementUI {
                 return .json(["ok": false, "error": error.errorDescription ?? "bad request"], status: 400)
             } catch {
                 return .json(["ok": false, "error": error.localizedDescription], status: 400)
+            }
+        case ("POST", "/api/icons/backfill"):
+            do {
+                let report = try engine.backfillIcons(appId: request.query["app"])
+                return .json(["ok": true, "updated": report.updated, "skipped": report.skipped, "warnings": report.warnings])
+            } catch let error as IsenoughError {
+                return .json(["ok": false, "error": error.errorDescription ?? "request failed"], status: 400)
+            } catch {
+                return .json(["ok": false, "error": error.localizedDescription], status: 500)
             }
         case ("POST", "/api/pin"), ("POST", "/api/unpin"), ("POST", "/api/evict"), ("POST", "/api/restore"):
             guard let name = appName(request) else { return .json(["ok": false, "error": "app is required"], status: 400) }

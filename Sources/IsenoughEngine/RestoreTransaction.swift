@@ -1110,7 +1110,7 @@ public final class RestoreCoordinator {
         let info = BundleFacts.readInfo(destURL)
         let isStub = (info?["CFBundleIdentifier"] as? String) == stubId
         if isStub && !stagingExists {
-            try StateStore(config.stateDir).update { state in
+            _ = try StateStore(config.stateDir).update { state in
                 state.restored.removeValue(forKey: appId)
             }
             return .terminal("mirrorRetired")

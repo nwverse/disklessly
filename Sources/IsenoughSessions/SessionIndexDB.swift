@@ -86,7 +86,7 @@ public final class SessionIndexDB {
                 try createTables()
                 try exec("COMMIT")
             } catch {
-                try? exec("ROLLBACK")
+                _ = try? exec("ROLLBACK")
                 throw error
             }
             if sqlite3_compileoption_used("ENABLE_FTS5") == 1 {
@@ -115,7 +115,7 @@ public final class SessionIndexDB {
             }
             try exec("COMMIT")
         } catch {
-            try? exec("ROLLBACK")
+            _ = try? exec("ROLLBACK")
             throw error
         }
     }
@@ -154,7 +154,7 @@ public final class SessionIndexDB {
             }
             try exec("COMMIT")
         } catch {
-            try? exec("ROLLBACK")
+            _ = try? exec("ROLLBACK")
             throw error
         }
     }
@@ -191,7 +191,7 @@ public final class SessionIndexDB {
             }
             try exec("COMMIT")
         } catch {
-            try? exec("ROLLBACK")
+            _ = try? exec("ROLLBACK")
             throw error
         }
     }
