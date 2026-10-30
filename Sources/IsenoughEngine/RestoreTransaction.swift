@@ -330,7 +330,7 @@ enum StubRebuilder {
         } else {
             enginePath = cli.path
         }
-        let stubInfo: [String: Any] = [
+        var stubInfo: [String: Any] = [
             "schema": "stub/1",
             "appId": journal.appId,
             "imageId": journal.imageId,
@@ -339,6 +339,9 @@ enum StubRebuilder {
             "engineRevision": EngineInstall.revision,
             "stubVersion": 1,
         ]
+        // The repo is not read here. Keep the replaced stub's repo; without one
+        // the rebuilt stub is legacy rather than a guess from the current config.
+        if let repoId = journal.stubRepoId, !repoId.isEmpty { stubInfo["repoId"] = repoId }
         let stubData = try JSONSerialization.data(withJSONObject: stubInfo, options: [.prettyPrinted, .sortedKeys])
         try stubData.write(to: temp.appendingPathComponent("Contents/Resources/stub.json"))
         #if os(macOS)
@@ -620,6 +623,7 @@ public final class RestoreCoordinator {
             guard (info?["CFBundleIdentifier"] as? String) == journal.stubBundleId else {
                 throw IsenoughError.unsupported("restore destination is not the isenough stub at \(dest.path)")
             }
+            journal.stubRepoId = StubIdentity.read(bundle: dest)?.repoId
             guard fm.isWritableFile(atPath: dest.deletingLastPathComponent().path) else {
                 throw IsenoughError.unsupported("restore destination parent is not writable: \(dest.deletingLastPathComponent().path)")
             }

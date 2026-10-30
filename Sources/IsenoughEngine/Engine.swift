@@ -1,5 +1,6 @@
 import Foundation
 import IsenoughCore
+import IsenoughStubSupport
 #if canImport(Glibc)
 import Glibc
 #elseif canImport(Darwin)
@@ -152,8 +153,11 @@ public enum StubGenerator {
         for key in ["SUFeedURL","SUPublicEDKey","ElectronDefaultApp"] { p.removeValue(forKey:key) }
         return p
     }
-    public static func stubInfo(manifest: ImageManifest, cliPath: String) -> [String:Any] {
-        ["schema":"stub/1", "appId":manifest.bundleId, "imageId":manifest.imageId, "isenoughPath":cliPath, "engineVersion":EngineInstall.version, "engineRevision":EngineInstall.revision, "stubVersion":1]
+    /// `repoId` scopes the stub to one repo. Nil writes a legacy stub without it.
+    public static func stubInfo(manifest: ImageManifest, cliPath: String, repoId: String? = nil) -> [String:Any] {
+        var info: [String:Any] = ["schema":"stub/1", "appId":manifest.bundleId, "imageId":manifest.imageId, "isenoughPath":cliPath, "engineVersion":EngineInstall.version, "engineRevision":EngineInstall.revision, "stubVersion":1]
+        if let repoId, !repoId.isEmpty { info["repoId"] = repoId }
+        return info
     }
 
     public static func locateLauncher(cliExecutable: URL, environment: [String:String], isExecutable: (String)->Bool) throws -> URL {
@@ -265,9 +269,7 @@ public struct IsenoughEngine {
         if let root = backend.localRoot() {
             try fm.createDirectory(at: root, withIntermediateDirectories: true)
         }
-        if try backend.stat("repo.json") == nil {
-            try backend.put("repo.json", data: Data("{\"schema\":\"repo/1\",\"repoId\":\"\(UUID().uuidString)\",\"layoutVersion\":1}".utf8))
-        }
+        try RepoIdentity.ensure(backend)
         for p in ["images", "manifests", "catalog", "devices", "trash"] { try backend.ensureCollection(p) }
         try saveConfig()
         if EngineInstall.runningExecutable().lastPathComponent == "isenough" {
@@ -297,21 +299,35 @@ public struct IsenoughEngine {
     }
 
     /// Rewrite `stub.json` in installed stubs so `isenoughPath` is the stable engine, then re-sign on macOS.
-    public func refreshStubs(appId: String) throws -> [String] {
+    /// A stub that names another repo is reported in `foreign` and not touched,
+    /// the same as `refreshOwnedStubs`.
+    public func refreshStubs(appId: String) throws -> StubRefreshReport {
         try ensureDevice()
-        let enginePath = try installedEnginePath()
         let bundles = locatedStubs(matching: appId)
         guard !bundles.isEmpty else { throw IsenoughError.usage("no installed stub for \(appId)") }
-        var updated: [String] = []
+        let backend = try repo
+        try RepoIdentity.ensure(backend)
+        let scope = try stubScope(backend, manifests: try readManifests(backend))
+        let enginePath = try installedEnginePath()
+        var report = StubRefreshReport()
         for bundle in bundles {
-            try rewriteStubEngine(bundle: bundle, enginePath: enginePath)
-            updated.append(bundle.path)
+            if let stub = StubIdentity.read(bundle: bundle), stub.isForeign(toRepo: scope.repoId) {
+                let imageId = stub.imageId ?? Self.embeddedImageId(bundle) ?? ""
+                if !imageId.isEmpty, scope.isMismatched(stub, imageId: imageId) {
+                    report.mismatched.append(bundle.path)
+                } else {
+                    report.foreign.append(bundle.path)
+                }
+                continue
+            }
+            try rewriteStubEngine(bundle: bundle, enginePath: enginePath, repoId: scope.repoId, knownImageIds: scope.manifestIds.union(scope.trashedIds))
+            report.updated.append(bundle.path)
         }
         let icons = try backfillIcons(appId: appId)
         for warning in icons.warnings {
             FileHandle.standardError.write(Data("isenough: \(warning)\n".utf8))
         }
-        return updated
+        return report
     }
 
     /// Warnings for `doctor`. A missing or older engine does not fail the command.
@@ -347,7 +363,7 @@ public struct IsenoughEngine {
         return lines
     }
 
-    private func locatedStubs(matching appId: String?) -> [URL] {
+    func locatedStubs(matching appId: String?) -> [URL] {
         let fm = FileManager.default
         var urls: [URL] = []
         func consider(_ url: URL) {
@@ -385,7 +401,10 @@ public struct IsenoughEngine {
         return urls
     }
 
-    private func rewriteStubEngine(bundle: URL, enginePath: String) throws {
+    /// Also stamps `repoId` on a legacy stub whose image has a manifest in this
+    /// repo (`knownImageIds`). A stub that already names a repo keeps it unless
+    /// `adopt` is set (`stub refresh --all --adopt` for a mismatched stub).
+    func rewriteStubEngine(bundle: URL, enginePath: String, repoId: String? = nil, knownImageIds: Set<String> = [], adopt: Bool = false) throws {
         let stubJSON = bundle.appendingPathComponent("Contents/Resources/stub.json")
         let data = try Data(contentsOf: stubJSON)
         guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -396,6 +415,10 @@ public struct IsenoughEngine {
         object["engineRevision"] = EngineInstall.revision
         if object["schema"] == nil { object["schema"] = "stub/1" }
         if object["stubVersion"] == nil { object["stubVersion"] = 1 }
+        let stub = StubIdentity(object: object)
+        if stub.isLegacy || adopt, let repoId, let image = stub.imageId, knownImageIds.contains(image) {
+            object["repoId"] = repoId
+        }
         let encoded = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
         try encoded.write(to: stubJSON, options: .atomic)
         #if os(macOS)
@@ -553,7 +576,8 @@ public struct IsenoughEngine {
         // A later stub rebuild reads this copy instead of the repo.
         StubManifestCache.store(manifestData, imageId: manifest.imageId, cacheDir: config.cacheDir)
         let enginePath = try installedEnginePath()
-        try JSONSerialization.data(withJSONObject:StubGenerator.stubInfo(manifest:manifest,cliPath:enginePath),options:[.prettyPrinted,.sortedKeys]).write(to:temp.appendingPathComponent("Contents/Resources/stub.json"))
+        let repoId = repoIdentity()
+        try JSONSerialization.data(withJSONObject:StubGenerator.stubInfo(manifest:manifest,cliPath:enginePath,repoId:repoId),options:[.prettyPrinted,.sortedKeys]).write(to:temp.appendingPathComponent("Contents/Resources/stub.json"))
         StubIcon.capture(from: source, into: temp, imageId: manifest.imageId, stateDir: config.stateDir, publish: { data in
             self.publishIcon(manifest.imageId, data: data)
         })

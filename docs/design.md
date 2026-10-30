@@ -371,7 +371,16 @@ and architecture as already in the repo.
 The first repo command on a Mac (`devices`, `list`, `doctor`, `gc`, `pack`, and the other commands that read the
 repo) registers that Mac before it lists or deletes anything. It fills gaps in this Mac's device file from local
 stubs (`stub.json`'s `imageId`, or the manifest stored beside it) and from journals whose destination is a stub
-on this Mac. Images that are still unreferenced at that moment are written once to `catalog/legacy.json`. `gc`
+on this Mac. Only this repo's stubs count: a stub whose `stub.json` `repoId` names another repo is skipped, and a
+legacy stub without `repoId` counts only when its image has a manifest in this repo (live or in `trash/`). Refs an
+older engine wrote for another repo's stub (stub still at `installPath`, image absent from this repo's manifests,
+images, and trash) are dropped. `repo.json` gets a `repoId` only from `init` and `stub refresh`; routine commands
+only read it. It is never created beside an iCloud placeholder or conflict copy of `repo.json`, or in a repo that
+already has manifests or images. `stub refresh --all` stamps it on this repo's legacy stubs. A stub that names
+another repo id while its image is in this repo is reported as `mismatched`; `gc` keeps its image and
+`stub refresh --all --adopt` restamps it. `stub refresh --app` leaves other repos' stubs alone. A stub rebuilt
+during restore recovery keeps the `repoId` of the stub it replaced (recorded in the journal), or none.
+Images that are still unreferenced at that moment are written once to `catalog/legacy.json`. `gc`
 does not delete those images unless `--include-legacy` is passed, and it names each one it kept. A later forget
 of an image this Mac registered after that snapshot can still move it to trash.
 
@@ -1383,7 +1392,7 @@ Implemented on the synchronous `StorageBackend` (`docs/backends.md`): SMB/NFS vi
       AppIcon.icns                         copied from CFBundleIconFile, or rendered from the asset catalog
       <iconFile>.icns / Assets.car         copied from the real app (and doc-type icons)
       stub.json                            {"schema":"stub/1","appId":"com.blender.blender","imageId":"…",
-                                            "isenoughPath":"/Users/me/.local/bin/isenough","stubVersion":1,"createdAt":"…"}
+                                            "repoId":"<repo.json repoId>","isenoughPath":"/Users/me/.local/bin/isenough","stubVersion":1,"createdAt":"…"}
       <lang>.lproj/InfoPlist.strings       only CFBundleName/CFBundleDisplayName/CFBundleSpokenName
     _CodeSignature/
 ```

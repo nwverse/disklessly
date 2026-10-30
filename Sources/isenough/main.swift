@@ -31,7 +31,7 @@ Bring an app back
 Keep things tidy
   gc [--dry-run] [--include-legacy]
   evict-local | cleanup-backups | doctor [--fix] | reap [--dry-run]
-  install-engine | stub refresh --app ID | icons backfill [--app ID]
+  install-engine | stub refresh --app ID|--all [--adopt] | icons backfill [--app ID]
 
 Repos and Macs
   backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
@@ -494,9 +494,21 @@ do {
         if args.first=="rebuild" { throw IsenoughError.unsupported("stub rebuild is not available in this build; use isenough stub refresh --app ID") }
         else if args.first=="refresh" {
             args.removeFirst()
-            guard args.first=="--app", args.count>=2 else { throw IsenoughError.usage("stub refresh requires --app ID") }
-            let updated=try engine.refreshStubs(appId:args[1])
-            say(["ok":true,"updated":updated], "Refreshed stubs for \(args[1]): \(updated)")
+            if args.first=="--all" {
+                // Also the migration that stamps this repo's repoId on legacy stubs.
+                let adopt=args.contains("--adopt")
+                let report=try engine.refreshOwnedStubs(appId:nil, adopt:adopt)
+                var line="Refreshed \(report.updated.count) stub(s); left \(report.foreign.count) stub(s) of other repos alone"
+                if !report.mismatched.isEmpty { line+="; \(report.mismatched.count) stub(s) name another repo id but use this repo's images (run isenough stub refresh --all --adopt to restamp them)" }
+                say(["ok":true,"updated":report.updated,"foreign":report.foreign,"mismatched":report.mismatched], line)
+            } else {
+                guard args.first=="--app", args.count>=2 else { throw IsenoughError.usage("stub refresh requires --app ID or --all [--adopt]") }
+                let report=try engine.refreshStubs(appId:args[1])
+                var line="Refreshed stubs for \(args[1]): \(report.updated)"
+                if !report.foreign.isEmpty { line+="; left stubs of other repos alone: \(report.foreign)" }
+                if !report.mismatched.isEmpty { line+="; stubs naming another repo id: \(report.mismatched) (run isenough stub refresh --all --adopt)" }
+                say(["ok":true,"updated":report.updated,"foreign":report.foreign,"mismatched":report.mismatched], line)
+            }
         } else { throw IsenoughError.usage("stub requires refresh --app ID") }
     // Placeholder kept for old scripts. Hidden from help.
     case "hooks": emit(["ok":true,"hooks":[] as [String]])
