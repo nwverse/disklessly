@@ -56,35 +56,30 @@ public final class LoopbackUIServer {
     private let queue = DispatchQueue(label: "io.github.s546126.256isenough.ui")
     private let lock = NSLock()
     private var running = false
-    public var handler: (UIRequest) -> UIResponse
+    private var storedHandler: (UIRequest) -> UIResponse
+    /// Runs on concurrent workers, one per connection; it must be safe to call from several threads.
+    public var handler: (UIRequest) -> UIResponse {
+        get { lock.lock(); defer { lock.unlock() }; return storedHandler }
+        set { lock.lock(); storedHandler = newValue; lock.unlock() }
+    }
 
     public init(token: String = UUID().uuidString, handler: @escaping (UIRequest) -> UIResponse) {
         self.token = token
-        self.handler = handler
+        self.storedHandler = handler
     }
 
-    public func start() throws {
-        #if canImport(Glibc)
-        let streamType = Int32(SOCK_STREAM.rawValue)
-        #else
-        let streamType = SOCK_STREAM
-        #endif
-        let fd = socket(AF_INET, streamType, 0)
-        guard fd >= 0 else { throw IsenoughError.failure("could not open the UI socket") }
-        var yes: Int32 = 1
-        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
-        var addr = sockaddr_in()
-        memset(&addr, 0, MemoryLayout<sockaddr_in>.size)
-        addr.sin_family = sa_family_t(AF_INET)
-        addr.sin_port = 0
-        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
-        let bound = withUnsafePointer(to: &addr) { pointer -> Int32 in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+    /// Port `isenough ui` and the native window ask for first. Taken ports fall back to an ephemeral one.
+    public static let defaultPort: UInt16 = 47256
+
+    /// Binds 127.0.0.1 and starts accepting. With `preferredPort`, that port is
+    /// tried first; when it is taken the server falls back to an ephemeral port
+    /// (read `port` afterwards). Without it the port is ephemeral, as before.
+    public func start(preferredPort: UInt16? = nil) throws {
+        var fd: Int32 = -1
+        if let preferredPort, preferredPort != 0 {
+            fd = try bindLoopback(port: preferredPort, required: false)
         }
-        guard bound == 0, listen(fd, 16) == 0 else {
-            close(fd)
-            throw IsenoughError.failure("could not bind the UI server to 127.0.0.1")
-        }
+        if fd < 0 { fd = try bindLoopback(port: 0, required: true) }
         var named = sockaddr_in()
         var length = socklen_t(MemoryLayout<sockaddr_in>.size)
         let namedRC = withUnsafeMutablePointer(to: &named) { pointer -> Int32 in
@@ -100,6 +95,33 @@ public final class LoopbackUIServer {
         running = true
         lock.unlock()
         queue.async { [weak self] in self?.acceptLoop() }
+    }
+
+    /// Returns a listening socket, or -1 when `required` is false and the port is taken.
+    private func bindLoopback(port: UInt16, required: Bool) throws -> Int32 {
+        #if canImport(Glibc)
+        let streamType = Int32(SOCK_STREAM.rawValue)
+        #else
+        let streamType = SOCK_STREAM
+        #endif
+        let fd = socket(AF_INET, streamType, 0)
+        guard fd >= 0 else { throw IsenoughError.failure("could not open the UI socket") }
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        var addr = sockaddr_in()
+        memset(&addr, 0, MemoryLayout<sockaddr_in>.size)
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = port.bigEndian
+        addr.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let bound = withUnsafePointer(to: &addr) { pointer -> Int32 in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size)) }
+        }
+        guard bound == 0, listen(fd, 64) == 0 else {
+            close(fd)
+            if !required { return -1 }
+            throw IsenoughError.failure("could not bind the UI server to 127.0.0.1")
+        }
+        return fd
     }
 
     public func stop() {
@@ -126,6 +148,7 @@ public final class LoopbackUIServer {
                 pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { accept(listenFD, $0, &length) }
             }
             if client < 0 { continue }
+            Self.configureClient(client)
             let address = UInt32(bigEndian: peer.sin_addr.s_addr)
             if address != 0x7f000001 {
                 let denied = UIResponse.text(403, "loopback only")
@@ -133,14 +156,31 @@ public final class LoopbackUIServer {
                 close(client)
                 continue
             }
-            transmit(client, respond(readRequest(client)))
-            close(client)
+            // Each connection runs on its own worker, so a slow action or a
+            // slow iCloud listing does not hold up /api/status or /api/icon.
+            DispatchQueue.global(qos: .userInitiated).async { [self] in
+                transmit(client, respond(readRequest(client)))
+                close(client)
+            }
         }
+    }
+
+    /// A stalled client gives up its worker after the timeout; a closed one does not raise SIGPIPE.
+    private static func configureClient(_ fd: Int32) {
+        var timeout = timeval(tv_sec: 15, tv_usec: 0)
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+        #if canImport(Darwin)
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &yes, socklen_t(MemoryLayout<Int32>.size))
+        #endif
     }
 
     private func respond(_ request: UIRequest?) -> UIResponse {
         guard let request else { return UIResponse.text(400, "bad request") }
-        guard request.token == token else { return UIResponse.json(["ok": false, "error": "unauthorized"], status: 401) }
+        guard request.token == token else {
+            return UIResponse.json(["ok": false, "error": ["code": "unauthorized", "message": "The page token is missing or expired."]], status: 401)
+        }
         return handler(request)
     }
 
@@ -191,12 +231,16 @@ public final class LoopbackUIServer {
         let reason: String
         switch response.status {
         case 200: reason = "OK"
+        case 202: reason = "Accepted"
+        case 400: reason = "Bad Request"
         case 401: reason = "Unauthorized"
         case 403: reason = "Forbidden"
         case 404: reason = "Not Found"
+        case 409: reason = "Conflict"
+        case 500: reason = "Internal Server Error"
         default: reason = "Error"
         }
-        let header = "HTTP/1.1 \(response.status) \(reason)\r\nContent-Type: \(response.contentType)\r\nContent-Length: \(response.body.count)\r\nConnection: close\r\n\r\n"
+        let header = "HTTP/1.1 \(response.status) \(reason)\r\nContent-Type: \(response.contentType)\r\nContent-Length: \(response.body.count)\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"
         var bytes = Data(header.utf8)
         bytes.append(response.body)
         bytes.withUnsafeBytes { raw in
