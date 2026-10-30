@@ -275,13 +275,40 @@ enum RestoreArchive {
 }
 
 enum StubRebuilder {
-    static func write(at dest: URL, journal: RestoreJournal, config: RuntimeConfig) throws {
+    /// The manifest the stub embeds. Prefers the copy the restore staged next to the
+    /// journal, then the copy pack left in the cache. The repo is not read here.
+    static func manifestData(journal: RestoreJournal, config: RuntimeConfig) -> Data? {
+        let staged = URL(fileURLWithPath: journal.staging).appendingPathComponent("manifest.json")
+        for data in [try? Data(contentsOf: staged), StubManifestCache.load(imageId: journal.imageId, cacheDir: config.cacheDir)] {
+            if let data, let manifest = try? ImageManifest.decode(data), manifest.imageId == journal.imageId, manifest.bundleId == journal.appId {
+                return data
+            }
+        }
+        return nil
+    }
+
+    /// Build a working stub at `dest`, or throw and leave `dest` absent. The bundle
+    /// is assembled beside `dest` and renamed into place only once it is signed.
+    static func write(at dest: URL, journal: RestoreJournal, config: RuntimeConfig, environment: [String: String] = ProcessInfo.processInfo.environment, cli explicitCLI: URL? = nil) throws {
         let fm = FileManager.default
         if fm.fileExists(atPath: dest.path) {
             throw IsenoughError.busy("refusing to regenerate a stub over an existing destination \(dest.path)")
         }
-        try fm.createDirectory(at: dest.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
-        try fm.createDirectory(at: dest.appendingPathComponent("Contents/Resources"), withIntermediateDirectories: true)
+        let cli = explicitCLI ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        let launcher: URL
+        do {
+            launcher = try StubGenerator.locateLauncher(cliExecutable: cli, environment: environment, isExecutable: { fm.isExecutableFile(atPath: $0) })
+        } catch {
+            throw IsenoughError.failure("cannot rebuild the stub at \(dest.path): \(error.localizedDescription)")
+        }
+        guard let manifest = manifestData(journal: journal, config: config) else {
+            throw IsenoughError.failure("cannot rebuild the stub at \(dest.path): no local copy of manifest \(journal.imageId)")
+        }
+        let temp = dest.deletingLastPathComponent().appendingPathComponent(".isenough-stub-\(UUID().uuidString).app")
+        var placed = false
+        defer { if !placed { try? fm.removeItem(at: temp) } }
+        try fm.createDirectory(at: temp.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: temp.appendingPathComponent("Contents/Resources"), withIntermediateDirectories: true)
         let plist: [String: Any] = [
             "CFBundleIdentifier": journal.stubBundleId,
             "CFBundleExecutable": "isenough-stub",
@@ -292,19 +319,9 @@ enum StubRebuilder {
             "LSUIElement": true,
         ]
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-        try data.write(to: dest.appendingPathComponent("Contents/Info.plist"))
-        let exe = dest.appendingPathComponent("Contents/MacOS/isenough-stub")
-        let cli = URL(fileURLWithPath: CommandLine.arguments[0])
-        if let launcher = try? StubGenerator.locateLauncher(cliExecutable: cli, environment: ProcessInfo.processInfo.environment, isExecutable: { fm.isExecutableFile(atPath: $0) }) {
-            try fm.copyItem(at: launcher, to: exe)
-        } else {
-            try Data("#!/bin/sh\nexit 0\n".utf8).write(to: exe)
-            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path)
-        }
-        let manifest = URL(fileURLWithPath: config.repoPath).appendingPathComponent("manifests/\(journal.imageId).json")
-        if fm.fileExists(atPath: manifest.path) {
-            try fm.copyItem(at: manifest, to: dest.appendingPathComponent("Contents/Resources/manifest.json"))
-        }
+        try data.write(to: temp.appendingPathComponent("Contents/Info.plist"))
+        try fm.copyItem(at: launcher, to: temp.appendingPathComponent("Contents/MacOS/isenough-stub"))
+        try manifest.write(to: temp.appendingPathComponent("Contents/Resources/manifest.json"))
         let enginePath: String
         if cli.lastPathComponent == "isenough" {
             enginePath = (try? EngineInstall.install(stateDir: config.stateDir, source: cli).path) ?? cli.path
@@ -323,15 +340,18 @@ enum StubRebuilder {
             "stubVersion": 1,
         ]
         let stubData = try JSONSerialization.data(withJSONObject: stubInfo, options: [.prettyPrinted, .sortedKeys])
-        try stubData.write(to: dest.appendingPathComponent("Contents/Resources/stub.json"))
+        try stubData.write(to: temp.appendingPathComponent("Contents/Resources/stub.json"))
         #if os(macOS)
-        StubIcon.backfill(stub: dest, imageId: journal.imageId, stateDir: config.stateDir, originals: StubIcon.originals(mountRoot: config.mountRoot, imageId: journal.imageId, stub: dest, recordedPath: nil), publish: { data in
-            guard let relative = AppIcon.repoRelativePath(imageId: journal.imageId) else { return }
-            let url = URL(fileURLWithPath: config.repoPath).appendingPathComponent(relative)
-            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try? data.write(to: url)
-        })
-        try? ProcessRunner.run("/usr/bin/codesign", ["--force", "--sign", "-", dest.path])
+        StubIcon.backfill(stub: temp, imageId: journal.imageId, stateDir: config.stateDir, originals: StubIcon.originals(mountRoot: config.mountRoot, imageId: journal.imageId, stub: temp, recordedPath: nil), publish: { _ in })
+        let identity = SigningIdentity.resolve(configured: config.signIdentity, environment: environment)
+        try ProcessRunner.run("/usr/bin/codesign", ["--force", "--sign", identity, temp.path])
+        #endif
+        if fm.fileExists(atPath: dest.path) {
+            throw IsenoughError.busy("refusing to regenerate a stub over an existing destination \(dest.path)")
+        }
+        try fm.moveItem(at: temp, to: dest)
+        placed = true
+        #if os(macOS)
         StubIcon.touch(dest)
         StubIcon.register(dest)
         #endif
@@ -592,6 +612,8 @@ public final class RestoreCoordinator {
         )
         let probe = services.probe([dest.path])
         if probe != .clean { throw IsenoughError.busy("\(manifest.name) is already in use at \(dest.path)") }
+        let manifestData = try? manifest.encode()
+        if let manifestData { StubManifestCache.store(manifestData, imageId: manifest.imageId, cacheDir: config.cacheDir) }
         try withLock(manifest.bundleId) {
             if openJournal(manifest.bundleId) != nil { throw IsenoughError.busy("a restore journal is already open for \(manifest.bundleId)") }
             let info = BundleFacts.readInfo(dest)
@@ -602,6 +624,10 @@ public final class RestoreCoordinator {
                 throw IsenoughError.unsupported("restore destination parent is not writable: \(dest.deletingLastPathComponent().path)")
             }
             try phasePrepared(&journal)
+            // The journal's own copy, for a stub rebuild if the parked stub is lost.
+            if let manifestData {
+                try? manifestData.write(to: URL(fileURLWithPath: journal.staging).appendingPathComponent("manifest.json"))
+            }
             try phaseExtracted(&journal, manifest: manifest)
             try phaseStubParked(&journal)
             try phaseInstalled(&journal)
@@ -808,7 +834,18 @@ public final class RestoreCoordinator {
             try restoreStub(&journal)
             return .waiting("clean")
         case .regenerateStub:
-            try regenerate(&journal)
+            do {
+                try regenerate(&journal)
+            } catch let fault as InjectedFault {
+                throw fault
+            } catch {
+                // The app stays in staging/app.old. Say so instead of retrying forever.
+                journal.waitReason = "needsAttention"
+                try? JournalStore.save(journal, stateDir: config.stateDir)
+                events.append("stubRegenerationFailed")
+                let old = URL(fileURLWithPath: journal.staging).appendingPathComponent("app.old").path
+                return .rejected("needs attention: could not rebuild the stub at \(journal.dest) (\(error.localizedDescription)). The app is safe at \(old).")
+            }
             return .waiting("clean")
         case .deleteIdenticalCopy:
             try dispose(&journal, retain: false)
@@ -1127,7 +1164,7 @@ public final class RestoreCoordinator {
         let parked = staging.appendingPathComponent("stub.app")
         var unexpected: [String] = []
         if fm.fileExists(atPath: staging.path), let names = try? fm.contentsOfDirectory(atPath: staging.path) {
-            let known: Set<String> = [".txn", ".extracting", ".extracted-ok", "app.new", "app.old", "stub.app"]
+            let known: Set<String> = [".txn", ".extracting", ".extracted-ok", "app.new", "app.old", "stub.app", "manifest.json"]
             unexpected = names.filter { !known.contains($0) }.sorted()
         }
         let hasRole = exists(appNew) || exists(appOld) || exists(parked)

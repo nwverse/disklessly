@@ -583,6 +583,8 @@ final class RestoreTransactionTests: XCTestCase {
         let parked = URL(fileURLWithPath: journal.staging).appendingPathComponent("stub.app")
         XCTAssertTrue(FileManager.default.fileExists(atPath: parked.path))
         try FileManager.default.removeItem(at: parked)
+        // A rebuild needs a real launcher; the old `exit 0` placeholder is gone.
+        try world.useFakeLauncher()
         try world.assertTerminalStub()
         XCTAssertEqual(world.bundleID(at: world.dest), world.stubBundleID)
         XCTAssertTrue(world.engine.restore.events.contains("stubRegenerated"))
