@@ -31,6 +31,7 @@ build/256isenough.app/Contents/
   MacOS/isenough              CLI and engine
   MacOS/isenough-stub         launcher template copied into generated stubs
   Resources/web/              management page
+  Resources/AppIcon.icns      app icon (CFBundleIconFile), from Resources/AppIcon.icns
   Resources/LICENSE, THIRD_PARTY_NOTICES.md, PRIVACY.md
 ```
 

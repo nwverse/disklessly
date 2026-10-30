@@ -1,3 +1,5 @@
+<img src="Resources/AppIcon-1024.png" alt="256isenough icon" width="96" align="right">
+
 # 256isenough
 
 **中文简介：** 把不常用的 macOS 应用打包存到 iCloud Drive、NAS 或 WebDAV，本机只留一个很小的替身（stub）。双击替身时再下载、校验、挂载并启动应用。256 GB 的 Mac 也够用。
@@ -12,6 +14,10 @@ with the stub are passed on to the app.
 
 It comes as a menu-bar app, **256isenough.app**, with a dashboard, and as the
 `isenough` command-line tool. Both use the same engine.
+
+**用户指南 / User guide:** [`docs/user-guide.md`](docs/user-guide.md) covers
+install, packing, launching, the cache, backends, several Macs, the menu-bar app,
+troubleshooting, and uninstalling, in Chinese and English.
 
 ## Install
 
@@ -65,11 +71,13 @@ from the read-only image.
 ## Everyday use
 
 - Open the stub from Finder, Launchpad, Spotlight, or the Dock as usual.
-  Or run `isenough launch "Some App"` (`--doc FILE`, `--url URL`).
+  Or run `isenough launch "Some App"` (`--doc FILE`, `--url URL`, `--no-wait`);
+  `isenough restore "Some App"` forces restore mode for one launch.
 - `isenough list` shows packed apps; `isenough status` shows the cache and the state of each app.
 - `isenough pin APP` keeps an app's image in the cache; `unpin` lets the cache drop it.
 - `isenough prefetch APP` downloads ahead of time, for example before a flight.
 - `isenough evict APP` drops the cached image; the repo copy stays.
+  `isenough evict-local` removes local iCloud copies of repo files that finished uploading.
 - `isenough gc` tidies up: finishes interrupted launches, moves unreferenced images to
   the repo's trash (kept 7 days), and trims the cache to its quota. `gc --dry-run` shows
   what it would do.
@@ -83,9 +91,15 @@ command for machine-readable output.
 The menu-bar app opens the dashboard in its own window. From a terminal,
 `isenough ui --open` serves the same page and opens it in your browser
 (`isenough ui --json` prints `url`, `port`, and `token` for scripts). The page
-lists packed apps with icons and sizes, cache use, pins, other Macs that share the
-repo, and the recommend list. It listens only on `127.0.0.1` and needs the random
-token in the URL.
+shows the backend, cache use against the quota, packed apps with icons and sizes,
+pins, other Macs that share the repo, and the recommend list. From each app row you
+can open, prefetch, pin or unpin, evict, and unpack; packing a new app is
+`isenough pack`. The page is bilingual (Chinese and English) and follows the
+system light or dark appearance. It listens only on `127.0.0.1` and needs the
+random token in the URL.
+
+The menu-bar item has **Open Dashboard**, **Copy Dashboard URL**, the version, and
+**Quit**. The app has no Dock icon; reopening it shows the dashboard window again.
 
 ## Bring apps back, or uninstall
 
@@ -109,7 +123,8 @@ architectures, and a content hash, so the same app on two Macs is stored once an
 the second `pack` does not upload again. Each Mac writes only its own
 `devices/<id>.json`, and `gc` never deletes an image that any Mac still lists, even
 a Mac that has been offline for months. `isenough devices` lists the Macs and what
-they use; `devices rename NAME` sets this Mac's name. Pins, cache, and launch state
+they use; `devices rename NAME` sets this Mac's name, and
+`devices forget DEVICEID --yes` drops a Mac you no longer use. Pins, cache, and launch state
 stay on each Mac.
 
 Repos on a share or WebDAV server: `isenough backend add smb|nfs|webdav|openlist ...`,
@@ -146,6 +161,20 @@ configure. Details are in [PRIVACY.md](PRIVACY.md).
   and never leave the Mac, so they cannot carry the release's Developer ID.
 - Try it first on an app you can reinstall.
 
+## In this release (landing now)
+
+> These are being merged into the 0.1 release branch while this README is
+> updated. `isenough help` on your build is authoritative.
+
+- `isenough evict APP --force` drops a cached image even while it is mounted,
+  detaching it first.
+- `isenough detach APP` detaches an app's image now instead of after the detach
+  delay (120 s by default).
+- Mount reaping: images left attached after their app quit are found and
+  detached.
+- Stubs are scoped to their repo, so a stub never opens an image from a
+  different repo.
+
 ## Coding-agent sessions
 
 `isenough sessions` (dry run by default; `--apply` to act) moves cold coding-agent
@@ -175,6 +204,7 @@ for each packed app so existing stubs use the new engine.
 ```sh
 swift build && swift test       # Swift 5.9+; on Linux install libsqlite3-dev and g++ first
 scripts/build-app.sh            # universal build/256isenough.app (see gui/README.md)
+scripts/make-icon.sh            # redraw Resources/AppIcon.icns (committed; build-app.sh copies it)
 scripts/release-sign.sh         # sign, notarize, DMG, tarball; a dry run without ISENOUGH_SIGN_IDENTITY
 bash scripts/e2e.sh             # macOS end-to-end run against fixture apps in temp folders
 ```

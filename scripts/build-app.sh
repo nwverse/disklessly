@@ -6,6 +6,7 @@
 #   Contents/MacOS/isenough        CLI and engine
 #   Contents/MacOS/isenough-stub   launcher template copied into generated stubs
 #   Contents/Resources/web/        management page
+#   Contents/Resources/AppIcon.icns  app icon (Resources/AppIcon.icns, see scripts/make-icon.sh)
 #
 # The CLI and the stub sit beside the main executable because the engine looks
 # for isenough-stub next to the running binary.
@@ -54,6 +55,11 @@ cp "$BIN/isenough-stub" "$APP/Contents/MacOS/isenough-stub"
 cp -R "$ROOT/Sources/isenough/web" "$APP/Contents/Resources/web"
 cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/PRIVACY.md" "$APP/Contents/Resources/"
 cp "$ROOT/packaging/Info.plist" "$APP/Contents/Info.plist"
+# App icon: Resources/AppIcon.icns is committed; regenerate it only if it is missing.
+ICON="$ROOT/Resources/AppIcon.icns"
+[[ -s "$ICON" ]] || bash "$ROOT/scripts/make-icon.sh" "$ROOT/Resources"
+cp "$ICON" "$APP/Contents/Resources/AppIcon.icns"
+/usr/bin/plutil -replace CFBundleIconFile -string "AppIcon" "$APP/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleShortVersionString -string "$VERSION" "$APP/Contents/Info.plist"
 /usr/bin/plutil -replace CFBundleVersion -string "$BUILD_NUMBER" "$APP/Contents/Info.plist"
 /usr/bin/plutil -lint "$APP/Contents/Info.plist" >/dev/null

@@ -39,6 +39,40 @@ First public release.
   (Developer ID signing, notarization, stapling, tarball, DMG, SHA256SUMS), a
   tag-driven GitHub workflow, and Homebrew formula and cask templates.
 - `PRIVACY.md` (no telemetry) and `THIRD_PARTY_NOTICES.md`.
+- An app icon: the blue rounded "256" tile from the dashboard, drawn by
+  `scripts/make-icon.sh` (CoreGraphics through `swift`, `sips`, `iconutil`) into
+  `Resources/AppIcon.icns`. `scripts/build-app.sh` copies it into the bundle and
+  sets `CFBundleIconFile`.
+- `docs/user-guide.md`, an end-user guide in Chinese with an English section.
+
+### Release branch highlights (`release/v0.1` compared with `main`)
+
+- **Crash-safe pack and unpack.** `pack` swaps the stub in with an atomic
+  `renamex_np(RENAME_SWAP)` under a journal and re-checks the source under the
+  app lock (not a stub, not running, unchanged since it was cloned); any refusal
+  leaves the original alone. `unpack` holds the app lock from preflight to
+  install. `gc` and `doctor --fix` finish interrupted pack journals.
+- **Exclusive repo publishing.** Images and manifests are published write-once
+  (`RENAME_EXCL`, with fallbacks); a lost race is detected and the canonical copy
+  is confirmed by re-reading it. Device records are keyed by image id, so two
+  Macs or two install paths of the same app no longer overwrite each other.
+- **Dashboard jobs.** The loopback server handles connections concurrently, and
+  open, prefetch, pin, unpin, evict, restore, and unpack run as background jobs
+  with per-row progress, confirmations for destructive actions, an onboarding
+  view for an empty repo, search, sort and filter, and Chinese and English text.
+  An expired dashboard link shows a readable page.
+- **Mount-mode `launch --no-wait`** hands the post-quit detach to the detached
+  watcher, so the image is detached after the app quits.
+- `scripts/e2e.sh` runs end to end on macOS against fixture apps in temp folders.
+
+### In this release (landing now)
+
+These are being merged into `release/v0.1` in parallel with this entry; check
+`isenough help` on the tagged build.
+
+- `isenough evict APP --force` and `isenough detach APP`.
+- Reaping of images left mounted after their app quit.
+- Stubs scoped to the repo that packed them.
 
 ### Changed
 
@@ -63,6 +97,18 @@ First public release.
   `Bundle.module`. The page is found through `ISENOUGH_WEB_ROOT`,
   `<exe>/../Resources/web`, `<exe>/../share/isenough/web`, then the SwiftPM
   resource bundle, and a clear error is printed when none exists.
+- An empty mount folder left by `diskutil` detach no longer counts as mounted,
+  so a launched image can be evicted or unpacked afterwards.
+- `evict` refuses an image that is mounted or in use (exit 9) instead of
+  deleting the DMG under a running app; the dashboard disables Evict meanwhile.
+- `unpack`, `evict`, and `pin` accept a stub's path as the app.
+- `status` no longer reports evicted images as cached.
+- A killed but unreaped (zombie) journal owner is treated as dead, so a restore
+  launch no longer waits on it forever; `launch` no longer prints `pgrep` output.
+- The first `pack` or `prefetch` on a fresh state folder creates the cache folder
+  before checking free space.
+- Tree hashes and backend uploads stream SHA-256 instead of reading whole files.
+- The dashboard's "also on" list leaves out this Mac.
 
 ## Schema compatibility
 
