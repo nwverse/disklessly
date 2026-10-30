@@ -20,13 +20,19 @@ public enum RepoIdentity {
     /// Returns the repo's id, creating `repo.json` or adding `repoId` to an older
     /// one as needed. Other keys in an existing `repo.json` are kept.
     ///
+    /// Only explicit commands call this (`init`, `stub refresh`); routine
+    /// commands use `read` so two Macs never race to mint different ids.
+    ///
     /// Returns nil, and writes nothing, when `repo.json` exists but cannot be read
-    /// or parsed (for example an iCloud placeholder), so a good file is never
-    /// replaced by a guess.
+    /// or parsed, when the root holds an iCloud placeholder or conflict copy of
+    /// it (`.repo.json.icloud`, `repo 2.json`), or when `repo.json` is missing
+    /// but the repo already has manifests or images (it may not have synced yet).
+    /// A good or not-yet-downloaded file is never replaced by a guess.
     @discardableResult
     public static func ensure(_ backend: any StorageBackend, now: Date = Date()) throws -> String? {
         var object: [String: Any]
         if try backend.stat(path) == nil {
+            guard isSafeToCreate(backend) else { return nil }
             object = ["schema": "repo/1", "layoutVersion": 1, "createdAt": stamp(now)]
         } else {
             guard let existing = readObject(backend) else { return nil }
@@ -39,6 +45,23 @@ public enum RepoIdentity {
         try backend.put(path, data: data)
         // Another Mac may have written first; whatever the repo now holds wins.
         return read(backend) ?? (object["repoId"] as? String)
+    }
+
+    /// A fresh `repo.json` may be written only when no other copy of it can be
+    /// on its way: no placeholder or conflict copy in the root, and no repo
+    /// content that would mean the real file has not synced yet.
+    static func isSafeToCreate(_ backend: any StorageBackend) -> Bool {
+        guard let names = try? backend.list("") else { return false }
+        for name in names where name != path {
+            if RepoFileNames.logicalName(name) == path { return false }
+            let logical = RepoFileNames.logicalName(name)
+            if RepoFileNames.isConflictCopy(name), (logical as NSString).pathExtension == "json",
+               (logical as NSString).deletingPathExtension.hasPrefix("repo ") { return false }
+        }
+        for dir in ["manifests", "images"] {
+            if let entries = try? backend.list(dir), !entries.isEmpty { return false }
+        }
+        return true
     }
 
     static func repoId(in object: [String: Any]) -> String? {
@@ -58,42 +81,19 @@ public enum RepoIdentity {
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.string(from: date)
     }
-
-    // MARK: - Local copy
-
-    /// Code that must not read the repo (stub regeneration during recovery) uses
-    /// the id last seen for the configured repo. Keyed so switching repos does
-    /// not reuse the old id.
-    static func cacheURL(stateDir: String) -> URL {
-        URL(fileURLWithPath: stateDir).appendingPathComponent("repo-identity.json")
-    }
-
-    static func cacheKey(_ config: RuntimeConfig) -> String {
-        if let id = config.activeBackendId, !id.isEmpty { return "backend:\(id)" }
-        return "path:" + (config.repoPath as NSString).standardizingPath
-    }
-
-    static func remember(_ repoId: String, config: RuntimeConfig) {
-        let object: [String: Any] = ["repoKey": cacheKey(config), "repoId": repoId]
-        guard let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else { return }
-        try? AtomicFile.write(data, to: cacheURL(stateDir: config.stateDir))
-    }
-
-    static func remembered(config: RuntimeConfig) -> String? {
-        guard let data = try? Data(contentsOf: cacheURL(stateDir: config.stateDir)),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["repoKey"] as? String == cacheKey(config) else { return nil }
-        return repoId(in: object)
-    }
 }
 
 extension IsenoughEngine {
-    /// The current repo's id, created on first use. Nil only when `repo.json`
-    /// exists but cannot be read; callers then fall back to legacy rules.
-    public func repoIdentity() throws -> String? {
-        let id = try RepoIdentity.ensure(try repo)
-        if let id { RepoIdentity.remember(id, config: config) }
-        return id
+    /// The current repo's id as `repo.json` records it. Never writes; nil for a
+    /// repo that has no id yet (legacy rules then apply).
+    public func repoIdentity() -> String? {
+        guard let backend = try? repo else { return nil }
+        return RepoIdentity.read(backend)
     }
 
+    /// Creates the id when it is safe to (see `RepoIdentity.ensure`). Explicit commands only.
+    @discardableResult
+    public func ensureRepoIdentity() throws -> String? {
+        try RepoIdentity.ensure(try repo)
+    }
 }

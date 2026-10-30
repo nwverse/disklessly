@@ -113,42 +113,74 @@ final class StubRepoIdentityTests: XCTestCase {
     func testInitWritesRepoIdAndTwoMacsShareIt() throws {
         let a = try makeEngine(mac: "mac-a", repo: "shared")
         let b = try makeEngine(mac: "mac-b", repo: "shared")
-        let idA = try XCTUnwrap(try a.repoIdentity())
-        let idB = try XCTUnwrap(try b.repoIdentity())
+        let idA = try XCTUnwrap(a.repoIdentity())
+        let idB = try XCTUnwrap(b.repoIdentity())
         XCTAssertEqual(idA, idB, "two Macs on the same repo see the same repoId")
         XCTAssertEqual(try repoJSON(a)["repoId"] as? String, idA)
         XCTAssertEqual(try repoJSON(a)["schema"] as? String, "repo/1")
-        XCTAssertEqual(RepoIdentity.remembered(config: b.config), idA)
 
         let other = try makeEngine(mac: "mac-a", repo: "other")
-        XCTAssertNotEqual(try other.repoIdentity(), idA)
-        // The local copy is keyed by repo, so a different repo does not reuse it.
-        var switched = a.config
-        switched.repoPath = other.config.repoPath
-        XCTAssertNil(RepoIdentity.remembered(config: switched))
+        XCTAssertNotEqual(other.repoIdentity(), idA)
     }
 
-    func testLegacyRepoJSONGetsRepoIdOnFirstUseAndKeepsOtherKeys() throws {
+    func testLegacyRepoJSONGetsRepoIdOnlyFromExplicitCommandsAndKeepsOtherKeys() throws {
         let engine = try makeEngine(mac: "mini", repo: "legacy")
         let url = URL(fileURLWithPath: engine.config.repoPath).appendingPathComponent("repo.json")
-        try Data(#"{"schema":"repo/1","layoutVersion":1,"note":"keep me"}"#.utf8).write(to: url)
+        let legacy = Data(#"{"schema":"repo/1","layoutVersion":1,"note":"keep me"}"#.utf8)
+        try legacy.write(to: url)
         XCTAssertNil(RepoIdentity.read(try engine.repo))
-        let id = try XCTUnwrap(try engine.repoIdentity())
+        // Routine commands only read, so two Macs never race to mint ids.
+        try engine.ensureDevice(now: now)
+        _ = try publish(engine, bundleId: "com.example.Routine", name: "Routine", hash: "01")
+        XCTAssertNil(engine.repoIdentity())
+        XCTAssertEqual(try Data(contentsOf: url), legacy)
+
+        let id = try XCTUnwrap(try engine.ensureRepoIdentity())
         let object = try repoJSON(engine)
         XCTAssertEqual(object["repoId"] as? String, id)
         XCTAssertEqual(object["note"] as? String, "keep me")
         XCTAssertEqual(object["layoutVersion"] as? Int, 1)
         // Stable after that.
-        XCTAssertEqual(try engine.repoIdentity(), id)
+        XCTAssertEqual(try engine.ensureRepoIdentity(), id)
         try engine.initialize()
-        XCTAssertEqual(try engine.repoIdentity(), id)
+        XCTAssertEqual(engine.repoIdentity(), id)
+    }
+
+    /// An evicted iCloud `repo.json` shows up only as `.repo.json.icloud`.
+    func testICloudPlaceholderRepoJSONIsNeverReplaced() throws {
+        let engine = try makeEngine(mac: "mini", repo: "evicted")
+        let repo = URL(fileURLWithPath: engine.config.repoPath)
+        XCTAssertNotNil(engine.repoIdentity())
+        try FileManager.default.removeItem(at: repo.appendingPathComponent("repo.json"))
+        let placeholder = repo.appendingPathComponent(".repo.json.icloud")
+        try Data("placeholder".utf8).write(to: placeholder)
+        XCTAssertNil(try engine.ensureRepoIdentity())
+        try engine.initialize()
+        try engine.ensureDevice(now: now)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("repo.json").path), "no new repo.json beside the placeholder")
+        XCTAssertNil(engine.repoIdentity())
+        XCTAssertEqual(try Data(contentsOf: placeholder), Data("placeholder".utf8))
+    }
+
+    /// `repo.json` missing while the repo already holds manifests: it may not have
+    /// synced yet, so no new id is minted.
+    func testMissingRepoJSONInARepoWithContentIsNotRecreated() throws {
+        let engine = try makeEngine(mac: "mini", repo: "unsynced")
+        _ = try publish(engine, bundleId: "com.example.Unsynced", name: "Unsynced", hash: "02")
+        let url = URL(fileURLWithPath: engine.config.repoPath).appendingPathComponent("repo.json")
+        try FileManager.default.removeItem(at: url)
+        XCTAssertNil(try engine.ensureRepoIdentity())
+        try engine.initialize()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
     }
 
     func testUnreadableRepoJSONIsNeverOverwritten() throws {
         let engine = try makeEngine(mac: "mini", repo: "broken")
         let url = URL(fileURLWithPath: engine.config.repoPath).appendingPathComponent("repo.json")
         try Data("not json".utf8).write(to: url)
-        XCTAssertNil(try engine.repoIdentity())
+        XCTAssertNil(engine.repoIdentity())
+        XCTAssertNil(try engine.ensureRepoIdentity())
+        try engine.ensureDevice(now: now)
         XCTAssertEqual(try Data(contentsOf: url), Data("not json".utf8))
     }
 
@@ -159,7 +191,7 @@ final class StubRepoIdentityTests: XCTestCase {
     func testForeignRepoStubsAreNotClaimed() throws {
         let apps = root.appendingPathComponent("Applications")
         let real = try makeEngine(mac: "mini", repo: "real", apps: apps)
-        let realId = try XCTUnwrap(try real.repoIdentity())
+        let realId = try XCTUnwrap(real.repoIdentity())
         let keynote = try publish(real, bundleId: "com.apple.iWork.Keynote", name: "Keynote", hash: "aa")
         let numbers = try publish(real, bundleId: "com.apple.iWork.Numbers", name: "Numbers", hash: "bb")
         try writeStub(in: apps, name: "Keynote", manifest: keynote, repoId: realId)
@@ -194,7 +226,7 @@ final class StubRepoIdentityTests: XCTestCase {
     func testOwnStubIsClaimedEvenWithoutAManifestHere() throws {
         let apps = root.appendingPathComponent("Applications")
         let engine = try makeEngine(mac: "mini", repo: "repo", apps: apps)
-        let id = try XCTUnwrap(try engine.repoIdentity())
+        let id = try XCTUnwrap(engine.repoIdentity())
         let manifest = try publish(engine, bundleId: "com.example.Gone", name: "Gone", hash: "ee")
         try engine.unregister(bundleId: manifest.bundleId, imageId: manifest.imageId, now: now)
         // The manifest is not readable (iCloud placeholder, partial sync), but the
@@ -208,7 +240,7 @@ final class StubRepoIdentityTests: XCTestCase {
     func testTwoMacsOnOneRepoBothClaimStubsStampedByEither() throws {
         let a = try makeEngine(mac: "mac-a", repo: "shared")
         let b = try makeEngine(mac: "mac-b", repo: "shared")
-        let id = try XCTUnwrap(try a.repoIdentity())
+        let id = try XCTUnwrap(a.repoIdentity())
         let manifest = try publish(a, bundleId: "com.example.Shared", name: "Shared", hash: "ff")
         // Mac B installed a stub for the same image (for example a later rebuild).
         try FileManager.default.removeItem(at: URL(fileURLWithPath: a.config.repoPath).appendingPathComponent("manifests/\(manifest.imageId).json"))
@@ -246,13 +278,57 @@ final class StubRepoIdentityTests: XCTestCase {
         let manifest = try publish(engine, bundleId: "com.example.Kept", name: "Kept", hash: "56")
         // A foreign stub now sits where this repo's ref points, but this repo
         // still has the image, so the ref keeps its GC protection.
-        var ref = try XCTUnwrap(try record(engine).images.first)
+        var ref = try XCTUnwrap(record(engine).images.first)
         ref.installPath = try writeStub(in: apps, name: "Kept", manifest: manifest, repoId: "SOMEONE-ELSE").path
         var updated = try record(engine)
         updated.images = [ref]
         let data = try updated.encode()
         try data.write(to: URL(fileURLWithPath: engine.config.repoPath).appendingPathComponent("devices/\(updated.deviceId).json"))
         try data.write(to: URL(fileURLWithPath: engine.config.stateDir).appendingPathComponent("device-record.json"))
+        try engine.ensureDevice(now: now)
+        XCTAssertEqual(try record(engine).images.map(\.imageId), [manifest.imageId])
+    }
+
+    // MARK: - Trash
+
+    /// What another Mac's `gc` does before this Mac's device file has synced.
+    private func trashFromAnotherMac(_ engine: IsenoughEngine, imageId: String) throws {
+        let repo = URL(fileURLWithPath: engine.config.repoPath)
+        let fm = FileManager.default
+        for dir in ["trash/images", "trash/manifests", "trash/meta"] {
+            try fm.createDirectory(at: repo.appendingPathComponent(dir), withIntermediateDirectories: true)
+        }
+        try fm.moveItem(at: repo.appendingPathComponent("images/\(imageId).dmg"), to: repo.appendingPathComponent("trash/images/\(imageId).dmg"))
+        try fm.moveItem(at: repo.appendingPathComponent("manifests/\(imageId).json"), to: repo.appendingPathComponent("trash/manifests/\(imageId).json"))
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        let meta: [String: Any] = ["schema": "trash/1", "imageId": imageId, "trashedAt": formatter.string(from: now)]
+        try JSONSerialization.data(withJSONObject: meta).write(to: repo.appendingPathComponent("trash/meta/\(imageId).json"))
+    }
+
+    func testTrashedImageOfALegacyStubKeepsItsRefAndIsRestoredByGC() throws {
+        let apps = root.appendingPathComponent("Applications")
+        let engine = try makeEngine(mac: "mini", repo: "repo", apps: apps)
+        let manifest = try publish(engine, bundleId: "com.example.Trashed", name: "Trashed", hash: "61")
+        // A stub packed before repoId existed sits where the ref points.
+        let stub = try writeStub(in: apps, name: "Trashed", manifest: manifest, repoId: nil)
+        XCTAssertEqual(try record(engine).images.first?.installPath, stub.path)
+        try trashFromAnotherMac(engine, imageId: manifest.imageId)
+
+        try engine.ensureDevice(now: now)
+        XCTAssertEqual(try record(engine).images.map(\.imageId), [manifest.imageId], "a trashed image is still this repo's; its ref is not expelled")
+        let report = try engine.maintain(now: now.addingTimeInterval(60))
+        XCTAssertEqual(report.restored, [manifest.imageId])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: URL(fileURLWithPath: engine.config.repoPath).appendingPathComponent("images/\(manifest.imageId).dmg").path))
+    }
+
+    func testLegacyStubOfATrashedImageIsStillClaimed() throws {
+        let apps = root.appendingPathComponent("Applications")
+        let engine = try makeEngine(mac: "mini", repo: "repo", apps: apps)
+        let manifest = try publish(engine, bundleId: "com.example.Claimed", name: "Claimed", hash: "62")
+        try engine.unregister(bundleId: manifest.bundleId, imageId: manifest.imageId, now: now)
+        try trashFromAnotherMac(engine, imageId: manifest.imageId)
+        try writeStub(in: apps, name: "Claimed", manifest: manifest, repoId: nil, embed: false)
         try engine.ensureDevice(now: now)
         XCTAssertEqual(try record(engine).images.map(\.imageId), [manifest.imageId])
     }
@@ -264,8 +340,8 @@ final class StubRepoIdentityTests: XCTestCase {
         let apps = root.appendingPathComponent("Applications")
         let engine = try makeEngine(mac: "mini", repo: "repo", apps: apps)
         let other = try makeEngine(mac: "mini", repo: "other", apps: root.appendingPathComponent("other-apps"))
-        let id = try XCTUnwrap(try engine.repoIdentity())
-        let otherId = try XCTUnwrap(try other.repoIdentity())
+        let id = try XCTUnwrap(engine.repoIdentity())
+        let otherId = try XCTUnwrap(other.repoIdentity())
         let ours = try publish(engine, bundleId: "com.example.Legacy", name: "Legacy", hash: "78")
         let theirs = try publish(other, bundleId: "com.example.Theirs", name: "Theirs", hash: "9a")
         let strayManifest = try publish(other, bundleId: "com.example.Stray", name: "Stray", hash: "bc")
@@ -289,14 +365,79 @@ final class StubRepoIdentityTests: XCTestCase {
         XCTAssertEqual(try stubJSON(legacy)["repoId"] as? String, id)
     }
 
-    func testRecoveryRebuiltStubCarriesTheRepoId() throws {
+    /// `repo.json` was recreated (or two Macs minted different ids) after stubs
+    /// were stamped. Those stubs are not claimed, but gc keeps their images and
+    /// `--adopt` restamps them.
+    func testStubsStampedWithAnOldRepoIdAreKeptByGCAndCanBeAdopted() throws {
+        let apps = root.appendingPathComponent("Applications")
+        let engine = try makeEngine(mac: "mini", repo: "repo", apps: apps)
+        let oldId = try XCTUnwrap(engine.repoIdentity())
+        let manifest = try publish(engine, bundleId: "com.example.Drift", name: "Drift", hash: "63")
+        let stub = try writeStub(in: apps, name: "Drift", manifest: manifest, repoId: oldId)
+        var object = try repoJSON(engine)
+        object["repoId"] = "NEW-ID"
+        try JSONSerialization.data(withJSONObject: object).write(to: URL(fileURLWithPath: engine.config.repoPath).appendingPathComponent("repo.json"))
+        try engine.unregister(bundleId: manifest.bundleId, imageId: manifest.imageId, now: now)
+
+        try engine.ensureDevice(now: now)
+        XCTAssertEqual(try record(engine).images, [])
+        let gc = try engine.maintain(now: now.addingTimeInterval(60))
+        XCTAssertFalse(gc.trashed.contains(manifest.imageId))
+        XCTAssertTrue(gc.kept.contains(manifest.imageId))
+        XCTAssertTrue(gc.warnings.contains { $0.contains(manifest.imageId) && $0.contains("--adopt") })
+
+        let report = try engine.refreshOwnedStubs(appId: nil)
+        XCTAssertEqual(report.mismatched, [stub.path])
+        XCTAssertEqual(report.foreign, [])
+        XCTAssertEqual(try stubJSON(stub)["repoId"] as? String, oldId)
+
+        let adopted = try engine.refreshOwnedStubs(appId: nil, adopt: true)
+        XCTAssertEqual(adopted.updated, [stub.path])
+        XCTAssertEqual(try stubJSON(stub)["repoId"] as? String, "NEW-ID")
+        XCTAssertEqual(try record(engine).images.map(\.imageId), [manifest.imageId])
+    }
+
+    func testRefreshAppLeavesAnotherReposStubAlone() throws {
+        let apps = root.appendingPathComponent("Applications")
+        let engine = try makeEngine(mac: "mini", repo: "repo", apps: apps)
+        let manifest = try publish(engine, bundleId: "com.example.Other", name: "Other", hash: "64")
+        let stub = try writeStub(in: apps, name: "Other", manifest: manifest, repoId: "SOMEONE-ELSE")
+        // The image is in this repo, so it is mismatched rather than foreign.
+        let report = try engine.refreshStubs(appId: manifest.bundleId)
+        XCTAssertEqual(report.updated, [])
+        XCTAssertEqual(report.mismatched, [stub.path])
+        XCTAssertEqual(try stubJSON(stub)["isenoughPath"] as? String, "/old/isenough")
+
+        let other = try makeEngine(mac: "mini", repo: "other", apps: root.appendingPathComponent("other-apps"))
+        let theirs = try publish(other, bundleId: "com.example.Theirs", name: "Theirs", hash: "65")
+        let foreign = try writeStub(in: apps, name: "Theirs", manifest: theirs, repoId: other.repoIdentity())
+        let second = try engine.refreshStubs(appId: theirs.bundleId)
+        XCTAssertEqual(second.foreign, [foreign.path])
+        XCTAssertEqual(try stubJSON(foreign)["isenoughPath"] as? String, "/old/isenough")
+    }
+
+    func testRecoveryRebuiltStubCarriesTheReplacedStubsRepoId() throws {
         let world = try RestoreWorld()
         defer { world.cleanup() }
-        let id = try XCTUnwrap(try world.engine.repoIdentity())
-        let journal = try world.strandWithoutParkedStub()
+        // The stub being replaced names its repo.
+        let id = "REPO-OF-THE-STUB"
+        let stubJSONURL = world.dest.appendingPathComponent("Contents/Resources/stub.json")
+        try FileManager.default.createDirectory(at: stubJSONURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: ["schema": "stub/1", "appId": world.bundleID, "repoId": id]).write(to: stubJSONURL)
+        var journal = try world.strandWithoutParkedStub()
+        XCTAssertEqual(journal.stubRepoId, id, "the journal keeps the replaced stub's repo")
         let launcher = try world.fakeLauncher()
-        try StubRebuilder.write(at: world.dest, journal: journal, config: world.engine.config, environment: ["ISENOUGH_STUB_BINARY": launcher.path], cli: URL(fileURLWithPath: "/nonexistent/isenough"))
+        // The configured repo changed before recovery; the rebuilt stub still names the journal's repo.
+        var switched = world.engine.config
+        switched.repoPath = root.appendingPathComponent("elsewhere").path
+        try StubRebuilder.write(at: world.dest, journal: journal, config: switched, environment: ["ISENOUGH_STUB_BINARY": launcher.path], cli: URL(fileURLWithPath: "/nonexistent/isenough"))
         XCTAssertEqual(try stubJSON(world.dest)["repoId"] as? String, id)
+
+        // Unknown repo (legacy stub, older journal): a legacy stub, not a guess.
+        try FileManager.default.removeItem(at: world.dest)
+        journal.stubRepoId = nil
+        try StubRebuilder.write(at: world.dest, journal: journal, config: world.engine.config, environment: ["ISENOUGH_STUB_BINARY": launcher.path], cli: URL(fileURLWithPath: "/nonexistent/isenough"))
+        XCTAssertNil(try stubJSON(world.dest)["repoId"])
     }
     #endif
 }

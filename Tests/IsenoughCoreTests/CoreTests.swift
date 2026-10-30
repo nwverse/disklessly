@@ -369,7 +369,7 @@ final class CoreTests: XCTestCase {
         #endif
         let stubInfo: [String: Any] = ["schema": "stub/1", "appId": "com.example.foo", "isenoughPath": "/old/dev/isenough", "stubVersion": 1]
         try JSONSerialization.data(withJSONObject: stubInfo).write(to: bundle.appendingPathComponent("Contents/Resources/stub.json"))
-        let updated = try engine.refreshStubs(appId: "com.example.foo")
+        let updated = try engine.refreshStubs(appId: "com.example.foo").updated
         XCTAssertEqual(updated, [bundle.path])
         let rewritten = try JSONSerialization.jsonObject(with: Data(contentsOf: bundle.appendingPathComponent("Contents/Resources/stub.json"))) as? [String: Any]
         XCTAssertEqual(rewritten?["isenoughPath"] as? String, installed.path)

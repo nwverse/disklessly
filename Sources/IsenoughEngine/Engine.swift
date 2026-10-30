@@ -266,7 +266,7 @@ public struct IsenoughEngine {
         if let root = backend.localRoot() {
             try fm.createDirectory(at: root, withIntermediateDirectories: true)
         }
-        if let repoId = try RepoIdentity.ensure(backend) { RepoIdentity.remember(repoId, config: config) }
+        try RepoIdentity.ensure(backend)
         for p in ["images", "manifests", "catalog", "devices", "trash"] { try backend.ensureCollection(p) }
         try saveConfig()
         if EngineInstall.runningExecutable().lastPathComponent == "isenough" {
@@ -296,23 +296,35 @@ public struct IsenoughEngine {
     }
 
     /// Rewrite `stub.json` in installed stubs so `isenoughPath` is the stable engine, then re-sign on macOS.
-    public func refreshStubs(appId: String) throws -> [String] {
+    /// A stub that names another repo is reported in `foreign` and not touched,
+    /// the same as `refreshOwnedStubs`.
+    public func refreshStubs(appId: String) throws -> StubRefreshReport {
         try ensureDevice()
-        let enginePath = try installedEnginePath()
         let bundles = locatedStubs(matching: appId)
         guard !bundles.isEmpty else { throw IsenoughError.usage("no installed stub for \(appId)") }
-        let repoId = try? repoIdentity()
-        let known = Set(((try? list()) ?? []).map(\.imageId))
-        var updated: [String] = []
+        let backend = try repo
+        try RepoIdentity.ensure(backend)
+        let scope = try stubScope(backend, manifests: try readManifests(backend))
+        let enginePath = try installedEnginePath()
+        var report = StubRefreshReport()
         for bundle in bundles {
-            try rewriteStubEngine(bundle: bundle, enginePath: enginePath, repoId: repoId ?? nil, knownImageIds: known)
-            updated.append(bundle.path)
+            if let stub = StubIdentity.read(bundle: bundle), stub.isForeign(toRepo: scope.repoId) {
+                let imageId = stub.imageId ?? Self.embeddedImageId(bundle) ?? ""
+                if !imageId.isEmpty, scope.isMismatched(stub, imageId: imageId) {
+                    report.mismatched.append(bundle.path)
+                } else {
+                    report.foreign.append(bundle.path)
+                }
+                continue
+            }
+            try rewriteStubEngine(bundle: bundle, enginePath: enginePath, repoId: scope.repoId, knownImageIds: scope.manifestIds.union(scope.trashedIds))
+            report.updated.append(bundle.path)
         }
         let icons = try backfillIcons(appId: appId)
         for warning in icons.warnings {
             FileHandle.standardError.write(Data("isenough: \(warning)\n".utf8))
         }
-        return updated
+        return report
     }
 
     /// Warnings for `doctor`. A missing or older engine does not fail the command.
@@ -387,8 +399,9 @@ public struct IsenoughEngine {
     }
 
     /// Also stamps `repoId` on a legacy stub whose image has a manifest in this
-    /// repo (`knownImageIds`). A stub that already names a repo keeps it.
-    func rewriteStubEngine(bundle: URL, enginePath: String, repoId: String? = nil, knownImageIds: Set<String> = []) throws {
+    /// repo (`knownImageIds`). A stub that already names a repo keeps it unless
+    /// `adopt` is set (`stub refresh --all --adopt` for a mismatched stub).
+    func rewriteStubEngine(bundle: URL, enginePath: String, repoId: String? = nil, knownImageIds: Set<String> = [], adopt: Bool = false) throws {
         let stubJSON = bundle.appendingPathComponent("Contents/Resources/stub.json")
         let data = try Data(contentsOf: stubJSON)
         guard var object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -400,7 +413,7 @@ public struct IsenoughEngine {
         if object["schema"] == nil { object["schema"] = "stub/1" }
         if object["stubVersion"] == nil { object["stubVersion"] = 1 }
         let stub = StubIdentity(object: object)
-        if stub.isLegacy, let repoId, let image = stub.imageId, knownImageIds.contains(image) {
+        if stub.isLegacy || adopt, let repoId, let image = stub.imageId, knownImageIds.contains(image) {
             object["repoId"] = repoId
         }
         let encoded = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
@@ -560,8 +573,8 @@ public struct IsenoughEngine {
         // A later stub rebuild reads this copy instead of the repo.
         StubManifestCache.store(manifestData, imageId: manifest.imageId, cacheDir: config.cacheDir)
         let enginePath = try installedEnginePath()
-        let repoId = try? repoIdentity()
-        try JSONSerialization.data(withJSONObject:StubGenerator.stubInfo(manifest:manifest,cliPath:enginePath,repoId:repoId ?? nil),options:[.prettyPrinted,.sortedKeys]).write(to:temp.appendingPathComponent("Contents/Resources/stub.json"))
+        let repoId = repoIdentity()
+        try JSONSerialization.data(withJSONObject:StubGenerator.stubInfo(manifest:manifest,cliPath:enginePath,repoId:repoId),options:[.prettyPrinted,.sortedKeys]).write(to:temp.appendingPathComponent("Contents/Resources/stub.json"))
         StubIcon.capture(from: source, into: temp, imageId: manifest.imageId, stateDir: config.stateDir, publish: { data in
             self.publishIcon(manifest.imageId, data: data)
         })

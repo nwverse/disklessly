@@ -72,6 +72,9 @@ public struct RestoreJournal: Codable, Equatable {
     public var didLaunch: Bool
     /// Stat-only digest of `dest` after `app.new` was renamed into place. Nil on older journals.
     public var installedFingerprint: String?
+    /// `repoId` from the stub this restore replaced, so a rebuilt stub names the
+    /// same repo. Nil for a legacy stub and on older journals.
+    public var stubRepoId: String?
 
     public init(txid: String, appId: String, imageId: String, owner: ProcessOwner, dest: String, staging: String, imagePath: String, imageFile: String, appName: String, stubBundleId: String, executable: String, manifestCdhash: String, manifestTreeHash: String, imageSha256: String, createdAt: Date = Date()) {
         self.schema = "tx/1"
@@ -109,6 +112,7 @@ public struct RestoreJournal: Codable, Equatable {
         self.detachAfter = nil
         self.didLaunch = false
         self.installedFingerprint = nil
+        self.stubRepoId = nil
     }
 
     public func encode() throws -> Data {

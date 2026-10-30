@@ -320,7 +320,8 @@ extension IsenoughEngine {
         let trash = try trashFacts(backend)
         let legacy = try loadLegacyIds(backend)
         let selfId = LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId
-        let plan = RepoGarbage.plan(liveImageIds: census.ids, trash: trash, devices: devices, now: now, legacyImageIds: legacy, includeLegacy: includeLegacy, selfDeviceId: selfId)
+        var plan = RepoGarbage.plan(liveImageIds: census.ids, trash: trash, devices: devices, now: now, legacyImageIds: legacy, includeLegacy: includeLegacy, selfDeviceId: selfId)
+        try keepMismatchedStubImages(&plan, backend: backend)
         let scan = scanCache(justUsed: nil, now: now)
         let eviction = CachePlanner.planEviction(scan.items, leftovers: scan.leftovers, quota: config.quotaBytes, now: now)
         let trashed = plan.trash.filter { !census.placeholders.contains($0) }
@@ -623,7 +624,8 @@ extension IsenoughEngine {
         let trash = try trashFacts(backend)
         let legacy = try loadLegacyIds(backend)
         let selfId = LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId
-        let plan = RepoGarbage.plan(liveImageIds: census.ids, trash: trash, devices: devices, now: now, legacyImageIds: legacy, includeLegacy: includeLegacy, selfDeviceId: selfId)
+        var plan = RepoGarbage.plan(liveImageIds: census.ids, trash: trash, devices: devices, now: now, legacyImageIds: legacy, includeLegacy: includeLegacy, selfDeviceId: selfId)
+        try keepMismatchedStubImages(&plan, backend: backend)
         for imageId in plan.restoreFromTrash {
             try stopOnMoveFailure { try restoreTrashed(imageId, backend: backend) }
         }
@@ -652,33 +654,98 @@ extension IsenoughEngine {
         return BackupScanner.defaultRoots(stubDir: config.stubDir, home: NSHomeDirectory())
     }
 
-    /// What this repo is: its id and the images it has manifests or image files for.
-    /// Stub claims are filtered through it so another repo's stubs on this Mac
-    /// (for example the user's real `/Applications` stubs seen from a test repo)
-    /// are never counted.
+    /// What this repo is: its id and the images it has manifests, image files,
+    /// or trash entries for. Stub claims are filtered through it so another
+    /// repo's stubs on this Mac (for example the user's real `/Applications`
+    /// stubs seen from a test repo) are never counted.
     struct StubScope {
         var repoId: String?
         /// Image ids with a manifest in `manifests/`, placeholders included.
         var manifestIds: Set<String>
         /// Image ids with a file in `images/`, placeholders included.
         var imageIds: Set<String>
+        /// Image ids in `trash/` (manifests, images, or meta). These are still
+        /// this repo's: a ref to one restores it during the GC grace period.
+        var trashedIds: Set<String> = []
+        /// False when a trash folder could not be listed; nothing is expelled then.
+        var trashListed = true
+
+        /// Ids whose manifest is here, live or in the trash. The legacy-stub rule.
+        func hasManifest(_ imageId: String) -> Bool {
+            manifestIds.contains(imageId) || trashedIds.contains(imageId)
+        }
+
+        /// Any trace of the image in this repo.
+        func knows(_ imageId: String) -> Bool {
+            hasManifest(imageId) || imageIds.contains(imageId)
+        }
 
         func owns(_ stub: StubIdentity, imageId: String) -> Bool {
-            stub.belongs(toRepo: repoId, imageInRepo: manifestIds.contains(imageId))
+            stub.belongs(toRepo: repoId, imageInRepo: hasManifest(imageId))
+        }
+
+        /// A stub that names another repo although its image is in this one, for
+        /// example after `repo.json` was recreated or two Macs minted different
+        /// ids. It is not claimed, but `gc` keeps its image and
+        /// `stub refresh --all --adopt` can restamp it.
+        func isMismatched(_ stub: StubIdentity, imageId: String) -> Bool {
+            stub.isForeign(toRepo: repoId) && knows(imageId)
         }
     }
 
+    /// Reads only: the repo id is never created here (see `RepoIdentity.ensure`).
     func stubScope(_ backend: any StorageBackend, manifests: [ImageManifest]) throws -> StubScope {
-        let repoId = try RepoIdentity.ensure(backend)
-        if let repoId { RepoIdentity.remember(repoId, config: config) }
+        let repoId = RepoIdentity.read(backend)
         var manifestIds = Set(manifests.map(\.imageId))
         for name in try listRepo(backend, "manifests") where !RepoFileNames.isConflictCopy(name) {
             let logical = RepoFileNames.logicalName(name)
             guard logical.hasSuffix(".json") else { continue }
             manifestIds.insert((logical as NSString).deletingPathExtension)
         }
+        var trashedIds = Set<String>()
+        var trashListed = true
+        for (dir, suffix) in [("trash/manifests", ".json"), ("trash/images", ".dmg"), ("trash/meta", ".json")] {
+            // Some backends fail to list a folder that was never created. That
+            // must not block routine commands; it only disables expelling refs.
+            guard let names = try? listRepo(backend, dir) else { trashListed = false; continue }
+            for name in names where !RepoFileNames.isConflictCopy(name) {
+                let logical = RepoFileNames.logicalName(name)
+                guard logical.hasSuffix(suffix) else { continue }
+                let id = (logical as NSString).deletingPathExtension
+                if !id.isEmpty { trashedIds.insert(id) }
+            }
+        }
         let census = try imageCensus(backend)
-        return StubScope(repoId: repoId, manifestIds: manifestIds, imageIds: Set(census.ids))
+        return StubScope(repoId: repoId, manifestIds: manifestIds, imageIds: Set(census.ids), trashedIds: trashedIds, trashListed: trashListed)
+    }
+
+    /// A stub on this Mac names another repo id but uses this repo's image. It
+    /// is not claimed, so `gc` keeps the image (neither trashed nor purged)
+    /// until `stub refresh --all --adopt` restamps the stub.
+    func keepMismatchedStubImages(_ plan: inout GCPlan, backend: any StorageBackend) throws {
+        let mismatched = mismatchedStubImageIds(scope: try stubScope(backend, manifests: try readManifests(backend)))
+        let hit = mismatched.filter { plan.trash.contains($0) || plan.purge.contains($0) }.sorted()
+        guard !hit.isEmpty else { return }
+        for imageId in hit {
+            plan.warnings.append("\(imageId) is used by a stub on this Mac that names another repo id, so it was kept. Run isenough stub refresh --all --adopt.")
+        }
+        plan.kept.append(contentsOf: plan.trash.filter { mismatched.contains($0) })
+        plan.trash.removeAll { mismatched.contains($0) }
+        plan.purge.removeAll { mismatched.contains($0) }
+    }
+
+    /// Image ids of stubs on this Mac that name another repo although the image
+    /// is this repo's. `gc` does not trash or purge these.
+    func mismatchedStubImageIds(scope: StubScope) -> Set<String> {
+        var ids = Set<String>()
+        for root in stubSearchRoots() {
+            for app in RecommendPaths.topLevelApps(in: root) {
+                guard let stub = StubIdentity.read(bundle: app) else { continue }
+                let imageId = stub.imageId ?? Self.embeddedImageId(app) ?? ""
+                if !imageId.isEmpty, scope.isMismatched(stub, imageId: imageId) { ids.insert(imageId) }
+            }
+        }
+        return ids
     }
 
     /// Stubs in the Applications folders, plus journals whose destination is a stub on this Mac.
@@ -717,11 +784,11 @@ extension IsenoughEngine {
     /// Refs in this Mac's device file that an older engine claimed from another
     /// repo's stub. A ref goes only when its stub is still on disk at
     /// `installPath`, names the same image, is not this repo's, and the image has
-    /// neither a manifest nor an image file here, so nothing of this repo loses
-    /// GC protection.
+    /// no manifest, image file, or trash entry here, so nothing of this repo
+    /// loses GC protection (a trashed image's ref is what restores it).
     func isForeignStubRef(_ ref: DeviceImageRef, scope: StubScope) -> Bool {
-        guard !ref.imageId.isEmpty, let path = ref.installPath, !path.isEmpty,
-              !scope.manifestIds.contains(ref.imageId), !scope.imageIds.contains(ref.imageId) else { return false }
+        guard scope.trashListed, !ref.imageId.isEmpty, let path = ref.installPath, !path.isEmpty,
+              !scope.knows(ref.imageId) else { return false }
         guard let stub = StubIdentity.read(bundle: URL(fileURLWithPath: path)) else { return false }
         if let image = stub.imageId, image != ref.imageId { return false }
         return !scope.owns(stub, imageId: ref.imageId)
