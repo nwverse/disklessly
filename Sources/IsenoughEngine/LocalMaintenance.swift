@@ -142,7 +142,7 @@ enum LiveMaterialProbe {
             guard let imageId = item.imageId, !imageId.isEmpty else { continue }
             let name = item.state ?? ""
             if name == "running" || name == "detaching" { inUse.insert(imageId) }
-            if let mount = item.mountPoint, !mount.isEmpty, FileManager.default.fileExists(atPath: mount) {
+            if let mount = item.mountPoint, !mount.isEmpty, IsenoughEngine.isActiveMountPoint(mount) {
                 inUse.insert(imageId)
             }
             if let used = item.lastUsed {
@@ -154,7 +154,8 @@ enum LiveMaterialProbe {
             }
         }
         if !config.mountRoot.isEmpty, let mounts = try? FileManager.default.contentsOfDirectory(atPath: config.mountRoot) {
-            for name in mounts where !name.hasPrefix(".") { inUse.insert(name) }
+            // Detach can leave an empty folder behind; only live mount points count.
+            for name in mounts where !name.hasPrefix(".") && IsenoughEngine.isActiveMountPoint((config.mountRoot as NSString).appendingPathComponent(name)) { inUse.insert(name) }
         }
         for journal in (try? JournalStore.loadAll(stateDir: config.stateDir)) ?? [] {
             let protection = LocalEviction.protects(phase: journal.phase, outcome: journal.outcome, detachAfter: journal.detachAfter, now: now)

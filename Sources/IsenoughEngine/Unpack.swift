@@ -259,7 +259,7 @@ extension IsenoughEngine {
         }
         let dest = URL(fileURLWithPath: manifest.app.originalPath)
         let usage = services.probe([dest.path])
-        let mounted = FileManager.default.fileExists(atPath: URL(fileURLWithPath: config.mountRoot).appendingPathComponent(manifest.imageId).path)
+        let mounted = IsenoughEngine.isActiveMountPoint(URL(fileURLWithPath: config.mountRoot).appendingPathComponent(manifest.imageId).path)
         if manifest.mode == .mount && mounted {
             throw IsenoughError.busy("\(manifest.name) is mounted; detach it before unpack")
         }

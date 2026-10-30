@@ -157,8 +157,18 @@ func serveUntilSignaled(_ server: LoopbackUIServer) -> Never {
     intr.resume()
     dispatchMain()
 }
+/// A stub bundle path (e.g. `/Applications/Foo.app`) resolves through its `stub.json` image id.
+func stubImageId(_ name: String) -> String? {
+    guard name.hasSuffix(".app") || name.hasSuffix(".app/") else { return nil }
+    let stubJSON = URL(fileURLWithPath: name).appendingPathComponent("Contents/Resources/stub.json")
+    guard let data = try? Data(contentsOf: stubJSON),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let imageId = object["imageId"] as? String, !imageId.isEmpty else { return nil }
+    return imageId
+}
 func find(_ name:String) throws -> ImageManifest {
     let manifests = try engine.list()
+    if let imageId = stubImageId(name), let m = manifests.first(where: { $0.imageId == imageId }) { return m }
     guard let m=engine.manifest(named: name, in: manifests) else {
         throw IsenoughError.usage(CLIText.unknownApp(name, suggestions: CLIText.suggestions(for: name, in: manifests)))
     }

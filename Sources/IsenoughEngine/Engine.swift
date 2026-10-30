@@ -592,10 +592,22 @@ public struct IsenoughEngine {
         }
         if pinned { _ = try prefetch(manifest) }
     }
+    /// True when `path` is a live mount point. Launch leaves an empty folder behind
+    /// after detach, so a folder that merely exists does not mean "mounted".
+    static func isActiveMountPoint(_ path: String) -> Bool {
+        var mount = stat(), parent = stat()
+        guard lstat(path, &mount) == 0, lstat((path as NSString).deletingLastPathComponent, &parent) == 0 else { return false }
+        return mount.st_dev != parent.st_dev
+    }
     public func evict(_ manifest: ImageManifest) throws {
         if let reason=restore.blockReason(appId: manifest.bundleId) { throw IsenoughError.busy(reason) }
         let path=URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
-        if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
+        guard FileManager.default.fileExists(atPath: path.path) else { return }
+        // design §7: evict refuses a mounted or in-use image (EX_BUSY).
+        if let item = scanCache(justUsed: nil, now: Date()).items.first(where: { $0.imageId == manifest.imageId }), item.mounted || item.inUse {
+            throw IsenoughError.busy("\(manifest.name) is mounted or in use; quit it and try again")
+        }
+        try FileManager.default.removeItem(at: path)
     }
     public func gc(now: Date = Date(), includeLegacy: Bool = false) throws -> [String] {
         var lines = try recoverPackJournals()
@@ -635,7 +647,7 @@ public struct IsenoughEngine {
             let owners = loaded.apps.filter { $0.value.imageId == id }
             let pinned = owners.values.contains { $0.pinned }
             let needs = owners.values.contains { $0.needsResolution != nil }
-            var mounted = fm.fileExists(atPath: URL(fileURLWithPath: config.mountRoot).appendingPathComponent(id).path)
+            var mounted = Self.isActiveMountPoint(URL(fileURLWithPath: config.mountRoot).appendingPathComponent(id).path)
             var inUse = owners.values.contains { ($0.state == "running" || $0.state == "detaching") }
             var protected: Date? = nil
             #if os(macOS)
@@ -903,6 +915,7 @@ public struct IsenoughEngine {
             try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"detaching",mountPoint:mount.path)
             do {
                 try LiveDiskImage.detach(mountPoint: mount, force: false)
+                if !Self.isActiveMountPoint(mount.path) { rmdir(mount.path) }
                 try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"cached")
                 _ = try enforceCacheQuota(justUsed: manifest.imageId)
                 break

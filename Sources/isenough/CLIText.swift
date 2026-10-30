@@ -80,10 +80,13 @@ enum CLIText {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
         var lines: [String] = []
-        let used = state.cache.values.reduce(UInt64(0)) { $0 + ($1.bytes ?? 0) }
+        // state.cache keeps records for evicted images; only count files still in the cache.
+        let images = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images")
+        let present = state.cache.filter { FileManager.default.fileExists(atPath: images.appendingPathComponent("\($0.key).dmg").path) }
+        let used = present.values.reduce(UInt64(0)) { $0 + ($1.bytes ?? 0) }
         if app == nil {
             lines.append("repo:   \(config.repoPath) (\(config.backend))")
-            lines.append("cache:  \(config.cacheDir), \(size(used)) of \(size(config.quotaBytes)) used, \(state.cache.count) image\(state.cache.count == 1 ? "" : "s")")
+            lines.append("cache:  \(config.cacheDir), \(size(used)) of \(size(config.quotaBytes)) used, \(present.count) image\(present.count == 1 ? "" : "s")")
             lines.append("stubs:  \(config.stubDir)")
         }
         let apps = state.apps.filter { key, value in
@@ -98,7 +101,7 @@ enum CLIText {
                 var parts = [id, item.state ?? "idle"]
                 if item.pinned { parts.append("pinned") }
                 if let mode = item.mode { parts.append(mode) }
-                if let imageId = item.imageId, let bytes = state.cache[imageId]?.bytes { parts.append("cached \(size(bytes))") }
+                if let imageId = item.imageId, let bytes = present[imageId]?.bytes { parts.append("cached \(size(bytes))") }
                 if let last = item.lastUsed { parts.append("last used \(formatter.string(from: last))") }
                 if item.needsResolution != nil { parts.append("needs: isenough resolve \(id)") }
                 lines.append("  " + parts.joined(separator: "  "))
