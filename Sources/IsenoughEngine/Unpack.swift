@@ -138,6 +138,9 @@ extension IsenoughEngine {
         try preflightUnpack(manifest)
         let staging = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-unpack-copy-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: staging) }
+        // extractVerifiedApp writes `staging/app.new`; the parent must exist first.
+        // ditto creates it, but a plain copy (Darwin FileManager) does not.
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         try extractVerifiedApp(manifest, staging: staging)
         if FileManager.default.fileExists(atPath: target.path) {
             throw IsenoughError.usage("unpack target already exists: \(target.path)")
