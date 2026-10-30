@@ -168,20 +168,17 @@ configure. Details are in [PRIVACY.md](PRIVACY.md).
   and never leave the Mac, so they cannot carry the release's Developer ID.
 - Try it first on an app you can reinstall.
 
-## In this release (landing now)
+## Mount lifecycle and repo scoping
 
-> Planned for 0.1; your build may not have them yet. A command that
-> `isenough help` does not list is not available (today `isenough detach`
-> reports "not available in this build").
-
-- `isenough evict APP --force` drops a cached image even while it is mounted,
-  detaching it first.
-- `isenough detach APP` detaches an app's image now instead of after the detach
-  delay (120 s by default).
-- Mount reaping: images left attached after their app quit are found and
-  detached.
-- Stubs are scoped to their repo, so a stub never opens an image from a
-  different repo.
+- `isenough evict APP` refuses a pinned app (exit 9, reason `pinned`); add
+  `--force` to drop its cache anyway (the pin stays). A mounted or in-use image is
+  never evicted, even with `--force`.
+- `isenough detach APP [--force]` detaches an app's image now instead of after the
+  detach delay (120 s by default). It refuses while the app is still running.
+- `isenough reap [--dry-run]` detaches images left mounted under the mount root
+  after their owner died. `launch`, `gc`, and `doctor --fix` also reap.
+- Each stub records the repo that packed it (`repoId` in `stub.json`), so another
+  repo never claims it. `isenough stub refresh --all` stamps older stubs.
 
 ## Coding-agent sessions
 

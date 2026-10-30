@@ -65,15 +65,15 @@ First public release.
   watcher, so the image is detached after the app quits.
 - `scripts/e2e.sh` runs end to end on macOS against fixture apps in temp folders.
 
-### In this release (landing now)
-
-Planned for 0.1 and not in every build yet (`isenough detach` currently reports
-"not available in this build"). Fold these into Added or remove them before
-tagging; see `docs/release-checklist.md`.
-
-- `isenough evict APP --force` and `isenough detach APP`.
-- Reaping of images left mounted after their app quit.
-- Stubs scoped to the repo that packed them.
+- **Pinned evict:** `isenough evict APP` refuses a pinned app unless `--force`;
+  mounted, in-use, or mid-restore images are refused even with `--force`. The
+  dashboard disables Evict while an app is pinned.
+- **`isenough detach APP [--force]`** detaches a mounted image now, refusing while
+  the app runs.
+- **Orphan mount reaper:** `isenough reap [--dry-run]`, also run by `launch`
+  (after the app opens), `gc`, and `doctor --fix`.
+- **Repo-scoped stubs:** `stub.json` carries `repoId`; device claims count only
+  this repo's stubs. `isenough stub refresh --all [--adopt]` migrates old stubs.
 
 ### Changed
 

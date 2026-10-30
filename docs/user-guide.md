@@ -21,7 +21,7 @@
 13. [排查问题 `doctor`](#排查问题-doctor)
 14. [卸载 256isenough](#卸载-256isenough)
 15. [隐私](#隐私)
-16. [本版本新增（开发中）](#本版本新增开发中)
+16. [挂载生命周期与仓库归属](#挂载生命周期与仓库归属)
 
 ## 它做什么
 
@@ -266,15 +266,12 @@ isenough doctor --fix    # 回放本机未完成的 unpack / restore 日志
 没有遥测、统计、崩溃上报，也不检查更新。256isenough 只和你配置的仓库通信，项目本身不运行任何服务器。
 NAS / WebDAV 密码和会话加密密钥保存在钥匙串中。详见 [PRIVACY.md](../PRIVACY.md)。
 
-## 本版本新增（开发中）
+## 挂载生命周期与仓库归属
 
-> 以下功能计划在 0.1 中提供，你手上的版本可能还没有。`isenough help` 里没有列出的命令就是还不可用
-> （例如目前运行 `isenough detach` 会提示 not available in this build）。
-
-- `isenough evict APP --force`：应用镜像仍处于挂载状态时也能强制清除缓存（会先尝试卸载镜像）。
-- `isenough detach APP`：立即卸载一个应用的镜像，不必等待卸载延迟。
-- 挂载回收（reap）：自动发现并卸载应用退出后遗留的镜像挂载。
-- 替身按仓库区分：替身记录它属于哪个仓库，切换仓库或多仓库共存时不会打开错误仓库中的镜像。
+- `isenough evict APP`：已固定的应用会被拒绝（退出码 9，reason `pinned`）；加 `--force` 可仍然清除缓存（固定状态保留）。正在挂载或使用中的镜像即使加 `--force` 也不会清除。
+- `isenough detach APP [--force]`：立即卸载一个应用的镜像，不必等待卸载延迟；应用仍在运行时会拒绝。
+- `isenough reap [--dry-run]`：卸载挂载目录下所有者已退出的遗留挂载。`launch`、`gc` 和 `doctor --fix` 也会自动回收。
+- 替身按仓库区分：`stub.json` 记录 `repoId`，其他仓库不会认领它。旧替身可用 `isenough stub refresh --all` 补写。
 
 ---
 
@@ -388,12 +385,9 @@ adds Foundation error details. After an upgrade run `isenough install-engine` an
 No telemetry, analytics, crash reporting, or update checks. 256isenough talks only
 to the repo you configure. See [PRIVACY.md](../PRIVACY.md).
 
-### New in this release (landing now)
+### Mount lifecycle and repo scoping
 
-> Planned for 0.1; your build may not have them yet. A command that `isenough help`
-> does not list is not available (today `isenough detach` reports "not available in this build").
-
-- `isenough evict APP --force` evicts a cached image even while it is mounted (it detaches first).
-- `isenough detach APP` detaches an app's image now instead of waiting for the detach delay.
-- Mount reaping finds and detaches images left mounted after their app quit.
-- Stubs are scoped to their repo, so a stub never opens an image from a different repo.
+- `isenough evict APP` refuses a pinned app (exit 9, reason `pinned`); `--force` evicts it anyway and keeps the pin. A mounted or in-use image is never evicted, even with `--force`.
+- `isenough detach APP [--force]` detaches an app's image now instead of waiting for the detach delay; it refuses while the app is running.
+- `isenough reap [--dry-run]` detaches images left mounted after their owner died. `launch`, `gc`, and `doctor --fix` also reap.
+- Each stub records its repo (`repoId` in `stub.json`), so another repo never claims it. `isenough stub refresh --all` stamps older stubs.
