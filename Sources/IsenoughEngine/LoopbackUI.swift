@@ -190,11 +190,11 @@ public final class LoopbackUIServer {
 
     static let expiredPage = """
     <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>256isenough</title>
-    <style>body{font:16px/1.5 -apple-system,system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#1d1d1f}@media(prefers-color-scheme:dark){body{background:#1c1c1e;color:#f2f2f7}}code{font:15px ui-monospace,Menlo,monospace}</style></head>
-    <body><h1>256isenough</h1>
-    <p lang="en">This dashboard link has expired. Run <code>isenough ui</code> (or reopen the 256isenough app) to get a new one.</p>
-    <p lang="zh">这个管理页面链接已失效。请重新运行 <code>isenough ui</code>（或重新打开 256isenough App）获取新链接。</p>
-    </body></html>
+    <style>body{font:15px/1.55 -apple-system,"PingFang SC",system-ui,sans-serif;margin:0;background:#f2f2f5;color:#1d1d1f}main{max-width:30rem;margin:15vh auto;padding:24px;background:#fff;border-radius:14px;box-shadow:0 6px 20px rgba(0,0,0,.06)}.mark{display:inline-grid;place-items:center;width:30px;height:30px;border-radius:8px;background:#0a6cdf;color:#fff;font:700 11px -apple-system,system-ui;margin-right:8px;vertical-align:middle}h1{font-size:17px;margin:0 0 14px}.s{color:#8e8e93;font-size:.9em}code{font:14px ui-monospace,Menlo,monospace;background:#f2f2f5;padding:1px 5px;border-radius:5px}@media(prefers-color-scheme:dark){body{background:#161618;color:#f2f2f7}main{background:#242426}code{background:#2c2c2f}}</style></head>
+    <body><main><h1><span class="mark">256</span>256isenough</h1>
+    <p lang="zh-Hans">这个管理页面链接已失效。请重新运行 <code>isenough ui</code>（或重新打开 256isenough App）获取新链接。</p>
+    <p lang="en" class="s">This dashboard link has expired. Run <code>isenough ui</code> (or reopen the 256isenough app) to get a new one.</p>
+    </main></body></html>
     """
 
     private func readRequest(_ fd: Int32) -> UIRequest? {

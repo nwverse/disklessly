@@ -23,22 +23,25 @@ public enum ManagementUI {
     public static func dashboard(_ engine: IsenoughEngine, context: ManagementUIContext) -> [String: Any] {
         var apps: [[String: Any]] = []
         var appsError = ""
+        var appsErrorCode = ""
         let isoFormatter = ISO8601DateFormatter()
         let loaded = StateStore(engine.config.stateDir).load()
         let state = loaded.dictionary()
         let stored = state["apps"] as? [String: [String: Any]] ?? [:]
-        let loadedApps = UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> (DeviceListing?, [ImageManifest], String) in
+        let loadedApps = UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> (DeviceListing?, [ImageManifest], (code: String, message: String)) in
             let listing = try? engine.deviceListing(createLocal: false)
             do {
-                return (listing, try engine.list(), "")
+                return (listing, try engine.list(), ("", ""))
             } catch {
-                return (listing, [], (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                // Same codes as API failures: only `offline` means the backend is unreachable.
+                return (listing, [], errorInfo(error))
             }
         }
         let listing = loadedApps.0
         let deviceRows = listing?.devices ?? []
         let manifests = loadedApps.1
-        appsError = loadedApps.2
+        appsError = loadedApps.2.message
+        appsErrorCode = loadedApps.2.code
         for manifest in manifests {
                 let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
                 let exists = FileManager.default.fileExists(atPath: cached.path)
@@ -71,51 +74,54 @@ public enum ManagementUI {
                     "imageBytes": NSNumber(value: manifest.image.size),
                     "devices": holders,
                     "iconPath": AppIcon.existingPath(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: manifest.imageId) ?? "",
+                    // Where the stub lives and where a permanent restore puts the app.
+                    "installPath": manifest.app.originalPath,
                 ]
                 if let used = record?.lastUsed { row["lastUsed"] = isoFormatter.string(from: used) }
                 apps.append(row)
         }
         let index = (try? SessionArchive.loadIndex(engine.config.stateDir)) ?? SessionIndex()
         let formatter = ISO8601DateFormatter()
+        let now = Date()
         let sessions: [[String: Any]] = index.entries.map { entry in
-            [
+            // Only cold files are ever archived, so every indexed entry is cold.
+            return [
                 "id": entry.id,
                 "tool": entry.tool,
                 "path": entry.path,
                 "preview": entry.preview,
                 "archive": entry.archive,
                 "tier": "cold",
+                "ageDays": NSNumber(value: sessionAgeDays(modified: entry.modified, now: now)),
                 "modified": formatter.string(from: entry.modified),
             ]
         }
-        let endpoints: [[String: Any]] = engine.config.backends.map { endpoint in
-            [
-                "id": endpoint.id,
-                "type": endpoint.type,
-                "host": endpoint.host ?? "",
-                "mountPoint": endpoint.mountPoint ?? "",
-                "url": endpoint.url ?? "",
-            ]
+        let health = context.health.current(engine)
+        let used = directoryBytes(engine.config.cacheDir)
+        let quota = engine.config.quotaBytes
+        var cache: [String: Any] = [
+            "usedBytes": NSNumber(value: used),
+            "quotaBytes": NSNumber(value: quota),
+            "minFreeBytes": NSNumber(value: engine.config.minFreeBytes),
+            "detachDelaySeconds": NSNumber(value: engine.config.detachDelaySeconds),
+            "quotaLeftBytes": NSNumber(value: quota > used ? quota - used : 0),
+            "level": cacheLevel(used: used, quota: quota),
+        ]
+        if let diskFree = diskFreeBytes(engine.config.cacheDir) {
+            cache["diskFreeBytes"] = NSNumber(value: diskFree)
+            // The floor is free disk space, not a cache size. On the 0...quota axis it sits
+            // where cache growth would push free disk space below the floor.
+            if let marker = floorMarker(used: used, diskFree: diskFree, floor: engine.config.minFreeBytes, quota: quota) {
+                cache["floorMarkerBytes"] = NSNumber(value: marker)
+            }
         }
-        let health = backendHealth(engine)
         return [
             "ok": true,
-            "backend": [
-                "kind": engine.config.backend,
-                "activeId": engine.config.activeBackendId ?? "",
-                "repoPath": engine.config.repoPath,
-                "health": health.status,
-                "healthDetail": health.detail,
-                "endpoints": endpoints,
-            ] as [String: Any],
-            "cache": [
-                "usedBytes": NSNumber(value: directoryBytes(engine.config.cacheDir)),
-                "quotaBytes": NSNumber(value: engine.config.quotaBytes),
-                "minFreeBytes": NSNumber(value: engine.config.minFreeBytes),
-                "detachDelaySeconds": NSNumber(value: engine.config.detachDelaySeconds),
-            ] as [String: Any],
+            "backend": backendInfo(engine, health: health),
+            "cache": cache,
             "apps": apps,
             "appsError": appsError,
+            "appsErrorCode": appsErrorCode,
             "devices": deviceRows.map { device in
                 [
                     "deviceId": device.deviceId,
@@ -135,7 +141,92 @@ public enum ManagementUI {
                 "coldDays": NSNumber(value: engine.config.sessionColdDays),
                 "offloaded": sessions,
             ] as [String: Any],
+            "generatedAt": formatter.string(from: now),
         ]
+    }
+
+    /// Backend card data: kind, where it lives, health with latency, and every endpoint with its state.
+    static func backendInfo(_ engine: IsenoughEngine, health: BackendHealthProbe.Result) -> [String: Any] {
+        let config = engine.config
+        let activeId = config.activeBackendId ?? ""
+        let active = config.backends.first { $0.id == activeId }
+        let kind = active?.type ?? config.backend
+        var endpoints: [[String: Any]] = config.backends.map { endpoint in
+            let state: String
+            if endpoint.id == activeId { state = "active" }
+            else if endpoint.type == "local" { state = "local" }
+            else { state = "standby" }
+            return [
+                "id": endpoint.id,
+                "type": endpoint.type,
+                "host": endpoint.host ?? "",
+                "mountPoint": endpoint.mountPoint ?? "",
+                "url": endpoint.url ?? "",
+                "place": endpointPlace(endpoint),
+                "state": state,
+            ]
+        }
+        if active == nil {
+            // A plain folder repo has no saved endpoint; it is the active one.
+            endpoints.insert([
+                "id": "local",
+                "type": config.backend,
+                "host": "",
+                "mountPoint": "",
+                "url": "",
+                "place": config.repoPath,
+                "state": "active",
+            ], at: 0)
+        }
+        var object: [String: Any] = [
+            "kind": kind,
+            "location": kind == "local" ? "local" : "remote",
+            "activeId": activeId,
+            "activePlace": active.map(endpointPlace) ?? config.repoPath,
+            "repoPath": config.repoPath,
+            "health": health.status,
+            "healthDetail": health.detail,
+            "timedOut": health.timedOut,
+            "timeoutMs": NSNumber(value: Int(health.timeout * 1000)),
+            "checkedAt": ISO8601DateFormatter().string(from: health.checkedAt),
+            "endpoints": endpoints,
+        ]
+        if let latency = health.latencyMs { object["latencyMs"] = NSNumber(value: latency) }
+        return object
+    }
+
+    private static func endpointPlace(_ endpoint: BackendEndpoint) -> String {
+        if let url = endpoint.url, !url.isEmpty { return url }
+        if let host = endpoint.host, !host.isEmpty {
+            let share = endpoint.share ?? endpoint.exportPath ?? ""
+            if share.isEmpty { return host }
+            return host + "/" + (share.hasPrefix("/") ? String(share.dropFirst()) : share)
+        }
+        if let mount = endpoint.mountPoint, !mount.isEmpty { return mount }
+        return endpoint.root
+    }
+
+    /// `ok` below 80 % of the quota, `near` from 80 %, `critical` from 95 %.
+    public static func cacheLevel(used: UInt64, quota: UInt64) -> String {
+        guard quota > 0 else { return "ok" }
+        let ratio = Double(used) / Double(quota)
+        if ratio >= 0.95 { return "critical" }
+        if ratio >= 0.8 { return "near" }
+        return "ok"
+    }
+
+    /// Cache size at which free disk space would fall to `floor` (`used + diskFree - floor`,
+    /// clamped at 0), or nil when that point lies at or past the quota and the floor never binds.
+    public static func floorMarker(used: UInt64, diskFree: UInt64, floor: UInt64, quota: UInt64) -> UInt64? {
+        guard quota > 0, floor > 0 else { return nil }
+        let reach = Double(used) + Double(diskFree) - Double(floor)
+        if reach >= Double(quota) { return nil }
+        return UInt64(max(0, reach))
+    }
+
+    /// Whole days since the archived file was last modified.
+    public static func sessionAgeDays(modified: Date, now: Date) -> Int {
+        max(0, Int(now.timeIntervalSince(modified) / 86_400))
     }
 
     private static func api(engine: IsenoughEngine, request: UIRequest, context: ManagementUIContext) -> UIResponse {
@@ -156,7 +247,9 @@ public enum ManagementUI {
         if request.method == "POST", let kind = UIJobKind(path: request.path) {
             guard let name = appName(request) else { return failure(code: "bad_request", message: "app is required", status: 400) }
             let actions = context.actions ?? .live(engine)
-            switch context.jobs.start(kind: kind, app: name, work: { progress in try actions.run(kind, name, progress) }) {
+            // Evicting a pinned app needs an explicit force; the page sends force=false.
+            let options = UIJobOptions(force: flag(request, "force"))
+            switch context.jobs.start(kind: kind, app: name, work: { progress in try actions.perform(kind, name, options, progress) }) {
             case .started(let job):
                 var object = job.jsonObject()
                 object["ok"] = true
@@ -171,6 +264,11 @@ public enum ManagementUI {
         switch (request.method, request.path) {
         case ("GET", "/api/status"):
             return .json(dashboard(engine, context: context))
+        case ("GET", "/api/health"):
+            let fresh = ["1", "true", "yes"].contains((request.query["fresh"] ?? "").lowercased())
+            var object = backendInfo(engine, health: context.health.current(engine, fresh: fresh))
+            object["ok"] = true
+            return .json(object)
         case ("GET", "/api/jobs"):
             return .json(["ok": true, "jobs": context.jobs.all().map { $0.jsonObject() }])
         case ("GET", "/api/recommend"):
@@ -204,6 +302,7 @@ public enum ManagementUI {
         if let error = error as? UIJobError {
             switch error {
             case .unknownApp(let name): return ("unknown_app", "Unknown app: \(name)")
+            case .pinned(let name): return ("pinned", "\(name) is pinned; unpin it first")
             }
         }
         if let error = error as? IsenoughError {
@@ -246,6 +345,14 @@ public enum ManagementUI {
         return engine.config.stateDir + "?" + options
     }
 
+    private static func flag(_ request: UIRequest, _ key: String) -> Bool {
+        if let query = request.query[key] { return ["1", "true", "yes"].contains(query.lowercased()) }
+        if let object = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any] {
+            return object[key] as? Bool ?? false
+        }
+        return false
+    }
+
     private static func appName(_ request: UIRequest) -> String? {
         if let query = request.query["app"], !query.isEmpty { return query }
         if let object = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any],
@@ -281,16 +388,13 @@ public enum ManagementUI {
         return UIResponse(status: 200, contentType: type, body: data)
     }
 
-    private static func backendHealth(_ engine: IsenoughEngine) -> (status: String, detail: String) {
-        do {
-            let backend = try engine.openBackend()
-            if try backend.stat("repo.json") != nil {
-                return ("ok", "")
-            }
-            return ("missing", "repo.json is not in the backend")
-        } catch {
-            return ("offline", (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+    /// Free space on the cache volume (the nearest existing folder up the path).
+    private static func diskFreeBytes(_ path: String) -> UInt64? {
+        var url = URL(fileURLWithPath: path)
+        while !FileManager.default.fileExists(atPath: url.path), url.path != "/" {
+            url.deleteLastPathComponent()
         }
+        return try? VolumeSpace.availableBytes(at: url.path)
     }
 
     private static func directoryBytes(_ path: String) -> UInt64 {
@@ -320,6 +424,14 @@ public enum UIJobKind: String, CaseIterable {
 
 public enum UIJobError: Error, Equatable {
     case unknownApp(String)
+    /// Evict on a pinned app without `force`.
+    case pinned(String)
+}
+
+/// Request options for a job. `force` lets evict drop a pinned app's cache.
+public struct UIJobOptions: Equatable {
+    public var force: Bool
+    public init(force: Bool = false) { self.force = force }
 }
 
 public enum UIJobState: String {
@@ -462,14 +574,18 @@ public final class UIJobStore {
 
 /// What each job does. Tests pass their own `run`; `isenough ui` uses `live`.
 public struct ManagementActions {
-    public var run: (UIJobKind, String, UIJobProgress) throws -> Void
+    public var perform: (UIJobKind, String, UIJobOptions, UIJobProgress) throws -> Void
 
     public init(run: @escaping (UIJobKind, String, UIJobProgress) throws -> Void) {
-        self.run = run
+        self.perform = { kind, name, _, progress in try run(kind, name, progress) }
+    }
+
+    public init(perform: @escaping (UIJobKind, String, UIJobOptions, UIJobProgress) throws -> Void) {
+        self.perform = perform
     }
 
     public static func live(_ engine: IsenoughEngine) -> ManagementActions {
-        ManagementActions { kind, name, progress in
+        ManagementActions(perform: { kind, name, options, progress in
             progress.phase("resolve")
             guard var manifest = engine.manifest(named: name, in: try engine.list()) else { throw UIJobError.unknownApp(name) }
             switch kind {
@@ -484,12 +600,13 @@ public struct ManagementActions {
                 try launchSupervised(engine, manifest)
                 progress.phase("running")
             case .evict:
-                progress.phase("evict")
-                // The dashboard has no --force, so say what to do here instead.
-                if engine.evictRefusal(manifest, force: false)?.reason == "pinned" {
-                    throw IsenoughError.busy("\(manifest.name) is pinned; unpin it first")
+                // design §4: a pinned app is refused unless forced; the page
+                // always sends force=false and disables Evict while pinned.
+                if engine.evictRefusal(manifest, force: options.force)?.reason == "pinned" {
+                    throw UIJobError.pinned(manifest.name)
                 }
-                try engine.evict(manifest)
+                progress.phase("evict")
+                try engine.evict(manifest, force: options.force)
             case .unpack:
                 progress.phase("unpack")
                 try engine.unpack(manifest, to: nil)
@@ -500,7 +617,7 @@ public struct ManagementActions {
                 progress.phase("pin")
                 try engine.setPinned(manifest, pinned: false)
             }
-        }
+        })
     }
 
     /// `launch` keeps supervising the session until the app quits, then
@@ -552,6 +669,8 @@ private final class LaunchOutcome: @unchecked Sendable {
 /// Shared state for one management server: running jobs and the last scan.
 public final class ManagementUIContext {
     public let jobs: UIJobStore
+    /// Backend reachability with latency; bounded by its timeout and shared across requests.
+    public let health: BackendHealthProbe
     /// Replaces the engine-backed actions, for tests.
     public let actions: ManagementActions?
     private let now: () -> Date
@@ -559,8 +678,9 @@ public final class ManagementUIContext {
     private let scanLock = NSLock()
     private var recommendCache: [String: (report: [String: Any], scannedAt: Date)] = [:]
 
-    public init(jobs: UIJobStore = UIJobStore(), actions: ManagementActions? = nil, now: @escaping () -> Date = Date.init) {
+    public init(jobs: UIJobStore = UIJobStore(), actions: ManagementActions? = nil, health: BackendHealthProbe = BackendHealthProbe(), now: @escaping () -> Date = Date.init) {
         self.jobs = jobs
+        self.health = health
         self.actions = actions
         self.now = now
     }
@@ -584,5 +704,132 @@ public final class ManagementUIContext {
         lock.lock()
         defer { lock.unlock() }
         return recommendCache[key]
+    }
+}
+
+// MARK: - Backend health
+
+/// Probes the backend off the request thread. A probe that runs past `timeout`
+/// reports `offline` (timed out); it keeps running, and its real answer replaces
+/// the timeout when it lands. Callers share one probe per backend, and a result
+/// stays fresh for `maxAge` seconds. A caller waits on a probe only when it
+/// started one itself; while a probe is still running, everyone else gets the
+/// last result at once (stale-while-revalidate), so a hung backend costs one
+/// `timeout`, not one per refresh.
+public final class BackendHealthProbe: @unchecked Sendable {
+    public struct Result: Equatable {
+        /// `ok`, `degraded` (answers slowly), `missing` (no repo.json), or `offline`.
+        public var status: String
+        public var detail: String
+        public var latencyMs: Int?
+        public var timedOut: Bool
+        public var timeout: TimeInterval
+        public var checkedAt: Date
+    }
+
+    /// Returns nil when the repo answers, or a reason when it answers but is incomplete. Throws when unreachable.
+    public typealias Check = (IsenoughEngine) throws -> String?
+
+    private struct Inflight {
+        let group: DispatchGroup
+        let generation: Int
+        let started: Date
+    }
+
+    public let timeout: TimeInterval
+    public let maxAge: TimeInterval
+    public let slowMs: Int
+    private let check: Check
+    private let lock = NSLock()
+    private var results: [String: Result] = [:]
+    private var inflight: [String: Inflight] = [:]
+    private var generation = 0
+
+    public init(timeout: TimeInterval = 5, maxAge: TimeInterval = 10, slowMs: Int = 500, check: Check? = nil) {
+        self.timeout = timeout
+        self.maxAge = maxAge
+        self.slowMs = slowMs
+        self.check = check ?? BackendHealthProbe.repoCheck
+    }
+
+    public static func repoCheck(_ engine: IsenoughEngine) throws -> String? {
+        let backend = try engine.openBackend()
+        return try backend.stat("repo.json") != nil ? nil : "repo.json is not in the backend"
+    }
+
+    /// `fresh` skips the cache. With a probe already hung past `timeout`, it
+    /// starts a new probe instead of joining the stuck one, so Retry can see a
+    /// backend that has recovered.
+    public func current(_ engine: IsenoughEngine, fresh: Bool = false) -> Result {
+        let key = [engine.config.backend, engine.config.activeBackendId ?? "", engine.config.repoPath].joined(separator: "|")
+        lock.lock()
+        let last = results[key]
+        if !fresh, let last, Date().timeIntervalSince(last.checkedAt) < maxAge {
+            lock.unlock()
+            return last
+        }
+        let probe: Inflight
+        if let running = inflight[key] {
+            let hung = Date().timeIntervalSince(running.started) >= timeout
+            if fresh {
+                // Retry: join a probe that is still within its timeout, replace a hung one.
+                probe = hung ? start(engine, key: key) : running
+            } else if let last {
+                // A probe is already on it: answer from the last result, do not wait.
+                lock.unlock()
+                return last
+            } else {
+                probe = running
+            }
+        } else {
+            probe = start(engine, key: key)
+        }
+        lock.unlock()
+        if probe.group.wait(timeout: .now() + timeout) == .timedOut {
+            let timedOut = Result(status: "offline", detail: "timeout", latencyMs: nil, timedOut: true, timeout: timeout, checkedAt: Date())
+            lock.lock()
+            defer { lock.unlock() }
+            // Still running: remember the timeout so the next refresh does not wait again.
+            if inflight[key]?.generation == probe.generation {
+                results[key] = timedOut
+                return timedOut
+            }
+            return results[key] ?? timedOut
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        return results[key] ?? Result(status: "offline", detail: "", latencyMs: nil, timedOut: false, timeout: timeout, checkedAt: Date())
+    }
+
+    /// Call with `lock` held. A probe superseded by a newer generation drops its answer.
+    private func start(_ engine: IsenoughEngine, key: String) -> Inflight {
+        generation += 1
+        let probe = Inflight(group: DispatchGroup(), generation: generation, started: Date())
+        probe.group.enter()
+        inflight[key] = probe
+        let check = self.check
+        let timeout = self.timeout
+        let slowMs = self.slowMs
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let started = Date()
+            var result: Result
+            do {
+                let problem = try check(engine)
+                let latency = Int((Date().timeIntervalSince(started) * 1000).rounded())
+                let status = problem != nil ? "missing" : (latency >= slowMs ? "degraded" : "ok")
+                result = Result(status: status, detail: problem ?? "", latencyMs: latency, timedOut: false, timeout: timeout, checkedAt: Date())
+            } catch {
+                let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                result = Result(status: "offline", detail: detail, latencyMs: nil, timedOut: false, timeout: timeout, checkedAt: Date())
+            }
+            lock.lock()
+            if inflight[key]?.generation == probe.generation {
+                results[key] = result
+                inflight[key] = nil
+            }
+            lock.unlock()
+            probe.group.leave()
+        }
+        return probe
     }
 }

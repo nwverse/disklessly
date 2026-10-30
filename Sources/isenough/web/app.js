@@ -1,29 +1,81 @@
 // Loopback management page. The token stays in the page URL; the server rejects
 // calls that do not present it. No remote assets and no embedded secrets.
+//
+// Labels are bilingual inline: the primary language (Chinese unless ?lang=en)
+// followed by the other one in a smaller grey run. All text lives in `copy`.
 
 const params = new URLSearchParams(location.search);
 const token = params.get("token") || "";
 const REFRESH_MS = 20000;
 const JOB_POLL_MS = 700;
+const TICK_MS = 15000;
 
 // i18n:begin — both languages must carry the same keys (checked by UIServerTests and scripts/ui-screenshots.mjs).
 const copy = {
   zh: {
-    subtitle: "把冷门 App 放到远端，本机只留一个入口",
+    subtitle: "卸载应用，按需缓存",
+    updatedJustNow: "刚刚更新",
+    updatedAgo: (m) => `${m} 分钟前更新`,
+    updatedNever: "尚未更新",
     refresh: "刷新",
-    langToggle: "English",
-    langAria: "切换到英文界面",
-    themeGroup: "外观",
-    themeLight: "浅色",
-    themeDark: "深色",
-    themeSystem: "跟随系统",
     skip: "跳到应用",
     retry: "重试",
     cancel: "取消",
-    cache: "缓存用量",
+    details: "详情",
+    dismiss: "关闭",
     backend: "后端",
-    apps: "应用",
-    appsCount: (n) => `应用 ${n}`,
+    locationremote: "远端",
+    locationlocal: "本地",
+    healthok: "运行正常",
+    healthdegraded: "缓慢",
+    healthmissing: "仓库不完整",
+    healthoffline: "离线",
+    healthunknown: "正在检查",
+    latency: (ms) => `延迟 ${ms} ms`,
+    timedOut: (s) => `超时 ${s} s`,
+    missingHint: "能连上，但缺少 repo.json",
+    offlineHint: "已缓存的应用仍可打开",
+    activeEndpoint: "活动端点",
+    kind: "类型",
+    endpoints: "端点",
+    endpointactive: "活动",
+    endpointstandby: "待机",
+    endpointlocal: "本地",
+    kindlocal: "本地目录",
+    kindicloud: "iCloud 云盘",
+    kindsmb: "SMB 共享",
+    kindnfs: "NFS 共享",
+    kindwebdav: "WebDAV",
+    kindopenlist: "OpenList",
+    kinds3: "S3",
+    cache: "缓存",
+    levelok: "空间充足",
+    levelnear: "接近配额",
+    levelcritical: "配额将满",
+    levelunset: "未设配额",
+    quotaWord: "配额",
+    usedPct: "已用",
+    floorLabel: "空闲下限",
+    floorKeep: (size) => `保留 ${size}`,
+    floorMarkerHint: (size) => `缓存长到这里时，磁盘可用空间会降到 ${size} 的下限`,
+    legendNormal: "正常",
+    legendNear: "接近",
+    legendCritical: "临界",
+    quotaLeft: "配额剩余",
+    floor: "空闲下限",
+    diskFree: "磁盘可用",
+    detach: "分离延迟",
+    durationS: (n) => `${n} 秒`,
+    durationM: (n) => `${n} 分钟`,
+    nearNote: "低于空闲下限时自动清除未固定的缓存",
+    quotaUnset: "未设置配额",
+    noData: "没有数据",
+    apps: "已卸载应用",
+    appsSummary: (n, m, size, k) => `${n} 个应用 · ${m} 个已缓存 ${size} · ${k} 个已固定`,
+    colApp: "应用",
+    colStatus: "状态",
+    colCache: "缓存",
+    colActions: "操作",
     backfillIcons: "补齐图标",
     search: "搜索",
     sortBy: "排序",
@@ -36,117 +88,53 @@ const copy = {
     filterRemote: "仅远端",
     filterPinned: "已固定",
     noMatches: "没有符合条件的应用",
-    devices: "设备",
-    devicesEmpty: "还没有登记的 Mac",
-    devicesSummary: (n) => `${n} 台 Mac 共用这个仓库`,
-    thisMac: "本机",
-    onDevices: (names) => `也在 ${names}`,
-    conflictCopies: (n) => `${n} 个 iCloud 冲突副本，未合并`,
-    placeholders: (n) => `${n} 个设备文件还没下载`,
-    sessions: "冷会话",
-    recommend: "值得卸载",
-    recommendWarn: "不建议卸载",
-    recommendEmpty: "没有达到大小阈值的应用",
-    recommendEmptyHint: "较大且久未使用的应用会显示在这里",
-    recommendUnavailable: "扫描已安装应用需要 macOS",
-    recommendFailed: "未能加载建议",
-    recommendScanning: "正在扫描已安装的应用…",
-    recommendSummary: (count, min) => `${count} 个应用 · 只列出不小于 ${min} 的应用`,
-    couldFree: (size) => `大约可腾出 ${size}`,
-    scannedAgo: (when) => `扫描于${when}`,
-    rescan: "重新扫描",
-    copyCommand: "复制命令",
-    copyCommandFor: (name) => `复制命令：打包 ${name}`,
-    copied: (name) => `已复制 ${name} 的打包命令`,
-    copyFailed: "无法写入剪贴板，请手动复制命令",
-    leftoverBackups: (count, size) => `${count} 个残留备份（${size}）可以删除`,
-    leftoverAdmin: "删除需要管理员权限。",
-    neverUsed: "从未使用",
-    idleDays: (n) => n === 1 ? "1 天未使用" : `${n} 天未使用`,
-    restoreNeeded: "含商店收据，需要还原模式",
-    sizeBound: "大小是下限（扫描超时）",
-    warnloginItem: "登录项",
-    warnmenuBarAgent: "菜单栏代理",
-    warnbackgroundHelper: "后台辅助进程在运行",
-    warnsystemExtension: "带系统扩展",
-    warnkernelExtension: "带内核扩展",
-    warntoolchain: "引擎使用的工具链",
-    warnpinned: "已固定",
-    warnalreadyPacked: "已经打包",
-    warnsizeTimedOut: "体积扫描超时",
-    alreadyInRepo: "仓库里已有相同版本，打包无需上传",
-    usedCaption: "已用",
-    remaining: "剩余空间",
-    floor: "空闲底线",
-    detach: "卸载延迟",
-    seconds: (n) => `${n} 秒`,
-    legendUsed: "已用",
-    legendFree: "剩余",
-    legendFloor: "空闲底线",
-    floorOver: "空闲底线高于配额",
-    nearWarn: "接近配额",
-    nearHot: "配额将满",
-    noData: "没有数据",
-    healthyTitle: "运行正常",
-    healthySub: "仓库可以访问",
-    degradedTitle: "性能下降",
-    degradedSub: "仓库可以连接，但缺少文件",
-    offlineTitle: "已离线",
-    offlineSub: "暂时连不上仓库，已缓存的应用仍可打开",
-    latency: "延迟",
-    current: "当前",
-    endpoints: "端点",
-    currentChip: "当前",
-    local: "本地目录",
-    coldDays: (n) => `超过 ${n} 天未用会进入冷层`,
-    offloaded: (n) => `${n} 个已归档`,
-    emptyApps: "还没有卸载到远端的应用",
-    emptyAppsHint: "pack 之后，应用会显示在这里",
-    loadFailed: "未能加载应用",
-    emptySessions: "没有冷会话",
-    countNone: "无",
+    modemount: "按需",
+    moderestore: "完整",
+    modeskip: "跳过",
+    modeunsupported: "不支持",
     cached: "已缓存",
-    remote: "仅远端",
+    remote: "远端",
     pinned: "已固定",
     restored: "已还原",
     stateAttention: "需要处理",
     stateMounted: "已挂载",
     stateDownloading: "下载中",
-    remoteToDownload: (size) => `远端 · 需下载 ${size}`,
-    lastUsedAt: (when) => `${when}使用`,
+    notCached: "未缓存",
+    toDownload: "需下载",
+    lastUsedAt: (iso) => `${relativeTime(iso, "zh")}使用`,
+    onDevices: (names) => `也在 ${names}`,
     open: "打开",
     openFor: (name) => `打开 ${name}`,
     prefetch: "预取",
     prefetchFor: (name) => `预取 ${name}`,
-    prefetchDone: "预取，已在缓存中",
     pin: "固定",
     unpin: "取消固定",
     evict: "清除缓存",
-    evictDisabled: "清除缓存，目前没有缓存",
-    evictMounted: "清除缓存，应用正在使用，退出后再试",
-    evictPinned: "清除缓存，应用已固定，先取消固定",
+    evictMounted: "应用正在使用，退出后再清除",
+    evictPinned: "已固定的应用不能清除，先取消固定",
     more: "更多",
     moreFor: (name) => `${name} 的更多操作`,
     restore: "临时还原",
-    unpack: "永久还原到 /Applications…",
-    mount: "挂载",
-    restoreMode: "还原",
-    modeSkip: "跳过",
-    modeUnsupported: "不支持",
+    unpack: (dir) => `永久还原到 ${dir}…`,
     share: (n) => `占配额 ${n}%`,
-    quotaUnset: "未设置配额",
+    evictNote: "清除缓存只删除本地副本，应用仍保留在后端，下次打开时自动拉取。固定的应用不会被自动清除。",
+    emptyApps: "暂无已卸载应用",
+    emptyAppsHint: "卸载的应用会显示在这里。",
+    loading: "正在读取后端…",
+    loadFailed: "未能加载应用",
+    unreachable: "无法连接后端",
+    appsLoadFailed: "无法读取应用列表",
     confirmEvictTitle: (name) => `清除 ${name} 的缓存？`,
     confirmEvictBody: (size) => `本机会腾出 ${size}。仓库里的镜像保留，下次打开时会重新下载。`,
     confirmEvictOk: "清除缓存",
     confirmRestoreTitle: (name) => `临时还原 ${name}？`,
     confirmRestoreBody: "会把应用解压回本机原位置并打开，退出后再放回仓库。期间会占用完整的磁盘空间。",
     confirmRestoreOk: "还原并打开",
-    confirmUnpackTitle: (name) => `把 ${name} 永久还原到 /Applications？`,
-    confirmUnpackBody: "应用会完整复制回 /Applications，入口替换为真正的应用，此后不再按需挂载。仓库里的镜像保留。",
+    confirmUnpackTitle: (name, dir) => `把 ${name} 永久还原到 ${dir}？`,
+    confirmUnpackBody: (path) => `应用会完整复制回 ${path}，入口替换为真正的应用，此后不再按需挂载。仓库里的镜像保留。`,
     confirmUnpackOk: "永久还原",
-    jobStarted: (action, name) => `${name}：${action}已开始`,
     jobDone: (action, name) => `${name}：${action}完成`,
-    jobFailed: (action, name, reason) => `${name}：${action}失败。${reason}`,
+    jobFailed: (action, name) => `${name}：${action}失败`,
     actionlaunch: "打开",
     actionprefetch: "预取",
     actionevict: "清除缓存",
@@ -167,6 +155,7 @@ const copy = {
     errintegrity: "下载的镜像校验失败，已丢弃，请重试。",
     errno_space: "磁盘空间不足，先清除一些缓存再试。",
     errbusy: "这个应用正在执行另一项操作，请稍后再试。",
+    errpinned: "这个应用已固定，先取消固定再清除缓存。",
     errunauthorized: "链接已失效。",
     errunsupported: "这台 Mac 不支持这个操作。",
     errneeds_resolution: "这个应用有未处理的改动，请先在终端里运行 isenough resolve。",
@@ -183,33 +172,115 @@ const copy = {
     heroStep3: "3. 卸载到仓库",
     heroStep3Body: "复制建议里的命令到终端运行：",
     heroRepo: (path) => `当前仓库：${path}`,
-    kindlocal: "本地目录",
-    kindicloud: "iCloud 云盘",
-    kindsmb: "SMB 共享",
-    kindnfs: "NFS 共享",
-    kindwebdav: "WebDAV",
-    kindopenlist: "OpenList",
-    kinds3: "S3",
+    sessionTiers: "会话分层",
+    coldAfter: (n) => `${n} 天未用转冷`,
+    offloadedCount: (n) => `已卸载 ${n} 个`,
+    emptySessions: "还没有归档的会话",
     tiercold: "冷",
-    tierwarm: "温",
-    tierhot: "热",
+    daysAgo: (n) => (n <= 0 ? "今天" : `${n} 天前`),
+    recommend: "值得卸载",
+    recommendWarn: "不建议卸载",
+    recommendEmpty: "没有达到大小阈值的应用",
+    recommendEmptyHint: "较大且久未使用的应用会显示在这里",
+    recommendUnavailable: "扫描已安装应用需要 macOS",
+    recommendFailed: "未能加载建议",
+    recommendScanning: "正在扫描已安装的应用…",
+    recommendSummary: (count, min) => `${count} 个应用 · 只列出不小于 ${min} 的应用`,
+    couldFree: "大约可腾出",
+    scannedAgo: (iso) => `扫描于${relativeTime(iso, "zh")}`,
+    rescan: "重新扫描",
+    copyCommand: "复制命令",
+    copyCommandFor: (name) => `复制命令：打包 ${name}`,
+    copied: (name) => `已复制 ${name} 的打包命令`,
+    copyFailed: "无法写入剪贴板，请手动复制命令",
+    leftoverBackups: (count, size) => `${count} 个残留备份（${size}）可以删除`,
+    leftoverAdmin: "删除需要管理员权限。",
+    neverUsed: "从未使用",
+    idleDays: (n) => (n === 1 ? "1 天未使用" : `${n} 天未使用`),
+    restoreNeeded: "含商店收据，需要还原模式",
+    sizeBound: "大小是下限（扫描超时）",
+    warnloginItem: "登录项",
+    warnmenuBarAgent: "菜单栏代理",
+    warnbackgroundHelper: "后台辅助进程在运行",
+    warnsystemExtension: "带系统扩展",
+    warnkernelExtension: "带内核扩展",
+    warntoolchain: "引擎使用的工具链",
+    warnpinned: "已固定",
+    warnalreadyPacked: "已经打包",
+    warnsizeTimedOut: "体积扫描超时",
+    alreadyInRepo: "仓库里已有相同版本，打包无需上传",
+    devices: "设备",
+    devicesEmpty: "还没有登记的 Mac",
+    devicesSummary: (n) => `${n} 台 Mac 共用这个仓库`,
+    thisMac: "本机",
+    conflictCopies: (n) => `${n} 个 iCloud 冲突副本，未合并`,
+    placeholders: (n) => `${n} 个设备文件还没下载`,
+    countNone: "无",
   },
   en: {
-    subtitle: "Keep rarely used apps remote, and a small launcher on this Mac",
+    subtitle: "Diskless apps",
+    updatedJustNow: "Updated just now",
+    updatedAgo: (m) => `Updated ${m} min ago`,
+    updatedNever: "Not updated yet",
     refresh: "Refresh",
-    langToggle: "中文",
-    langAria: "Switch the page to Chinese",
-    themeGroup: "Appearance",
-    themeLight: "Light",
-    themeDark: "Dark",
-    themeSystem: "System",
     skip: "Skip to apps",
     retry: "Retry",
     cancel: "Cancel",
-    cache: "Cache",
+    details: "Details",
+    dismiss: "Dismiss",
     backend: "Backend",
-    apps: "Apps",
-    appsCount: (n) => `Apps ${n}`,
+    locationremote: "Remote",
+    locationlocal: "Local",
+    healthok: "Healthy",
+    healthdegraded: "Degraded",
+    healthmissing: "Repo incomplete",
+    healthoffline: "Offline",
+    healthunknown: "Checking",
+    latency: (ms) => `latency ${ms} ms`,
+    timedOut: (s) => `timed out after ${s} s`,
+    missingHint: "Reachable, but repo.json is missing",
+    offlineHint: "Cached apps still open",
+    activeEndpoint: "Active",
+    kind: "Kind",
+    endpoints: "Endpoints",
+    endpointactive: "Active",
+    endpointstandby: "standby",
+    endpointlocal: "local",
+    kindlocal: "Local folder",
+    kindicloud: "iCloud Drive",
+    kindsmb: "SMB share",
+    kindnfs: "NFS share",
+    kindwebdav: "WebDAV",
+    kindopenlist: "OpenList",
+    kinds3: "S3",
+    cache: "Cache",
+    levelok: "Plenty of room",
+    levelnear: "Near quota",
+    levelcritical: "Almost full",
+    levelunset: "No quota",
+    quotaWord: "quota",
+    usedPct: "used",
+    floorLabel: "Free floor",
+    floorKeep: (size) => `keeps ${size} free`,
+    floorMarkerHint: (size) => `At this cache size, free disk space falls to the ${size} floor`,
+    legendNormal: "Normal",
+    legendNear: "Near",
+    legendCritical: "Critical",
+    quotaLeft: "Quota left",
+    floor: "Floor",
+    diskFree: "free on disk",
+    detach: "Detach delay",
+    durationS: (n) => `${n} s`,
+    durationM: (n) => `${n} min`,
+    nearNote: "Unpinned cache is cleared automatically below the free floor",
+    quotaUnset: "No quota set",
+    noData: "No data",
+    apps: "Offloaded apps",
+    appsSummary: (n, m, size, k) => `${n} ${n === 1 ? "app" : "apps"} · ${m} cached ${size} · ${k} pinned`,
+    colApp: "App",
+    colStatus: "Status",
+    colCache: "Cache",
+    colActions: "Actions",
     backfillIcons: "Backfill icons",
     search: "Search",
     sortBy: "Sort",
@@ -222,75 +293,10 @@ const copy = {
     filterRemote: "Remote only",
     filterPinned: "Pinned",
     noMatches: "No apps match",
-    devices: "Devices",
-    devicesEmpty: "No Macs have registered yet",
-    devicesSummary: (n) => `${n} ${n === 1 ? "Mac shares" : "Macs share"} this repo`,
-    thisMac: "This Mac",
-    onDevices: (names) => `Also on ${names}`,
-    conflictCopies: (n) => `${n} iCloud conflict ${n === 1 ? "copy" : "copies"}, not merged`,
-    placeholders: (n) => `${n} device ${n === 1 ? "file is" : "files are"} not downloaded`,
-    sessions: "Cold sessions",
-    recommend: "Worth offloading",
-    recommendWarn: "Poor candidates",
-    recommendEmpty: "No apps above the size threshold",
-    recommendEmptyHint: "Large apps that have sat unused show up here",
-    recommendUnavailable: "Scanning installed apps requires macOS",
-    recommendFailed: "Could not load recommendations",
-    recommendScanning: "Scanning installed apps…",
-    recommendSummary: (count, min) => `${count} ${count === 1 ? "app" : "apps"} · only apps of ${min} or more are listed`,
-    couldFree: (size) => `Could free about ${size}`,
-    scannedAgo: (when) => `Scanned ${when}`,
-    rescan: "Rescan",
-    copyCommand: "Copy command",
-    copyCommandFor: (name) => `Copy command to pack ${name}`,
-    copied: (name) => `Copied the pack command for ${name}`,
-    copyFailed: "Could not write to the clipboard; copy the command by hand",
-    leftoverBackups: (count, size) => `${count} leftover backup${count === 1 ? "" : "s"} (${size}) can be removed`,
-    leftoverAdmin: "Removing them needs an administrator.",
-    neverUsed: "Never used",
-    idleDays: (n) => n === 1 ? "Last used 1 day ago" : `Last used ${n} days ago`,
-    restoreNeeded: "Mac App Store receipt, restore mode",
-    sizeBound: "Size is a lower bound (scan timed out)",
-    warnloginItem: "Login item",
-    warnmenuBarAgent: "Menu bar agent",
-    warnbackgroundHelper: "Background helper is running",
-    warnsystemExtension: "Bundles a system extension",
-    warnkernelExtension: "Bundles a kernel extension",
-    warntoolchain: "Toolchain used by the engine",
-    warnpinned: "Pinned",
-    warnalreadyPacked: "Already packed",
-    warnsizeTimedOut: "Size scan timed out",
-    alreadyInRepo: "already in repo, packing is instant, no upload",
-    usedCaption: "Used",
-    remaining: "Remaining",
-    floor: "Free-space floor",
-    detach: "Detach delay",
-    seconds: (n) => `${n}s`,
-    legendUsed: "Used",
-    legendFree: "Free",
-    legendFloor: "Floor",
-    floorOver: "Floor is larger than the quota",
-    nearWarn: "Near quota",
-    nearHot: "Quota almost full",
-    noData: "No data",
-    healthyTitle: "Running OK",
-    healthySub: "The repository is reachable",
-    degradedTitle: "Degraded",
-    degradedSub: "The repository answers but files are missing",
-    offlineTitle: "Offline",
-    offlineSub: "The repository is unreachable; cached apps still open",
-    latency: "Latency",
-    current: "Current",
-    endpoints: "Endpoints",
-    currentChip: "Current",
-    local: "Local folder",
-    coldDays: (n) => `Cold after ${n} days`,
-    offloaded: (n) => `${n} archived`,
-    emptyApps: "No offloaded apps",
-    emptyAppsHint: "Apps show up here after they are packed",
-    loadFailed: "Could not load apps",
-    emptySessions: "No cold sessions",
-    countNone: "None",
+    modemount: "on-demand",
+    moderestore: "full",
+    modeskip: "skip",
+    modeunsupported: "unsupported",
     cached: "Cached",
     remote: "Remote",
     pinned: "Pinned",
@@ -298,41 +304,42 @@ const copy = {
     stateAttention: "Needs attention",
     stateMounted: "Mounted",
     stateDownloading: "Downloading",
-    remoteToDownload: (size) => `Remote · ${size} to download`,
-    lastUsedAt: (when) => `Used ${when}`,
+    notCached: "Not cached",
+    toDownload: "to download",
+    lastUsedAt: (iso) => `used ${relativeTime(iso, "en")}`,
+    onDevices: (names) => `Also on ${names}`,
     open: "Open",
     openFor: (name) => `Open ${name}`,
     prefetch: "Prefetch",
     prefetchFor: (name) => `Prefetch ${name}`,
-    prefetchDone: "Prefetch, already cached",
     pin: "Pin",
     unpin: "Unpin",
-    evict: "Evict cache",
-    evictDisabled: "Evict cache, nothing cached",
-    evictMounted: "Evict cache, the app is in use; quit it first",
-    evictPinned: "Evict cache, the app is pinned; unpin it first",
+    evict: "Evict",
+    evictMounted: "The app is in use; quit it first",
+    evictPinned: "Pinned apps can't be evicted; unpin first",
     more: "More",
     moreFor: (name) => `More actions for ${name}`,
     restore: "Restore temporarily",
-    unpack: "Restore to /Applications for good…",
-    mount: "Mount",
-    restoreMode: "Restore",
-    modeSkip: "Skip",
-    modeUnsupported: "Unsupported",
+    unpack: (dir) => `Restore to ${dir} for good…`,
     share: (n) => `${n}% of quota`,
-    quotaUnset: "Quota is not set",
+    evictNote: "Evict only drops the local copy; pinned apps are never auto-evicted.",
+    emptyApps: "No offloaded apps.",
+    emptyAppsHint: "Apps you offload show up here.",
+    loading: "Loading",
+    loadFailed: "Could not load apps",
+    unreachable: "Backend unreachable",
+    appsLoadFailed: "Couldn't load the app list",
     confirmEvictTitle: (name) => `Evict ${name} from the cache?`,
     confirmEvictBody: (size) => `This frees ${size} on this Mac. The image stays in the repo and downloads again the next time you open the app.`,
-    confirmEvictOk: "Evict cache",
+    confirmEvictOk: "Evict",
     confirmRestoreTitle: (name) => `Restore ${name} temporarily?`,
     confirmRestoreBody: "The app is copied back to its original place and opened, then returned to the repo after it quits. It uses the full disk space meanwhile.",
     confirmRestoreOk: "Restore and open",
-    confirmUnpackTitle: (name) => `Restore ${name} to /Applications for good?`,
-    confirmUnpackBody: "The full app is copied back to /Applications and replaces the launcher; it is no longer mounted on demand. The image stays in the repo.",
+    confirmUnpackTitle: (name, dir) => `Restore ${name} to ${dir} for good?`,
+    confirmUnpackBody: (path) => `The full app is copied back to ${path} and replaces the launcher; it is no longer mounted on demand. The image stays in the repo.`,
     confirmUnpackOk: "Restore for good",
-    jobStarted: (action, name) => `${name}: ${action} started`,
     jobDone: (action, name) => `${name}: ${action} finished`,
-    jobFailed: (action, name, reason) => `${name}: ${action} failed. ${reason}`,
+    jobFailed: (action, name) => `${name}: ${action} failed`,
     actionlaunch: "open",
     actionprefetch: "prefetch",
     actionevict: "evict",
@@ -353,6 +360,7 @@ const copy = {
     errintegrity: "The downloaded image failed its checksum and was discarded. Try again.",
     errno_space: "Not enough disk space. Evict some cached apps and try again.",
     errbusy: "This app is busy with another action. Try again shortly.",
+    errpinned: "This app is pinned. Unpin it before evicting.",
     errunauthorized: "The link has expired.",
     errunsupported: "This Mac does not support that action.",
     errneeds_resolution: "This app has unresolved changes. Run isenough resolve in Terminal first.",
@@ -369,28 +377,65 @@ const copy = {
     heroStep3: "3. Offload",
     heroStep3Body: "Copy a command from the recommendations and run it in Terminal:",
     heroRepo: (path) => `Current repo: ${path}`,
-    kindlocal: "Local folder",
-    kindicloud: "iCloud Drive",
-    kindsmb: "SMB share",
-    kindnfs: "NFS share",
-    kindwebdav: "WebDAV",
-    kindopenlist: "OpenList",
-    kinds3: "S3",
+    sessionTiers: "Session tiers",
+    coldAfter: (n) => `Cold after ${n} days`,
+    offloadedCount: (n) => `${n} offloaded`,
+    emptySessions: "No archived sessions",
     tiercold: "Cold",
-    tierwarm: "Warm",
-    tierhot: "Hot",
+    daysAgo: (n) => (n <= 0 ? "today" : n === 1 ? "1 day ago" : `${n} days ago`),
+    recommend: "Worth offloading",
+    recommendWarn: "Poor candidates",
+    recommendEmpty: "No apps above the size threshold",
+    recommendEmptyHint: "Large apps that have sat unused show up here",
+    recommendUnavailable: "Scanning installed apps requires macOS",
+    recommendFailed: "Could not load recommendations",
+    recommendScanning: "Scanning installed apps…",
+    recommendSummary: (count, min) => `${count} ${count === 1 ? "app" : "apps"} · only apps of ${min} or more are listed`,
+    couldFree: "Could free about",
+    scannedAgo: (iso) => `Scanned ${relativeTime(iso, "en")}`,
+    rescan: "Rescan",
+    copyCommand: "Copy command",
+    copyCommandFor: (name) => `Copy command to pack ${name}`,
+    copied: (name) => `Copied the pack command for ${name}`,
+    copyFailed: "Could not write to the clipboard; copy the command by hand",
+    leftoverBackups: (count, size) => `${count} leftover backup${count === 1 ? "" : "s"} (${size}) can be removed`,
+    leftoverAdmin: "Removing them needs an administrator.",
+    neverUsed: "Never used",
+    idleDays: (n) => (n === 1 ? "Last used 1 day ago" : `Last used ${n} days ago`),
+    restoreNeeded: "Mac App Store receipt, restore mode",
+    sizeBound: "Size is a lower bound (scan timed out)",
+    warnloginItem: "Login item",
+    warnmenuBarAgent: "Menu bar agent",
+    warnbackgroundHelper: "Background helper is running",
+    warnsystemExtension: "Bundles a system extension",
+    warnkernelExtension: "Bundles a kernel extension",
+    warntoolchain: "Toolchain used by the engine",
+    warnpinned: "Pinned",
+    warnalreadyPacked: "Already packed",
+    warnsizeTimedOut: "Size scan timed out",
+    alreadyInRepo: "already in repo, packing is instant, no upload",
+    devices: "Devices",
+    devicesEmpty: "No Macs have registered yet",
+    devicesSummary: (n) => `${n} ${n === 1 ? "Mac shares" : "Macs share"} this repo`,
+    thisMac: "This Mac",
+    conflictCopies: (n) => `${n} iCloud conflict ${n === 1 ? "copy" : "copies"}, not merged`,
+    placeholders: (n) => `${n} device ${n === 1 ? "file is" : "files are"} not downloaded`,
+    countNone: "None",
   },
 };
 // i18n:end
 window.isenoughI18n = { copy };
 
 const root = document.documentElement;
-let lang = root.getAttribute("data-lang") === "zh" ? "zh" : "en";
+const primary = root.getAttribute("data-lang") === "en" ? "en" : "zh";
+const secondary = primary === "zh" ? "en" : "zh";
+const langTag = { zh: "zh-Hans", en: "en" };
+
 let lastStatus = null;
 let lastRecommend = null;
-let recommendError = "";
-let lastLatency = null;
-let loadFailed = false;
+let recommendError = null;
+let loadError = null; // { code, message } when /api/status itself failed
+let updatedAt = 0;
 let expired = false;
 let refreshing = null;
 let recommendLoading = false;
@@ -398,22 +443,69 @@ const pending = new Map(); // app name -> { kind, jobId, phase }
 const view = { search: "", sort: "name", filter: "all" };
 const folds = {};
 
-function t(key, ...args) {
-  let value = copy[lang][key];
+// ---- text -----------------------------------------------------------------
+
+function tl(language, key, ...args) {
+  let value = copy[language][key];
   if (value === undefined) {
-    console.warn(`isenough ui: missing ${lang} text for "${key}"`);
+    console.warn(`isenough ui: missing ${language} text for "${key}"`);
     value = copy.en[key];
   }
   if (value === undefined) return key;
   return typeof value === "function" ? value(...args) : value;
 }
 
-function has(key) {
-  return copy[lang][key] !== undefined || copy.en[key] !== undefined;
+function t(key, ...args) {
+  return tl(primary, key, ...args);
 }
 
-function locale() {
-  return lang === "zh" ? "zh-Hans" : "en";
+function has(key) {
+  return copy.zh[key] !== undefined && copy.en[key] !== undefined;
+}
+
+/// "清除缓存 Evict": both languages in one string, for aria-label and title.
+function both(key, ...args) {
+  const first = tl(primary, key, ...args);
+  const second = tl(secondary, key, ...args);
+  return first === second ? first : `${first} ${second}`;
+}
+
+/// Primary text, then the other language in a smaller grey run.
+function bi(key, ...args) {
+  return biPair(tl(primary, key, ...args), tl(secondary, key, ...args));
+}
+
+/// Number-heavy lines: primary text only, the other language as its tooltip, so
+/// figures are not printed twice.
+function one(key, ...args) {
+  const node = el("span", "one", tl(primary, key, ...args));
+  node.lang = langTag[primary];
+  node.title = tl(secondary, key, ...args);
+  return node;
+}
+
+/// Bilingual label followed by a single value: "已用 used 19%".
+function biValue(key, value) {
+  const node = el("span", "bi-value");
+  node.append(bi(key), document.createTextNode(` ${value}`));
+  return node;
+}
+
+function biPair(first, second, className) {
+  const node = el("span", ["bi", className].filter(Boolean).join(" "));
+  const main = el("span", "bi-p", first);
+  main.lang = langTag[primary];
+  node.append(main);
+  if (second && second !== first) {
+    const extra = el("span", "bi-s", second);
+    extra.lang = langTag[secondary];
+    node.append(document.createTextNode(" "), extra);
+  }
+  return node;
+}
+
+function locale(language) {
+  return langTag[language || primary];
 }
 
 function url(path) {
@@ -442,26 +534,40 @@ async function api(path, options) {
   try { payload = await response.json(); } catch (e) { payload = {}; }
   if (response.status === 401) {
     showExpired();
-    throw new ApiError("unauthorized", t("errunauthorized"), 401, payload);
+    throw new ApiError("unauthorized", "", 401, payload);
   }
   if (!response.ok || payload.ok === false) {
     const error = payload.error;
     const code = (error && typeof error === "object" && error.code) || "failed";
-    const message = (error && typeof error === "object" ? error.message : error) || response.statusText || "request failed";
+    const message = (error && typeof error === "object" ? error.message : error) || response.statusText || "";
     throw new ApiError(code, message, response.status, payload);
   }
   return payload;
 }
 
-/// Localized sentence for a stable error code; the server message is kept as detail.
-function errorText(code, message) {
+/// Error key for a stable server code. The raw server text is never shown inline.
+function errorKey(code) {
   const key = "err" + (code || "failed");
-  const base = has(key) ? t(key) : t("errfailed");
-  if (!message || code === "unauthorized") return base;
-  return `${base} (${message})`;
+  return has(key) ? key : "errfailed";
 }
 
-// One size rule everywhere: 1024-based units, one decimal below 10, none at 10 and above.
+/// Localized error line plus the raw server text folded into a Details disclosure.
+function errorBlock(code, raw) {
+  const wrap = el("div", "err-block");
+  wrap.append(bi(errorKey(code)));
+  if (raw && code !== "unauthorized") wrap.append(detailsFold(raw));
+  return wrap;
+}
+
+function detailsFold(raw) {
+  const fold = el("details", "raw");
+  const summary = el("summary");
+  summary.append(bi("details"));
+  fold.append(summary, el("code", "", raw));
+  return fold;
+}
+
+// One size rule everywhere: 1024-based units, one decimal below 100 for GiB and up.
 function bytes(value) {
   let n = Math.max(0, Number(value || 0));
   const units = ["B", "KiB", "MiB", "GiB", "TiB"];
@@ -470,21 +576,27 @@ function bytes(value) {
     n /= 1024;
     unit += 1;
   }
-  const digits = unit === 0 || n >= 10 ? 0 : 1;
+  const digits = unit === 0 || n >= 100 || (unit < 3 && n >= 10) ? 0 : 1;
   const number = new Intl.NumberFormat(locale(), { minimumFractionDigits: 0, maximumFractionDigits: digits }).format(n);
   return `${number} ${units[unit]}`;
 }
 
-function relativeTime(iso) {
+function relativeTime(iso, language) {
   const when = Date.parse(iso || "");
   if (!Number.isFinite(when)) return "";
   const seconds = Math.round((when - Date.now()) / 1000);
-  const format = new Intl.RelativeTimeFormat(locale(), { numeric: "auto" });
+  const format = new Intl.RelativeTimeFormat(locale(language), { numeric: "auto" });
   const steps = [["year", 31536000], ["month", 2592000], ["week", 604800], ["day", 86400], ["hour", 3600], ["minute", 60]];
   for (const [unit, size] of steps) {
     if (Math.abs(seconds) >= size) return format.format(Math.round(seconds / size), unit);
   }
   return format.format(0, "second");
+}
+
+function duration(seconds) {
+  const n = Math.max(0, Number(seconds || 0));
+  if (n >= 60 && n % 60 === 0) return one("durationM", n / 60);
+  return one("durationS", n);
 }
 
 function usagePercent(used, quota) {
@@ -498,20 +610,17 @@ function usageLevel(pct) {
   return "ok";
 }
 
+/// Page level for a server health status.
 function healthLevel(status) {
   if (status === "ok") return "healthy";
   if (status === "offline") return "offline";
-  return "degraded";
+  if (status === "degraded" || status === "missing") return "degraded";
+  return "unknown";
 }
 
-function kindLabel(kind) {
+function kindKey(kind) {
   const key = "kind" + String(kind || "local").toLowerCase();
-  return has(key) ? t(key) : String(kind || "");
-}
-
-function tierLabel(tier) {
-  const key = "tier" + String(tier || "cold").toLowerCase();
-  return has(key) ? t(key) : String(tier || "");
+  return has(key) ? key : null;
 }
 
 function el(tag, className, text) {
@@ -527,56 +636,44 @@ function setText(node, text) {
 
 // ---- chrome ---------------------------------------------------------------
 
-function currentTheme() {
-  return root.getAttribute("data-theme") || "system";
-}
-
-function applyTheme(value) {
-  if (value === "light" || value === "dark") root.setAttribute("data-theme", value);
-  else root.removeAttribute("data-theme");
-  try {
-    if (value === "light" || value === "dark") localStorage.setItem("isenough.theme", value);
-    else localStorage.removeItem("isenough.theme");
-  } catch (e) {}
-  syncTheme();
-}
-
-function syncTheme() {
-  const group = document.querySelector("#theme");
-  group.setAttribute("aria-label", t("themeGroup"));
-  const theme = currentTheme();
-  for (const button of group.querySelectorAll("[role=radio]")) {
-    const checked = button.dataset.themeValue === theme;
-    button.setAttribute("aria-checked", String(checked));
-    button.tabIndex = checked ? 0 : -1;
-  }
-}
-
 function applyChrome() {
-  root.lang = lang === "zh" ? "zh-Hans" : "en";
-  root.setAttribute("data-lang", lang);
-  for (const node of document.querySelectorAll("[data-i18n]")) setText(node, t(node.dataset.i18n));
-  const toggle = document.querySelector("#lang");
-  setText(toggle, t("langToggle"));
-  toggle.setAttribute("lang", lang === "zh" ? "en" : "zh-Hans");
-  toggle.setAttribute("aria-label", t("langAria"));
-  syncTheme();
-  const count = (lastStatus && lastStatus.apps && lastStatus.apps.length) || 0;
-  setText(document.querySelector("#apps-title"), lastStatus ? t("appsCount", count) : t("apps"));
-  setText(document.querySelector("#confirm-cancel"), t("cancel"));
+  root.lang = langTag[primary];
+  for (const node of document.querySelectorAll("[data-t]")) {
+    node.replaceChildren(node.dataset.mono === "1" ? document.createTextNode(t(node.dataset.t)) : bi(node.dataset.t));
+  }
+  // Options and other text-only slots take both languages as plain text.
+  for (const node of document.querySelectorAll("[data-tp]")) setText(node, both(node.dataset.tp));
+  for (const node of document.querySelectorAll("[data-t-label]")) node.setAttribute("aria-label", both(node.dataset.tLabel));
+  renderUpdated();
 }
 
-function showBanner(message) {
+function renderUpdated() {
+  const node = document.querySelector("#updated");
+  if (!updatedAt) {
+    node.replaceChildren(bi("updatedNever"));
+    return;
+  }
+  const minutes = Math.floor((Date.now() - updatedAt) / 60000);
+  node.replaceChildren(minutes < 1 ? bi("updatedJustNow") : bi("updatedAgo", minutes));
+}
+
+function showBanner(code, raw) {
   const banner = document.querySelector("#banner");
-  // Only touch the live region when the message changes, so a refresh does not re-announce it.
-  setText(document.querySelector("#banner-text"), message);
+  const body = document.querySelector("#banner-text");
+  // Only touch the live region when the error changes, so a refresh does not re-announce it.
+  const signature = `${code}|${raw}`;
+  if (banner.dataset.signature !== signature) {
+    banner.dataset.signature = signature;
+    body.replaceChildren(errorBlock(code, raw));
+  }
   if (banner.hidden) banner.hidden = false;
 }
 
 function hideBanner() {
   const banner = document.querySelector("#banner");
   if (!banner.hidden) banner.hidden = true;
-  setText(document.querySelector("#banner-text"), "");
+  banner.dataset.signature = "";
+  document.querySelector("#banner-text").replaceChildren();
 }
 
 function showExpired() {
@@ -588,12 +685,25 @@ function showExpired() {
   document.querySelector("#refresh").disabled = true;
 }
 
-function toast(message, tone) {
+/// Toast with a bilingual headline and an optional localized error with raw details.
+function toast({ title, error, tone }) {
   const region = document.querySelector("#toasts");
-  const item = el("div", `toast ${tone || ""}`.trim(), message);
+  const item = el("div", `toast ${tone || ""}`.trim());
+  const text = el("div", "toast-text");
+  text.append(title);
+  if (error) text.append(errorBlock(error.code, error.message));
+  const close = el("button", "toast-close", "×");
+  close.type = "button";
+  close.setAttribute("aria-label", both("dismiss"));
+  close.addEventListener("click", () => item.remove());
+  item.append(text, close);
   region.append(item);
   while (region.children.length > 4) region.firstElementChild.remove();
-  setTimeout(() => item.remove(), tone === "error" ? 12000 : 6000);
+  let timer = setTimeout(() => item.remove(), tone === "error" ? 15000 : 6000);
+  // Keep an error open while the pointer or focus is on it, so its details can be read.
+  item.addEventListener("mouseenter", () => clearTimeout(timer));
+  item.addEventListener("focusin", () => clearTimeout(timer));
+  item.addEventListener("mouseleave", () => { timer = setTimeout(() => item.remove(), 6000); });
 }
 
 // ---- icons ----------------------------------------------------------------
@@ -602,16 +712,20 @@ function toast(message, tone) {
 const svgNS = "http" + "://www.w3.org/2000/svg";
 const iconOpen = "M8 5v14l11-7z";
 const iconDownload = "M11 4h2v8.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3V4zM5 18h14v2H5z";
-const iconPin = "M12 2.2c.5 0 .9.4.9.9v1.2A5.1 5.1 0 0 1 17 9.2c0 1.2-.4 2.3-1.1 3.2L14.6 21h-5.2l-1.3-8.6A4.8 4.8 0 0 1 7 9.2a5.1 5.1 0 0 1 4.1-4.9V3.1c0-.5.4-.9.9-.9z";
-const iconTrash = "M9 3h6l1 2h4v2H4V5h4l1-2zm1 6h2v9h-2V9zm4 0h2v9h-2V9zM8 9h2v9H8V9z";
+const iconPin = "M14.5 2.6 21.4 9.5l-1.4 1.4-1.1-.4-3.6 3.6.4 3.9-1.4 1.4-3.6-3.6-4.8 4.8-1.4-1.4 4.8-4.8-3.6-3.6L7.1 9.4l3.9.4 3.6-3.6-.4-1.1z";
+const iconTrash = "M9 3h6l1 2h4v2H4V5h4l1-2zM6 9h12l-1 11a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 9zm4 2v8h1.6v-8H10zm2.4 0v8H14v-8h-1.6z";
 const iconMore = "M6 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm6 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm6 0a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3z";
 const iconCopy = "M8 3h10a2 2 0 0 1 2 2v10h-2V5H8V3zM5 7h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zm0 2v10h10V9H5z";
+const iconRefresh = "M12 4a8 8 0 0 1 7.4 5H17v2h6V5h-2v2.3A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8zm8 8a8 8 0 0 1-15.4 3H7v-2H1v6h2v-2.3A10 10 0 0 0 22 12h-2z";
+const iconTray = "M5 4h14l3 9v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6l3-9zm1.4 2-2.3 7H8l1 2h6l1-2h3.9l-2.3-7H6.4z";
+const iconAlert = "M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16zm-1 3h2v7h-2V7zm0 9h2v2h-2v-2z";
+const iconInfo = "M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16zm-1 6h2v7h-2v-7zm0-3h2v2h-2V7z";
 
-function svgIcon(path) {
+function svgIcon(path, size) {
   const svg = document.createElementNS(svgNS, "svg");
   svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("width", "18");
-  svg.setAttribute("height", "18");
+  svg.setAttribute("width", String(size || 16));
+  svg.setAttribute("height", String(size || 16));
   svg.setAttribute("aria-hidden", "true");
   svg.classList.add("glyph");
   const drawing = document.createElementNS(svgNS, "path");
@@ -621,30 +735,50 @@ function svgIcon(path) {
   return svg;
 }
 
-function actionButton({ label, name, icon, onClick, className, busy, disabled }) {
+/// Button with a glyph and a bilingual label. A `blocked` reason keeps the button
+/// focusable (aria-disabled) so its tooltip still shows and screen readers hear why.
+function actionButton({ labelKey, labelArgs, name, icon, onClick, className, busy, disabled, blocked, iconOnly }) {
   const node = document.createElement("button");
   node.type = "button";
-  node.className = ["action", className].filter(Boolean).join(" ");
-  if (name && name !== label) node.setAttribute("aria-label", name);
+  node.className = ["btn", className, iconOnly ? "icon-only" : ""].filter(Boolean).join(" ");
   const spinner = el("span", "spinner");
   spinner.setAttribute("aria-hidden", "true");
-  node.append(svgIcon(icon), spinner, el("span", "btn-label", label));
+  node.append(svgIcon(icon), spinner);
+  const args = labelArgs || [];
+  if (!iconOnly) {
+    const label = el("span", "btn-label");
+    label.append(bi(labelKey, ...args));
+    node.append(label);
+  }
+  node.setAttribute("aria-label", name || both(labelKey, ...args));
+  node.title = name || both(labelKey, ...args);
   if (busy) {
     node.setAttribute("aria-busy", "true");
     node.classList.add("is-busy");
   }
   if (disabled) node.disabled = true;
-  node.addEventListener("click", onClick);
+  if (blocked && !disabled) {
+    node.setAttribute("aria-disabled", "true");
+    node.title = blocked;
+    node.setAttribute("aria-description", blocked);
+  }
+  node.addEventListener("click", (event) => {
+    if (node.getAttribute("aria-disabled") === "true") {
+      event.preventDefault();
+      return;
+    }
+    onClick(event);
+  });
   return node;
 }
 
 function letterIcon(name) {
   const letter = (name || "?").trim().charAt(0).toUpperCase() || "?";
-  const tones = ["#0f6b4c", "#0c4f8a", "#8a3d12", "#8f1d3a", "#3d4a2a", "#4a3f8a"];
+  const tones = ["#d9622b", "#2563eb", "#15803d", "#7c3aed", "#dc2626", "#0e7490", "#be185d", "#4f46e5"];
   let hash = 0;
-  for (const ch of name || "?") hash = (hash + ch.charCodeAt(0)) % tones.length;
-  const node = el("div", "app-icon", letter);
-  node.style.background = tones[hash];
+  for (const ch of name || "?") hash = (hash * 31 + ch.charCodeAt(0)) % 9973;
+  const node = el("div", "avatar", letter);
+  node.style.background = tones[hash % tones.length];
   node.setAttribute("aria-hidden", "true");
   return node;
 }
@@ -652,141 +786,262 @@ function letterIcon(name) {
 function appIcon(name, imageId) {
   if (!imageId) return letterIcon(name);
   const node = document.createElement("img");
-  node.className = "app-icon";
+  node.className = "avatar";
   node.alt = "";
-  node.width = 44;
-  node.height = 44;
+  node.width = 40;
+  node.height = 40;
   node.src = String(url("/api/icon/" + encodeURIComponent(imageId)));
   node.addEventListener("error", () => node.replaceWith(letterIcon(name)));
   return node;
 }
 
-function chip(kind, label) {
-  return el("span", `chip ${kind}`, label);
+function pill(kind, key, ...args) {
+  const node = el("span", `pill ${kind}`);
+  node.append(bi(key, ...args));
+  return node;
 }
 
-// ---- cache and backend ----------------------------------------------------
+function skeleton(rows) {
+  const wrap = el("div", "skeleton-wrap");
+  for (let i = 0; i < rows; i += 1) {
+    const row = el("div", "sk-row");
+    row.append(el("div", "sk-avatar"), el("div", "sk-lines"));
+    row.lastChild.append(el("div", "sk-line"), el("div", "sk-line short"));
+    wrap.append(row);
+  }
+  const note = el("p", "sk-note");
+  note.append(bi("loading"));
+  wrap.append(note);
+  return wrap;
+}
+
+// ---- backend ---------------------------------------------------------------
+
+function healthTitleKey(status) {
+  if (status === "ok") return "healthok";
+  if (status === "degraded") return "healthdegraded";
+  if (status === "missing") return "healthmissing";
+  if (status === "offline") return "healthoffline";
+  return "healthunknown";
+}
+
+/// Second status line: latency when it answered, the timeout or a hint when not.
+function healthSubline(backend) {
+  const words = el("span", "health-sub");
+  const status = backend.health;
+  const parts = [tl(secondary, healthTitleKey(status))];
+  if (backend.latencyMs != null && status !== "offline") parts.push(t("latency", backend.latencyMs));
+  else if (status === "offline" && backend.timedOut) parts.push(t("timedOut", Math.round(Number(backend.timeoutMs || 5000) / 1000)));
+  else if (status === "offline") parts.push(t("offlineHint"));
+  else if (status === "missing") parts.push(t("missingHint"));
+  words.textContent = parts.join(" · ");
+  return words;
+}
+
+function renderBackend(backend) {
+  const card = document.querySelector("#backend-card");
+  const body = document.querySelector("#backend-body");
+  const pillSlot = document.querySelector("#backend-pill");
+  body.removeAttribute("aria-busy");
+  body.replaceChildren();
+  pillSlot.replaceChildren();
+  if (!backend) {
+    card.dataset.level = "offline";
+    const status = el("div", "health-line");
+    const dot = el("span", "dot");
+    dot.setAttribute("aria-hidden", "true");
+    const words = el("div");
+    words.append(el("strong", "health-title", t("healthoffline")));
+    const sub = el("span", "health-sub", tl(secondary, "healthoffline"));
+    words.append(sub);
+    status.append(dot, words);
+    body.append(status);
+    return;
+  }
+  const level = healthLevel(backend.health);
+  card.dataset.level = level;
+  const location = backend.location === "local" ? "local" : "remote";
+  pillSlot.append(pill(location === "remote" ? "blue" : "grey", "location" + location));
+
+  const status = el("div", "health-line");
+  status.setAttribute("role", "status");
+  const dot = el("span", "dot");
+  dot.setAttribute("aria-hidden", "true");
+  const words = el("div");
+  const title = el("strong", "health-title", t(healthTitleKey(backend.health)));
+  title.lang = langTag[primary];
+  words.append(title, healthSubline(backend));
+  status.append(dot, words);
+  body.append(status);
+  if (backend.healthDetail && backend.healthDetail !== "timeout" && backend.health !== "ok") body.append(detailsFold(backend.healthDetail));
+
+  const facts = el("dl", "kv");
+  const activeId = backend.activeId || "local";
+  const addFact = (labelKey, value, mono, titleText) => {
+    const row = el("div");
+    const dt = el("dt");
+    dt.append(bi(labelKey));
+    const dd = el("dd", mono ? "mono" : "");
+    if (typeof value === "string") dd.textContent = value;
+    else dd.append(value);
+    if (titleText) dd.title = titleText;
+    row.append(dt, dd);
+    facts.append(row);
+  };
+  addFact("activeEndpoint", activeId, true, backend.activePlace || "");
+  // Local repos already say "Local" in the pill; the kind row would only repeat it.
+  const key = kindKey(backend.kind);
+  if (backend.kind && backend.kind !== "local") addFact("kind", key ? bi(key) : String(backend.kind), false);
+  body.append(facts);
+
+  const endpoints = backend.endpoints || [];
+  const head = el("p", "list-label");
+  head.append(bi("endpoints"), document.createTextNode(` · ${endpoints.length}`));
+  body.append(head);
+  const list = el("ul", "endpoints");
+  for (const endpoint of endpoints) {
+    const row = el("li", endpoint.state === "active" ? "endpoint is-active" : "endpoint");
+    const name = el("div", "endpoint-name");
+    name.append(el("span", "mono", endpoint.id || ""));
+    if (endpoint.place) name.append(el("span", "endpoint-place", endpoint.place));
+    name.title = endpoint.place || "";
+    row.append(name);
+    const state = endpoint.state || "standby";
+    if (state === "active") {
+      const active = pill("green", "endpointactive");
+      active.prepend(el("span", "pill-dot"));
+      row.append(active);
+    } else {
+      const quiet = el("span", "endpoint-state");
+      quiet.append(bi("endpoint" + (state === "local" ? "local" : "standby")));
+      row.append(quiet);
+    }
+    list.append(row);
+  }
+  body.append(list);
+}
+
+// ---- cache -----------------------------------------------------------------
+
+/// Big number and unit apart, as on the mockup: "12.4" "GiB".
+function heroBytes(value) {
+  const text = bytes(value);
+  const space = text.lastIndexOf(" ");
+  const wrap = el("span", "hero-num");
+  wrap.append(el("span", "hero-value", text.slice(0, space)), el("span", "hero-unit", text.slice(space + 1)));
+  return wrap;
+}
 
 function renderCache(cache) {
-  const body = document.querySelector("#cache-body");
   const card = document.querySelector("#cache-card");
-  const near = document.querySelector("#near");
-  body.replaceChildren();
+  const body = document.querySelector("#cache-body");
+  const pillSlot = document.querySelector("#cache-pill");
   body.removeAttribute("aria-busy");
+  body.replaceChildren();
+  pillSlot.replaceChildren();
   if (!cache) {
     card.dataset.level = "ok";
-    near.hidden = true;
-    body.append(el("p", "usage-caption", t("noData")));
+    body.append(el("p", "muted", "—"));
     return;
   }
   const used = Number(cache.usedBytes || 0);
   const quota = Number(cache.quotaBytes || 0);
   const floor = Number(cache.minFreeBytes || 0);
   const pct = usagePercent(used, quota);
-  const level = usageLevel(pct);
+  const level = quota > 0 ? usageLevel(pct) : "ok";
   card.dataset.level = level;
-  near.hidden = level === "ok";
-  near.textContent = level === "hot" ? t("nearHot") : level === "warn" ? t("nearWarn") : "";
-  const value = el("p", "usage-value", quota > 0 ? `${pct}%` : "—");
-  const caption = el("p", "usage-caption", quota > 0 ? `${bytes(used)} / ${bytes(quota)}` : t("quotaUnset"));
-  const track = el("div", "usage-track");
-  track.setAttribute("role", "meter");
-  track.setAttribute("aria-valuemin", "0");
-  track.setAttribute("aria-valuemax", "100");
-  track.setAttribute("aria-valuenow", String(Math.max(0, Math.min(100, pct))));
-  track.setAttribute("aria-valuetext", `${pct}% ${t("usedCaption")}. ${t("floor")} ${bytes(floor)}`);
-  track.setAttribute("aria-labelledby", "cache-title");
-  const fill = el("div", "usage-fill");
-  fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
-  track.append(fill);
-  if (quota > 0 && floor > 0) {
-    const marker = el("div", "usage-floor");
-    marker.style.left = `${Math.max(0, Math.min(100, (floor / quota) * 100))}%`;
-    marker.title = `${t("floor")} ${bytes(floor)}`;
-    track.append(marker);
+  const pillKind = { ok: "blue", warn: "amber", hot: "red" }[level];
+  const pillKey = quota <= 0 ? "levelunset" : { ok: "levelok", warn: "levelnear", hot: "levelcritical" }[level];
+  pillSlot.append(pill(pillKind, pillKey));
+
+  const hero = el("div", "hero-line");
+  hero.append(heroBytes(used));
+  const rest = el("span", "hero-rest");
+  if (quota > 0) {
+    rest.append(document.createTextNode(`/ ${bytes(quota)} `), bi("quotaWord"), document.createTextNode(" · "), biValue("usedPct", `${pct}%`));
+  } else {
+    rest.append(bi("quotaUnset"));
   }
-  const legend = el("ul", "legend");
-  for (const [kind, label] of [["used", t("legendUsed")], ["free", t("legendFree")], ["floor", t("legendFloor")]]) {
-    const item = el("li");
-    const swatch = el("i", `swatch ${kind}`);
-    swatch.setAttribute("aria-hidden", "true");
-    item.append(swatch, document.createTextNode(label));
-    legend.append(item);
+  hero.append(rest);
+  body.append(hero);
+
+  if (quota > 0) {
+    const meter = el("div", "meter");
+    const marker = cache.floorMarkerBytes != null ? Math.max(0, Math.min(100, (Number(cache.floorMarkerBytes) / quota) * 100)) : null;
+    if (marker != null) {
+      const label = el("div", "floor-label");
+      label.style.left = `${marker}%`;
+      label.classList.toggle("align-end", marker > 70);
+      label.classList.toggle("align-start", marker < 30);
+      label.append(bi("floorLabel"));
+      const keep = el("strong", "", t("floorKeep", bytes(floor)));
+      label.append(keep);
+      meter.append(label);
+    }
+    const track = el("div", "track");
+    track.setAttribute("role", "meter");
+    track.setAttribute("aria-valuemin", "0");
+    track.setAttribute("aria-valuemax", String(quota));
+    track.setAttribute("aria-valuenow", String(Math.min(used, quota)));
+    track.setAttribute("aria-valuetext", `${bytes(used)} / ${bytes(quota)}, ${both("usedPct")} ${pct}%`);
+    track.setAttribute("aria-labelledby", "cache-title");
+    track.append(el("div", "zone near"), el("div", "zone critical"));
+    const fill = el("div", `fill ${level}`);
+    fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    track.append(fill);
+    if (marker != null) {
+      const line = el("div", "floor-marker");
+      line.style.left = `${marker}%`;
+      line.title = both("floorMarkerHint", bytes(floor));
+      track.append(line);
+    }
+    meter.append(track);
+    const ticks = el("div", "ticks");
+    ticks.append(el("span", "", "0"), el("span", "", bytes(quota / 2)), el("span", "", bytes(quota)));
+    meter.append(ticks);
+    body.append(meter);
+    const legend = el("ul", "legend");
+    for (const [kind, prefix, key] of [["ok", "", "legendNormal"], ["warn", "≥ 80% ", "legendNear"], ["hot", "≥ 95% ", "legendCritical"]]) {
+      const item = el("li");
+      const swatch = el("i", `swatch ${kind}`);
+      swatch.setAttribute("aria-hidden", "true");
+      item.append(swatch, document.createTextNode(prefix), bi(key));
+      legend.append(item);
+    }
+    body.append(legend);
+    if (level !== "ok") {
+      const note = el("p", `near-note ${level}`);
+      note.append(svgIcon(iconAlert, 14), bi("nearNote"));
+      body.append(note);
+    }
   }
-  body.append(value, caption, track, legend);
-  if (quota > 0 && floor > quota) body.append(el("p", "floor-note", t("floorOver")));
+
   const stats = el("dl", "stats");
-  const remaining = quota > used ? quota - used : 0;
-  for (const [label, text] of [
-    [t("remaining"), quota > 0 ? bytes(remaining) : "—"],
-    [t("floor"), bytes(floor)],
-    [t("detach"), t("seconds", cache.detachDelaySeconds || 0)],
-  ]) {
+  const left = cache.quotaLeftBytes != null ? Number(cache.quotaLeftBytes) : Math.max(0, quota - used);
+  const stat = (value, labelKey, extra) => {
     const row = el("div");
-    row.append(el("dt", "", label), el("dd", "", text));
+    const dd = el("dd", "stat-value", value);
+    const dt = el("dt");
+    dt.append(bi(labelKey));
+    row.append(dt, dd);
+    if (extra) row.append(extra);
     stats.append(row);
+  };
+  stat(quota > 0 ? bytes(left) : "—", "quotaLeft");
+  let disk = null;
+  if (cache.diskFreeBytes != null) {
+    disk = el("p", "stat-extra");
+    disk.append(biValue("diskFree", bytes(cache.diskFreeBytes)));
   }
+  stat(bytes(floor), "floor", disk);
+  const delay = el("div");
+  const delayValue = el("dd", "stat-value");
+  delayValue.append(duration(cache.detachDelaySeconds));
+  const delayLabel = el("dt");
+  delayLabel.append(bi("detach"));
+  delay.append(delayLabel, delayValue);
+  stats.append(delay);
   body.append(stats);
-}
-
-function endpointLine(item) {
-  const row = el("li", item.current ? "endpoint is-current" : "endpoint");
-  row.append(el("span", "kind", kindLabel(item.type || "local")));
-  row.append(el("strong", "", item.id || ""));
-  const place = item.mountPoint || item.url || item.host || "";
-  if (place) row.append(el("span", "", place));
-  if (item.current) row.append(chip("cached", t("currentChip")));
-  return row;
-}
-
-function renderHealth(backend, latency) {
-  const body = document.querySelector("#health-body");
-  const card = document.querySelector("#health-card");
-  body.replaceChildren();
-  body.removeAttribute("aria-busy");
-  const level = backend ? healthLevel(backend.health) : "offline";
-  card.dataset.level = level;
-  const title = { healthy: t("healthyTitle"), degraded: t("degradedTitle"), offline: t("offlineTitle") }[level];
-  const sub = { healthy: t("healthySub"), degraded: t("degradedSub"), offline: t("offlineSub") }[level];
-  const status = el("div", "health-status");
-  const dot = el("span", "dot");
-  dot.setAttribute("aria-hidden", "true");
-  const words = el("div");
-  words.append(el("strong", "", title), el("span", "subline", sub));
-  status.append(dot, words);
-  const facts = el("dl", "facts");
-  for (const [label, text] of [
-    [t("latency"), latency == null ? "—" : `${latency} ms`],
-    [t("current"), backend ? `${backend.activeId || kindLabel(backend.kind) || t("local")}` : "—"],
-  ]) {
-    const row = el("div");
-    row.append(el("dt", "", label), el("dd", "", text));
-    facts.append(row);
-  }
-  body.append(status, facts);
-  if (backend && backend.healthDetail) body.append(el("p", "health-detail", backend.healthDetail));
-  const list = el("ul", "endpoints");
-  const raw = (backend && backend.endpoints) || [];
-  const rows = raw.length
-    ? raw.map((item) => ({
-        id: item.id || "",
-        type: item.type || "",
-        host: item.host || "",
-        mountPoint: item.mountPoint || "",
-        url: item.url || "",
-        current: item.id && backend.activeId && item.id === backend.activeId,
-      }))
-    : [{
-        id: (backend && (backend.activeId || kindLabel(backend.kind))) || t("local"),
-        type: (backend && backend.kind) || "local",
-        host: "",
-        mountPoint: (backend && backend.repoPath) || "",
-        url: "",
-        current: true,
-      }];
-  body.append(el("p", "endpoint-label", t("endpoints")));
-  for (const item of rows) list.append(endpointLine(item));
-  body.append(list);
 }
 
 // ---- apps -----------------------------------------------------------------
@@ -811,13 +1066,6 @@ function visibleApps(apps) {
   return filtered;
 }
 
-function stateChip(app, job) {
-  if (app.needsResolution || app.state === "needsResolution") return chip("attention", t("stateAttention"));
-  if (job && job.phase === "download") return chip("downloading", t("stateDownloading"));
-  if (app.mounted || app.state === "running") return chip("mounted", t("stateMounted"));
-  return null;
-}
-
 function closeMenus(except) {
   for (const menu of document.querySelectorAll(".menu:not([hidden])")) {
     if (menu === except) continue;
@@ -827,14 +1075,26 @@ function closeMenus(except) {
   }
 }
 
+/// Folder that holds the app's launcher, which a permanent restore writes back to.
+function installDir(app) {
+  const full = String(app.installPath || "");
+  const cut = full.lastIndexOf("/");
+  if (cut <= 0) return "/Applications";
+  const dir = full.slice(0, cut);
+  const home = dir.match(/^\/Users\/[^/]+(\/.*)?$/);
+  return home ? `~${home[1] || ""}` : dir;
+}
+
 function overflowMenu(app, busy) {
   const wrap = el("div", "more");
   const menuId = `menu-${String(app.imageId || app.name).replace(/[^a-zA-Z0-9_-]/g, "")}`;
+  const menu = el("div", "menu");
   const trigger = actionButton({
-    label: t("more"),
-    name: t("moreFor", app.name),
+    labelKey: "more",
+    name: both("moreFor", app.name),
     icon: iconMore,
-    className: "quiet icon-only",
+    className: "quiet",
+    iconOnly: true,
     disabled: busy,
     onClick: (event) => {
       event.stopPropagation();
@@ -848,18 +1108,21 @@ function overflowMenu(app, busy) {
   trigger.setAttribute("aria-haspopup", "menu");
   trigger.setAttribute("aria-expanded", "false");
   trigger.setAttribute("aria-controls", menuId);
-  const menu = el("div", "menu");
   menu.id = menuId;
   menu.setAttribute("role", "menu");
   menu.hidden = true;
+  const dir = installDir(app);
   const items = [
-    [t("restore"), () => confirmAction("restore", app)],
-    [t("unpack"), () => confirmAction("unpack", app)],
+    [bi("restore"), both("restore"), () => confirmAction("restore", app)],
+    [bi("unpack", dir), both("unpack", dir), () => confirmAction("unpack", app)],
   ];
-  for (const [label, run] of items) {
-    const item = el("button", "menuitem", label);
+  if (!app.cached) items.unshift([bi("prefetch"), both("prefetchFor", app.name), () => startJob("prefetch", app)]);
+  for (const [label, name, run] of items) {
+    const item = el("button", "menuitem");
+    item.append(label);
     item.type = "button";
     item.setAttribute("role", "menuitem");
+    item.setAttribute("aria-label", name);
     item.tabIndex = -1;
     item.addEventListener("click", () => {
       closeMenus();
@@ -886,81 +1149,192 @@ function overflowMenu(app, busy) {
   return wrap;
 }
 
-function renderApps(list, failed) {
+function statusPills(app, job) {
+  const pills = el("div", "pills");
+  if (app.needsResolution || app.state === "needsResolution") pills.append(pill("red attention", "stateAttention"));
+  if (job && job.phase === "download") pills.append(pill("blue downloading", "stateDownloading"));
+  else if (app.mounted || app.state === "running") pills.append(pill("blue mounted", "stateMounted"));
+  if (app.cached) {
+    const node = pill("green", "cached");
+    node.prepend(el("span", "pill-dot"));
+    pills.append(node);
+  } else {
+    pills.append(pill("grey", "remote"));
+  }
+  if (app.pinned) {
+    const node = pill("amber", "pinned");
+    node.prepend(svgIcon(iconPin, 12));
+    pills.append(node);
+  }
+  if (app.restored && !app.needsResolution) pills.append(pill("grey", "restored"));
+  return pills;
+}
+
+function cacheCell(app, quota) {
+  const cell = el("div", "cell cache-cell");
+  if (!app.cached) {
+    const line = el("div", "cache-size muted");
+    line.append(bi("notCached"));
+    const sub = el("div", "cache-sub", `${t("toDownload")} ${bytes(app.imageBytes)}`);
+    sub.title = `${tl(secondary, "toDownload")} ${bytes(app.imageBytes)}`;
+    cell.append(line, sub);
+    return cell;
+  }
+  cell.append(el("div", "cache-size", bytes(app.cachedBytes)));
+  if (quota > 0) {
+    const sharePct = Math.max(0, Math.min(100, (Number(app.cachedBytes || 0) / quota) * 100));
+    const shownPct = sharePct >= 10 ? Math.round(sharePct) : Math.round(sharePct * 10) / 10;
+    const bar = el("div", "share");
+    bar.setAttribute("role", "meter");
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
+    bar.setAttribute("aria-valuenow", String(Math.round(sharePct)));
+    bar.setAttribute("aria-label", both("share", shownPct));
+    bar.title = both("share", shownPct);
+    const fill = el("span");
+    fill.style.width = `${Math.max(sharePct, 1.5)}%`;
+    bar.append(fill);
+    cell.append(bar);
+  }
+  return cell;
+}
+
+function emptyState() {
+  const empty = el("div", "state-empty");
+  const icon = el("div", "tray");
+  icon.append(svgIcon(iconTray, 22));
+  empty.append(icon, el("strong", "", t("emptyApps")));
+  const second = el("span", "muted", tl(secondary, "emptyApps"));
+  second.lang = langTag[secondary];
+  empty.append(second);
+  empty.append(el("span", "muted", t("emptyAppsHint")));
+  if (primary === "zh") {
+    const hint = el("span", "muted small", tl(secondary, "emptyAppsHint"));
+    hint.lang = langTag[secondary];
+    empty.append(hint);
+  }
+  return empty;
+}
+
+/// Red panel with the endpoint, the reason, raw details and Retry. Only an
+/// `offline` code claims the backend is unreachable; anything else (a corrupt
+/// manifest on a reachable repo, say) reads as "couldn't load the app list".
+function errorState(code, raw) {
+  const offline = !code || code === "offline";
+  const titleKey = offline ? "unreachable" : "appsLoadFailed";
+  const panel = el("div", "state-error");
+  panel.setAttribute("role", "alert");
+  const box = el("div", "error-box");
+  const head = el("div", "error-head");
+  head.append(svgIcon(iconAlert, 18));
+  const words = el("div");
+  words.append(el("strong", "", t(titleKey)));
+  const second = el("span", "", tl(secondary, titleKey));
+  second.lang = langTag[secondary];
+  words.append(second);
+  head.append(words);
+  box.append(head);
+  const backend = lastStatus && lastStatus.backend;
+  const where = (backend && (backend.activeId || "local")) || "";
+  const reasonParts = [where];
+  if (offline && backend && backend.timedOut) reasonParts.push(t("timedOut", Math.round(Number(backend.timeoutMs || 5000) / 1000)));
+  else if (code) reasonParts.push(t(errorKey(code)));
+  box.append(el("p", "error-where mono", reasonParts.filter(Boolean).join(" · ")));
+  if (raw) box.append(detailsFold(raw));
+  panel.append(box);
+  const retry = actionButton({ labelKey: "retry", icon: iconRefresh, className: "retry", onClick: () => retryNow() });
+  panel.append(retry);
+  return panel;
+}
+
+function renderAppsSummary(apps) {
+  const node = document.querySelector("#apps-summary");
+  if (!apps) {
+    node.replaceChildren();
+    return;
+  }
+  const cached = apps.filter((app) => app.cached);
+  const size = bytes(cached.reduce((sum, app) => sum + Number(app.cachedBytes || 0), 0));
+  const pinned = apps.filter((app) => app.pinned).length;
+  node.replaceChildren(one("appsSummary", apps.length, cached.length, size, pinned));
+}
+
+function renderApps(list, failure) {
   const rootNode = document.querySelector("#app-list");
   const tools = document.querySelector("#list-tools");
+  const head = document.querySelector("#table-head");
   const focusedKey = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.key : "";
   rootNode.replaceChildren();
   rootNode.removeAttribute("aria-busy");
   const apps = list || [];
+  renderAppsSummary(failure && !apps.length ? null : apps);
   tools.hidden = apps.length < 2;
+  head.hidden = !apps.length;
+  if (failure && !apps.length) {
+    rootNode.append(errorState(failure.code, failure.message));
+    return;
+  }
   if (!apps.length) {
-    const empty = el("div", "empty");
-    empty.append(el("strong", "", failed ? t("loadFailed") : t("emptyApps")));
-    if (!failed) empty.append(el("span", "", t("emptyAppsHint")));
-    rootNode.append(empty);
+    rootNode.append(emptyState());
     return;
   }
   const shown = visibleApps(apps);
   if (!shown.length) {
-    rootNode.append(el("div", "empty", t("noMatches")));
+    rootNode.append(el("div", "state-note", both("noMatches")));
     return;
   }
   const quota = Number((lastStatus && lastStatus.cache && lastStatus.cache.quotaBytes) || 0);
   for (const app of shown) {
     const job = pending.get(app.name);
     const busy = Boolean(job);
-    const card = el("article", "app");
-    card.dataset.state = app.state || "";
-    if (busy) card.setAttribute("aria-busy", "true");
-    const main = el("div", "app-main");
-    const nameRow = el("div", "name-row");
-    const heading = el("h3", "name", app.name || "");
-    nameRow.append(heading);
-    const chips = el("div", "chips");
-    const status = stateChip(app, job);
-    if (status) chips.append(status);
-    if (app.cached) chips.append(chip("cached", t("cached")));
-    else chips.append(chip("remote", t("remote")));
-    if (app.pinned) chips.append(chip("pinned", t("pinned")));
-    if (app.restored && !app.needsResolution) chips.append(chip("restored", t("restored")));
-    nameRow.append(chips);
+    const row = el("article", "app-row");
+    row.dataset.app = app.name || "";
+    row.dataset.state = app.state || "";
+    if (busy) row.setAttribute("aria-busy", "true");
+
+    const who = el("div", "cell app-cell");
+    who.append(appIcon(app.name, app.imageId));
+    const words = el("div", "app-words");
+    words.append(el("h3", "app-name", app.name || ""));
+    const meta = el("div", "app-meta");
+    if (app.version) meta.append(document.createTextNode(`v${String(app.version).replace(/^v/, "")} · `));
+    const modeKey = "mode" + (app.mode || "mount");
+    meta.append(has(modeKey) ? bi(modeKey) : document.createTextNode(String(app.mode || "")));
+    words.append(meta);
     const holders = (app.devices || []).filter(Boolean);
-    const meta = [
-      app.version || "",
-      app.mode === "restore" ? t("restoreMode") : t("mount"),
-      app.cached ? bytes(app.cachedBytes) : t("remoteToDownload", bytes(app.imageBytes)),
-      app.lastUsed ? t("lastUsedAt", relativeTime(app.lastUsed)) : "",
-      holders.length ? t("onDevices", holders.join(", ")) : "",
-    ].filter(Boolean);
-    main.append(nameRow, el("div", "meta", meta.join(" · ")));
-    if (job) main.append(el("div", "job-line", t("phase" + (job.phase || "queued"))));
-    if (app.cached && quota > 0) {
-      const sharePct = Math.max(0, Math.min(100, (Number(app.cachedBytes || 0) / quota) * 100));
-      const shownPct = sharePct >= 10 ? Math.round(sharePct) : Math.round(sharePct * 10) / 10;
-      const bar = el("div", "share");
-      bar.setAttribute("role", "meter");
-      bar.setAttribute("aria-valuemin", "0");
-      bar.setAttribute("aria-valuemax", "100");
-      bar.setAttribute("aria-valuenow", String(Math.round(sharePct)));
-      bar.setAttribute("aria-label", t("share", shownPct));
-      const fill = el("span");
-      fill.style.width = `${sharePct}%`;
-      bar.append(fill);
-      main.append(bar);
+    const extra = [app.lastUsed ? t("lastUsedAt", app.lastUsed) : "", holders.length ? t("onDevices", holders.join(", ")) : ""].filter(Boolean);
+    if (extra.length) words.append(el("div", "app-extra", extra.join(" · ")));
+    if (job) {
+      const line = el("div", "job-line");
+      line.append(bi("phase" + (job.phase || "queued")));
+      words.append(line);
     }
-    const actions = el("div", "actions");
+    who.append(words);
+
+    const status = el("div", "cell status-cell");
+    status.append(statusPills(app, job));
+
+    const actions = el("div", "cell actions");
     const isBusy = (kind) => busy && job.kind === kind;
-    const open = actionButton({ label: t("open"), name: t("openFor", app.name), icon: iconOpen, className: "primary", busy: isBusy("launch"), disabled: busy, onClick: () => startJob("launch", app) });
-    const prefetch = actionButton({ label: t("prefetch"), name: app.cached ? t("prefetchDone") : t("prefetchFor", app.name), icon: iconDownload, busy: isBusy("prefetch"), disabled: busy || app.cached, onClick: () => startJob("prefetch", app) });
+    const open = actionButton({ labelKey: "open", name: both("openFor", app.name), icon: iconOpen, className: "quiet", iconOnly: true, busy: isBusy("launch"), disabled: busy, onClick: () => startJob("launch", app) });
     const pinKind = app.pinned ? "unpin" : "pin";
-    const pin = actionButton({ label: app.pinned ? t("unpin") : t("pin"), icon: iconPin, busy: isBusy("pin") || isBusy("unpin"), disabled: busy, onClick: () => startJob(pinKind, app) });
-    pin.setAttribute("aria-pressed", String(Boolean(app.pinned)));
-    const evict = actionButton({ label: t("evict"), name: !app.cached ? t("evictDisabled") : app.mounted ? t("evictMounted") : app.pinned ? t("evictPinned") : t("evict"), icon: iconTrash, className: "danger-quiet", busy: isBusy("evict"), disabled: busy || !app.cached || Boolean(app.mounted) || Boolean(app.pinned), onClick: () => confirmAction("evict", app) });
-    for (const [kind, node] of [["launch", open], ["prefetch", prefetch], ["pin", pin], ["evict", evict]]) node.dataset.key = `${app.name}:${kind}`;
-    actions.append(open, prefetch, pin, evict, overflowMenu(app, busy));
-    card.append(appIcon(app.name, app.imageId), main, actions);
-    rootNode.append(card);
+    const pinButton = actionButton({ labelKey: pinKind, icon: iconPin, className: "tint", busy: isBusy("pin") || isBusy("unpin"), disabled: busy, onClick: () => startJob(pinKind, app) });
+    pinButton.setAttribute("aria-pressed", String(Boolean(app.pinned)));
+    let second;
+    if (app.cached) {
+      const blocked = app.pinned ? both("evictPinned") : app.mounted ? both("evictMounted") : "";
+      second = actionButton({ labelKey: "evict", icon: iconTrash, className: "danger-outline", busy: isBusy("evict"), disabled: busy, blocked, onClick: () => confirmAction("evict", app) });
+      second.dataset.key = `${app.name}:evict`;
+    } else {
+      second = actionButton({ labelKey: "prefetch", name: both("prefetchFor", app.name), icon: iconDownload, className: "outline", busy: isBusy("prefetch"), disabled: busy, onClick: () => startJob("prefetch", app) });
+      second.dataset.key = `${app.name}:prefetch`;
+    }
+    open.dataset.key = `${app.name}:launch`;
+    pinButton.dataset.key = `${app.name}:pin`;
+    actions.append(open, pinButton, second, overflowMenu(app, busy));
+
+    row.append(who, status, cacheCell(app, quota), actions);
+    rootNode.append(row);
   }
   if (focusedKey) {
     const again = rootNode.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`);
@@ -972,14 +1346,26 @@ function renderApps(list, failed) {
 
 function confirmAction(kind, app) {
   const dialog = document.querySelector("#confirm");
-  const titles = { evict: "confirmEvictTitle", restore: "confirmRestoreTitle", unpack: "confirmUnpackTitle" };
-  const bodies = { evict: "confirmEvictBody", restore: "confirmRestoreBody", unpack: "confirmUnpackBody" };
-  const oks = { evict: "confirmEvictOk", restore: "confirmRestoreOk", unpack: "confirmUnpackOk" };
-  document.querySelector("#confirm-title").textContent = t(titles[kind], app.name);
-  document.querySelector("#confirm-body").textContent = t(bodies[kind], bytes(app.cachedBytes || app.imageBytes));
+  const dir = installDir(app);
+  const size = bytes(app.cachedBytes || app.imageBytes);
+  const spec = {
+    evict: { title: ["confirmEvictTitle", app.name], body: ["confirmEvictBody", size], ok: "confirmEvictOk", danger: true },
+    restore: { title: ["confirmRestoreTitle", app.name], body: ["confirmRestoreBody"], ok: "confirmRestoreOk", danger: false },
+    unpack: { title: ["confirmUnpackTitle", app.name, dir], body: ["confirmUnpackBody", app.installPath || `${dir}/${app.name}.app`], ok: "confirmUnpackOk", danger: true },
+  }[kind];
+  const title = document.querySelector("#confirm-title");
+  title.replaceChildren(document.createTextNode(t(...spec.title)));
+  const titleSecond = el("span", "dialog-second", tl(secondary, ...spec.title));
+  titleSecond.lang = langTag[secondary];
+  title.append(titleSecond);
+  const body = document.querySelector("#confirm-body");
+  body.replaceChildren(document.createTextNode(t(...spec.body)));
+  const bodySecond = el("span", "dialog-second", tl(secondary, ...spec.body));
+  bodySecond.lang = langTag[secondary];
+  body.append(bodySecond);
   const ok = document.querySelector("#confirm-ok");
-  ok.textContent = t(oks[kind]);
-  ok.className = kind === "evict" || kind === "unpack" ? "danger" : "primary";
+  ok.replaceChildren(bi(spec.ok));
+  ok.className = spec.danger ? "btn danger" : "btn primary";
   const opener = document.activeElement;
   dialog.returnValue = "";
   dialog.onclose = () => {
@@ -990,9 +1376,13 @@ function confirmAction(kind, app) {
   if (typeof dialog.showModal === "function") {
     dialog.showModal();
     document.querySelector("#confirm-cancel").focus();
-  } else if (window.confirm(`${document.querySelector("#confirm-title").textContent}\n\n${document.querySelector("#confirm-body").textContent}`)) {
+  } else if (window.confirm(`${title.textContent}\n\n${body.textContent}`)) {
     startJob(kind, app);
   }
+}
+
+function jobTitle(key, kind, name) {
+  return biPair(tl(primary, key, tl(primary, "action" + kind), name), tl(secondary, key, tl(secondary, "action" + kind), name));
 }
 
 async function startJob(kind, app) {
@@ -1000,7 +1390,9 @@ async function startJob(kind, app) {
   pending.set(app.name, { kind, jobId: "", phase: "queued" });
   rerenderApps();
   try {
-    const started = await api(`/api/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ app: app.name }) });
+    // Evict never forces from the page: a pinned app is refused by the server too.
+    const payload = kind === "evict" ? { app: app.name, force: false } : { app: app.name };
+    const started = await api(`/api/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     pending.set(app.name, { kind, jobId: started.jobId, phase: started.phase || "queued" });
     rerenderApps();
     pollJob(app.name, kind, started.jobId);
@@ -1012,7 +1404,7 @@ async function startJob(kind, app) {
       pending.set(app.name, { kind, jobId: error.payload.jobId, phase: "queued" });
       pollJob(app.name, kind, error.payload.jobId);
     }
-    toast(t("jobFailed", t("action" + kind), app.name, errorText(error.code, error.message)), "error");
+    toast({ title: jobTitle("jobFailed", kind, app.name), error: { code: error.code, message: error.message }, tone: "error" });
   }
 }
 
@@ -1036,8 +1428,8 @@ async function pollJob(name, kind, jobId) {
       continue;
     }
     pending.delete(name);
-    if (job.state === "done") toast(t("jobDone", t("action" + kind), name), "ok");
-    else toast(t("jobFailed", t("action" + kind), name, errorText(job.error && job.error.code, job.error && job.error.message)), "error");
+    if (job.state === "done") toast({ title: jobTitle("jobDone", kind, name), tone: "ok" });
+    else toast({ title: jobTitle("jobFailed", kind, name), error: { code: job.error && job.error.code, message: job.error && job.error.message }, tone: "error" });
     break;
   }
   pending.delete(name);
@@ -1053,31 +1445,70 @@ function adoptServerJobs(status) {
 }
 
 function rerenderApps() {
-  if (lastStatus) renderApps(lastStatus.apps || [], Boolean(lastStatus.appsError));
+  if (lastStatus) renderApps(lastStatus.apps || [], lastStatus.appsError ? { code: appsErrorCode(lastStatus), message: lastStatus.appsError } : null);
+}
+
+/// Server code for an app-list failure; older servers sent only the text.
+function appsErrorCode(status) {
+  return status.appsErrorCode || "failed";
+}
+
+// ---- sessions -------------------------------------------------------------
+
+function renderSessions(sessions) {
+  const summary = document.querySelector("#sessions-summary");
+  const list = document.querySelector("#sessions");
+  list.replaceChildren();
+  summary.replaceChildren();
+  const offloaded = (sessions && sessions.offloaded) || [];
+  if (sessions) {
+    const days = Number(sessions.coldDays || 14);
+    summary.append(bi("coldAfter", days), document.createTextNode(" · "), one("offloadedCount", offloaded.length));
+  }
+  if (!offloaded.length) {
+    const empty = el("li", "state-note");
+    empty.append(bi("emptySessions"));
+    list.append(empty);
+    return;
+  }
+  const sorted = [...offloaded].sort((a, b) => (Date.parse(b.modified || "") || 0) - (Date.parse(a.modified || "") || 0));
+  for (const entry of sorted) {
+    const item = el("li", "session-row");
+    // Only cold files are archived, so every offloaded row is cold.
+    item.append(pill("grey", "tiercold"));
+    item.append(el("span", "session-tool", entry.tool || ""));
+    const path = el("span", "session-path mono", entry.path || "");
+    path.title = [entry.path, entry.preview].filter(Boolean).join("\n");
+    item.append(path);
+    const age = entry.ageDays != null ? Number(entry.ageDays) : Math.max(0, Math.floor((Date.now() - (Date.parse(entry.modified || "") || Date.now())) / 86400000));
+    const ageNode = el("span", "session-age", t("daysAgo", age));
+    ageNode.title = tl(secondary, "daysAgo", age);
+    item.append(ageNode);
+    list.append(item);
+  }
 }
 
 // ---- recommendations ------------------------------------------------------
 
-function recommendReason(app) {
+function recommendReason(app, language) {
+  const say = (key, ...args) => tl(language || primary, key, ...args);
   const warnings = app.warnings || [];
-  if (warnings.length) return warnings.map((code) => (has("warn" + code) ? t("warn" + code) : code)).join("; ");
+  if (warnings.length) return warnings.map((code) => (has("warn" + code) ? say("warn" + code) : code)).join("; ");
   const parts = [];
-  if (app.neverUsed) parts.push(t("neverUsed"));
-  else if (app.daysIdle != null) parts.push(t("idleDays", Number(app.daysIdle)));
-  if (app.macAppStore) parts.push(t("restoreNeeded"));
-  if (app.sizeIncomplete) parts.push(t("sizeBound"));
+  if (app.neverUsed) parts.push(say("neverUsed"));
+  else if (app.daysIdle != null) parts.push(say("idleDays", Number(app.daysIdle)));
+  if (app.macAppStore) parts.push(say("restoreNeeded"));
+  if (app.sizeIncomplete) parts.push(say("sizeBound"));
   if (app.alreadyInRepo) {
     const devices = app.otherDevices || [];
-    parts.push(t("alreadyInRepo") + (devices.length ? ` (${devices.join(", ")})` : ""));
+    parts.push(say("alreadyInRepo") + (devices.length ? ` (${devices.join(", ")})` : ""));
   }
   return parts.join("; ");
 }
 
-function modeLabel(mode) {
-  if (mode === "restore") return t("restoreMode");
-  if (mode === "skip") return t("modeSkip");
-  if (mode === "unsupported") return t("modeUnsupported");
-  return t("mount");
+function modeKeyFor(mode) {
+  const key = "mode" + (mode || "mount");
+  return has(key) ? key : "modemount";
 }
 
 function packCommand(path) {
@@ -1114,30 +1545,27 @@ function renderLeftovers(report) {
   line.hidden = !items.length;
   paths.hidden = !items.length;
   if (!items.length) return;
-  const total = items.reduce((sum, item) => sum + Number(item.sizeBytes || 0), 0);
-  line.append(document.createTextNode(t("leftoverBackups", items.length, bytes(total)) + " " + t("leftoverAdmin")));
-  for (const item of items) {
-    const row = el("li");
-    row.append(el("div", "path", item.path || ""));
-    paths.append(row);
-  }
+  const total = bytes(items.reduce((sum, item) => sum + Number(item.sizeBytes || 0), 0));
+  line.append(biPair(`${tl(primary, "leftoverBackups", items.length, total)} ${tl(primary, "leftoverAdmin")}`, `${tl(secondary, "leftoverBackups", items.length, total)} ${tl(secondary, "leftoverAdmin")}`));
+  for (const item of items) paths.append(el("li", "mono path", item.path || ""));
 }
 
 function renderScanLine() {
   const scanned = document.querySelector("#recommend-scanned");
   const rescan = document.querySelector("#rescan");
+  scanned.replaceChildren();
   if (recommendLoading) {
-    setText(scanned, t("recommendScanning"));
+    scanned.append(bi("recommendScanning"));
     rescan.setAttribute("aria-busy", "true");
     rescan.disabled = true;
   } else {
-    setText(scanned, lastRecommend && lastRecommend.scannedAt ? t("scannedAgo", relativeTime(lastRecommend.scannedAt)) : "");
+    if (lastRecommend && lastRecommend.scannedAt) scanned.append(bi("scannedAgo", lastRecommend.scannedAt));
     rescan.removeAttribute("aria-busy");
     rescan.disabled = false;
   }
 }
 
-function renderRecommend(report, failed) {
+function renderRecommend(report, failure) {
   const summary = document.querySelector("#recommend-summary");
   const total = document.querySelector("#recommend-total");
   const list = document.querySelector("#recommend-list");
@@ -1145,14 +1573,14 @@ function renderRecommend(report, failed) {
   const warnings = document.querySelector("#recommend-warnings");
   list.replaceChildren();
   warnings.replaceChildren();
+  summary.replaceChildren();
   list.removeAttribute("aria-busy");
   renderScanLine();
   if (!report) {
     total.hidden = true;
-    summary.textContent = "";
-    const empty = el("div", "empty");
-    empty.append(el("strong", "", t("recommendFailed")));
-    if (failed) empty.append(el("span", "", failed));
+    const empty = el("div", "state-note");
+    empty.append(bi("recommendFailed"));
+    if (failure) empty.append(errorBlock(failure.code, failure.message));
     list.append(empty);
     warnTitle.hidden = true;
     renderLeftovers(null);
@@ -1161,59 +1589,62 @@ function renderRecommend(report, failed) {
   const apps = report.recommendations || [];
   if (report.scan === "unavailable") {
     total.hidden = true;
-    summary.textContent = t("recommendUnavailable");
+    summary.append(bi("recommendUnavailable"));
   } else {
     total.hidden = !apps.length;
-    total.textContent = t("couldFree", bytes(report.estimatedFreedBytes || 0));
-    summary.textContent = t("recommendSummary", apps.length, bytes(report.minSizeBytes || 0));
+    total.replaceChildren(biValue("couldFree", bytes(report.estimatedFreedBytes || 0)));
+    summary.append(one("recommendSummary", apps.length, bytes(report.minSizeBytes || 0)));
   }
   if (!apps.length && report.scan !== "unavailable") {
-    const empty = el("div", "empty");
-    empty.append(el("strong", "", t("recommendEmpty")));
-    empty.append(el("span", "", t("recommendEmptyHint")));
+    const empty = el("div", "state-note");
+    empty.append(bi("recommendEmpty"), el("br"), bi("recommendEmptyHint"));
     list.append(empty);
   }
   for (const app of apps) {
-    const card = el("article", "app");
-    const main = el("div", "app-main");
-    const nameRow = el("div", "name-row");
-    nameRow.append(el("h3", "name", app.name || ""));
-    nameRow.append(chip(app.macAppStore ? "restored" : "cached", modeLabel(app.suggestedMode)));
-    const reason = recommendReason(app);
-    main.append(nameRow, el("div", "meta", [bytes(app.sizeBytes), app.bundleId || ""].filter(Boolean).join(" · ")));
-    if (reason) main.append(el("div", "recommend-reason", reason));
+    const row = el("article", "rec-row");
+    const who = el("div", "app-cell");
+    who.append(appIcon(app.name));
+    const words = el("div", "app-words");
+    const nameLine = el("div", "rec-name");
+    nameLine.append(el("h3", "app-name", app.name || ""), pill(app.macAppStore ? "amber" : "blue", modeKeyFor(app.suggestedMode)));
+    words.append(nameLine, el("div", "app-meta", [bytes(app.sizeBytes), app.bundleId || ""].filter(Boolean).join(" · ")));
+    const reason = recommendReason(app, primary);
+    if (reason) words.append(biPair(reason, recommendReason(app, secondary), "rec-reason"));
     const command = packCommand(app.path);
-    main.append(el("code", "inline-command", command));
+    words.append(el("code", "inline-command", command));
+    who.append(words);
     const actions = el("div", "actions");
     actions.append(actionButton({
-      label: t("copyCommand"),
-      name: t("copyCommandFor", app.name),
+      labelKey: "copyCommand",
+      name: both("copyCommandFor", app.name),
       icon: iconCopy,
+      className: "outline",
       onClick: async () => {
-        if (await copyText(command)) toast(t("copied", app.name), "ok");
-        else toast(t("copyFailed"), "error");
+        if (await copyText(command)) toast({ title: bi("copied", app.name), tone: "ok" });
+        else toast({ title: bi("copyFailed"), tone: "error" });
       },
     }));
-    card.append(appIcon(app.name), main, actions);
-    list.append(card);
+    row.append(who, actions);
+    list.append(row);
   }
   const poor = report.warnings || [];
   warnTitle.hidden = poor.length === 0;
   for (const app of poor) {
-    const item = el("li");
-    const top = el("div", "session-top");
-    top.append(el("div", "name", app.name || ""), chip("warn", modeLabel(app.suggestedMode)));
-    item.append(top, el("div", "path", app.path || ""), el("p", "preview", recommendReason(app)));
+    const item = el("li", "poor-row");
+    const top = el("div", "rec-name");
+    top.append(el("span", "app-name", app.name || ""), pill("grey", modeKeyFor(app.suggestedMode)));
+    item.append(top, el("div", "mono path", app.path || ""), biPair(recommendReason(app, primary), recommendReason(app, secondary), "rec-reason"));
     warnings.append(item);
   }
   renderLeftovers(report);
 }
 
-// ---- devices, sessions, onboarding ---------------------------------------
+// ---- devices, onboarding --------------------------------------------------
 
 function setFold(id, countId, count) {
   const fold = document.querySelector(id);
-  setText(document.querySelector(countId), count ? String(count) : t("countNone"));
+  const counter = document.querySelector(countId);
+  counter.replaceChildren(count ? document.createTextNode(String(count)) : bi("countNone"));
   fold.classList.toggle("is-empty", !count);
   // Open the section the first time it has content; afterwards respect the user's toggle.
   const had = folds[id];
@@ -1225,51 +1656,36 @@ function renderDevices(status) {
   const summary = document.querySelector("#devices-summary");
   const list = document.querySelector("#devices");
   list.replaceChildren();
+  summary.replaceChildren();
   const devices = (status && status.devices) || [];
   const conflicts = (status && status.deviceConflicts) || [];
   const placeholders = (status && status.devicePlaceholders) || [];
   const notes = [];
-  if (status && devices.length) notes.push(t("devicesSummary", devices.length));
-  if (conflicts.length) notes.push(t("conflictCopies", conflicts.length));
-  if (placeholders.length) notes.push(t("placeholders", placeholders.length));
-  summary.textContent = notes.join(" · ");
+  if (status && devices.length) notes.push(["devicesSummary", devices.length]);
+  if (conflicts.length) notes.push(["conflictCopies", conflicts.length]);
+  if (placeholders.length) notes.push(["placeholders", placeholders.length]);
+  notes.forEach(([key, n], index) => {
+    if (index) summary.append(document.createTextNode(" · "));
+    summary.append(bi(key, n));
+  });
   summary.hidden = !notes.length;
   setFold("#devices-section", "#devices-count", devices.length);
   if (!devices.length) {
-    list.append(el("li", "empty", status ? t("devicesEmpty") : t("loadFailed")));
+    const empty = el("li", "state-note");
+    empty.append(bi(status ? "devicesEmpty" : "loadFailed"));
+    list.append(empty);
     return;
   }
   for (const device of devices) {
-    const item = el("li");
-    const top = el("div", "session-top");
-    top.append(el("div", "name", device.displayName || device.hostname || device.deviceId || ""));
-    if (device.self) top.append(chip("cached", t("thisMac")));
+    const item = el("li", "device-row");
+    const top = el("div", "rec-name");
+    top.append(el("span", "app-name", device.displayName || device.hostname || device.deviceId || ""));
+    if (device.self) top.append(pill("blue", "thisMac"));
     item.append(top);
+    item.append(el("div", "mono path", [device.hostname, device.arch, device.osVersion].filter(Boolean).join(" · ")));
     const images = device.images || [];
     const detail = images.map((image) => `${image.bundleId || image.imageId} ${image.version || ""}`.trim()).join(", ");
-    item.append(el("div", "path", [device.hostname, device.arch, device.osVersion].filter(Boolean).join(" · ")));
-    if (detail) item.append(el("p", "preview", detail));
-    list.append(item);
-  }
-}
-
-function renderSessions(sessions) {
-  const summary = document.querySelector("#sessions-summary");
-  const list = document.querySelector("#sessions");
-  list.replaceChildren();
-  const offloaded = (sessions && sessions.offloaded) || [];
-  summary.textContent = sessions ? [t("coldDays", sessions.coldDays || 14), t("offloaded", offloaded.length)].join(" · ") : "";
-  setFold("#sessions-section", "#sessions-count", offloaded.length);
-  if (!offloaded.length) {
-    list.append(el("li", "empty", t("emptySessions")));
-    return;
-  }
-  for (const entry of offloaded) {
-    const item = el("li");
-    const top = el("div", "session-top");
-    top.append(el("div", "name", entry.tool || ""), chip("cold", tierLabel(entry.tier)));
-    item.append(top, el("div", "path", entry.path || ""));
-    if (entry.preview) item.append(el("p", "preview", entry.preview));
+    if (detail) item.append(el("p", "muted small", detail));
     list.append(item);
   }
 }
@@ -1279,7 +1695,8 @@ function renderOnboarding(status) {
   const show = Boolean(status) && !status.appsError && !((status.apps || []).length);
   hero.hidden = !show;
   const repo = status && status.backend && status.backend.repoPath;
-  setText(document.querySelector("#hero-repo"), repo ? t("heroRepo", repo) : "");
+  const slot = document.querySelector("#hero-repo");
+  slot.replaceChildren(repo ? bi("heroRepo", repo) : document.createTextNode(""));
 }
 
 // ---- load -----------------------------------------------------------------
@@ -1288,21 +1705,20 @@ function render(status) {
   lastStatus = status;
   applyChrome();
   renderOnboarding(status);
-  renderCache(status.cache || {});
-  renderHealth(status.backend || {}, lastLatency);
-  const failed = Boolean(status.appsError);
-  if (failed) showBanner(status.appsError);
-  renderApps(status.apps || [], failed);
+  renderBackend(status.backend || null);
+  renderCache(status.cache || null);
+  if (status.appsError) showBanner(appsErrorCode(status), status.appsError);
+  rerenderApps();
   renderDevices(status);
-  renderSessions(status.sessions || {});
+  renderSessions(status.sessions || null);
 }
 
 function renderFailure() {
   applyChrome();
   renderOnboarding(null);
+  renderBackend(null);
   renderCache(null);
-  renderHealth(null, lastLatency);
-  renderApps([], true);
+  renderApps([], loadError || { code: "offline", message: "" });
   renderDevices(null);
   renderSessions(null);
 }
@@ -1312,60 +1728,61 @@ async function loadRecommendations(rescan) {
   recommendLoading = true;
   renderScanLine();
   try {
-    const report = await api(rescan ? "/api/recommend?rescan=1" : "/api/recommend");
-    lastRecommend = report;
-    recommendError = "";
+    lastRecommend = await api(rescan ? "/api/recommend?rescan=1" : "/api/recommend");
+    recommendError = null;
   } catch (error) {
     if (error.code === "unauthorized") return;
-    recommendError = errorText(error.code, error.message);
+    recommendError = { code: error.code, message: error.message };
   } finally {
     recommendLoading = false;
   }
-  if (lastRecommend) renderRecommend(lastRecommend, "");
+  if (lastRecommend) renderRecommend(lastRecommend, null);
   else renderRecommend(null, recommendError);
 }
 
 async function load() {
   if (expired) return;
-  const started = performance.now();
+  let status;
   try {
-    const status = await api("/api/status");
-    lastLatency = Math.round(performance.now() - started);
-    loadFailed = false;
-    if (!status.appsError) hideBanner();
-    adoptServerJobs(status);
-    render(status);
+    status = await api("/api/status");
   } catch (error) {
     if (error.code === "unauthorized") return;
-    lastLatency = Math.round(performance.now() - started);
-    loadFailed = !lastStatus;
-    showBanner(error.message || String(error));
+    loadError = { code: error.code, message: error.message };
+    showBanner(error.code, error.message);
     if (!lastStatus) renderFailure();
-    else renderHealth(Object.assign({}, lastStatus.backend, { health: "offline" }), lastLatency);
+    else renderBackend(Object.assign({}, lastStatus.backend, { health: "offline", latencyMs: null }));
+    return;
   }
+  loadError = null;
+  updatedAt = Date.now();
+  if (!status.appsError) hideBanner();
+  adoptServerJobs(status);
+  render(status);
 }
 
 function refresh() {
   // Coalesce overlapping refreshes instead of a page-wide busy flag; actions run independently.
   if (!refreshing) {
-    refreshing = Promise.all([load(), loadRecommendations(false)]).finally(() => { refreshing = null; });
+    const button = document.querySelector("#refresh");
+    button.setAttribute("aria-busy", "true");
+    refreshing = Promise.all([load(), loadRecommendations(false)]).finally(() => {
+      refreshing = null;
+      button.removeAttribute("aria-busy");
+    });
   }
   return refreshing;
 }
 
-function rerenderAll() {
-  if (lastStatus) render(lastStatus);
-  else if (loadFailed) renderFailure();
-  else applyChrome();
-  if (lastRecommend) renderRecommend(lastRecommend, "");
-  else if (recommendError) renderRecommend(null, recommendError);
-  else renderScanLine();
+/// Retry asks for a fresh backend probe first, so a recovered backend shows at once.
+async function retryNow() {
+  try { await api("/api/health?fresh=1"); } catch (e) {}
+  return refresh();
 }
 
 // ---- wiring ---------------------------------------------------------------
 
 document.querySelector("#refresh").addEventListener("click", refresh);
-document.querySelector("#retry").addEventListener("click", refresh);
+document.querySelector("#retry").addEventListener("click", retryNow);
 document.querySelector("#rescan").addEventListener("click", () => loadRecommendations(true));
 document.querySelector("#icon-backfill").addEventListener("click", async (event) => {
   const button = event.currentTarget;
@@ -1375,34 +1792,14 @@ document.querySelector("#icon-backfill").addEventListener("click", async (event)
   try {
     const report = await api("/api/icons/backfill", { method: "POST" });
     const warnings = report.warnings || [];
-    if (warnings.length) toast(warnings.join("; "), "error");
+    if (warnings.length) toast({ title: bi("backfillIcons"), error: { code: "failed", message: warnings.join("; ") }, tone: "error" });
     await load();
   } catch (error) {
-    if (error.code !== "unauthorized") toast(errorText(error.code, error.message), "error");
+    if (error.code !== "unauthorized") toast({ title: bi("backfillIcons"), error: { code: error.code, message: error.message }, tone: "error" });
   } finally {
     button.removeAttribute("aria-busy");
     button.disabled = false;
   }
-});
-document.querySelector("#lang").addEventListener("click", () => {
-  lang = lang === "zh" ? "en" : "zh";
-  try { localStorage.setItem("isenough.lang", lang); } catch (e) {}
-  rerenderAll();
-});
-const themeGroup = document.querySelector("#theme");
-themeGroup.addEventListener("click", (event) => {
-  const button = event.target.closest("[role=radio]");
-  if (button) applyTheme(button.dataset.themeValue);
-});
-themeGroup.addEventListener("keydown", (event) => {
-  const keys = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 };
-  if (!(event.key in keys)) return;
-  event.preventDefault();
-  const radios = [...themeGroup.querySelectorAll("[role=radio]")];
-  const index = radios.findIndex((item) => item.dataset.themeValue === currentTheme());
-  const next = radios[(index + keys[event.key] + radios.length) % radios.length];
-  applyTheme(next.dataset.themeValue);
-  next.focus();
 });
 document.querySelector("#search").addEventListener("input", (event) => {
   view.search = event.target.value;
@@ -1425,9 +1822,11 @@ document.addEventListener("keydown", (event) => {
 setInterval(() => {
   if (document.visibilityState === "visible" && !expired) refresh();
 }, REFRESH_MS);
+setInterval(renderUpdated, TICK_MS);
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && !expired) refresh();
 });
 
 applyChrome();
+document.querySelector("#app-list").replaceChildren(skeleton(3));
 refresh();

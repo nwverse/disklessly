@@ -44,8 +44,8 @@ Section heading + right summary `N 个应用 · M 个已缓存 X GiB · K 个已
 
 ## 会话分层 Session tiers
 
-Summary `14 天未用转冷 Cold after 14 days · 已卸载 N 个 offloaded`. Rows: tier pill (`冷 Cold` grey,
-`温 Warm` amber), app, document path (monospace), relative age (`21 天前`).
+Summary `14 天未用转冷 Cold after 14 days · 已卸载 N 个 offloaded`. Rows: tier pill (`冷 Cold` grey;
+only cold files are archived, so there is no warm tier), app, document path (monospace), relative age (`21 天前`).
 
 ## States (must exist in the real page)
 
