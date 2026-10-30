@@ -209,6 +209,9 @@ public struct IsenoughEngine {
     public var packUsageOverride: ((String) -> UsageClass)?
     /// Replaces `SHA256Digest.hexFile` for prefetch. Nil hashes the file.
     public var hasherOverride: ((URL) throws -> String)?
+    /// Replaces the disk-image tool and process probe for `detach` and the
+    /// orphan mount reaper. Nil uses `MountOps.live`.
+    public var mountOpsOverride: MountOps? = nil
     /// Test hook. Called with a point name such as `pack.swapped` or
     /// `unpack.installed.beforeMutation`; a throw there is an ordinary failure,
     /// not a simulated crash. Production leaves it nil.
@@ -596,25 +599,31 @@ public struct IsenoughEngine {
     }
     /// True when `path` is a live mount point. Launch leaves an empty folder behind
     /// after detach, so a folder that merely exists does not mean "mounted".
+    /// The parent is resolved first: through a symlinked parent, lstat of the
+    /// link itself would report the link's device, not the target folder's.
     static func isActiveMountPoint(_ path: String) -> Bool {
+        let name = (path as NSString).lastPathComponent
+        guard !name.isEmpty, name != "/", let real = realpath((path as NSString).deletingLastPathComponent, nil) else { return false }
+        let parentPath = String(cString: real)
+        free(real)
+        let child = (parentPath as NSString).appendingPathComponent(name)
         var mount = stat(), parent = stat()
-        guard lstat(path, &mount) == 0, lstat((path as NSString).deletingLastPathComponent, &parent) == 0 else { return false }
+        guard lstat(child, &mount) == 0, lstat(parentPath, &parent) == 0 else { return false }
         return mount.st_dev != parent.st_dev
     }
-    public func evict(_ manifest: ImageManifest) throws {
-        if let reason=restore.blockReason(appId: manifest.bundleId) { throw IsenoughError.busy(reason) }
+    /// design §4: refuses a pinned app unless `force`, and a mounted or in-use
+    /// image even with `force` (EX_BUSY). See `evictRefusal`.
+    public func evict(_ manifest: ImageManifest, force: Bool = false) throws {
+        if let refusal = evictRefusal(manifest, force: force) { throw refusal.error }
         let path=URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
         guard FileManager.default.fileExists(atPath: path.path) else { return }
-        // design §7: evict refuses a mounted or in-use image (EX_BUSY).
-        if let item = scanCache(justUsed: nil, now: Date()).items.first(where: { $0.imageId == manifest.imageId }), item.mounted || item.inUse {
-            throw IsenoughError.busy("\(manifest.name) is mounted or in use; quit it and try again")
-        }
         try FileManager.default.removeItem(at: path)
     }
     public func gc(now: Date = Date(), includeLegacy: Bool = false) throws -> [String] {
         var lines = try recoverPackJournals()
         lines.append(contentsOf: try recoverUnpackJournals())
         lines.append(contentsOf: try maintain(now: now, includeLegacy: includeLegacy).lines)
+        lines.append(contentsOf: reapOrphanMounts(deep: false).actionLines)
         let enforced = try enforceCacheQuota(justUsed: nil, now: now)
         lines.append(contentsOf: enforced.lines)
         return lines
@@ -893,6 +902,9 @@ public struct IsenoughEngine {
         let app=mount.appendingPathComponent(manifest.image.appPathInVolume)
         let state=StateStore(config.stateDir)
         var handOff = false
+        // Held from attach until supervision ends so the reaper never takes a live mount.
+        var lease: MountLease?
+        defer { lease?.release() }
         try restore.withLock(manifest.bundleId) {
             let recorded = state.load().apps[manifest.bundleId]?.mountPoint
             let info = ProcessRunner.capture("/usr/bin/hdiutil", ["info", "-plist"])
@@ -905,15 +917,23 @@ public struct IsenoughEngine {
                 if busy { handOff = true }
                 return
             }
+            lease = MountLease.acquire(stateDir: config.stateDir, name: manifest.imageId, waitSeconds: 0.5)
             try LiveDiskImage.attach(image: image, mountPoint: mount)
             try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"running",mountPoint:mount.path)
             let built = OpenInvocation.arguments(app: app.path, documents: documents, urls: urls, arguments: arguments, alreadyRunning: false)
             try run(built.argv[0], Array(built.argv.dropFirst()))
         }
+        // Opportunistic, and only once the user's app is open: images a crashed
+        // watcher left attached. Fast scan; a recently failed detach is not retried.
+        // This process still holds the lease, so its own mount stays excluded.
+        for line in reapOrphanMounts(deep: false, excluding: [manifest.imageId], retryAfter: 600).actionLines {
+            FileHandle.standardError.write(Data("isenough: \(line)\n".utf8))
+        }
         if handOff { return }
         if !wait {
             // design: `--no-wait` returns once the app runs; a detached supervisor
             // still detaches the image after the app quits.
+            // The watcher blocks on the lease until this process returns and lets go.
             do { _ = try ProcessRunner.spawnWatch(appId: manifest.bundleId, stateDir: config.stateDir) }
             catch { FileHandle.standardError.write(Data("isenough: could not start the detach supervisor: \(error)\n".utf8)) }
             return
@@ -966,6 +986,8 @@ public struct IsenoughEngine {
               let imageId = record.imageId, let mountPath = record.mountPoint,
               let manifest = try list().first(where: { $0.imageId == imageId }), manifest.mode == .mount else { return }
         let mount = URL(fileURLWithPath: mountPath)
+        var lease = MountLease.acquire(stateDir: config.stateDir, name: imageId)
+        defer { lease?.release() }
         try superviseMount(manifest, app: mount.appendingPathComponent(manifest.image.appPathInVolume), mount: mount)
     }
     private func run(_ path:String,_ args:[String]) throws {

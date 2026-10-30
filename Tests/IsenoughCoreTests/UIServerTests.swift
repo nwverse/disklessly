@@ -88,6 +88,15 @@ final class UIServerTests: XCTestCase {
         XCTAssertEqual(pin["state"] as? String, "done")
         let pinned = StateStore(config.stateDir).read()["apps"] as? [String: [String: Any]]
         XCTAssertEqual(pinned?["com.test.app"]?["pinned"] as? Bool, true)
+        // design §4: evict refuses a pinned app; the dashboard disables Evict
+        // while pinned, and the job's error names no CLI-only flag.
+        let refused = try runJob(port: server.port, path: "/api/evict", token: "page-token", app: "Test")
+        XCTAssertEqual(refused["state"] as? String, "failed")
+        XCTAssertEqual((refused["error"] as? [String: Any])?["code"] as? String, "busy")
+        XCTAssertFalse(((refused["error"] as? [String: Any])?["message"] as? String ?? "--force").contains("--force"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cached.path))
+        let unpin = try runJob(port: server.port, path: "/api/unpin", token: "page-token", app: "Test")
+        XCTAssertEqual(unpin["state"] as? String, "done")
         let evict = try runJob(port: server.port, path: "/api/evict", token: "page-token", app: "Test")
         XCTAssertEqual(evict["state"] as? String, "done")
         XCTAssertFalse(FileManager.default.fileExists(atPath: cached.path))

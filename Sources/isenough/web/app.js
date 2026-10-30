@@ -124,6 +124,7 @@ const copy = {
     evict: "清除缓存",
     evictDisabled: "清除缓存，目前没有缓存",
     evictMounted: "清除缓存，应用正在使用，退出后再试",
+    evictPinned: "清除缓存，应用已固定，先取消固定",
     more: "更多",
     moreFor: (name) => `${name} 的更多操作`,
     restore: "临时还原",
@@ -309,6 +310,7 @@ const copy = {
     evict: "Evict cache",
     evictDisabled: "Evict cache, nothing cached",
     evictMounted: "Evict cache, the app is in use; quit it first",
+    evictPinned: "Evict cache, the app is pinned; unpin it first",
     more: "More",
     moreFor: (name) => `More actions for ${name}`,
     restore: "Restore temporarily",
@@ -954,7 +956,7 @@ function renderApps(list, failed) {
     const pinKind = app.pinned ? "unpin" : "pin";
     const pin = actionButton({ label: app.pinned ? t("unpin") : t("pin"), icon: iconPin, busy: isBusy("pin") || isBusy("unpin"), disabled: busy, onClick: () => startJob(pinKind, app) });
     pin.setAttribute("aria-pressed", String(Boolean(app.pinned)));
-    const evict = actionButton({ label: t("evict"), name: !app.cached ? t("evictDisabled") : app.mounted ? t("evictMounted") : t("evict"), icon: iconTrash, className: "danger-quiet", busy: isBusy("evict"), disabled: busy || !app.cached || Boolean(app.mounted), onClick: () => confirmAction("evict", app) });
+    const evict = actionButton({ label: t("evict"), name: !app.cached ? t("evictDisabled") : app.mounted ? t("evictMounted") : app.pinned ? t("evictPinned") : t("evict"), icon: iconTrash, className: "danger-quiet", busy: isBusy("evict"), disabled: busy || !app.cached || Boolean(app.mounted) || Boolean(app.pinned), onClick: () => confirmAction("evict", app) });
     for (const [kind, node] of [["launch", open], ["prefetch", prefetch], ["pin", pin], ["evict", evict]]) node.dataset.key = `${app.name}:${kind}`;
     actions.append(open, prefetch, pin, evict, overflowMenu(app, busy));
     card.append(appIcon(app.name, app.imageId), main, actions);

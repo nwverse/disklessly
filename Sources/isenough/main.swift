@@ -22,14 +22,15 @@ Use offloaded apps
   launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
   restore APP                     launch with restore mode forced
   resolve APP --keep-updated|--trust|--export DIR|--discard
-  prefetch APP | pin APP | unpin APP | evict APP
+  prefetch APP | pin APP | unpin APP | evict APP [--force]
+  detach APP [--force]            eject a mount-mode app's image now (refused while it runs)
 
 Bring an app back
   unpack APP [--to DIR]           put the real app back in place of its stub (or copy it to DIR)
 
 Keep things tidy
   gc [--dry-run] [--include-legacy]
-  evict-local | cleanup-backups | doctor [--fix]
+  evict-local | cleanup-backups | doctor [--fix] | reap [--dry-run]
   install-engine | stub refresh --app ID | icons backfill [--app ID]
 
 Repos and Macs
@@ -46,7 +47,9 @@ Other
 
 gc replays local journals, applies the repo garbage rules, and enforces the cache quota.
 gc --dry-run prints trash candidates, legacy images, and cache LRU victims and changes nothing.
-doctor --fix replays local unpack and restore journals only.
+doctor --fix replays local unpack and restore journals and reaps orphan mounts.
+reap detaches idle images left attached under the mount root (e.g. after a watcher crash).
+evict --force only overrides a pin; a mounted or running image is always refused.
 --json is accepted before or after the command. Without it, output is meant for people.
 Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
   ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,
@@ -166,6 +169,40 @@ func stubImageId(_ name: String) -> String? {
           let imageId = object["imageId"] as? String, !imageId.isEmpty else { return nil }
     return imageId
 }
+/// Stable machine key for a refusal, printed as `error.reason` with `--json`.
+var errorReason: String?
+func refuse(_ refusal: LifecycleRefusal) throws -> Never {
+    errorReason = refusal.reason
+    throw refusal.error
+}
+/// `APP [--force]`: the app name and whether `--force` was given.
+func appAndForce(_ command: String, _ args: [String]) throws -> (String, Bool) {
+    var name: String?
+    var force = false
+    for arg in args {
+        if arg == "--force" { force = true }
+        else if arg.hasPrefix("--") { throw IsenoughError.usage("Unknown option: \(arg)") }
+        else if name == nil { name = arg }
+        else { throw IsenoughError.usage("\(command) takes one app") }
+    }
+    guard let name else { throw IsenoughError.usage("\(command) requires app") }
+    return (name, force)
+}
+func exitName(_ code: Int) -> String {
+    switch code {
+    case 1: "EX_FAILURE"
+    case 2: "EX_USAGE"
+    case 3: "EX_UNSUPPORTED"
+    case 4: "EX_BACKEND"
+    case 5: "EX_INTEGRITY"
+    case 6: "EX_DISKIMAGE"
+    case 8: "EX_NOSPACE"
+    case 9: "EX_BUSY"
+    case 10: "EX_HOOK"
+    case 14: "EX_RESOLUTION"
+    default: "EX_FAILURE"
+    }
+}
 func find(_ name:String) throws -> ImageManifest {
     let manifests = try engine.list()
     if let imageId = stubImageId(name), let m = manifests.first(where: { $0.imageId == imageId }) { return m }
@@ -250,10 +287,30 @@ do {
         try engine.setPinned(manifest, pinned: command=="pin")
         say(["ok":true,"pinned":command=="pin"], CLIText.pinned(manifest, pinned: command=="pin"))
     case "evict":
-        guard let n=args.first else { throw IsenoughError.usage("evict requires app") }
+        let (n, force) = try appAndForce("evict", args)
         let manifest=try find(n)
-        try engine.evict(manifest)
+        if let refusal = engine.evictRefusal(manifest, force: force) { try refuse(refusal) }
+        try engine.evict(manifest, force: force)
         say(["ok":true], CLIText.evicted(manifest))
+    case "detach":
+        let (n, force) = try appAndForce("detach", args)
+        let manifest=try find(n)
+        if let refusal = engine.detachRefusal(manifest) { try refuse(refusal) }
+        let report = try engine.detach(manifest, force: force)
+        let text = report.outcome == .detached ? "Detached \(manifest.name)'s disk image from \(report.mountPoint)." : "\(manifest.name)'s disk image is not mounted."
+        say(["ok":true,"outcome":report.outcome.rawValue,"mountPoint":report.mountPoint,"forced":report.forced], text)
+    case "reap":
+        var dryRun = false
+        while let flag = args.first {
+            args.removeFirst()
+            if flag == "--dry-run" { dryRun = true }
+            else if flag == "--help" || flag == "-h" { usage() }
+            else { throw IsenoughError.usage("Unknown option: \(flag)") }
+        }
+        let report = engine.reapOrphanMounts(dryRun: dryRun)
+        if json { emit(report.jsonObject()) }
+        else { print(report.lines.isEmpty ? "no orphan mounts" : report.lines.joined(separator: "\n")) }
+        if !report.failed.isEmpty { exit(6) }
     case "evict-local":
         let files = engine.materialFiles()
         let eviction = engine.evictLocalCopies()
@@ -467,11 +524,15 @@ do {
         serveUntilSignaled(ui)
     case "serve": throw IsenoughError.unsupported("serve is not available in this build; use isenough ui")
     case "daemon": throw IsenoughError.unsupported("daemon is not available in this build")
-    case "detach", "trust": throw IsenoughError.unsupported("\(command) is not available in this build")
+    case "trust": throw IsenoughError.unsupported("\(command) is not available in this build")
     default: throw IsenoughError.usage(command.hasPrefix("--") ? "Unknown option: \(command)" : "Unknown command: \(command)")
     }
 } catch let e as IsenoughError {
-    if json { emit(["ok":false,"error":["code":e.exitCode,"message":e.errorDescription ?? String(describing: e)]]) }
+    if json {
+        var detail: [String: Any] = ["code":e.exitCode,"name":exitName(e.exitCode),"message":e.errorDescription ?? String(describing: e)]
+        if let errorReason { detail["reason"] = errorReason }
+        emit(["ok":false,"error":detail])
+    }
     else { fputs("isenough: \(e.errorDescription ?? String(describing:e))\n",stderr) }
     exit(Int32(e.exitCode))
 } catch {

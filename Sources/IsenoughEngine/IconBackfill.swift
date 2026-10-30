@@ -122,6 +122,9 @@ extension IsenoughEngine {
         case .onDiskApp(let path):
             app = URL(fileURLWithPath: path)
         case .diskImage(let path):
+            // Keeps the orphan reaper off this mount while it is in use.
+            var lease = MountLease.tryAcquire(stateDir: config.stateDir, name: ".icon-\(job.imageId)")
+            defer { lease?.release() }
             guard let mounted = mountReadOnly(image: URL(fileURLWithPath: path), imageId: job.imageId) else {
                 return "\(job.imageId): could not attach the disk image read-only"
             }

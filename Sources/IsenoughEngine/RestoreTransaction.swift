@@ -649,6 +649,10 @@ public final class RestoreCoordinator {
 
     private func phaseExtracted(_ journal: inout RestoreJournal, manifest: ImageManifest) throws {
         let mountPoint = URL(fileURLWithPath: config.mountRoot).appendingPathComponent("restore-\(journal.txid)")
+        // Held from before attach until this phase ends, so the orphan reaper
+        // never detaches the extraction mount even if the journal is unreadable.
+        var lease = MountLease.acquire(stateDir: config.stateDir, name: "restore-\(journal.txid)", waitSeconds: 0.5)
+        defer { lease?.release() }
         journal.mountPath = mountPoint.path
         try JournalStore.save(journal, stateDir: config.stateDir)
         let mounted = try services.attach(URL(fileURLWithPath: journal.imagePath), mountPoint)
