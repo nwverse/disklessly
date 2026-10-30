@@ -1,35 +1,105 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-Hans">
+<head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
 <title>256isenough</title>
+<script>
+(function () {
+  try {
+    var params = new URLSearchParams(location.search);
+    var theme = params.get("theme");
+    if (theme !== "light" && theme !== "dark" && theme !== "system") theme = localStorage.getItem("isenough.theme");
+    if (theme === "light" || theme === "dark") document.documentElement.setAttribute("data-theme", theme);
+    var lang = params.get("lang");
+    if (lang !== "zh" && lang !== "en") lang = localStorage.getItem("isenough.lang") || "zh";
+    document.documentElement.lang = lang === "en" ? "en" : "zh-Hans";
+  } catch (e) {}
+})();
+</script>
 <link rel="stylesheet" href="style.css">
-<main>
-  <header>
-    <h1>256isenough</h1>
-    <button id="refresh" type="button">Refresh</button>
+</head>
+<body>
+<div class="window">
+  <a class="skip" id="skip" href="#apps"></a>
+  <header class="toolbar">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">256</div>
+      <div>
+        <h1>256isenough</h1>
+        <p class="sub" id="subtitle">把冷门 App 放到远端，本机只留一个入口</p>
+      </div>
+    </div>
+    <div class="toolbar-actions">
+      <button id="lang" type="button">English</button>
+      <button id="theme" type="button">跟随系统</button>
+      <button id="refresh" type="button" class="primary">刷新</button>
+    </div>
   </header>
-  <section>
-    <h2>Backend</h2>
-    <p id="backend">Loading…</p>
+  <div id="banner" class="banner" role="alert" hidden>
+    <p id="banner-text"></p>
+    <button id="retry" type="button">重试</button>
+  </div>
+  <div class="grid">
+    <article class="card" id="cache-card" data-level="ok">
+      <div class="card-head">
+        <h2 id="cache-title">缓存用量</h2>
+        <p class="near" id="near" hidden></p>
+      </div>
+      <div id="cache-body" aria-busy="true">
+        <div class="skeleton sk-lg"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton sk-short"></div>
+      </div>
+    </article>
+    <article class="card" id="health-card" data-level="offline">
+      <h2 id="health-title">后端</h2>
+      <div id="health-body" aria-busy="true">
+        <div class="skeleton sk-lg"></div>
+        <div class="skeleton"></div>
+        <div class="skeleton sk-short"></div>
+      </div>
+    </article>
+  </div>
+  <section class="card" id="apps">
+    <div class="section-head">
+      <h2 id="apps-title">应用</h2>
+      <button id="icon-backfill" type="button">补齐图标</button>
+    </div>
+    <div id="app-list" class="apps" aria-busy="true">
+      <div class="skeleton sk-row"></div>
+      <div class="skeleton sk-row"></div>
+    </div>
   </section>
-  <section>
-    <h2>Cache</h2>
-    <p id="cache"></p>
-    <div class="bar"><div id="cache-fill"></div></div>
+  <section class="card" id="devices-section">
+    <div class="section-head">
+      <h2 id="devices-title">设备</h2>
+    </div>
+    <p id="devices-summary" class="muted"></p>
+    <ul id="devices" class="sessions"></ul>
   </section>
-  <section>
-    <h2>Offloaded apps</h2>
-    <table>
-      <thead><tr><th>App</th><th>Mode</th><th>Cache</th><th></th></tr></thead>
-      <tbody id="apps"></tbody>
-    </table>
+  <section class="card" id="recommend-section">
+    <div class="section-head">
+      <h2 id="recommend-title">值得卸载</h2>
+    </div>
+    <p id="recommend-summary" class="muted"></p>
+    <div id="recommend-list" class="apps" aria-busy="true">
+      <div class="skeleton sk-row"></div>
+    </div>
+    <h3 id="recommend-warn-title" class="warn-title" hidden>不建议卸载</h3>
+    <ul id="recommend-warnings" class="sessions"></ul>
+    <p id="recommend-leftovers" class="muted" hidden></p>
+    <ul id="recommend-leftover-paths" class="sessions" hidden></ul>
   </section>
-  <section>
-    <h2>Session tiers</h2>
-    <p id="sessions-summary"></p>
-    <ul id="sessions"></ul>
+  <section class="card" id="sessions-section">
+    <div class="section-head">
+      <h2 id="sessions-title">冷会话</h2>
+    </div>
+    <p id="sessions-summary" class="muted"></p>
+    <ul id="sessions" class="sessions"></ul>
   </section>
-  <p id="error" class="error"></p>
-</main>
+</div>
 <script type="module" src="app.js"></script>
+</body>
+</html>

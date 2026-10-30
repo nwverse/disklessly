@@ -57,16 +57,9 @@ public enum CacheFetcher {
         } else if FileManager.default.fileExists(atPath: partial.path) {
             try FileManager.default.removeItem(at: partial)
         }
-        let body = try backend.getResumable(remote, offset: offset)
-        if body.restart || offset == 0 {
-            try body.data.write(to: partial, options: .atomic)
-            return body.restart ? false : resumed
-        }
-        let handle = try FileHandle(forWritingTo: partial)
-        defer { try? handle.close() }
-        try handle.seekToEnd()
-        try handle.write(contentsOf: body.data)
-        return true
+        let fetched = try backend.download(remote, to: partial, offset: offset)
+        if fetched.restart { return false }
+        return resumed
     }
 
     private static func matches(_ url: URL, expectedSize: UInt64, expectedSHA256: String) throws -> Bool {

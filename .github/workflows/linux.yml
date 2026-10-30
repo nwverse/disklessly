@@ -1,0 +1,26 @@
+name: Linux
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      matrix:
+        swift: ["5.10", "6.1"]
+    container: swift:${{ matrix.swift }}-jammy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SQLite headers
+        run: apt-get update && apt-get install -y libsqlite3-dev g++
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test --parallel

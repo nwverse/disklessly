@@ -12,26 +12,48 @@ public enum ManagementUI {
     public static func dashboard(_ engine: IsenoughEngine) -> [String: Any] {
         var apps: [[String: Any]] = []
         var appsError = ""
-        let state = StateStore(engine.config.stateDir).read()
+        let loaded = StateStore(engine.config.stateDir).load()
+        let state = loaded.dictionary()
         let stored = state["apps"] as? [String: [String: Any]] ?? [:]
-        do {
-            for manifest in try engine.list() {
+        let loadedApps = UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> (DeviceListing?, [ImageManifest], String) in
+            let listing = try? engine.deviceListing(createLocal: false)
+            do {
+                return (listing, try engine.list(), "")
+            } catch {
+                return (listing, [], (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+            }
+        }
+        let listing = loadedApps.0
+        let deviceRows = listing?.devices ?? []
+        let manifests = loadedApps.1
+        appsError = loadedApps.2
+        for manifest in manifests {
                 let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
                 let exists = FileManager.default.fileExists(atPath: cached.path)
                 let size = exists ? ((try? cached.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init) ?? 0) : 0
+                let restoredMap = state["restored"] as? [String: Any] ?? [:]
+                let appState = stored[manifest.bundleId]?["state"] as? String ?? ""
+                let restored = restoredMap[manifest.bundleId] != nil || appState == "restored" || appState == "needsResolution"
+                let holders = deviceRows.filter { device in
+                    device.images.contains { $0.imageId == manifest.imageId }
+                }.map(\.displayName)
                 apps.append([
                     "imageId": manifest.imageId,
                     "bundleId": manifest.bundleId,
                     "name": manifest.name,
                     "version": manifest.version,
+                    "build": manifest.build,
+                    "architectures": manifest.architectures,
                     "mode": manifest.mode.rawValue,
                     "pinned": stored[manifest.bundleId]?["pinned"] as? Bool ?? false,
                     "cached": exists,
+                    "remote": !exists,
+                    "restored": restored,
+                    "state": appState,
                     "cachedBytes": NSNumber(value: size),
+                    "devices": holders,
+                    "iconPath": AppIcon.existingPath(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: manifest.imageId) ?? "",
                 ])
-            }
-        } catch {
-            appsError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
         }
         let index = (try? SessionArchive.loadIndex(engine.config.stateDir)) ?? SessionIndex()
         let formatter = ISO8601DateFormatter()
@@ -55,12 +77,15 @@ public enum ManagementUI {
                 "url": endpoint.url ?? "",
             ]
         }
+        let health = backendHealth(engine)
         return [
             "ok": true,
             "backend": [
                 "kind": engine.config.backend,
                 "activeId": engine.config.activeBackendId ?? "",
                 "repoPath": engine.config.repoPath,
+                "health": health.status,
+                "healthDetail": health.detail,
                 "endpoints": endpoints,
             ] as [String: Any],
             "cache": [
@@ -71,6 +96,20 @@ public enum ManagementUI {
             ] as [String: Any],
             "apps": apps,
             "appsError": appsError,
+            "devices": deviceRows.map { device in
+                [
+                    "deviceId": device.deviceId,
+                    "displayName": device.displayName,
+                    "hostname": device.hostname,
+                    "arch": device.arch,
+                    "osVersion": device.osVersion,
+                    "lastSeen": formatter.string(from: device.lastSeen),
+                    "self": device.deviceId == listing?.localDeviceId,
+                    "images": device.images.map { ["imageId": $0.imageId, "bundleId": $0.bundleId, "version": $0.version, "architectures": $0.architectures, "mode": $0.mode] },
+                ] as [String: Any]
+            },
+            "devicePlaceholders": listing?.placeholders ?? [],
+            "deviceConflicts": listing?.conflicts ?? [],
             "sessions": [
                 "coldDays": NSNumber(value: engine.config.sessionColdDays),
                 "offloaded": sessions,
@@ -79,21 +118,47 @@ public enum ManagementUI {
     }
 
     private static func api(engine: IsenoughEngine, request: UIRequest) -> UIResponse {
+        if request.method == "GET", request.path.hasPrefix("/api/icon/") {
+            guard let imageId = AppIcon.imageId(apiPath: request.path) else { return .text(404, "not found") }
+            let body = AppIcon.png(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: imageId)
+            return UIResponse(status: 200, contentType: "image/png", body: body)
+        }
         switch (request.method, request.path) {
         case ("GET", "/api/status"):
             return .json(dashboard(engine))
-        case ("POST", "/api/pin"), ("POST", "/api/unpin"), ("POST", "/api/evict"):
+        case ("GET", "/api/recommend"):
+            do {
+                let arguments = try RecommendArguments.parse(query: request.query)
+                return .json(engine.recommend(options: arguments.options()).jsonObject())
+            } catch let error as IsenoughError {
+                return .json(["ok": false, "error": error.errorDescription ?? "bad request"], status: 400)
+            } catch {
+                return .json(["ok": false, "error": error.localizedDescription], status: 400)
+            }
+        case ("POST", "/api/icons/backfill"):
+            do {
+                let report = try engine.backfillIcons(appId: request.query["app"])
+                return .json(["ok": true, "updated": report.updated, "skipped": report.skipped, "warnings": report.warnings])
+            } catch let error as IsenoughError {
+                return .json(["ok": false, "error": error.errorDescription ?? "request failed"], status: 400)
+            } catch {
+                return .json(["ok": false, "error": error.localizedDescription], status: 500)
+            }
+        case ("POST", "/api/pin"), ("POST", "/api/unpin"), ("POST", "/api/evict"), ("POST", "/api/restore"):
             guard let name = appName(request) else { return .json(["ok": false, "error": "app is required"], status: 400) }
             do {
-                guard let manifest = engine.manifest(named: name, in: try engine.list()) else {
+                guard var manifest = engine.manifest(named: name, in: try engine.list()) else {
                     return .json(["ok": false, "error": "Unknown app: \(name)"], status: 404)
                 }
                 if request.path == "/api/evict" {
                     try engine.evict(manifest)
+                } else if request.path == "/api/restore" {
+                    manifest.mode = .restore
+                    try engine.launch(manifest)
                 } else {
                     try engine.setPinned(manifest, pinned: request.path == "/api/pin")
                 }
-                return .json(["ok": true, "app": manifest.name, "pinned": request.path == "/api/pin"])
+                return .json(["ok": true, "app": manifest.name, "pinned": request.path == "/api/pin", "restored": request.path == "/api/restore"])
             } catch let error as IsenoughError {
                 return .json(["ok": false, "error": error.errorDescription ?? "request failed"], status: 400)
             } catch {
@@ -137,6 +202,18 @@ public enum ManagementUI {
             return UIResponse(status: 200, contentType: type, body: Data(html.utf8))
         }
         return UIResponse(status: 200, contentType: type, body: data)
+    }
+
+    private static func backendHealth(_ engine: IsenoughEngine) -> (status: String, detail: String) {
+        do {
+            let backend = try engine.openBackend()
+            if try backend.stat("repo.json") != nil {
+                return ("ok", "")
+            }
+            return ("missing", "repo.json is not in the backend")
+        } catch {
+            return ("offline", (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+        }
     }
 
     private static func directoryBytes(_ path: String) -> UInt64 {

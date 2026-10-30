@@ -159,7 +159,11 @@ public enum BackendFactory {
         case "local", "icloud":
             let path = endpoint.mountPoint ?? endpoint.root
             guard !path.isEmpty else { throw IsenoughError.backend("local backend has no root") }
-            return try LocalFolderBackend(root: URL(fileURLWithPath: path))
+            let url = URL(fileURLWithPath: path)
+            if endpoint.type == "icloud" || ICloudFolderBackend.looksLikeICloud(url) {
+                return try ICloudFolderBackend(root: url)
+            }
+            return try LocalFolderBackend(root: url)
         case "smb", "nfs":
             guard let mount = endpoint.mountPoint, !mount.isEmpty else {
                 throw IsenoughError.backend("\(endpoint.type) backend has no mount point")

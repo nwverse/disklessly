@@ -193,6 +193,7 @@ public enum SessionTiering {
         return formatter.string(from: date)
     }
 
+    @available(*, deprecated, message: "Legacy monthly archive path. v2 segments are write-once and are not addressed by month.")
     public static func archivePath(tool: String, month: String) -> String {
         "sessions/\(tool)/\(month).tar.gz"
     }

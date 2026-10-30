@@ -1,6 +1,12 @@
 import XCTest
 @testable import IsenoughCore
 @testable import IsenoughEngine
+import IsenoughStubSupport
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
 
 /// Filesystem fixture for one restore-mode app. Services are in-process fakes;
 /// the journal, staging directory and bundles are real.
@@ -11,7 +17,7 @@ final class RestoreWorld {
     let bundleID = "com.example.foo"
     var stubBundleID: String { bundleID + ".256stub" }
     let manifest: ImageManifest
-    let engine: IsenoughEngine
+    var engine: IsenoughEngine
     let trace: RestoreTrace
     var probe: UsageClass = .clean
 
@@ -93,9 +99,15 @@ final class RestoreWorld {
                 trace.alive.insert(owner.pid)
                 return owner
             },
-            openApp: { url, _, _, _ in trace.opened.append(url.path) },
+            openApp: { url, docs, urls, _, _ in
+                trace.opened.append(url.path)
+                trace.openedDocuments.append(docs + urls)
+            },
             cdhash: { try BundleHasher.cdhash(of: $0) },
-            treeHash: { try BundleHasher.treeHash(of: $0) },
+            treeHash: {
+                trace.treeHashed.append($0.path)
+                return try BundleHasher.treeHash(of: $0)
+            },
             signatureValid: { trace.signatureValid($0) },
             archiveVerified: { RestoreArchive.verified($0, config: config) },
             buildStub: { dest, journal in try StubRebuilder.write(at: dest, journal: journal, config: config) },
@@ -104,7 +116,8 @@ final class RestoreWorld {
             runHook: { url, env in
                 trace.hooks.append(env["ISENOUGH_PHASE"] ?? "")
                 return try ProcessRunner.runHook(url, env)
-            }
+            },
+            detachWatcher: false
         )
         engine = IsenoughEngine(config: config, services: services, faults: FaultController())
         self.trace = trace
@@ -219,6 +232,8 @@ final class RestoreTrace {
     var alive: Set<Int32> = []
     var spawned: [ProcessOwner] = []
     var opened: [String] = []
+    var openedDocuments: [[String]] = []
+    var treeHashed: [String] = []
     var attached: [URL] = []
     var detached: [URL] = []
     var plantSidecar = false
@@ -249,6 +264,8 @@ final class RestoreTransactionTests: XCTestCase {
         XCTAssertEqual(ProcessProbe.usage(rows: symlinkShown, roots: [privateRoot], selfPid: 30), .busy)
         let watcher = launching + [ProcessRow(pid: 43, ppid: 1, command: "/opt/debug/isenough --state-dir /s hook watch --app io.example.restore")]
         XCTAssertEqual(ProcessProbe.usage(rows: watcher, roots: [root], selfPid: 30), .clean)
+        let opener = launching + [ProcessRow(pid: 44, ppid: 1, command: "/usr/bin/open -n -a \(root)")]
+        XCTAssertEqual(ProcessProbe.usage(rows: opener, roots: [root], selfPid: 30), .clean)
     }
 
     /// Same URL listing `BundleHasher` uses. `subpathsOfDirectory` is not a substitute:
@@ -607,4 +624,344 @@ final class RestoreTransactionTests: XCTestCase {
         XCTAssertNil(world.needsResolution)
         _ = export
     }
+
+    func testParallelTreeHashMatchesSerialOnMixedTree() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("isenough-tree-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        let bundle = root.appendingPathComponent("Fixture.app")
+        try fm.createDirectory(at: bundle.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: bundle.appendingPathComponent("Contents/Resources/realdir"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: bundle.appendingPathComponent("Contents/Resources/emptydir"), withIntermediateDirectories: true)
+        try Data("plist".utf8).write(to: bundle.appendingPathComponent("Contents/Info.plist"))
+        try Data("exe".utf8).write(to: bundle.appendingPathComponent("Contents/MacOS/Fixture"))
+        let empty = bundle.appendingPathComponent("Contents/Resources/empty")
+        try Data().write(to: empty)
+        try Data("nested".utf8).write(to: bundle.appendingPathComponent("Contents/Resources/realdir/file.txt"))
+        try Data("space".utf8).write(to: bundle.appendingPathComponent("Contents/Resources/my file.txt"))
+        let modeFile = bundle.appendingPathComponent("Contents/Resources/mode.txt")
+        try Data("secret".utf8).write(to: modeFile)
+        try fm.setAttributes([.posixPermissions: 0o640], ofItemAtPath: modeFile.path)
+        var big = Data(count: 4 << 20)
+        big.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            for offset in 0..<raw.count {
+                base.advanced(by: offset).storeBytes(of: UInt8(truncatingIfNeeded: offset &* 17), as: UInt8.self)
+            }
+        }
+        let bigURL = bundle.appendingPathComponent("Contents/Resources/wide.bin")
+        try big.write(to: bigURL)
+        for index in 0..<12 {
+            try Data("small-\(index)".utf8).write(to: bundle.appendingPathComponent("Contents/Resources/n\(index).txt"))
+        }
+        XCTAssertEqual(symlink("../empty", bundle.appendingPathComponent("Contents/Resources/realdir/link").path), 0)
+        XCTAssertEqual(symlink("../realdir", bundle.appendingPathComponent("Contents/Resources/alias").path), 0)
+        XCTAssertEqual(symlink("/tmp/isenough-missing-target", bundle.appendingPathComponent("Contents/Resources/absolute").path), 0)
+
+        let legacy = try legacySerialTreeHash(bundle)
+        unsetenv("ISENOUGH_TREE_HASH_WORKERS")
+        let parallel = try BundleHasher.treeHash(of: bundle)
+        XCTAssertEqual(parallel, legacy)
+        XCTAssertEqual(try BundleHasher.treeHash(of: bundle), parallel)
+        setenv("ISENOUGH_TREE_HASH_WORKERS", "1", 1)
+        defer { unsetenv("ISENOUGH_TREE_HASH_WORKERS") }
+        XCTAssertEqual(try BundleHasher.treeHash(of: bundle), legacy)
+
+        let link = root.appendingPathComponent("linked.app")
+        try fm.createSymbolicLink(at: link, withDestinationURL: bundle)
+        XCTAssertEqual(try BundleHasher.treeHash(of: link), legacy)
+
+        XCTAssertEqual(SHA256Digest.hex(Data("abc".utf8)), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+        XCTAssertEqual(SHA256Digest.hex(Data()), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+        XCTAssertEqual(SHA256Digest.Hasher.portableHex(Data("abc".utf8)), SHA256Digest.hex(Data("abc".utf8)))
+        XCTAssertEqual(SHA256Digest.Hasher.portableHex(Data()), SHA256Digest.hex(Data()))
+        XCTAssertEqual(SHA256Digest.Hasher.portableHex(big), SHA256Digest.hex(big))
+        XCTAssertEqual(try SHA256Digest.hexFile(bigURL), SHA256Digest.hex(big))
+        let summed = try Hashing.sha256(bigURL)
+        XCTAssertEqual(summed, SHA256Digest.hex(big))
+    }
+
+    func testLiveRestoreProbeDoesNotRehashTheTree() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        var hashes = 0
+        world.engine.restore.services.treeHash = { url in
+            hashes += 1
+            return try BundleHasher.treeHash(of: url)
+        }
+        world.probe = .clean
+        try world.launch(wait: false)
+        XCTAssertEqual(hashes, 1, "extract verification is the one tree hash before the app is running")
+        world.probe = .busy
+        let joined = try world.recover(wait: false, shortLived: true)
+        XCTAssertEqual(joined, .noop)
+        XCTAssertEqual(hashes, 1, "a busy restored app must not be tree-hashed on each probe")
+        var journal = try XCTUnwrap(world.journals().first)
+        journal.owner = ProcessOwner.current()
+        try JournalStore.save(journal, stateDir: world.engine.config.stateDir)
+        world.trace.alive = []
+        let waiting = try world.recover(wait: false, shortLived: true)
+        XCTAssertEqual(waiting, .waiting("busy"))
+        XCTAssertEqual(hashes, 1)
+        world.probe = .clean
+        world.trace.alive = []
+        let done = try world.recover()
+        switch done {
+        case .idle, .terminal: break
+        default: XCTFail("expected restore-out to finish, got \(done) \(world.debugDump())")
+        }
+        XCTAssertEqual(hashes, 1, "an unchanged tree fingerprint skips the content hash on quit")
+        XCTAssertEqual(world.outcomeName, "restoredOut")
+    }
+
+    /// Rough serial-vs-parallel timing for the PR note. Skipped unless `ISENOUGH_BENCH=1`.
+    func testBenchTreeHashSerialVersusParallel() throws {
+        guard getenv("ISENOUGH_BENCH") != nil else { return }
+        defer { unsetenv("ISENOUGH_TREE_HASH_WORKERS") }
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("isenough-bench-\(UUID().uuidString)")
+        defer { try? fm.removeItem(at: root) }
+        try fm.createDirectory(at: root.appendingPathComponent("nested/deeper"), withIntermediateDirectories: true)
+        let wide = 16 << 20
+        for index in 0..<4 {
+            var data = Data(count: wide)
+            data.withUnsafeMutableBytes { raw in
+                guard let base = raw.baseAddress else { return }
+                for offset in stride(from: 0, to: raw.count, by: 4096) {
+                    base.advanced(by: offset).storeBytes(of: UInt8(truncatingIfNeeded: index &+ offset), as: UInt8.self)
+                }
+            }
+            try data.write(to: root.appendingPathComponent("wide-\(index).bin"))
+        }
+        let small = Data(repeating: 0x5a, count: 8 * 1024)
+        for index in 0..<2000 {
+            try small.write(to: root.appendingPathComponent("nested/deeper/f\(index).dat"))
+        }
+        try Data().write(to: root.appendingPathComponent("nested/empty"))
+        XCTAssertEqual(symlink("empty", root.appendingPathComponent("nested/link").path), 0)
+
+        func time(_ body: () throws -> String) rethrows -> (String, Double) {
+            let start = Date()
+            let digest = try body()
+            return (digest, Date().timeIntervalSince(start))
+        }
+        _ = try BundleHasher.treeHash(of: root)
+        let (legacyDigest, legacySeconds) = try time { try legacySerialTreeHash(root) }
+        setenv("ISENOUGH_TREE_HASH_WORKERS", "1", 1)
+        let (oneDigest, oneSeconds) = try time { try BundleHasher.treeHash(of: root) }
+        unsetenv("ISENOUGH_TREE_HASH_WORKERS")
+        let (parallelDigest, parallelSeconds) = try time { try BundleHasher.treeHash(of: root) }
+        var payload = Data()
+        for index in 0..<4 {
+            payload.append(try Data(contentsOf: root.appendingPathComponent("wide-\(index).bin")))
+        }
+        let portableStart = Date()
+        _ = SHA256Digest.Hasher.portableHex(payload)
+        let portableSeconds = Date().timeIntervalSince(portableStart)
+        print(String(format: "BENCH portable-swift-sha %.3fs legacy-serial %.3fs workers=1 %.3fs parallel %.3fs bytes≈%d cores=%d digest %@", portableSeconds, legacySeconds, oneSeconds, parallelSeconds, 4 * wide + 2000 * small.count, ProcessInfo.processInfo.activeProcessorCount, parallelDigest))
+        XCTAssertEqual(oneDigest, legacyDigest)
+        XCTAssertEqual(parallelDigest, legacyDigest)
+    }
+
+    func testLiveProcessUsingTheBundleIsBusy() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-probe-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let marker = root.appendingPathComponent("Info.plist")
+        try Data("probe\n".utf8).write(to: marker)
+        let app = try DetachedProcess.spawn(
+            executable: "/bin/sh",
+            arguments: ["/bin/sh", "-c", "sleep 60", "isenough-fake-app", root.path],
+            redirectOutput: nil,
+            newSession: true
+        )
+        defer {
+            kill(app, SIGKILL)
+            _ = DetachedProcess.wait(pid: app, timeout: 2)
+        }
+        XCTAssertTrue(waitUntil(5) { ProcessProbe.usage(roots: [root.path]) == .busy })
+        let opener = [ProcessRow(pid: 70, ppid: 1, command: "/usr/bin/open -n -a \(root.path)")]
+        XCTAssertEqual(ProcessProbe.usage(rows: opener, roots: [root.path], selfPid: 1), .clean)
+        kill(app, SIGKILL)
+        _ = DetachedProcess.wait(pid: app, timeout: 5)
+        XCTAssertTrue(waitUntil(5) { ProcessProbe.usage(roots: [root.path]) == .clean })
+    }
+
+    func testDetachedChildHasItsOwnSessionAndDropsTheLock() throws {
+        let sleeper = try DetachedProcess.spawn(
+            executable: "/bin/sh",
+            arguments: ["/bin/sh", "-c", "sleep 60"],
+            redirectOutput: nil,
+            newSession: true
+        )
+        defer {
+            kill(sleeper, SIGKILL)
+            _ = DetachedProcess.wait(pid: sleeper, timeout: 2)
+        }
+        XCTAssertNotEqual(DetachedProcess.sessionID(sleeper), DetachedProcess.sessionID(0))
+        XCTAssertEqual(DetachedProcess.processGroup(sleeper), sleeper)
+        XCTAssertNotEqual(DetachedProcess.processGroup(sleeper), DetachedProcess.processGroup(0))
+
+        let dir = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-lock-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let lockPath = dir.appendingPathComponent("isenough-lock-cloexec.lock").path
+        let listing = dir.appendingPathComponent("fds.txt")
+        var held = FileLock(path: lockPath)
+        XCTAssertTrue(try held.tryLock())
+        let script = "ls -l /proc/self/fd > '\(listing.path)' 2>/dev/null || ls -l /dev/fd > '\(listing.path)'; exec sleep 30"
+        let child = try DetachedProcess.spawn(
+            executable: "/bin/sh",
+            arguments: ["/bin/sh", "-c", script],
+            redirectOutput: nil,
+            newSession: true
+        )
+        defer {
+            kill(child, SIGKILL)
+            _ = DetachedProcess.wait(pid: child, timeout: 2)
+        }
+        XCTAssertTrue(waitUntil(5) { FileManager.default.fileExists(atPath: listing.path) })
+        let listed = (try? String(contentsOf: listing, encoding: .utf8)) ?? ""
+        XCTAssertFalse(listed.contains("isenough-lock-cloexec.lock"), listed)
+        held.unlock()
+        var again = FileLock(path: lockPath)
+        XCTAssertTrue(try again.tryLock())
+        again.unlock()
+    }
+
+    func testFakeAppQuitLetsALaterWatchFinishTheJournal() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        try world.installHook("post-quit", "#!/bin/sh\necho post >> \"$ISENOUGH_STATE_DIR/post-quit.log\"\nexit 0\n")
+        world.arm("active", "afterMutation")
+        XCTAssertThrowsError(try world.launch(wait: true))
+        world.disarm()
+        let journal = try XCTUnwrap(world.journals().first)
+        XCTAssertEqual(journal.phase, .active)
+        XCTAssertFalse(journal.didLaunch)
+        XCTAssertEqual(world.bundleID(at: world.dest), world.bundleID)
+        world.engine.restore.services.probe = { roots in ProcessProbe.usage(roots: roots) }
+        let app = try DetachedProcess.spawn(
+            executable: "/bin/sh",
+            arguments: ["/bin/sh", "-c", "sleep 60", "isenough-fake-app", world.dest.path],
+            redirectOutput: nil,
+            newSession: true
+        )
+        defer {
+            kill(app, SIGKILL)
+            _ = DetachedProcess.wait(pid: app, timeout: 2)
+        }
+        XCTAssertTrue(waitUntil(5) { ProcessProbe.usage(roots: [world.dest.path]) == .busy })
+        let busy = try world.engine.restore.recover(appId: world.bundleID, wait: false, shortLived: true)
+        XCTAssertEqual(busy, .waiting("busy"))
+        XCTAssertEqual(world.journals().first?.owner.pid, 4242)
+        XCTAssertEqual(world.trace.spawned.count, 1)
+        XCTAssertEqual(world.bundleID(at: world.dest), world.bundleID)
+        kill(app, SIGKILL)
+        _ = DetachedProcess.wait(pid: app, timeout: 5)
+        XCTAssertTrue(waitUntil(5) { ProcessProbe.usage(roots: [world.dest.path]) == .clean })
+        world.trace.alive = []
+        try world.assertTerminalStub()
+        XCTAssertEqual(world.outcomeName, "restoredOut")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: world.engine.config.stateDir + "/post-quit.log"))
+        XCTAssertFalse(world.trace.hooks.contains("post-quit"))
+    }
+
+    func testDetachedLaunchHandsOffOnceWhileTheOwnerLives() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        world.engine.restore.services.detachWatcher = true
+        try world.launch(wait: false)
+        XCTAssertEqual(world.trace.spawned.count, 1)
+        XCTAssertEqual(world.journals().first?.owner.pid, 4242)
+        XCTAssertEqual(world.journals().first?.didLaunch, true)
+        XCTAssertEqual(world.journals().first?.phase, .active)
+        try world.launch(wait: false)
+        XCTAssertEqual(world.trace.spawned.count, 1)
+        XCTAssertEqual(world.trace.opened.count, 2)
+        XCTAssertEqual(world.journals().first?.owner.pid, 4242)
+        XCTAssertEqual(world.bundleID(at: world.dest), world.bundleID)
+    }
+
+    func testSecondLaunchWhileActiveForwardsDocuments() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        world.engine.restore.services.detachWatcher = true
+        try world.launch(wait: false)
+        world.trace.probe = .busy
+        try world.engine.launch(world.manifest, documents: ["/tmp/x.txt"], wait: false)
+        XCTAssertEqual(world.trace.opened.count, 2)
+        XCTAssertEqual(world.trace.attached.count, 1)
+        XCTAssertEqual(world.journals().count, 1)
+        XCTAssertEqual(world.trace.openedDocuments.last, ["/tmp/x.txt"])
+        XCTAssertEqual(world.journals().first?.owner.pid, 4242)
+        XCTAssertEqual(world.bundleID(at: world.dest), world.bundleID)
+    }
+
+    private func waitUntil(_ seconds: TimeInterval, _ condition: () -> Bool) -> Bool {
+        let deadline = Date().addingTimeInterval(seconds)
+        while Date() < deadline {
+            if condition() { return true }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        return condition()
+    }
+}
+
+/// Frozen copy of the pre-parallel tree hash: one blob of sorted records, then a single SHA-256.
+private func legacySerialTreeHash(_ root: URL) throws -> String {
+    let start = root.resolvingSymlinksInPath()
+    var files: [URL] = []
+    func collect(_ directory: URL) throws {
+        let fm = FileManager.default
+        let children = try fm.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isSymbolicLinkKey], options: [])
+        for child in children {
+            files.append(child)
+            if DurableIO.isSymlink(child) { continue }
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: child.path, isDirectory: &isDir), isDir.boolValue {
+                try collect(child)
+            }
+        }
+    }
+    try collect(start)
+    var entries: [(relative: String, url: URL)] = []
+    for url in files {
+        guard let relative = BundleHasher.relativePath(url.path, root: start.path) else {
+            throw IsenoughError.failure("cannot relativize \(url.path) under \(start.path)")
+        }
+        guard !relative.isEmpty, !relative.split(separator: "/").contains(".."), !relative.hasPrefix("/") else { continue }
+        entries.append((relative, url))
+    }
+    entries.sort { $0.relative < $1.relative }
+    var blob = Data()
+    func append(_ string: String) { blob.append(Data(string.utf8)) }
+    func mode(_ url: URL) -> String {
+        var st = stat()
+        if lstat(url.path, &st) != 0 { return "000" }
+        return String(st.st_mode & 0o777, radix: 8)
+    }
+    let fm = FileManager.default
+    for entry in entries {
+        let url = entry.url
+        let relative = entry.relative
+        let isLink = DurableIO.isSymlink(url)
+        var isDir: ObjCBool = false
+        if !isLink { _ = fm.fileExists(atPath: url.path, isDirectory: &isDir) }
+        let bits = mode(url)
+        if isLink {
+            let target = (try? fm.destinationOfSymbolicLink(atPath: url.path)) ?? ""
+            append("l \(bits) \(relative)\n")
+            append("target \(target)\n")
+        } else if isDir.boolValue {
+            append("d \(bits) \(relative)\n")
+        } else {
+            let bytes = (try? Data(contentsOf: url)) ?? Data()
+            append("f \(bits) \(relative)\n")
+            append("bytes \(bytes.count)\n")
+            blob.append(bytes)
+            append("\n")
+        }
+    }
+    return SHA256Digest.hex(blob)
 }

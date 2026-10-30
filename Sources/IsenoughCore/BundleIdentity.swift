@@ -1,4 +1,8 @@
 import Foundation
+import Dispatch
+#if canImport(CommonCrypto)
+import CommonCrypto
+#endif
 #if canImport(Glibc)
 import Glibc
 #elseif canImport(Darwin)
@@ -102,123 +106,35 @@ public enum DurableIO {
 }
 
 public enum SHA256Digest {
-    private static let k: [UInt32] = [
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
-    ]
-
-    /// Incremental SHA-256 (portable, no CryptoKit so Linux builds keep working).
-    /// Memory use is constant regardless of how many bytes are fed in.
-    public struct Hasher {
-        private var hash: [UInt32] = [
-            0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-            0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
-        ]
-        private var block = [UInt8](repeating: 0, count: 64)
-        private var blockLen = 0
-        private var total: UInt64 = 0
-        private var w = [UInt32](repeating: 0, count: 64)
-
-        public init() {}
-
-        public mutating func update(_ data: Data) {
-            data.withUnsafeBytes { update($0) }
-        }
-
-        public mutating func update(_ raw: UnsafeRawBufferPointer) {
-            total &+= UInt64(raw.count)
-            var index = 0
-            let count = raw.count
-            if blockLen > 0 {
-                while blockLen < 64 && index < count { block[blockLen] = raw[index]; blockLen += 1; index += 1 }
-                if blockLen == 64 {
-                    block.withUnsafeBufferPointer { compress(UnsafeRawBufferPointer($0), 0) }
-                    blockLen = 0
-                }
-            }
-            while count - index >= 64 {
-                compress(raw, index)
-                index += 64
-            }
-            while index < count { block[blockLen] = raw[index]; blockLen += 1; index += 1 }
-        }
-
-        public mutating func finalize() -> String {
-            let bitCount = total &* 8
-            var tail = [UInt8]()
-            tail.append(0x80)
-            var length = blockLen + 1
-            while length % 64 != 56 { tail.append(0); length += 1 }
-            for shift in stride(from: 56, through: 0, by: -8) { tail.append(UInt8((bitCount >> UInt64(shift)) & 0xff)) }
-            let before = total
-            tail.withUnsafeBytes { update($0) }
-            total = before
-            return hash.map { String(format: "%08x", $0) }.joined()
-        }
-
-        private func rotr(_ value: UInt32, _ bits: UInt32) -> UInt32 { (value >> bits) | (value << (32 - bits)) }
-
-        private mutating func compress(_ bytes: UnsafeRawBufferPointer, _ offset: Int) {
-            for i in 0..<16 {
-                let o = offset + i * 4
-                w[i] = (UInt32(bytes[o]) << 24) | (UInt32(bytes[o + 1]) << 16) | (UInt32(bytes[o + 2]) << 8) | UInt32(bytes[o + 3])
-            }
-            for i in 16..<64 {
-                let s0 = rotr(w[i - 15], 7) ^ rotr(w[i - 15], 18) ^ (w[i - 15] >> 3)
-                let s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10)
-                w[i] = w[i - 16] &+ s0 &+ w[i - 7] &+ s1
-            }
-            var a = hash[0], b = hash[1], c = hash[2], d = hash[3], e = hash[4], f = hash[5], g = hash[6], h = hash[7]
-            for i in 0..<64 {
-                let s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)
-                let ch = (e & f) ^ (~e & g)
-                let t1 = h &+ s1 &+ ch &+ SHA256Digest.k[i] &+ w[i]
-                let s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)
-                let maj = (a & b) ^ (a & c) ^ (b & c)
-                let t2 = s0 &+ maj
-                h = g; g = f; f = e; e = d &+ t1; d = c; c = b; b = a; a = t1 &+ t2
-            }
-            hash[0] = hash[0] &+ a; hash[1] = hash[1] &+ b; hash[2] = hash[2] &+ c; hash[3] = hash[3] &+ d
-            hash[4] = hash[4] &+ e; hash[5] = hash[5] &+ f; hash[6] = hash[6] &+ g; hash[7] = hash[7] &+ h
-        }
-    }
-
-    public static let chunkSize = 1 << 20
-
+    /// SHA-256 of `data`. Streaming and one-shot callers share one implementation.
     public static func hex(_ data: Data) -> String {
         var hasher = Hasher()
         hasher.update(data)
         return hasher.finalize()
     }
 
-    /// Stream `url` through the hasher in 1 MiB chunks; returns the number of bytes read.
-    @discardableResult
-    public static func feed(file url: URL, into hasher: inout Hasher) throws -> Int {
-        let handle = try FileHandle(forReadingFrom: url)
-        defer { try? handle.close() }
-        var total = 0
-        while true {
-            let chunk = try autoreleasepoolRead(handle)
-            if chunk.isEmpty { break }
-            hasher.update(chunk)
-            total += chunk.count
-        }
-        return total
-    }
-
-    private static func autoreleasepoolRead(_ handle: FileHandle) throws -> Data {
-        try handle.read(upToCount: chunkSize) ?? Data()
-    }
-
+    /// SHA-256 of a file, read in fixed-size chunks.
     public static func hexFile(_ url: URL) throws -> String {
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { throw IsenoughError.failure("cannot read \(url.path)") }
+        defer { _ = close(fd) }
         var hasher = Hasher()
-        try feed(file: url, into: &hasher)
+        var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
+        while true {
+            let n: Int = buffer.withUnsafeMutableBytes { raw in
+                guard let base = raw.baseAddress else { return -1 }
+                while true {
+                    let count = read(fd, base, raw.count)
+                    if count < 0 && errno == EINTR { continue }
+                    return count
+                }
+            }
+            if n < 0 { throw IsenoughError.failure("cannot read \(url.path)") }
+            if n == 0 { break }
+            buffer.withUnsafeBytes { raw in
+                hasher.update(UnsafeRawBufferPointer(start: raw.baseAddress, count: n))
+            }
+        }
         return hasher.finalize()
     }
 }
@@ -239,63 +155,40 @@ public enum BundleFacts {
         return try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any]
     }
 
-    public static func identity(_ url: URL, cdhash: (URL) throws -> String, treeHash: (URL) throws -> String) -> BundleIdentity? {
+    /// `verifyContent` false skips cdhash and tree hash. Callers that only need the
+    /// bundle id (a live restore probe) use that so a multi-gigabyte tree is not hashed
+    /// on every poll. The strings are empty, not a partial digest.
+    public static func identity(_ url: URL, cdhash: (URL) throws -> String, treeHash: (URL) throws -> String, verifyContent: Bool = true) -> BundleIdentity? {
         guard let info = readInfo(url), let bundleId = info["CFBundleIdentifier"] as? String else { return nil }
         let executable = info["CFBundleExecutable"] as? String ?? ""
-        let cd = (try? cdhash(url)) ?? ""
-        let tree = (try? treeHash(url)) ?? ""
         let stub = bundleId.hasSuffix(".256stub") || executable == "isenough-stub"
+        let cd: String
+        let tree: String
+        if verifyContent {
+            cd = (try? cdhash(url)) ?? ""
+            tree = (try? treeHash(url)) ?? ""
+        } else {
+            cd = ""
+            tree = ""
+        }
         return BundleIdentity(bundleId: bundleId, executable: executable, cdhash: cd, treeHash: tree, inode: DurableIO.inode(url), isStub: stub)
     }
 }
 
 /// Tree hash: sha256 over sorted relative paths, type, mode, symlink target, and file bytes.
 public enum BundleHasher {
-    public static func treeHash(of root: URL) throws -> String {
-        let start = root.resolvingSymlinksInPath()
-        var files: [URL] = []
-        try collect(start, &files)
-        var entries: [(relative: String, url: URL)] = []
-        entries.reserveCapacity(files.count)
-        for url in files {
-            guard let relative = relativePath(url.path, root: start.path) else {
-                throw IsenoughError.failure("cannot relativize \(url.path) under \(start.path)")
-            }
-            guard !relative.isEmpty, !relative.split(separator: "/").contains(".."), !relative.hasPrefix("/") else { continue }
-            entries.append((relative, url))
-        }
-        entries.sort { $0.relative < $1.relative }
-        var hasher = SHA256Digest.Hasher()
-        func append(_ string: String) { hasher.update(Data(string.utf8)) }
-        let fm = FileManager.default
-        for entry in entries {
-            let url = entry.url
-            let relative = entry.relative
-            let isLink = DurableIO.isSymlink(url)
-            var isDir: ObjCBool = false
-            if !isLink { _ = fm.fileExists(atPath: url.path, isDirectory: &isDir) }
-            let mode = fileMode(url)
-            if isLink {
-                let target = (try? fm.destinationOfSymbolicLink(atPath: url.path)) ?? ""
-                append("l \(mode) \(relative)\n")
-                append("target \(target)\n")
-            } else if isDir.boolValue {
-                append("d \(mode) \(relative)\n")
-            } else {
-                let size = ((try? fm.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.intValue ?? 0
-                append("f \(mode) \(relative)\n")
-                append("bytes \(size)\n")
-                let read = (try? SHA256Digest.feed(file: url, into: &hasher)) ?? 0
-                if read != size { throw IsenoughError.failure("file changed or unreadable while hashing: \(relative)") }
-                append("\n")
-            }
-        }
-        return hasher.finalize()
-    }
 
     /// Drop AppleDouble sidecars and `__MACOSX` directories left by a disk-image round trip.
     /// Their bytes can include a per-copy `com.apple.provenance` value, so they must not
     /// be part of the tree that is hashed or installed. Real bundle files stay.
+    /// Remove `Contents/_MASReceipt` so a shared image does not carry another Mac's receipt.
+    public static func removeMachineReceipt(_ root: URL) {
+        let receipt = root.appendingPathComponent(MASReceiptPaths.directory)
+        if FileManager.default.fileExists(atPath: receipt.path) {
+            try? FileManager.default.removeItem(at: receipt)
+        }
+    }
+
     public static func removeMetadataSidecars(_ root: URL) {
         var files: [URL] = []
         guard (try? collect(root.resolvingSymlinksInPath(), &files)) != nil else { return }
@@ -312,7 +205,7 @@ public enum BundleHasher {
     /// `FileManager.enumerator(at:)` can skip the contents of a package root (a `.app`).
     /// A direct listing always includes them, so a staged `Restore.app` and an extracted
     /// copy are hashed as the same tree.
-    private static func collect(_ directory: URL, _ files: inout [URL]) throws {
+    static func collect(_ directory: URL, _ files: inout [URL]) throws {
         let fm = FileManager.default
         let children: [URL]
         do {
@@ -440,7 +333,7 @@ public enum BundleHasher {
         return forms
     }
 
-    private static func fileMode(_ url: URL) -> String {
+    static func fileMode(_ url: URL) -> String {
         var st = stat()
         if lstat(url.path, &st) != 0 { return "000" }
         return String(st.st_mode & 0o777, radix: 8)

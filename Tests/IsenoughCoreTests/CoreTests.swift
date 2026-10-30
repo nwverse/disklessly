@@ -9,10 +9,11 @@ final class CoreTests: XCTestCase {
         let app=ImageManifest.App(originalPath:"/Applications/A.app",executable:"A",documentTypes:[],urlTypes:[])
         let m=ImageManifest(bundleId:"com.test.a",name:"A",version:"1.0",image:image,app:app,createdAt:Date(timeIntervalSince1970:1_700_000_000))
         XCTAssertEqual(try ImageManifest.decode(m.encode()),m)
-        var bad=m; bad.image.format="ULFO"; XCTAssertThrowsError(try bad.validate())
+        var bad=m; bad.image.format="UDZO"; XCTAssertThrowsError(try bad.validate())
+        var ulfo=m; ulfo.image.format="ULFO"; XCTAssertNoThrow(try ulfo.validate())
     }
     func testLRUAndPins() {
-        let now=Date(); let xs=[CacheEntry(id:"new",size:8,lastUsed:now),CacheEntry(id:"old",size:8,lastUsed:now.addingTimeInterval(-5)),CacheEntry(id:"pin",size:40,lastUsed:now.addingTimeInterval(-10),pinned:true)]
+        let now=Date(); let xs=[PolicyCacheEntry(id:"new",size:8,lastUsed:now),PolicyCacheEntry(id:"old",size:8,lastUsed:now.addingTimeInterval(-5)),PolicyCacheEntry(id:"pin",size:40,lastUsed:now.addingTimeInterval(-10),pinned:true)]
         XCTAssertEqual(CachePolicy.evictionPlan(xs,quota:10),["old","new"])
     }
     func testStateMachineRejectsIllegalTransitions() throws {
@@ -278,7 +279,7 @@ final class CoreTests: XCTestCase {
         }
     }
 
-    func testCLITopLevelUnknownOptionIsUsageError() {
+    func testCLITopLevelUnknownOptionIsUsageError() throws {
         XCTAssertThrowsError(try GlobalArguments.parse(["--doc", "x"])) { error in
             XCTAssertEqual((error as? IsenoughError)?.errorDescription, "Unknown option: --doc")
             XCTAssertEqual((error as? IsenoughError)?.exitCode, 2)
@@ -286,6 +287,13 @@ final class CoreTests: XCTestCase {
         XCTAssertThrowsError(try GlobalArguments.parse(["--config"])) { error in
             XCTAssertEqual((error as? IsenoughError)?.exitCode, 2)
         }
+        let help = try GlobalArguments.parse(["--help"])
+        XCTAssertEqual(help.rest, ["help"])
+        let short = try GlobalArguments.parse(["-h"])
+        XCTAssertEqual(short.rest, ["-h"])
+        let jsonHelp = try GlobalArguments.parse(["--json", "--help"])
+        XCTAssertEqual(jsonHelp.json, true)
+        XCTAssertEqual(jsonHelp.rest, ["help"])
         let parsed = try? GlobalArguments.parse(["--json", "--state-dir", "/tmp/state", "launch", "com.a"])
         XCTAssertEqual(parsed?.json, true)
         XCTAssertEqual(parsed?.stateDir, "/tmp/state")
@@ -303,6 +311,98 @@ final class CoreTests: XCTestCase {
         let fallback = try StubArgv.resolveCLI(environment: [:], stubInfo: [:], path: "", home: home, isExecutable: { $0 == "/opt/homebrew/bin/isenough" })
         XCTAssertEqual(fallback.path, "/opt/homebrew/bin/isenough")
         XCTAssertThrowsError(try StubArgv.resolveCLI(environment: [:], stubInfo: [:], path: "", home: home, isExecutable: { _ in false }))
+        let stable = StubArgv.stableEnginePath(environment: ["ISENOUGH_STATE_DIR": "/var/state"], home: home)
+        XCTAssertEqual(stable, EngineInstall.binary(stateDir: "/var/state").path)
+        let stableWins = try StubArgv.resolveCLI(environment: ["ISENOUGH_STATE_DIR": "/var/state"], stubInfo: ["isenoughPath": "/stub/isenough"], path: "/opt/bin", home: home, isExecutable: { $0 == stable || $0 == "/stub/isenough" })
+        XCTAssertEqual(stableWins.path, stable)
+    }
+
+    func testEngineInstallStampAndStubRefresh() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("isenough-engine-\(UUID().uuidString)")
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let state = root.appendingPathComponent("state").path
+        let source = root.appendingPathComponent("fake-isenough")
+        try Data("#!/bin/sh\nexit 0\n".utf8).write(to: source)
+        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: source.path)
+        let installed = try EngineInstall.install(stateDir: state, source: source)
+        XCTAssertEqual(try Data(contentsOf: installed), Data("#!/bin/sh\nexit 0\n".utf8))
+        XCTAssertEqual(EngineInstall.freshness(at: installed.path), .current)
+        XCTAssertEqual(EngineInstall.freshness(at: root.appendingPathComponent("absent").path), .missing)
+        try Data(#"{"revision":1,"version":"0.1.0"}"#.utf8).write(to: EngineInstall.stampFile(stateDir: state))
+        guard case .older = EngineInstall.freshness(at: installed.path) else {
+            return XCTFail("revision 1 should be older than \(EngineInstall.revision)")
+        }
+        _ = try EngineInstall.install(stateDir: state, source: source)
+        let config = RuntimeConfig(
+            repoPath: root.appendingPathComponent("repo").path,
+            cacheDir: root.appendingPathComponent("cache").path,
+            stateDir: state,
+            mountRoot: root.appendingPathComponent("mnt").path,
+            stubDir: root.appendingPathComponent("apps").path
+        )
+        let engine = IsenoughEngine(config: config)
+        let bundle = URL(fileURLWithPath: config.stubDir).appendingPathComponent("Foo.app")
+        try fm.createDirectory(at: bundle.appendingPathComponent("Contents/Resources"), withIntermediateDirectories: true)
+        let infoPlist = """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        <plist version="1.0"><dict>
+        <key>CFBundleIdentifier</key><string>com.example.foo.256stub</string>
+        <key>CFBundleExecutable</key><string>Foo</string>
+        <key>CFBundlePackageType</key><string>APPL</string>
+        </dict></plist>
+        """
+        try Data(infoPlist.utf8).write(to: bundle.appendingPathComponent("Contents/Info.plist"))
+        #if os(macOS)
+        try fm.createDirectory(at: bundle.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
+        let sourceC = root.appendingPathComponent("main.c")
+        try Data("int main(void){return 0;}\n".utf8).write(to: sourceC)
+        let exe = bundle.appendingPathComponent("Contents/MacOS/Foo")
+        let compile = Process()
+        compile.executableURL = URL(fileURLWithPath: "/usr/bin/clang")
+        compile.arguments = [sourceC.path, "-o", exe.path]
+        try compile.run()
+        compile.waitUntilExit()
+        XCTAssertEqual(compile.terminationStatus, 0)
+        #endif
+        let stubInfo: [String: Any] = ["schema": "stub/1", "appId": "com.example.foo", "isenoughPath": "/old/dev/isenough", "stubVersion": 1]
+        try JSONSerialization.data(withJSONObject: stubInfo).write(to: bundle.appendingPathComponent("Contents/Resources/stub.json"))
+        let updated = try engine.refreshStubs(appId: "com.example.foo")
+        XCTAssertEqual(updated, [bundle.path])
+        let rewritten = try JSONSerialization.jsonObject(with: Data(contentsOf: bundle.appendingPathComponent("Contents/Resources/stub.json"))) as? [String: Any]
+        XCTAssertEqual(rewritten?["isenoughPath"] as? String, installed.path)
+        XCTAssertEqual(rewritten?["engineRevision"] as? Int, EngineInstall.revision)
+        let report = engine.doctor()
+        let checks = try XCTUnwrap(report["checks"] as? [[String: Any]])
+        let engineCheck = checks.first { $0["name"] as? String == "engine" }
+        XCTAssertEqual(engineCheck?["status"] as? String, "ok")
+    }
+
+    func testICloudBackendPersistsIntoStatus() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-icloud-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        var config = RuntimeConfig(
+            repoPath: root.appendingPathComponent("repo").path,
+            cacheDir: root.appendingPathComponent("cache").path,
+            stateDir: root.appendingPathComponent("state").path,
+            mountRoot: root.appendingPathComponent("mnt").path,
+            stubDir: root.appendingPathComponent("apps").path
+        )
+        config.backend = "icloud"
+        try IsenoughEngine(config: config).initialize()
+        let saved = try JSONDecoder().decode(RuntimeConfig.self, from: Data(contentsOf: URL(fileURLWithPath: config.stateDir).appendingPathComponent("config.json")))
+        XCTAssertEqual(saved.backend, "icloud")
+        let loaded = RuntimeConfig.resolved(environment: [:], home: "/home/unused", stateDirOverride: config.stateDir, explicitConfig: nil)
+        XCTAssertEqual(loaded.backend, "icloud")
+        XCTAssertEqual(loaded.repoPath, config.repoPath)
+        XCTAssertEqual(IsenoughEngine(config: loaded).status()["backend"] as? String, "icloud")
+        let overridden = RuntimeConfig.resolved(environment: ["ISENOUGH_REPO_PATH": "/tmp/override-repo"], home: "/home/unused", stateDirOverride: config.stateDir, explicitConfig: nil)
+        XCTAssertEqual(overridden.backend, "icloud")
+        XCTAssertEqual(overridden.repoPath, "/tmp/override-repo")
+        let untouched = RuntimeConfig.resolved(environment: [:], home: root.path, stateDirOverride: root.appendingPathComponent("no-config").path, explicitConfig: nil)
+        XCTAssertEqual(untouched.backend, "local")
     }
 
     func testImageNamingUsesImageId() throws {
