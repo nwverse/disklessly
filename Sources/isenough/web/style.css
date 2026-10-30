@@ -266,6 +266,7 @@ details.raw code { display: block; margin-top: 6px; padding: 8px 10px; backgroun
 .track .zone.near { left: 80%; width: 15%; background: var(--amber-zone); }
 .track .zone.critical { left: 95%; right: 0; background: var(--red-zone); border-radius: 0 999px 999px 0; }
 .track .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 999px; background: var(--accent); min-width: 6px; }
+.track .fill.empty { min-width: 0; width: 0 !important; }
 .track .fill.warn { background: var(--amber-bar); }
 .track .fill.hot { background: var(--red-bar); }
 .floor-marker { position: absolute; top: -6px; bottom: -6px; width: 2px; margin-left: -1px; background: var(--marker); border-radius: 2px; }
@@ -311,7 +312,7 @@ details.raw code { display: block; margin-top: 6px; padding: 8px 10px; backgroun
 .section-head h2 .bi-s { font-size: 17px; }
 .section-summary { font-size: 12px; color: var(--muted); }
 .section-summary .bi-s { color: var(--faint); font-size: 1em; }
-.table-card { padding: 0; overflow: visible; }
+.card.table-card { padding: 0; overflow: visible; }
 .list-tools { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px; padding: 14px 20px; border-bottom: 1px solid var(--line); }
 .field { display: grid; gap: 4px; font-size: 12px; color: var(--muted); }
 .field .bi-s { color: var(--muted); font-size: 1em; }
@@ -328,7 +329,7 @@ details.raw code { display: block; margin-top: 6px; padding: 8px 10px; backgroun
 .table-head, .app-row {
   display: grid;
   /* Fixed tracks so every row lines up with the header. */
-  grid-template-columns: minmax(0, 1.5fr) minmax(0, 1.25fr) 128px 346px;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1.35fr) 120px 346px;
   align-items: center;
   gap: 16px;
   padding: 0 20px;
@@ -368,7 +369,7 @@ img.avatar { background: transparent; }
 .share { height: 4px; border-radius: 999px; background: var(--track); margin-top: 6px; max-width: 120px; overflow: hidden; }
 .share span { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
 .actions { display: flex; align-items: center; justify-content: flex-start; gap: 6px; flex-wrap: nowrap; }
-.rec-row .actions { justify-content: flex-end; }
+.rec-row .actions, .app-row .actions { justify-content: flex-end; }
 .table-foot {
   display: flex;
   gap: 8px;
@@ -622,7 +623,7 @@ img.avatar { background: transparent; }
   .session-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "tier tool age" "path path path"; gap: 4px 10px; }
   .session-row .pill { grid-area: tier; }
   .session-tool { grid-area: tool; }
-  .session-path { grid-area: path; }
+  .session-path { grid-area: path; white-space: normal; overflow-wrap: anywhere; }
   .session-age { grid-area: age; }
   .rec-row { flex-direction: column; align-items: stretch; }
   .menu { right: auto; left: 0; }

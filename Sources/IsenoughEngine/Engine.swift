@@ -794,13 +794,16 @@ public struct IsenoughEngine {
 
     /// Rank installed apps worth offloading. The scan is read-only. On Linux the
     /// live scan is unavailable unless `recommendEnvironment` injects facts.
-    public func recommend(options: RecommendOptions) -> RecommendReport {
+    /// `repoReachable: false` (the dashboard's probe says offline) skips the repo
+    /// lookups, which would otherwise block for the transport timeout; the local scan
+    /// still runs and pins still count.
+    public func recommend(options: RecommendOptions, repoReachable: Bool = true) -> RecommendReport {
         let environment = recommendEnvironment ?? LiveRecommendScan.environment(home: NSHomeDirectory(), now: options.now)
         var ranked = options
-        let catalog = UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> RecommendCatalog in
+        let catalog = repoReachable ? UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> RecommendCatalog in
             ranked.repoImages = self.repoImagePresences()
             return self.recommendCatalog()
-        }
+        } : self.recommendCatalog(manifests: [])
         guard environment.available else {
             return RecommendRanking.rank([], options: ranked, scanAvailable: false)
         }
@@ -810,8 +813,8 @@ public struct IsenoughEngine {
         return report
     }
 
-    private func recommendCatalog() -> RecommendCatalog {
-        let manifests = (try? list()) ?? []
+    private func recommendCatalog(manifests listed: [ImageManifest]? = nil) -> RecommendCatalog {
+        let manifests = listed ?? ((try? list()) ?? [])
         let stored = StateStore(config.stateDir).load().apps
         var pinned = Set<String>()
         for (bundleId, item) in stored where item.pinned {

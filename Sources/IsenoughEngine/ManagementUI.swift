@@ -28,7 +28,13 @@ public enum ManagementUI {
         let loaded = StateStore(engine.config.stateDir).load()
         let state = loaded.dictionary()
         let stored = state["apps"] as? [String: [String: Any]] ?? [:]
-        let loadedApps = UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> (DeviceListing?, [ImageManifest], (code: String, message: String)) in
+        // Probe first (bounded by its timeout). An offline backend would make the
+        // listing below block for the transport's own timeout, so skip it and show
+        // the Error state at once instead of a page stuck on Loading.
+        let health = context.health.current(engine)
+        let loadedApps = health.status == "offline"
+            ? (nil, [], (code: "offline", message: health.detail.isEmpty ? "The backend is unreachable." : health.detail))
+            : UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> (DeviceListing?, [ImageManifest], (code: String, message: String)) in
             let listing = try? engine.deviceListing(createLocal: false)
             do {
                 return (listing, try engine.list(), ("", ""))
@@ -80,15 +86,16 @@ public enum ManagementUI {
                 if let used = record?.lastUsed { row["lastUsed"] = isoFormatter.string(from: used) }
                 apps.append(row)
         }
-        let index = (try? SessionArchive.loadIndex(engine.config.stateDir)) ?? SessionIndex()
+        let archived = ((try? SessionArchive.archivedEntries(config: engine.config)) ?? []).sorted { $0.modified > $1.modified }
         let formatter = ISO8601DateFormatter()
         let now = Date()
-        let sessions: [[String: Any]] = index.entries.map { entry in
+        let sessions: [[String: Any]] = archived.map { entry in
             // Only cold files are ever archived, so every indexed entry is cold.
             return [
                 "id": entry.id,
                 "tool": entry.tool,
                 "path": entry.path,
+                "displayPath": homeRelative(entry.path),
                 "preview": entry.preview,
                 "archive": entry.archive,
                 "tier": "cold",
@@ -96,7 +103,6 @@ public enum ManagementUI {
                 "modified": formatter.string(from: entry.modified),
             ]
         }
-        let health = context.health.current(engine)
         let used = directoryBytes(engine.config.cacheDir)
         let quota = engine.config.quotaBytes
         var cache: [String: Any] = [
@@ -225,6 +231,19 @@ public enum ManagementUI {
     }
 
     /// Whole days since the archived file was last modified.
+    /// `~/…` for paths under the home folder (either `/private` spelling).
+    public static func homeRelative(_ path: String, home: String = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()) -> String {
+        let trimmed = home.hasSuffix("/") ? String(home.dropLast()) : home
+        guard !trimmed.isEmpty else { return path }
+        var homes = [trimmed]
+        if trimmed.hasPrefix("/private/") { homes.append(String(trimmed.dropFirst("/private".count))) }
+        else if trimmed.hasPrefix("/tmp/") || trimmed.hasPrefix("/var/") { homes.append("/private" + trimmed) }
+        for candidate in homes where path == candidate || path.hasPrefix(candidate + "/") {
+            return "~" + path.dropFirst(candidate.count)
+        }
+        return path
+    }
+
     public static func sessionAgeDays(modified: Date, now: Date) -> Int {
         max(0, Int(now.timeIntervalSince(modified) / 86_400))
     }
@@ -276,7 +295,8 @@ public enum ManagementUI {
                 let arguments = try RecommendArguments.parse(query: request.query)
                 let rescan = ["1", "true", "yes"].contains((request.query["rescan"] ?? "").lowercased())
                 let cached = context.recommendations(key: recommendKey(engine, request.query), rescan: rescan) {
-                    engine.recommend(options: arguments.options()).jsonObject()
+                    let reachable = context.health.current(engine).status != "offline"
+                    return engine.recommend(options: arguments.options(), repoReachable: reachable).jsonObject()
                 }
                 var object = cached.report
                 object["scannedAt"] = ISO8601DateFormatter().string(from: cached.scannedAt)

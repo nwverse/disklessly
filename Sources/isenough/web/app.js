@@ -988,6 +988,8 @@ function renderCache(cache) {
     track.append(el("div", "zone near"), el("div", "zone critical"));
     const fill = el("div", `fill ${level}`);
     fill.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    // The 6 px minimum keeps a small cache visible; an empty cache shows no fill.
+    if (!(Number(used) > 0)) fill.classList.add("empty");
     track.append(fill);
     if (marker != null) {
       const line = el("div", "floor-marker");
@@ -1477,7 +1479,7 @@ function renderSessions(sessions) {
     // Only cold files are archived, so every offloaded row is cold.
     item.append(pill("grey", "tiercold"));
     item.append(el("span", "session-tool", entry.tool || ""));
-    const path = el("span", "session-path mono", entry.path || "");
+    const path = el("span", "session-path mono", entry.displayPath || entry.path || "");
     path.title = [entry.path, entry.preview].filter(Boolean).join("\n");
     item.append(path);
     const age = entry.ageDays != null ? Number(entry.ageDays) : Math.max(0, Math.floor((Date.now() - (Date.parse(entry.modified || "") || Date.now())) / 86400000));

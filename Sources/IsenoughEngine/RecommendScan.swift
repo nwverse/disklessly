@@ -24,7 +24,7 @@ enum LiveRecommendScan {
         let homeURL = URL(fileURLWithPath: home, isDirectory: true)
         return RecommendEnvironment(
             available: true,
-            roots: [
+            roots: ScanRoots.override() ?? [
                 URL(fileURLWithPath: "/Applications", isDirectory: true),
                 homeURL.appendingPathComponent("Applications", isDirectory: true),
             ],

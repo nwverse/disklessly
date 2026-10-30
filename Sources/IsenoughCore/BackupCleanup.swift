@@ -129,15 +129,24 @@ public enum AdminShell {
     }
 }
 
+/// `ISENOUGH_SCAN_ROOTS` (colon-separated folders) replaces `/Applications` and
+/// `~/Applications` for the read-only recommend and backup scans, so isolated
+/// runs (tests, screenshots) never read the real application folders.
+public enum ScanRoots {
+    public static func override(_ environment: [String: String] = ProcessInfo.processInfo.environment) -> [URL]? {
+        guard let raw = environment["ISENOUGH_SCAN_ROOTS"] else { return nil }
+        return raw.split(separator: ":").map { URL(fileURLWithPath: String($0), isDirectory: true) }
+    }
+}
+
 public enum BackupScanner {
     public static func defaultRoots(stubDir: String, home: String) -> [URL] {
         var seen = Set<String>()
         var roots: [URL] = []
-        let candidates = [
+        let candidates = (ScanRoots.override() ?? [
             URL(fileURLWithPath: "/Applications", isDirectory: true),
             URL(fileURLWithPath: home, isDirectory: true).appendingPathComponent("Applications", isDirectory: true),
-            URL(fileURLWithPath: stubDir, isDirectory: true),
-        ]
+        ]) + [URL(fileURLWithPath: stubDir, isDirectory: true)]
         for url in candidates {
             let path = url.standardizedFileURL.path
             guard !path.isEmpty, path != "/", seen.insert(path).inserted else { continue }

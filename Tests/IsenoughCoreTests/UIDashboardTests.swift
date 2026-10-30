@@ -2,6 +2,7 @@ import XCTest
 import Foundation
 import IsenoughCore
 import IsenoughEngine
+import IsenoughSessions
 
 /// JSON the dashboard page needs: backend health with latency and timeout, endpoint
 /// states, cache levels and the free-floor marker, session tiers, and pinned evict.
@@ -210,6 +211,54 @@ final class UIDashboardTests: XCTestCase {
         let rows = try XCTUnwrap(sessions["offloaded"] as? [[String: Any]])
         XCTAssertEqual(Set(rows.compactMap { $0["tier"] as? String }), ["cold"])
         XCTAssertEqual((rows.first { $0["id"] as? String == "c" }?["ageDays"] as? NSNumber)?.intValue, 30)
+    }
+
+    /// `isenough sessions --apply` writes the SQLite index; the dashboard must list
+    /// those entries (restored ones excluded) without migrating or creating files.
+    func testSessionsComeFromTheSQLiteIndex() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let sqlite = URL(fileURLWithPath: fixture.config.stateDir).appendingPathComponent("sessions/index.sqlite")
+        let empty = try XCTUnwrap(try fixture.get("/api/status", context: context)["sessions"] as? [String: Any])
+        XCTAssertEqual((empty["offloaded"] as? [Any])?.count, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: sqlite.path), "status must not create the session index")
+
+        let mtime = Int64(Date().addingTimeInterval(-21 * 86_400).timeIntervalSince1970 * 1_000_000_000)
+        func row(_ id: String, _ state: String) -> SessionEntryRow {
+            SessionEntryRow(id: id, segmentId: nil, legacyArchive: "sessions/\(id).tar.gz", member: "m/\(id).jsonl", deviceId: "d", tool: "pi", path: "/tmp/\(id).jsonl", sha256: id, size: 1, mtimeNs: mtime, ino: nil, preview: "", archivedAt: "2026-01-01T00:00:00Z", state: state)
+        }
+        try SessionIndexDB(stateDir: fixture.config.stateDir).insert(entries: [row("kept", "deleted"), row("back", "restored")])
+        let sessions = try XCTUnwrap(try fixture.get("/api/status", context: context)["sessions"] as? [String: Any])
+        let rows = try XCTUnwrap(sessions["offloaded"] as? [[String: Any]])
+        XCTAssertEqual(rows.compactMap { $0["id"] as? String }, ["kept"])
+        XCTAssertEqual((rows.first?["ageDays"] as? NSNumber)?.intValue, 21)
+    }
+
+    /// An unreachable backend (e.g. a WebDAV host that never answers) must not leave
+    /// /api/status blocked on the app listing: an offline probe skips it.
+    func testOfflineProbeSkipsTheAppListing() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        struct Down: Error {}
+        let probe = BackendHealthProbe(timeout: 0.3, maxAge: 60) { _ in throw Down() }
+        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in }, health: probe)
+        let status = try fixture.get("/api/status", context: context)
+        XCTAssertEqual(status["appsErrorCode"] as? String, "offline")
+        XCTAssertFalse((status["appsError"] as? String ?? "").isEmpty)
+        XCTAssertEqual((status["apps"] as? [Any])?.count, 0, "the manifest in the repo is not listed while offline")
+        XCTAssertEqual((status["backend"] as? [String: Any])?["health"] as? String, "offline")
+    }
+
+    func testSessionPathsAreShownRelativeToHome() {
+        XCTAssertEqual(ManagementUI.homeRelative("/Users/me/Projects/a.jsonl", home: "/Users/me"), "~/Projects/a.jsonl")
+        XCTAssertEqual(ManagementUI.homeRelative("/private/tmp/h/.pi/s.jsonl", home: "/tmp/h"), "~/.pi/s.jsonl")
+        XCTAssertEqual(ManagementUI.homeRelative("/Users/meow/a", home: "/Users/me"), "/Users/meow/a")
+    }
+
+    func testScanRootsOverrideReplacesApplicationFolders() {
+        XCTAssertNil(ScanRoots.override([:]))
+        XCTAssertEqual(ScanRoots.override(["ISENOUGH_SCAN_ROOTS": "/tmp/a:/tmp/b"])?.map(\.path), ["/tmp/a", "/tmp/b"])
     }
 
     func testAppsErrorCarriesTheServerErrorCode() throws {

@@ -122,6 +122,11 @@ public enum SessionArchive {
         return try SessionTierV2.apply(config: config, backend: backend, now: now, cold: cold, skipped: skipped, secrets: secrets, encrypt: encrypt, isOpen: isOpen, beforeDelete: beforeDelete, afterIndexCommit: afterIndexCommit)
     }
 
+    /// Archived (cold) sessions for the dashboard; never migrates or writes.
+    public static func archivedEntries(config: RuntimeConfig) throws -> [SessionIndexEntry] {
+        try SessionTierV2.archivedForDisplay(config: config)
+    }
+
     public static func search(config: RuntimeConfig, query: String) throws -> [SessionIndexEntry] {
         try SessionTierV2.search(config: config, query: query)
     }

@@ -199,7 +199,9 @@ Environment overrides, useful for isolated test runs: `ISENOUGH_REPO_PATH`,
 `ISENOUGH_CACHE_DIR`, `ISENOUGH_STATE_DIR`, `ISENOUGH_MOUNT_ROOT`,
 `ISENOUGH_STUB_DIR`, `ISENOUGH_CONFIG`, `ISENOUGH_DETACH_DELAY`,
 `ISENOUGH_QUOTA_BYTES`, `ISENOUGH_MIN_FREE_BYTES`, `ISENOUGH_SIGN_IDENTITY`,
-`ISENOUGH_DOCTOR_TIMEOUT`, `ISENOUGH_WEB_ROOT`.
+`ISENOUGH_DOCTOR_TIMEOUT`, `ISENOUGH_WEB_ROOT`, `ISENOUGH_SCAN_ROOTS` (colon-separated
+folders scanned instead of `/Applications` and `~/Applications` by `recommend`
+and backup cleanup).
 
 After upgrading, run `isenough install-engine` and `isenough stub refresh --app ID`
 for each packed app so existing stubs use the new engine.

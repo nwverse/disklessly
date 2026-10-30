@@ -283,6 +283,22 @@ enum SessionTierV2 {
         return "\(deleting) kept for review"
     }
 
+    /// Archived sessions for display. Reads the SQLite index only when it already
+    /// exists (no migration, no file creation) and falls back to the legacy JSON index.
+    static func archivedForDisplay(config: RuntimeConfig) throws -> [SessionIndexEntry] {
+        let sqlite = URL(fileURLWithPath: config.stateDir).appendingPathComponent("sessions/index.sqlite")
+        guard FileManager.default.fileExists(atPath: sqlite.path) else {
+            return try SessionArchive.loadIndex(config.stateDir).entries
+        }
+        let database = try SessionIndexDB(stateDir: config.stateDir)
+        let paths = try database.segmentPaths()
+        let current = try database.allEntries().compactMap { row in row.state == "restored" ? nil : indexEntry(row, paths: paths) }
+        let ids = Set(current.map(\.id))
+        // Entries not yet migrated from the legacy JSON index still count.
+        let legacy = ((try? SessionArchive.loadIndex(config.stateDir).entries) ?? []).filter { !ids.contains($0.id) }
+        return current + legacy
+    }
+
     private static func indexed(config: RuntimeConfig, includeRestored: Bool) throws -> [SessionIndexEntry] {
         let device = try LocalDeviceStore.loadOrCreate(stateDir: URL(fileURLWithPath: config.stateDir), suggestedName: "mac")
         let database = try SessionIndexDB(stateDir: config.stateDir)
