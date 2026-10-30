@@ -151,6 +151,21 @@ final class UIServerTests: XCTestCase {
         XCTAssertEqual((object["error"] as? [String: Any])?["code"] as? String, "unauthorized")
     }
 
+    func testExpiredLinkInBrowserGetsReadablePage() throws {
+        let server = LoopbackUIServer(token: "right") { _ in UIResponse.json(["ok": true]) }
+        try server.start()
+        defer { server.stop() }
+        let page = try request(port: server.port, path: "/?token=old", token: nil, accept: "text/html,application/xhtml+xml")
+        XCTAssertEqual(page.status, 401)
+        let html = String(decoding: page.body, as: UTF8.self)
+        XCTAssertTrue(html.contains("isenough ui"))
+        XCTAssertFalse(html.contains("\"unauthorized\""))
+        // API calls keep the JSON error even when the client accepts HTML.
+        let api = try request(port: server.port, path: "/api/status", token: "old", accept: "text/html")
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: api.body) as? [String: Any])
+        XCTAssertEqual((object["error"] as? [String: Any])?["code"] as? String, "unauthorized")
+    }
+
     func testShippedPageKeepsTokenAndLocalAssets() throws {
         let web = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
@@ -289,10 +304,11 @@ final class UIServerTests: XCTestCase {
         return [:]
     }
 
-    private func request(port: UInt16, path: String, token: String?, method: String = "GET", body: Data? = nil) throws -> (status: Int, body: Data) {
+    private func request(port: UInt16, path: String, token: String?, method: String = "GET", body: Data? = nil, accept: String? = nil) throws -> (status: Int, body: Data) {
         let target = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)\(path)"))
         var request = URLRequest(url: target)
         request.httpMethod = method
+        if let accept { request.setValue(accept, forHTTPHeaderField: "Accept") }
         request.httpBody = body
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let box = ResponseBox()

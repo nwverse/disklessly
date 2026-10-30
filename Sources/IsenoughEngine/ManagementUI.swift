@@ -48,8 +48,9 @@ public enum ManagementUI {
                 var appState = record?.state ?? ""
                 if let pending = record?.needsResolution, !pending.isEmpty { appState = "needsResolution" }
                 let restored = restoredMap[manifest.bundleId] != nil || appState == "restored" || appState == "needsResolution"
+                // Other Macs that hold this image ("Also on …"); this Mac is not listed.
                 let holders = deviceRows.filter { device in
-                    device.images.contains { $0.imageId == manifest.imageId }
+                    device.deviceId != listing?.localDeviceId && device.images.contains { $0.imageId == manifest.imageId }
                 }.map(\.displayName)
                 var row: [String: Any] = [
                     "imageId": manifest.imageId,

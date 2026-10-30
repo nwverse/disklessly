@@ -179,10 +179,23 @@ public final class LoopbackUIServer {
     private func respond(_ request: UIRequest?) -> UIResponse {
         guard let request else { return UIResponse.text(400, "bad request") }
         guard request.token == token else {
+            // A browser opening an old dashboard link gets a readable page, not raw JSON.
+            if request.method == "GET", !request.path.hasPrefix("/api/"), (request.headers["accept"] ?? "").contains("text/html") {
+                return UIResponse(status: 401, contentType: "text/html; charset=utf-8", body: Data(Self.expiredPage.utf8))
+            }
             return UIResponse.json(["ok": false, "error": ["code": "unauthorized", "message": "The page token is missing or expired."]], status: 401)
         }
         return handler(request)
     }
+
+    static let expiredPage = """
+    <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>256isenough</title>
+    <style>body{font:16px/1.5 -apple-system,system-ui,sans-serif;max-width:32rem;margin:15vh auto;padding:0 1.5rem;color:#1d1d1f}@media(prefers-color-scheme:dark){body{background:#1c1c1e;color:#f2f2f7}}code{font:15px ui-monospace,Menlo,monospace}</style></head>
+    <body><h1>256isenough</h1>
+    <p lang="en">This dashboard link has expired. Run <code>isenough ui</code> (or reopen the 256isenough app) to get a new one.</p>
+    <p lang="zh">这个管理页面链接已失效。请重新运行 <code>isenough ui</code>（或重新打开 256isenough App）获取新链接。</p>
+    </body></html>
+    """
 
     private func readRequest(_ fd: Int32) -> UIRequest? {
         var data = Data()
