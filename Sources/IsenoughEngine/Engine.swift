@@ -209,6 +209,9 @@ public struct IsenoughEngine {
     public var packUsageOverride: ((String) -> UsageClass)?
     /// Replaces `SHA256Digest.hexFile` for prefetch. Nil hashes the file.
     public var hasherOverride: ((URL) throws -> String)?
+    /// Replaces the disk-image tool and process probe for `detach` and the
+    /// orphan mount reaper. Nil uses `MountOps.live`.
+    public var mountOpsOverride: MountOps? = nil
     /// Test hook. Called with a point name such as `pack.swapped` or
     /// `unpack.installed.beforeMutation`; a throw there is an ordinary failure,
     /// not a simulated crash. Production leaves it nil.
@@ -601,20 +604,19 @@ public struct IsenoughEngine {
         guard lstat(path, &mount) == 0, lstat((path as NSString).deletingLastPathComponent, &parent) == 0 else { return false }
         return mount.st_dev != parent.st_dev
     }
-    public func evict(_ manifest: ImageManifest) throws {
-        if let reason=restore.blockReason(appId: manifest.bundleId) { throw IsenoughError.busy(reason) }
+    /// design §4: refuses a pinned app unless `force`, and a mounted or in-use
+    /// image even with `force` (EX_BUSY). See `evictRefusal`.
+    public func evict(_ manifest: ImageManifest, force: Bool = false) throws {
+        if let refusal = evictRefusal(manifest, force: force) { throw refusal.error }
         let path=URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
         guard FileManager.default.fileExists(atPath: path.path) else { return }
-        // design §7: evict refuses a mounted or in-use image (EX_BUSY).
-        if let item = scanCache(justUsed: nil, now: Date()).items.first(where: { $0.imageId == manifest.imageId }), item.mounted || item.inUse {
-            throw IsenoughError.busy("\(manifest.name) is mounted or in use; quit it and try again")
-        }
         try FileManager.default.removeItem(at: path)
     }
     public func gc(now: Date = Date(), includeLegacy: Bool = false) throws -> [String] {
         var lines = try recoverPackJournals()
         lines.append(contentsOf: try recoverUnpackJournals())
         lines.append(contentsOf: try maintain(now: now, includeLegacy: includeLegacy).lines)
+        lines.append(contentsOf: reapOrphanMounts(deep: false).lines)
         let enforced = try enforceCacheQuota(justUsed: nil, now: now)
         lines.append(contentsOf: enforced.lines)
         return lines
@@ -884,6 +886,12 @@ public struct IsenoughEngine {
             return
         }
         let image=try prefetch(manifest)
+        #if os(macOS)
+        // Opportunistic: images a crashed watcher left attached. Fast scan only.
+        for line in reapOrphanMounts(deep: false, excluding: [manifest.imageId]).lines {
+            FileHandle.standardError.write(Data("isenough: \(line)\n".utf8))
+        }
+        #endif
         #if !os(macOS)
         throw IsenoughError.unsupported("launch requires macOS hdiutil and Launch Services")
         #else
@@ -893,6 +901,9 @@ public struct IsenoughEngine {
         let app=mount.appendingPathComponent(manifest.image.appPathInVolume)
         let state=StateStore(config.stateDir)
         var handOff = false
+        // Held from attach until supervision ends so the reaper never takes a live mount.
+        var lease: MountLease?
+        defer { lease?.release() }
         try restore.withLock(manifest.bundleId) {
             let recorded = state.load().apps[manifest.bundleId]?.mountPoint
             let info = ProcessRunner.capture("/usr/bin/hdiutil", ["info", "-plist"])
@@ -905,6 +916,7 @@ public struct IsenoughEngine {
                 if busy { handOff = true }
                 return
             }
+            lease = MountLease.acquire(stateDir: config.stateDir, name: manifest.imageId, waitSeconds: 0.5)
             try LiveDiskImage.attach(image: image, mountPoint: mount)
             try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"running",mountPoint:mount.path)
             let built = OpenInvocation.arguments(app: app.path, documents: documents, urls: urls, arguments: arguments, alreadyRunning: false)
@@ -914,6 +926,7 @@ public struct IsenoughEngine {
         if !wait {
             // design: `--no-wait` returns once the app runs; a detached supervisor
             // still detaches the image after the app quits.
+            // The watcher blocks on the lease until this process returns and lets go.
             do { _ = try ProcessRunner.spawnWatch(appId: manifest.bundleId, stateDir: config.stateDir) }
             catch { FileHandle.standardError.write(Data("isenough: could not start the detach supervisor: \(error)\n".utf8)) }
             return
@@ -966,6 +979,8 @@ public struct IsenoughEngine {
               let imageId = record.imageId, let mountPath = record.mountPoint,
               let manifest = try list().first(where: { $0.imageId == imageId }), manifest.mode == .mount else { return }
         let mount = URL(fileURLWithPath: mountPath)
+        var lease = MountLease.acquire(stateDir: config.stateDir, name: imageId)
+        defer { lease?.release() }
         try superviseMount(manifest, app: mount.appendingPathComponent(manifest.image.appPathInVolume), mount: mount)
     }
     private func run(_ path:String,_ args:[String]) throws {

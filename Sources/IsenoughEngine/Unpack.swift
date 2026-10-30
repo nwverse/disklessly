@@ -316,6 +316,9 @@ extension IsenoughEngine {
         }
         let image = try prefetch(manifest)
         let mount = URL(fileURLWithPath: config.mountRoot).appendingPathComponent("unpack-\(UUID().uuidString)")
+        // Keeps the orphan reaper off this mount while it is in use.
+        var lease = MountLease.tryAcquire(stateDir: config.stateDir, name: mount.lastPathComponent)
+        defer { lease?.release() }
         let mounted = try services.attach(image, mount)
         defer {
             try? services.detach(mounted)

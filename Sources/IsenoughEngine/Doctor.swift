@@ -81,6 +81,15 @@ enum Doctor {
             case .timedOut:
                 record("fix", "timed out", timedOut("recovery", path: config.stateDir))
             }
+            // Images a crashed watcher left attached under the mount root.
+            switch bound(seconds: max(seconds, 30), { engine.reapOrphanMounts() }) {
+            case .value(let reaped):
+                record("reap", reaped.failed.isEmpty ? "ok" : "warn", reaped.lines.isEmpty ? "no orphan mounts" : reaped.lines.joined(separator: " | "))
+            case .failure(let message):
+                record("reap", "warn", message)
+            case .timedOut:
+                record("reap", "timed out", timedOut("reaping orphan mounts", path: config.mountRoot))
+            }
         }
 
         switch bound(seconds: seconds, { () -> (lines: [String], attention: Bool) in
