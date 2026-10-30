@@ -130,7 +130,7 @@ extension IsenoughEngine {
             app.mountPoint = nil
             state.apps[journal.appId] = app
         }
-        try unregister(bundleId: journal.appId)
+        try unregister(bundleId: journal.appId, imageId: journal.imageId, installPath: journal.dest)
         registerLaunchServices(dest)
         try UnpackStore.remove(stateDir: config.stateDir, txid: journal.txid)
     }
@@ -393,7 +393,7 @@ extension IsenoughEngine {
             app.mountPoint = nil
             state.apps[journal.appId] = app
         }
-        try unregister(bundleId: journal.appId)
+        try unregister(bundleId: journal.appId, imageId: journal.imageId, installPath: journal.dest)
         registerLaunchServices(URL(fileURLWithPath: journal.dest))
         try UnpackStore.remove(stateDir: config.stateDir, txid: journal.txid)
         try faults.hit("unpack.closed", "afterMutation")

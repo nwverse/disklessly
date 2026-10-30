@@ -226,7 +226,7 @@ enum ProcessRunner {
     }
 
     static func spawnWatch(appId: String, stateDir: String, executable: String? = nil) throws -> ProcessOwner {
-        let exe = executable ?? CommandLine.arguments[0]
+        let exe = executable ?? EngineInstall.runningExecutable().path
         let args = [exe, "--state-dir", stateDir, "hook", "watch", "--app", appId]
         let logDirectory = URL(fileURLWithPath: stateDir).appendingPathComponent("logs")
         try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
@@ -294,7 +294,7 @@ enum StubRebuilder {
         if fm.fileExists(atPath: dest.path) {
             throw IsenoughError.busy("refusing to regenerate a stub over an existing destination \(dest.path)")
         }
-        let cli = explicitCLI ?? URL(fileURLWithPath: CommandLine.arguments[0])
+        let cli = explicitCLI ?? EngineInstall.runningExecutable()
         let launcher: URL
         do {
             launcher = try StubGenerator.locateLauncher(cliExecutable: cli, environment: environment, isExecutable: { fm.isExecutableFile(atPath: $0) })

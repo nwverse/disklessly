@@ -419,7 +419,6 @@ extension IsenoughEngine {
     /// Pass `imageId` (and `installPath` when known) so only that ref goes. With
     /// only a bundle id, every ref for the bundle is a candidate, but any image
     /// still claimed by a stub on disk (another installed copy) is kept.
-    /// TODO(P2): Unpack.swift should pass `imageId: journal.imageId, installPath: journal.dest`.
     func unregister(bundleId: String, imageId: String? = nil, installPath: String? = nil, now: Date = Date()) throws {
         let backend = try repo
         let local = try LocalDeviceStore.loadOrCreate(stateDir: stateDirectory, suggestedName: currentDeviceFacts().hostname)

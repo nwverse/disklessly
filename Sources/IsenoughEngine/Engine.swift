@@ -536,7 +536,7 @@ public struct IsenoughEngine {
         guard (StubGenerator.infoPlist(source:info,appId:manifest.bundleId) as NSDictionary).write(to:plistPath,atomically:true) else {
             throw IsenoughError.failure("Could not write generated stub Info.plist at \(plistPath.path)")
         }
-        let cli=Bundle.main.executableURL ?? URL(fileURLWithPath:CommandLine.arguments[0])
+        let cli=EngineInstall.runningExecutable()
         let launcher=try StubGenerator.locateLauncher(cliExecutable:cli,environment:ProcessInfo.processInfo.environment,isExecutable:{ FileManager.default.isExecutableFile(atPath:$0) })
         let stubExecutable=temp.appendingPathComponent("Contents/MacOS/isenough-stub")
         try FileManager.default.copyItem(at:launcher,to:stubExecutable)

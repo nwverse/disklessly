@@ -195,7 +195,7 @@ do {
         say(["ok":true,"repo":config.repoPath,"cacheDir":config.cacheDir,"quotaBytes":NSNumber(value: config.quotaBytes)], CLIText.initialized(config))
     case "pack":
         let parsed = try PackArguments.parse(args)
-        if let stubDir = parsed.stubDir { config.stubDir = stubDir }
+        if let stubDir = parsed.stubDir { config.stubDir = stubDir; engine = IsenoughEngine(config: config) }
         let published=try engine.pack(parsed.app,mode:parsed.mode,keepOriginal:parsed.keepOriginal,noStub:parsed.noStub,imageFormat:parsed.imageFormat); let m=published.manifest
         let path = parsed.app
         if json { for warning in published.warnings { fputs("isenough: \(warning)\n", stderr) } }
@@ -443,7 +443,7 @@ do {
         }
         let webRoot = try WebRoot.resolve(environment: env, executable: EngineInstall.runningExecutable())
         let ui = LoopbackUIServer(token: UUID().uuidString) { request in ManagementUI.respond(engine: engine, webRoot: webRoot, request: request) }
-        try ui.start()
+        try ui.start(preferredPort: LoopbackUIServer.defaultPort)
         let url = "http://127.0.0.1:\(ui.port)/?token=\(ui.token)"
         if json {
             let payload: [String: Any] = ["url": url, "port": Int(ui.port), "token": ui.token]
