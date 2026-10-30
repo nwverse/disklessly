@@ -19,19 +19,29 @@ extension IsenoughEngine {
     /// Remote trash, legacy purge, and cache LRU stay on `gc`.
     @discardableResult
     public func recoverLocalJournals() throws -> [String] {
-        var lines = try recoverUnpackJournals()
+        var lines = try recoverPackJournals()
+        lines.append(contentsOf: try recoverUnpackJournals())
         restore.loadConfiguredFaults()
         lines.append(contentsOf: try restore.recoverAll(shortLived: true))
         return lines
     }
 
     /// Replay open unpack journals. `gc` and the start of `unpack` both call this.
-    /// A journal already marked `needsAttention` is left untouched.
+    /// A journal already marked `needsAttention` is left untouched. A journal whose
+    /// app lock is held belongs to an unpack that is still running and is skipped.
     @discardableResult
     public func recoverUnpackJournals() throws -> [String] {
         let journals = try UnpackStore.loadAll(stateDir: config.stateDir)
         var notes: [String] = []
         for journal in journals {
+            let directory = URL(fileURLWithPath: config.stateDir).appendingPathComponent("locks/app")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var lock = FileLock(path: directory.appendingPathComponent(journal.appId + ".lock").path)
+            guard try lock.tryLock() else {
+                notes.append("unpack \(journal.txid) is still running")
+                continue
+            }
+            defer { lock.unlock() }
             notes.append(try recoverUnpack(journal))
         }
         return notes
@@ -50,7 +60,11 @@ extension IsenoughEngine {
             try unpackCopy(manifest, directory: directory)
             return
         }
-        try unpackInPlace(manifest)
+        // Held from preflight through install, so a stub click (which takes the same
+        // lock to launch) cannot start the app while its stub is being replaced.
+        try restore.withLock(manifest.bundleId) {
+            try unpackInPlace(manifest)
+        }
     }
 
     private func recoverUnpack(_ journal: UnpackJournal) throws -> String {
@@ -93,6 +107,7 @@ extension IsenoughEngine {
             guard observed.appNewVerified, FileManager.default.fileExists(atPath: appNew.path) else {
                 return try markUnpackAttention(journal)
             }
+            try failureInjector?("unpack.recover.install")
             try FileManager.default.moveItem(at: appNew, to: dest)
             try DurableIO.syncItem(dest.deletingLastPathComponent())
             try finishInstalledUnpack(journal, dest: dest, staging: staging)
@@ -170,16 +185,68 @@ extension IsenoughEngine {
         do {
             try phaseUnpackPrepared(&journal)
             try phaseUnpackExtracted(&journal, manifest: manifest)
-            try phaseUnpackStubParked(&journal)
+            try phaseUnpackStubParked(&journal, manifest: manifest)
             try phaseUnpackInstalled(&journal)
             try phaseUnpackStubDeleted(&journal)
             try phaseUnpackClosed(&journal)
         } catch let error as InjectedFault {
             throw error
         } catch {
-            try? removeStaging(staging)
-            try? UnpackStore.remove(stateDir: config.stateDir, txid: txid)
+            if Self.unpackPhaseIndex(journal.phase) < Self.unpackPhaseIndex("stubParked") {
+                try? removeStaging(staging)
+                try? UnpackStore.remove(stateDir: config.stateDir, txid: txid)
+            } else {
+                // The stub may already be in staging. Never delete staging or the
+                // journal here: settle dest to the stub or the app first.
+                settleFailedUnpack(journal)
+            }
             throw error
+        }
+    }
+
+    static func unpackPhaseIndex(_ phase: String) -> Int {
+        ["prepared", "extracted", "stubParked", "installed", "stubDeleted", "closed"].firstIndex(of: phase) ?? 0
+    }
+
+    /// Called with the app lock held after a failure at or past `stubParked`. Runs the
+    /// recovery table, then makes sure dest holds the stub or the verified app.
+    private func settleFailedUnpack(_ failed: UnpackJournal) {
+        let fm = FileManager.default
+        var journal = failed
+        let dest = URL(fileURLWithPath: journal.dest)
+        let staging = URL(fileURLWithPath: journal.staging)
+        if let observed = try? observeUnpack(journal) {
+            if observed.destIsStub {
+                // Failed before the stub moved. Nothing to undo but staging.
+                try? removeStaging(staging)
+                try? UnpackStore.remove(stateDir: config.stateDir, txid: journal.txid)
+                return
+            }
+            if observed.destIsApp && journal.phase == "closed" {
+                // Staging is gone already; retry the bookkeeping as a finished install.
+                journal.phase = "stubDeleted"
+                try? UnpackStore.save(journal, stateDir: config.stateDir)
+            }
+        }
+        do {
+            _ = try recoverUnpack(journal)
+        } catch {
+            FileHandle.standardError.write(Data("isenough: unpack recovery failed: \(error)\n".utf8))
+        }
+        guard !fm.fileExists(atPath: dest.path) else { return }
+        // Recovery could not install the app. Put the stub back.
+        let parked = staging.appendingPathComponent("stub.app")
+        guard fm.fileExists(atPath: parked.path) else {
+            FileHandle.standardError.write(Data("isenough: unpack \(journal.appId) left \(dest.path) empty; the journal \(UnpackStore.file(config.stateDir, txid: journal.txid).path) is kept\n".utf8))
+            return
+        }
+        do {
+            try fm.moveItem(at: parked, to: dest)
+            try? DurableIO.syncItem(dest.deletingLastPathComponent())
+            try? removeStaging(staging)
+            try? UnpackStore.remove(stateDir: config.stateDir, txid: journal.txid)
+        } catch {
+            FileHandle.standardError.write(Data("isenough: could not put the stub back at \(dest.path): \(error)\n".utf8))
         }
     }
 
@@ -209,7 +276,7 @@ extension IsenoughEngine {
         }
     }
 
-    private func assertUnpackStub(_ manifest: ImageManifest, dest: URL) throws {
+    func assertUnpackStub(_ manifest: ImageManifest, dest: URL) throws {
         let info = BundleFacts.readInfo(dest)
         let identifier = info?["CFBundleIdentifier"] as? String
         guard identifier == manifest.bundleId + ".256stub" else {
@@ -267,24 +334,33 @@ extension IsenoughEngine {
         }
     }
 
-    private func phaseUnpackStubParked(_ journal: inout UnpackJournal) throws {
+    private func phaseUnpackStubParked(_ journal: inout UnpackJournal, manifest: ImageManifest) throws {
+        let dest = URL(fileURLWithPath: journal.dest)
+        let parked = URL(fileURLWithPath: journal.staging).appendingPathComponent("stub.app")
+        // Extraction can take minutes. Look again right before moving dest, while
+        // the phase is still `extracted` so a refusal only deletes staging.
+        try assertUnpackStub(manifest, dest: dest)
+        if services.probe([dest.path]) != .clean {
+            throw IsenoughError.busy("\(manifest.name) started while it was being unpacked; the stub was left in place")
+        }
         journal.phase = "stubParked"
         try UnpackStore.save(journal, stateDir: config.stateDir)
         try faults.hit("unpack.stubParked", "afterJournal")
-        let dest = URL(fileURLWithPath: journal.dest)
-        let parked = URL(fileURLWithPath: journal.staging).appendingPathComponent("stub.app")
+        try failureInjector?("unpack.stubParked.beforeMutation")
         if FileManager.default.fileExists(atPath: dest.path), !FileManager.default.fileExists(atPath: parked.path) {
             try FileManager.default.moveItem(at: dest, to: parked)
             try DurableIO.syncItem(dest.deletingLastPathComponent())
             try DurableIO.syncItem(URL(fileURLWithPath: journal.staging))
         }
         try faults.hit("unpack.stubParked", "afterMutation")
+        try failureInjector?("unpack.stubParked.afterMutation")
     }
 
     private func phaseUnpackInstalled(_ journal: inout UnpackJournal) throws {
         journal.phase = "installed"
         try UnpackStore.save(journal, stateDir: config.stateDir)
         try faults.hit("unpack.installed", "afterJournal")
+        try failureInjector?("unpack.installed.beforeMutation")
         let dest = URL(fileURLWithPath: journal.dest)
         let appNew = URL(fileURLWithPath: journal.staging).appendingPathComponent("app.new")
         if FileManager.default.fileExists(atPath: appNew.path), !FileManager.default.fileExists(atPath: dest.path) {
@@ -292,20 +368,24 @@ extension IsenoughEngine {
             try DurableIO.syncItem(dest.deletingLastPathComponent())
         }
         try faults.hit("unpack.installed", "afterMutation")
+        try failureInjector?("unpack.installed.afterMutation")
     }
 
     private func phaseUnpackStubDeleted(_ journal: inout UnpackJournal) throws {
         journal.phase = "stubDeleted"
         try UnpackStore.save(journal, stateDir: config.stateDir)
         try faults.hit("unpack.stubDeleted", "afterJournal")
+        try failureInjector?("unpack.stubDeleted.beforeMutation")
         try removeStaging(URL(fileURLWithPath: journal.staging))
         try faults.hit("unpack.stubDeleted", "afterMutation")
+        try failureInjector?("unpack.stubDeleted.afterMutation")
     }
 
     private func phaseUnpackClosed(_ journal: inout UnpackJournal) throws {
         journal.phase = "closed"
         try UnpackStore.save(journal, stateDir: config.stateDir)
         try faults.hit("unpack.closed", "afterJournal")
+        try failureInjector?("unpack.closed.beforeMutation")
         try StateStore(config.stateDir).update { state in
             var app = state.apps[journal.appId] ?? AppState()
             app.imageId = journal.imageId

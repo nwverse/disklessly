@@ -209,6 +209,13 @@ public struct IsenoughEngine {
     public var packUsageOverride: ((String) -> UsageClass)?
     /// Replaces `SHA256Digest.hexFile` for prefetch. Nil hashes the file.
     public var hasherOverride: ((URL) throws -> String)?
+    /// Test hook. Called with a point name such as `pack.swapped` or
+    /// `unpack.installed.beforeMutation`; a throw there is an ordinary failure,
+    /// not a simulated crash. Production leaves it nil.
+    var failureInjector: ((String) throws -> Void)? = nil
+    /// Test hook. Forces the two-rename path that Linux and volumes without
+    /// `RENAME_SWAP` use.
+    var packSwapUnsupported = false
     public init(config: RuntimeConfig, services: RestoreServices? = nil, faults: FaultController? = nil, secrets: (any SecretStore)? = nil, shareOpener: ShareOpener = .system) {
         self.config=config
         let faults=faults ?? FaultController()
@@ -430,6 +437,7 @@ public struct IsenoughEngine {
         guard imageFormat == "ULMO" || imageFormat == "ULFO" else {
             throw IsenoughError.usage("invalid --image-format \(requested); expected ULMO or ULFO")
         }
+        try PackGuard.refuseStub(app, bundleId: bid)
         let usage = packUsageOverride?(app.path) ?? ProcessProbe.usage(roots: [app.path])
         if let blocked = PackPreflight.running(usage, name: name) { throw blocked }
         let allocated = AllocatedSize.tree(app)
@@ -444,6 +452,9 @@ public struct IsenoughEngine {
         let staging=URL(fileURLWithPath:config.cacheDir).appendingPathComponent("pack-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at:staging.appendingPathComponent("src"),withIntermediateDirectories:true); defer { try? FileManager.default.removeItem(at:staging) }
         let stagedApp=staging.appendingPathComponent("src").appendingPathComponent(app.lastPathComponent)
+        // Taken before the copy. The stub swap compares it again under the app lock,
+        // so an update or a launch that lands while the image is built aborts the swap.
+        let cloneFingerprint = try TreeFingerprint.of(app)
         if cloneSupported {
             let cloned = clonefile(app.path, stagedApp.path, UInt32(CLONE_NOFOLLOW))
             if cloned != 0 {
@@ -476,7 +487,7 @@ public struct IsenoughEngine {
             try register(existing, backend: backend, now: Date())
             if EngineInstall.runningExecutable().lastPathComponent == "isenough" { try installEngine() }
             let forcedKeep = { if case .keep = disposition { return true }; return false }()
-            let stubWarning = noStub ? nil : try installStub(info: info, manifest: existing, path: app.path, keepOriginal: keepOriginal || forcedKeep)
+            let stubWarning = noStub ? nil : try installStub(info: info, manifest: existing, path: app.path, keepOriginal: keepOriginal || forcedKeep, cloneFingerprint: cloneFingerprint)
             let kept: String? = { if case .keep(let reason) = disposition { return reason }; return nil }()
             return finishPublished(PublishResult(manifest: existing, reused: true, uploaded: false, originalKept: kept), stubWarning: stubWarning)
         }
@@ -507,16 +518,18 @@ public struct IsenoughEngine {
         let request = PublishRequest(name: name, identity: identity, mode: selected, executable: executableName, originalPath: app.path, cdhash: cdhash, postImageTreeHash: treeHash, volumeName: name, appPathInVolume: app.lastPathComponent, documentTypes: docs, urlTypes: urls, imageFormat: imageFormat)
         let published = try publish(request, imageFile: dmg)
         if EngineInstall.runningExecutable().lastPathComponent == "isenough" { try installEngine() }
-        let stubWarning = noStub ? nil : try installStub(info: info, manifest: published.manifest, path: app.path, keepOriginal: keepOriginal)
+        let stubWarning = noStub ? nil : try installStub(info: info, manifest: published.manifest, path: app.path, keepOriginal: keepOriginal, cloneFingerprint: cloneFingerprint)
         return finishPublished(published, stubWarning: stubWarning)
         #endif
     }
     #if os(macOS)
-    private func installStub(info:[String:Any],manifest:ImageManifest,path:String,keepOriginal:Bool) throws -> String? {
+    private func installStub(info:[String:Any],manifest:ImageManifest,path:String,keepOriginal:Bool,cloneFingerprint:String) throws -> String? {
         let source=URL(fileURLWithPath:path).standardizedFileURL
         let dest=URL(fileURLWithPath:config.stubDir).standardizedFileURL.appendingPathComponent(source.lastPathComponent)
+        guard StubGenerator.pathsReferToSameLocation(source.path, dest.path) else { throw IsenoughError.unsupported("Stub must replace the app at its original path (source: \(source.path), destination: \(dest.path))") }
         let temp=dest.deletingLastPathComponent().appendingPathComponent(".isenough-\(UUID().uuidString).app")
-        let backup=dest.deletingLastPathComponent().appendingPathComponent(".isenough-original-\(UUID().uuidString).app")
+        var committed=false
+        defer { if !committed { try? FileManager.default.removeItem(at: temp) } }
         try FileManager.default.createDirectory(at:temp.appendingPathComponent("Contents/MacOS"),withIntermediateDirectories:true)
         try FileManager.default.createDirectory(at:temp.appendingPathComponent("Contents/Resources"),withIntermediateDirectories:true)
         let plistPath=temp.appendingPathComponent("Contents/Info.plist")
@@ -530,7 +543,10 @@ public struct IsenoughEngine {
         if FileManager.default.contentsEqual(atPath: stubExecutable.path, andPath: cli.path) {
             throw IsenoughError.failure("Refusing to install CLI binary as isenough-stub launcher")
         }
-        try manifest.encode().write(to:temp.appendingPathComponent("Contents/Resources/manifest.json"))
+        let manifestData = try manifest.encode()
+        try manifestData.write(to:temp.appendingPathComponent("Contents/Resources/manifest.json"))
+        // A later stub rebuild reads this copy instead of the repo.
+        StubManifestCache.store(manifestData, imageId: manifest.imageId, cacheDir: config.cacheDir)
         let enginePath = try installedEnginePath()
         try JSONSerialization.data(withJSONObject:StubGenerator.stubInfo(manifest:manifest,cliPath:enginePath),options:[.prettyPrinted,.sortedKeys]).write(to:temp.appendingPathComponent("Contents/Resources/stub.json"))
         StubIcon.capture(from: source, into: temp, imageId: manifest.imageId, stateDir: config.stateDir, publish: { data in
@@ -541,33 +557,11 @@ public struct IsenoughEngine {
         let identity = SigningIdentity.resolve(configured: config.signIdentity, environment: ProcessInfo.processInfo.environment)
         try run("/usr/bin/codesign",["--force","--sign",identity,temp.path])
         try run("/usr/bin/codesign",["--verify","--strict",temp.path])
-        guard StubGenerator.pathsReferToSameLocation(source.path, dest.path) else { throw IsenoughError.unsupported("Stub must replace the app at its original path (source: \(source.path), destination: \(dest.path))") }
-        do {
-            try FileManager.default.moveItem(at:source,to:backup)
-        } catch {
-            throw IsenoughError.failure("Could not move original app to transaction backup \(backup.path): \(error.localizedDescription)")
-        }
-        do {
-            try FileManager.default.moveItem(at:temp,to:dest)
-        } catch {
-            try? FileManager.default.moveItem(at:backup,to:source)
-            throw IsenoughError.failure("Could not install signed stub at \(dest.path): \(error.localizedDescription)")
-        }
+        committed = true
+        let warning = try commitStub(staged: temp, source: source, bundleId: manifest.bundleId, name: manifest.name, cloneFingerprint: cloneFingerprint, keepOriginal: keepOriginal)
         StubIcon.touch(dest)
         StubIcon.register(dest)
-        if keepOriginal {
-            let retained=dest.deletingLastPathComponent().appendingPathComponent(source.deletingPathExtension().lastPathComponent+".256orig.app")
-            do { try FileManager.default.moveItem(at:backup,to:retained) }
-            catch {
-                try? FileManager.default.removeItem(at:dest)
-                try? FileManager.default.moveItem(at:backup,to:source)
-                throw IsenoughError.failure("Could not retain original app at \(retained.path): \(error.localizedDescription)")
-            }
-        } else {
-            do { try FileManager.default.removeItem(at: backup) }
-            catch { return BackupRemoval.warning(backupPath: backup.path) }
-        }
-        return nil
+        return warning
     }
     #endif
     /// Read-only. Uses manifests already in the repo and does not register this Mac.
@@ -604,7 +598,8 @@ public struct IsenoughEngine {
         if FileManager.default.fileExists(atPath: path.path) { try FileManager.default.removeItem(at: path) }
     }
     public func gc(now: Date = Date(), includeLegacy: Bool = false) throws -> [String] {
-        var lines = try recoverUnpackJournals()
+        var lines = try recoverPackJournals()
+        lines.append(contentsOf: try recoverUnpackJournals())
         lines.append(contentsOf: try maintain(now: now, includeLegacy: includeLegacy).lines)
         let enforced = try enforceCacheQuota(justUsed: nil, now: now)
         lines.append(contentsOf: enforced.lines)
@@ -935,4 +930,340 @@ public struct IsenoughEngine {
         }
     }
     #endif
+}
+
+/// Bookkeeping for one stub swap. Stored under `pack-journals/`, not `journals/`:
+/// `JournalStore.loadAll` decodes every file in `journals/` as a restore
+/// transaction and would fail on this schema.
+public struct PackJournal: Codable, Equatable {
+    public var schema: String
+    public var txid: String
+    public var appId: String
+    /// The app's path. It is also where the stub goes.
+    public var source: String
+    /// The signed stub before the swap. Right after a `RENAME_SWAP` it holds the original.
+    public var temp: String
+    /// Where the original sits after the swap until it is retained or deleted.
+    public var backup: String
+    /// Set when the original is kept as `<Name>.256orig.app`.
+    public var retained: String?
+    /// `staged`, `originalMoved` (two-rename path only), `swapped`, `parked`.
+    public var phase: String
+    public var createdAt: Date
+
+    public init(txid: String, appId: String, source: String, temp: String, backup: String, retained: String?, phase: String, createdAt: Date = Date()) {
+        self.schema = "pack/1"
+        self.txid = txid
+        self.appId = appId
+        self.source = source
+        self.temp = temp
+        self.backup = backup
+        self.retained = retained
+        self.phase = phase
+        self.createdAt = createdAt
+    }
+}
+
+public enum PackJournalStore {
+    public static func directory(_ stateDir: String) -> URL {
+        URL(fileURLWithPath: stateDir).appendingPathComponent("pack-journals")
+    }
+
+    public static func file(_ stateDir: String, txid: String) -> URL {
+        directory(stateDir).appendingPathComponent("pack-\(txid).json")
+    }
+
+    public static func save(_ journal: PackJournal, stateDir: String) throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        try DurableIO.atomicWrite(try encoder.encode(journal), to: file(stateDir, txid: journal.txid))
+    }
+
+    public static func loadAll(stateDir: String) throws -> [PackJournal] {
+        let dir = directory(stateDir)
+        guard FileManager.default.fileExists(atPath: dir.path) else { return [] }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let names = try FileManager.default.contentsOfDirectory(atPath: dir.path)
+        return try names.filter { $0.hasPrefix("pack-") && $0.hasSuffix(".json") }.sorted().map { name in
+            try decoder.decode(PackJournal.self, from: Data(contentsOf: dir.appendingPathComponent(name)))
+        }
+    }
+
+    public static func remove(stateDir: String, txid: String) throws {
+        let url = file(stateDir, txid: txid)
+        if FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.removeItem(at: url)
+            try DurableIO.syncItem(url.deletingLastPathComponent())
+        }
+    }
+}
+
+/// Exchange two directory entries in one step.
+enum AtomicSwap {
+    /// `true` when the two names were exchanged. `false` when the platform or
+    /// filesystem has no exchange (`EINVAL`, `ENOTSUP`), so the caller falls back to
+    /// two renames. Any other error throws and nothing was moved.
+    static func exchange(_ a: URL, _ b: URL) throws -> Bool {
+        #if canImport(Darwin)
+        if renamex_np(a.path, b.path, UInt32(RENAME_SWAP)) == 0 { return true }
+        let code = errno
+        if code == EINVAL || code == ENOTSUP { return false }
+        throw IsenoughError.failure("Could not swap \(a.path) and \(b.path): \(String(cString: strerror(code)))")
+        #else
+        _ = (a, b)
+        return false
+        #endif
+    }
+}
+
+enum PackGuard {
+    enum Kind: Equatable { case absent, original, stub, other }
+
+    /// A stub is never a pack source. Neither is anything carrying `stub.json`.
+    static func refuseStub(_ app: URL, bundleId: String) throws {
+        if bundleId.hasSuffix(".256stub") || FileManager.default.fileExists(atPath: app.appendingPathComponent("Contents/Resources/stub.json").path) {
+            throw IsenoughError.usage("\(app.path) is an isenough stub, not an app; nothing to pack")
+        }
+    }
+
+    static func kind(_ url: URL, appId: String) -> Kind {
+        guard FileManager.default.fileExists(atPath: url.path) else { return .absent }
+        let identifier = BundleFacts.readInfo(url)?["CFBundleIdentifier"] as? String
+        let hasStubJSON = FileManager.default.fileExists(atPath: url.appendingPathComponent("Contents/Resources/stub.json").path)
+        if identifier == appId + ".256stub" && hasStubJSON { return .stub }
+        if identifier == appId && !hasStubJSON { return .original }
+        return .other
+    }
+}
+
+/// Copies of the manifests embedded in stubs, so a stub rebuild never reads the repo.
+enum StubManifestCache {
+    static func url(imageId: String, cacheDir: String) -> URL {
+        URL(fileURLWithPath: cacheDir).appendingPathComponent("manifests/\(imageId).json")
+    }
+
+    static func store(_ data: Data, imageId: String, cacheDir: String) {
+        guard AppIcon.isSafeImageId(imageId) else { return }
+        let target = url(imageId: imageId, cacheDir: cacheDir)
+        try? FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try? data.write(to: target, options: .atomic)
+    }
+
+    static func load(imageId: String, cacheDir: String) -> Data? {
+        guard AppIcon.isSafeImageId(imageId) else { return nil }
+        return try? Data(contentsOf: url(imageId: imageId, cacheDir: cacheDir))
+    }
+}
+
+extension IsenoughEngine {
+    /// Swap a signed stub in for the app at `source`. Runs under the app lock and
+    /// re-checks the app first: still the same bundle, not a stub, not running, no
+    /// open restore journal, and unchanged since it was cloned. A refusal deletes
+    /// the staged stub and leaves the app alone. The swap is journaled so a crash
+    /// at any point leaves something `recoverPackJournals` can put back.
+    func commitStub(staged temp: URL, source: URL, bundleId: String, name: String, cloneFingerprint: String, keepOriginal: Bool) throws -> String? {
+        let fm = FileManager.default
+        let parent = source.deletingLastPathComponent()
+        let retained = parent.appendingPathComponent(source.deletingPathExtension().lastPathComponent + ".256orig.app")
+        return try restore.withLock(bundleId) { () -> String? in
+            let txid = UUID().uuidString.lowercased()
+            let backup = parent.appendingPathComponent(".isenough-original-\(txid).app")
+            var journal = PackJournal(txid: txid, appId: bundleId, source: source.path, temp: temp.path, backup: backup.path, retained: keepOriginal ? retained.path : nil, phase: "staged")
+            do {
+                try recheckPackSource(source, bundleId: bundleId, name: name, cloneFingerprint: cloneFingerprint)
+                if keepOriginal, fm.fileExists(atPath: retained.path) {
+                    throw IsenoughError.failure("Could not retain original app at \(retained.path): it already exists")
+                }
+                try PackJournalStore.save(journal, stateDir: config.stateDir)
+            } catch {
+                try? fm.removeItem(at: temp)
+                throw error
+            }
+            try faults.hit("pack.staged", "afterJournal")
+            let swapped: Bool
+            do {
+                try failureInjector?("pack.staged")
+                swapped = packSwapUnsupported ? false : try AtomicSwap.exchange(temp, source)
+            } catch {
+                try? fm.removeItem(at: temp)
+                try? PackJournalStore.remove(stateDir: config.stateDir, txid: txid)
+                throw error
+            }
+            if swapped {
+                // source is the stub now and temp is the original.
+                try? DurableIO.syncItem(parent)
+                try faults.hit("pack.swapped", "afterMutation")
+                journal.phase = "swapped"
+                do { try PackJournalStore.save(journal, stateDir: config.stateDir) }
+                catch { try rollbackPack(journal); throw error }
+                try faults.hit("pack.swapped", "afterJournal")
+                do {
+                    try failureInjector?("pack.swapped")
+                    try fm.moveItem(at: temp, to: backup)
+                } catch {
+                    try rollbackPack(journal)
+                    throw IsenoughError.failure("Could not move original app to transaction backup \(backup.path): \(error.localizedDescription)")
+                }
+            } else {
+                do {
+                    try fm.moveItem(at: source, to: backup)
+                } catch {
+                    try? fm.removeItem(at: temp)
+                    try? PackJournalStore.remove(stateDir: config.stateDir, txid: txid)
+                    throw IsenoughError.failure("Could not move original app to transaction backup \(backup.path): \(error.localizedDescription)")
+                }
+                try faults.hit("pack.originalMoved", "afterMutation")
+                journal.phase = "originalMoved"
+                do { try PackJournalStore.save(journal, stateDir: config.stateDir) }
+                catch { try rollbackPack(journal); throw error }
+                try faults.hit("pack.originalMoved", "afterJournal")
+                do {
+                    try failureInjector?("pack.originalMoved")
+                    try fm.moveItem(at: temp, to: source)
+                } catch {
+                    try rollbackPack(journal)
+                    throw IsenoughError.failure("Could not install signed stub at \(source.path): \(error.localizedDescription)")
+                }
+            }
+            try? DurableIO.syncItem(parent)
+            journal.phase = "parked"
+            do { try PackJournalStore.save(journal, stateDir: config.stateDir) }
+            catch { try rollbackPack(journal); throw error }
+            try faults.hit("pack.parked", "afterJournal")
+            var warning: String? = nil
+            if keepOriginal {
+                do {
+                    try failureInjector?("pack.retain")
+                    try fm.moveItem(at: backup, to: retained)
+                } catch {
+                    try rollbackPack(journal)
+                    throw IsenoughError.failure("Could not retain original app at \(retained.path): \(error.localizedDescription)")
+                }
+            } else {
+                do { try fm.removeItem(at: backup) }
+                catch { warning = BackupRemoval.warning(backupPath: backup.path) }
+            }
+            try? PackJournalStore.remove(stateDir: config.stateDir, txid: txid)
+            return warning
+        }
+    }
+
+    private func recheckPackSource(_ source: URL, bundleId: String, name: String, cloneFingerprint: String) throws {
+        guard let info = BundleFacts.readInfo(source), let current = info["CFBundleIdentifier"] as? String else {
+            throw IsenoughError.busy("\(source.path) is gone or is no longer an app bundle; nothing was replaced")
+        }
+        try PackGuard.refuseStub(source, bundleId: current)
+        guard current == bundleId else {
+            throw IsenoughError.busy("\(source.path) is now \(current), not \(bundleId); pack again")
+        }
+        let usage = packUsageOverride?(source.path) ?? ProcessProbe.usage(roots: [source.path])
+        if let blocked = PackPreflight.running(usage, name: name) { throw blocked }
+        if let reason = restore.blockReason(appId: bundleId) { throw IsenoughError.busy(reason) }
+        guard try TreeFingerprint.of(source) == cloneFingerprint else {
+            throw IsenoughError.busy("\(name) changed while it was being packed; the original was left alone. Pack again.")
+        }
+    }
+
+    /// Undo a swap in progress: the original goes back to `source` and the stub is deleted.
+    private func rollbackPack(_ journal: PackJournal) throws {
+        let fm = FileManager.default
+        let source = URL(fileURLWithPath: journal.source)
+        let temp = URL(fileURLWithPath: journal.temp)
+        let backup = URL(fileURLWithPath: journal.backup)
+        guard let original = [temp, backup].first(where: { PackGuard.kind($0, appId: journal.appId) == .original }) else {
+            throw IsenoughError.failure("pack of \(journal.appId) cannot find the original to roll back; the journal \(PackJournalStore.file(config.stateDir, txid: journal.txid).path) is kept")
+        }
+        switch PackGuard.kind(source, appId: journal.appId) {
+        case .stub:
+            if (try? AtomicSwap.exchange(original, source)) == true {
+                // `original` now names the stub.
+                try? fm.removeItem(at: original)
+            } else {
+                try fm.removeItem(at: source)
+                try fm.moveItem(at: original, to: source)
+            }
+        case .absent:
+            try fm.moveItem(at: original, to: source)
+        case .original, .other:
+            throw IsenoughError.failure("pack of \(journal.appId) found an unexpected bundle at \(source.path); the journal is kept")
+        }
+        try? DurableIO.syncItem(source.deletingLastPathComponent())
+        for leftover in [temp, backup] where PackGuard.kind(leftover, appId: journal.appId) == .stub {
+            try? fm.removeItem(at: leftover)
+        }
+        try PackJournalStore.remove(stateDir: config.stateDir, txid: journal.txid)
+    }
+
+    /// Replay open pack journals. `gc` and `doctor --fix` call this. A journal whose
+    /// app lock is held belongs to a pack that is still running and is skipped.
+    @discardableResult
+    public func recoverPackJournals() throws -> [String] {
+        let journals = try PackJournalStore.loadAll(stateDir: config.stateDir)
+        var lines: [String] = []
+        for journal in journals {
+            let directory = URL(fileURLWithPath: config.stateDir).appendingPathComponent("locks/app")
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            var lock = FileLock(path: directory.appendingPathComponent(journal.appId + ".lock").path)
+            guard try lock.tryLock() else {
+                lines.append("pack \(journal.txid) is still running")
+                continue
+            }
+            defer { lock.unlock() }
+            lines.append(try recoverPack(journal))
+        }
+        return lines
+    }
+
+    private func recoverPack(_ journal: PackJournal) throws -> String {
+        let fm = FileManager.default
+        let source = URL(fileURLWithPath: journal.source)
+        let temp = URL(fileURLWithPath: journal.temp)
+        let backup = URL(fileURLWithPath: journal.backup)
+        let retained = journal.retained.map { URL(fileURLWithPath: $0) }
+        let original = [temp, backup].first { PackGuard.kind($0, appId: journal.appId) == .original }
+        func dropStubLeftovers() {
+            for leftover in [temp, backup] where PackGuard.kind(leftover, appId: journal.appId) == .stub {
+                try? fm.removeItem(at: leftover)
+            }
+        }
+        switch PackGuard.kind(source, appId: journal.appId) {
+        case .absent:
+            guard let original else {
+                return "pack \(journal.appId) needs attention: \(source.path) is empty and the original is at neither \(temp.path) nor \(backup.path)"
+            }
+            try fm.moveItem(at: original, to: source)
+            try? DurableIO.syncItem(source.deletingLastPathComponent())
+            dropStubLeftovers()
+            try PackJournalStore.remove(stateDir: config.stateDir, txid: journal.txid)
+            return "restored original for pack \(journal.txid) at \(source.path)"
+        case .original:
+            dropStubLeftovers()
+            try PackJournalStore.remove(stateDir: config.stateDir, txid: journal.txid)
+            return "rolled back pack \(journal.txid)"
+        case .stub:
+            // The stub is signed and in place, and the image was published before the
+            // swap. Finish what pack started.
+            if let original {
+                if let retained {
+                    if fm.fileExists(atPath: retained.path) {
+                        return "pack \(journal.appId) needs attention: the original is at \(original.path) and \(retained.path) already exists"
+                    }
+                    try fm.moveItem(at: original, to: retained)
+                } else if original.path != backup.path {
+                    try fm.moveItem(at: original, to: backup)
+                }
+            }
+            var line = "finished pack \(journal.txid)"
+            if retained == nil, PackGuard.kind(backup, appId: journal.appId) == .original {
+                do { try fm.removeItem(at: backup) }
+                catch { line = BackupRemoval.warning(backupPath: backup.path) }
+            }
+            try PackJournalStore.remove(stateDir: config.stateDir, txid: journal.txid)
+            return line
+        case .other:
+            return "pack \(journal.appId) needs attention: \(source.path) is neither the app nor its stub"
+        }
+    }
 }
