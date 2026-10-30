@@ -259,7 +259,7 @@ enum RestoreArchive {
             URL(fileURLWithPath: config.repoPath).appendingPathComponent(journal.imageFile),
         ]
         for url in candidates {
-            if let data = try? Data(contentsOf: url), SHA256Digest.hex(data) == journal.imageSha256 { return true }
+            if let digest = try? SHA256Digest.hexFile(url), digest == journal.imageSha256 { return true }
         }
         return false
     }

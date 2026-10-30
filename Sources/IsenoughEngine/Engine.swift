@@ -227,7 +227,7 @@ public struct IsenoughEngine {
         detachedPackMount=true
         let facts=ImageManifest.App(originalPath:app.path,executable:info["CFBundleExecutable"] as? String ?? "",documentTypes:(info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },urlTypes:(info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) },cdhash:cdhash,treeHash:treeHash)
         var manifest=ImageManifest(bundleId:bid,name:name,version:version,image:image,app:facts,mode:selected); manifest.image.file="images/\(manifest.imageId).dmg"; try manifest.validate()
-        let backend=try repo; try backend.put(manifest.image.file,data:Data(contentsOf:dmg)); try backend.put("manifests/\(manifest.imageId).json",data:manifest.encode())
+        let backend=try repo; try backend.put(manifest.image.file,file:dmg); try backend.put("manifests/\(manifest.imageId).json",data:manifest.encode())
         if !noStub { try installStub(info:info, manifest:manifest, path:app.path, keepOriginal:keepOriginal) }
         return manifest
         #endif
@@ -248,7 +248,7 @@ public struct IsenoughEngine {
         let launcher=try StubGenerator.locateLauncher(cliExecutable:cli,environment:ProcessInfo.processInfo.environment,isExecutable:{ FileManager.default.isExecutableFile(atPath:$0) })
         let stubExecutable=temp.appendingPathComponent("Contents/MacOS/isenough-stub")
         try FileManager.default.copyItem(at:launcher,to:stubExecutable)
-        guard try Data(contentsOf:stubExecutable) != Data(contentsOf:cli) else {
+        guard try !FileManager.default.contentsEqual(atPath:stubExecutable.path,andPath:cli.path) else {
             throw IsenoughError.failure("Refusing to install CLI binary as isenough-stub launcher")
         }
         try manifest.encode().write(to:temp.appendingPathComponent("Contents/Resources/manifest.json"))
@@ -358,7 +358,7 @@ public struct IsenoughEngine {
         let paths = CachePaths(cacheDir: config.cacheDir, mountRoot: config.mountRoot)
         let cache = paths.image(manifest.imageId)
         try FileManager.default.createDirectory(at: cache.deletingLastPathComponent(), withIntermediateDirectories: true)
-        if FileManager.default.fileExists(atPath: cache.path), SHA256Digest.hex(try Data(contentsOf: cache)) == manifest.image.sha256 { return cache }
+        if FileManager.default.fileExists(atPath: cache.path), (try SHA256Digest.hexFile(cache)) == manifest.image.sha256 { return cache }
         let free = try VolumeSpace.availableBytes(at: config.cacheDir)
         guard SpaceFloor.admits(freeBytes: free, incoming: manifest.image.size, floor: config.minFreeBytes) else {
             throw IsenoughError.noSpace("free space \(free) bytes would fall below the \(config.minFreeBytes) byte floor after fetching \(manifest.image.size) bytes")

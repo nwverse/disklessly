@@ -161,6 +161,7 @@ public struct MountedShareBackend: StorageBackend {
     public func stat(_ path: String) throws -> BackendStat? { try online(); return try folder.stat(path) }
     public func get(_ path: String, range: Range<UInt64>?) throws -> Data { try online(); return try folder.get(path, range: range) }
     public func put(_ path: String, data: Data) throws { try online(); try folder.put(path, data: data) }
+    public func put(_ path: String, file: URL) throws { try online(); try folder.put(path, file: file) }
     public func getResumable(_ path: String, offset: UInt64) throws -> ResumableBody { try online(); return try folder.getResumable(path, offset: offset) }
     public func localRoot() -> URL? { root }
     public func ensureCollection(_ path: String) throws { try online(); try folder.ensureCollection(path) }

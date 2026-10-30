@@ -118,6 +118,11 @@ public struct ResumableBody: Equatable {
     }
 }
 
+public extension StorageBackend {
+    /// Upload a local file. Backends that can stream override this; the default reads the file into memory.
+    func put(_ path: String, file: URL) throws { try put(path, data: Data(contentsOf: file, options: .mappedIfSafe)) }
+}
+
 public protocol StorageBackend {
     func list(_ path: String) throws -> [String]
     func stat(_ path: String) throws -> BackendStat?
@@ -215,6 +220,15 @@ public struct LocalFolderBackend: StorageBackend {
     public func stat(_ path: String) throws -> BackendStat? { let u = try url(path); guard let a = try? FileManager.default.attributesOfItem(atPath: u.path), let n = a[.size] as? NSNumber else { return nil }; return BackendStat(size: n.uint64Value, modified: a[.modificationDate] as? Date ?? .distantPast) }
     public func get(_ path: String, range: Range<UInt64>? = nil) throws -> Data { let d = try Data(contentsOf: url(path)); guard let r = range else { return d }; let lo = min(Int(r.lowerBound), d.count), hi = min(Int(r.upperBound), d.count); return d.subdata(in: lo..<max(lo, hi)) }
     public func put(_ path: String, data: Data) throws { let u = try url(path); try FileManager.default.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true); try data.write(to: u, options: .atomic) }
+    public func put(_ path: String, file: URL) throws {
+        let u = try url(path); let fm = FileManager.default
+        try fm.createDirectory(at: u.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let tmp = u.deletingLastPathComponent().appendingPathComponent(".\(u.lastPathComponent).tmp-\(UUID().uuidString)")
+        do {
+            try fm.copyItem(at: file, to: tmp)
+            if fm.fileExists(atPath: u.path) { _ = try fm.replaceItemAt(u, withItemAt: tmp) } else { try fm.moveItem(at: tmp, to: u) }
+        } catch { try? fm.removeItem(at: tmp); throw error }
+    }
     public func delete(_ path: String) throws { let u = try url(path); if FileManager.default.fileExists(atPath: u.path) { try FileManager.default.removeItem(at: u) } }
     public func localRoot() -> URL? { root }
     public func ensureCollection(_ path: String) throws {

@@ -76,7 +76,7 @@ public enum CacheFetcher {
     }
 
     private static func digest(_ url: URL) throws -> String {
-        SHA256Digest.hex(try Data(contentsOf: url))
+        try SHA256Digest.hexFile(url)
     }
 
     private static func promote(_ partial: URL, to destination: URL) throws {
