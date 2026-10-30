@@ -80,19 +80,75 @@ final class UIServerTests: XCTestCase {
         let cacheInfo = try XCTUnwrap(object["cache"] as? [String: Any])
         XCTAssertGreaterThan((cacheInfo["usedBytes"] as? NSNumber)?.uint64Value ?? 0, 0)
         XCTAssertEqual((cacheInfo["quotaBytes"] as? NSNumber)?.uint64Value, 20 * 1024 * 1024 * 1024)
-        let pin = try request(port: server.port, path: "/api/pin", token: "page-token", method: "POST", body: Data("{\"app\":\"Test\"}".utf8))
-        XCTAssertEqual(pin.status, 200)
+        XCTAssertEqual((apps.first?["imageBytes"] as? NSNumber)?.uint64Value, UInt64(bytes.count))
+        XCTAssertEqual(apps.first?["state"] as? String, "")
+        XCTAssertEqual(apps.first?["needsResolution"] as? Bool, false)
+        XCTAssertNil(apps.first?["lastUsed"])
+        let pin = try runJob(port: server.port, path: "/api/pin", token: "page-token", app: "Test")
+        XCTAssertEqual(pin["state"] as? String, "done")
         let pinned = StateStore(config.stateDir).read()["apps"] as? [String: [String: Any]]
         XCTAssertEqual(pinned?["com.test.app"]?["pinned"] as? Bool, true)
-        let evict = try request(port: server.port, path: "/api/evict", token: "page-token", method: "POST", body: Data("{\"app\":\"Test\"}".utf8))
-        XCTAssertEqual(evict.status, 200)
+        let evict = try runJob(port: server.port, path: "/api/evict", token: "page-token", app: "Test")
+        XCTAssertEqual(evict["state"] as? String, "done")
         XCTAssertFalse(FileManager.default.fileExists(atPath: cached.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: repo.appendingPathComponent("manifests/\(manifest.imageId).json").path))
-        let restore = try request(port: server.port, path: "/api/restore", token: "page-token", method: "POST", body: Data("{\"app\":\"Test\"}".utf8))
-        let restoreBody = try XCTUnwrap(JSONSerialization.jsonObject(with: restore.body) as? [String: Any])
-        XCTAssertEqual(restoreBody["ok"] as? Bool, false)
-        XCTAssertFalse((restoreBody["error"] as? String ?? "").isEmpty)
+        let restore = try runJob(port: server.port, path: "/api/restore", token: "page-token", app: "Test")
+        XCTAssertEqual(restore["state"] as? String, "failed")
+        let restoreError = try XCTUnwrap(restore["error"] as? [String: Any])
+        XCTAssertFalse((restoreError["code"] as? String ?? "").isEmpty)
+        XCTAssertFalse((restoreError["message"] as? String ?? "").isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: repo.appendingPathComponent("manifests/\(manifest.imageId).json").path))
+        let unknown = try runJob(port: server.port, path: "/api/prefetch", token: "page-token", app: "Nope")
+        XCTAssertEqual(unknown["state"] as? String, "failed")
+        XCTAssertEqual((unknown["error"] as? [String: Any])?["code"] as? String, "unknown_app")
+    }
+
+    func testSlowHandlerDoesNotBlockOtherRequests() throws {
+        let server = LoopbackUIServer(token: "slow-token") { request in
+            if request.path == "/slow" { Thread.sleep(forTimeInterval: 2) }
+            return UIResponse.json(["ok": true, "path": request.path])
+        }
+        try server.start()
+        defer { server.stop() }
+        let slowDone = expectation(description: "slow request")
+        DispatchQueue.global().async {
+            _ = try? self.request(port: server.port, path: "/slow", token: "slow-token")
+            slowDone.fulfill()
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        let started = Date()
+        let fast = try request(port: server.port, path: "/api/status", token: "slow-token")
+        XCTAssertEqual(fast.status, 200)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0, "a slow handler held up /api/status")
+        wait(for: [slowDone], timeout: 5)
+    }
+
+    func testPreferredPortIsUsedAndFallsBackWhenTaken() throws {
+        let probe = LoopbackUIServer { _ in UIResponse.json(["ok": true]) }
+        try probe.start()
+        let free = probe.port
+        probe.stop()
+        let first = LoopbackUIServer(token: "a") { _ in UIResponse.json(["ok": true]) }
+        try first.start(preferredPort: free)
+        defer { first.stop() }
+        XCTAssertEqual(first.port, free)
+        let second = LoopbackUIServer(token: "b") { _ in UIResponse.json(["ok": true]) }
+        try second.start(preferredPort: free)
+        defer { second.stop() }
+        XCTAssertGreaterThan(second.port, 0)
+        XCTAssertNotEqual(second.port, free)
+        XCTAssertEqual(try request(port: second.port, path: "/x", token: "b").status, 200)
+        XCTAssertEqual(LoopbackUIServer.defaultPort, 47256)
+    }
+
+    func testUnauthorizedCarriesStableCode() throws {
+        let server = LoopbackUIServer(token: "right") { _ in UIResponse.json(["ok": true]) }
+        try server.start()
+        defer { server.stop() }
+        let denied = try request(port: server.port, path: "/api/status", token: "wrong")
+        XCTAssertEqual(denied.status, 401)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: denied.body) as? [String: Any])
+        XCTAssertEqual((object["error"] as? [String: Any])?["code"] as? String, "unauthorized")
     }
 
     func testShippedPageKeepsTokenAndLocalAssets() throws {
@@ -167,6 +223,23 @@ final class UIServerTests: XCTestCase {
         XCTAssertNotNil(cacheInfo["detachDelaySeconds"])
         let backend = try XCTUnwrap(object["backend"] as? [String: Any])
         XCTAssertEqual(backend["health"] as? String, "ok")
+    }
+
+    private func runJob(port: UInt16, path: String, token: String, app: String) throws -> [String: Any] {
+        let body = try JSONSerialization.data(withJSONObject: ["app": app])
+        let started = try request(port: port, path: path, token: token, method: "POST", body: body)
+        XCTAssertEqual(started.status, 202)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: started.body) as? [String: Any])
+        let id = try XCTUnwrap(object["jobId"] as? String)
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            let polled = try request(port: port, path: "/api/jobs/\(id)", token: token)
+            let job = try XCTUnwrap(JSONSerialization.jsonObject(with: polled.body) as? [String: Any])
+            if job["state"] as? String != "running" { return job }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTFail("job \(id) did not finish")
+        return [:]
     }
 
     private func request(port: UInt16, path: String, token: String?, method: String = "GET", body: Data? = nil) throws -> (status: Int, body: Data) {
