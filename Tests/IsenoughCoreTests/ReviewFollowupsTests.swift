@@ -93,8 +93,15 @@ final class ReviewFollowupsTests: XCTestCase {
     }
 
     private func cliBinary() throws -> URL {
-        var url = URL(fileURLWithPath: #filePath)
         let fm = FileManager.default
+        // Use the binary from the same build as this test bundle. Walking `.build`
+        // returns whichever `isenough` the enumerator meets first, which on macOS can
+        // be a stale `Release/isenough` from an older `swift build -c release`.
+        for bundle in Bundle.allBundles where bundle.bundlePath.hasSuffix(".xctest") {
+            let sibling = bundle.bundleURL.deletingLastPathComponent().appendingPathComponent("isenough")
+            if fm.isExecutableFile(atPath: sibling.path) { return sibling }
+        }
+        var url = URL(fileURLWithPath: #filePath)
         while url.path != "/" {
             if fm.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {
                 let root = url.appendingPathComponent(".build")
