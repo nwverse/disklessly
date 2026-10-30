@@ -55,3 +55,11 @@ only cold files are archived, so there is no warm tier), app, document path (mon
 - 配额告警 Near quota: amber bar at ≥80% (`86% 接近`), red at ≥95% (`97% 临界`), note
   `低于空闲下限时自动清除未固定的缓存`.
 - 后端健康 Health: `正常 Healthy` green with latency, `缓慢 Degraded` amber (e.g. 680 ms), `离线 Offline` red `—`.
+
+## Actual (release/v0.1 QA)
+
+Real `isenough ui` on isolated `ISENOUGH_*` dirs (three packed fixture apps: one pinned and cached, one cached,
+one remote-only; three archived sessions; `ISENOUGH_SCAN_ROOTS` pointing at a fixture folder):
+[`ui/actual-light-1194.png`](ui/actual-light-1194.png), [`ui/actual-dark-1194.png`](ui/actual-dark-1194.png),
+[`ui/actual-light-375.png`](ui/actual-light-375.png), [`ui/actual-dark-375.png`](ui/actual-dark-375.png).
+The Error state was checked against an unreachable WebDAV endpoint, and Empty against an empty repo.
