@@ -111,10 +111,19 @@ public struct MountReapReport: Equatable {
     public var skipped: [Skip] = []
     public var failed: [Skip] = []
 
+    /// Everything, including the mounts kept on purpose. For `isenough reap`.
     public var lines: [String] {
         detached.map { "reaped orphan mount \($0)" }
             + wouldDetach.map { "would reap orphan mount \($0)" }
             + skipped.map { "kept mount \($0.path): \($0.reason)" }
+            + failed.map { "could not reap mount \($0.path): \($0.reason)" }
+    }
+
+    /// Only what changed or went wrong. Launch, gc and doctor print these, so a
+    /// healthy mount owned by a running app does not look like a problem.
+    public var actionLines: [String] {
+        detached.map { "reaped orphan mount \($0)" }
+            + wouldDetach.map { "would reap orphan mount \($0)" }
             + failed.map { "could not reap mount \($0.path): \($0.reason)" }
     }
 
@@ -126,6 +135,28 @@ public struct MountReapReport: Equatable {
 }
 
 public enum MountReaper {
+    /// Mount paths whose reap failed, with when, in `state/reap-failures.json`.
+    struct FailureMemo {
+        var url: URL
+        init(stateDir: String) { url = URL(fileURLWithPath: stateDir).appendingPathComponent("reap-failures.json") }
+
+        func load(within seconds: TimeInterval, now: Date = Date()) -> [String: Date] {
+            guard let data = try? Data(contentsOf: url),
+                  let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Double] else { return [:] }
+            var out: [String: Date] = [:]
+            for (path, stamp) in raw where now.timeIntervalSince1970 - stamp < seconds { out[path] = Date(timeIntervalSince1970: stamp) }
+            return out
+        }
+
+        func save(_ entries: [String: Date]) {
+            if entries.isEmpty { try? FileManager.default.removeItem(at: url); return }
+            let raw = entries.mapValues { $0.timeIntervalSince1970 }
+            guard let data = try? JSONSerialization.data(withJSONObject: raw, options: [.sortedKeys]) else { return }
+            try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try? data.write(to: url, options: .atomic)
+        }
+    }
+
     /// Mount points listed by `hdiutil info -plist` (`images[].system-entities[].mount-point`).
     public static func mountPoints(hdiutilInfo data: Data) -> [String] {
         var slice = data
@@ -255,27 +286,58 @@ extension IsenoughEngine {
     /// Never touches a volume outside the mount root, never forces, and skips a
     /// mount whose lease or app lock is held or whose bundle is in use.
     /// `deep` also asks `hdiutil info`; the fast form only scans the mount root.
-    public func reapOrphanMounts(dryRun: Bool = false, deep: Bool = true, excluding: Set<String> = []) -> MountReapReport {
+    /// `retryAfter` skips a mount whose detach failed that recently (launch
+    /// uses it so a wedged orphan is not retried on every stub launch).
+    public func reapOrphanMounts(dryRun: Bool = false, deep: Bool = true, excluding: Set<String> = [], retryAfter: TimeInterval? = nil) -> MountReapReport {
         var report = MountReapReport(dryRun: dryRun)
-        let root = config.mountRoot
-        guard !root.isEmpty else { return report }
+        guard !config.mountRoot.isEmpty else { return report }
+        // Resolved once: a symlinked root must not compare its children against
+        // the link's own device (design §4: never detach outside the mount root).
+        let root = MountReaper.canonical(config.mountRoot)
+        guard root != "/" else { return report }
         let ops = mountOps
         var names: Set<String> = []
+        var listedCache: Set<String>?
+        func listed() -> Set<String> {
+            if let listedCache { return listedCache }
+            let found = Set(ops.listMounted().map(MountReaper.canonical))
+            listedCache = found
+            return found
+        }
         if deep {
-            for path in ops.listMounted() {
+            for path in listed() {
                 if let name = MountReaper.childName(path, mountRoot: root) { names.insert(name) }
             }
         }
         if let entries = try? FileManager.default.contentsOfDirectory(atPath: root) {
             for name in entries where ops.isMounted((root as NSString).appendingPathComponent(name)) { names.insert(name) }
         }
+        let failures = MountReaper.FailureMemo(stateDir: config.stateDir)
+        var recentFailures = failures.load(within: 24 * 3600)
+        var failuresChanged = false
+        defer { if failuresChanged { failures.save(recentFailures) } }
         let state = StateStore(config.stateDir)
-        let journals = (try? JournalStore.loadAll(stateDir: config.stateDir)) ?? []
+        var journals: [RestoreJournal] = []
+        var journalError: String?
+        do { journals = try JournalStore.loadAll(stateDir: config.stateDir) }
+        catch { journalError = (error as? LocalizedError)?.errorDescription ?? String(describing: error) }
         for name in names.sorted() where !excluding.contains(name) {
             let path = (root as NSString).appendingPathComponent(name)
             func skip(_ reason: String) { report.skipped.append(.init(path: path, reason: reason)) }
             guard ops.isMounted(path) else { continue }
             let canonical = MountReaper.canonical(path)
+            // Only a disk image hdiutil lists at exactly this path is ours to
+            // detach; `diskutil eject` on any other path ejects its whole volume.
+            guard listed().contains(canonical) else { continue }
+            if let journalError, name.hasPrefix("restore-") {
+                // Fail closed: an unreadable journal may be the one that owns it.
+                skip("restore journals could not be read (\(journalError)); run isenough doctor")
+                continue
+            }
+            if let retryAfter, let at = recentFailures[canonical], Date().timeIntervalSince(at) < retryAfter {
+                skip("detach failed recently; retrying later")
+                continue
+            }
             if journals.contains(where: { name == "restore-\($0.txid)" || $0.mountPath.map(MountReaper.canonical) == canonical }) {
                 skip("an open restore journal owns it; run isenough doctor --fix")
                 continue
@@ -311,13 +373,16 @@ extension IsenoughEngine {
                 try ops.detach(path, false)
                 guard !ops.isMounted(path) else {
                     report.failed.append(.init(path: path, reason: "still mounted after detach"))
+                    recentFailures[canonical] = Date(); failuresChanged = true
                     continue
                 }
                 rmdir(path)
                 if let owner { try? markDetached(owner, mount: path, state: state) }
                 report.detached.append(path)
+                if recentFailures.removeValue(forKey: canonical) != nil { failuresChanged = true }
             } catch {
                 report.failed.append(.init(path: path, reason: (error as? LocalizedError)?.errorDescription ?? String(describing: error)))
+                recentFailures[canonical] = Date(); failuresChanged = true
             }
         }
         return report

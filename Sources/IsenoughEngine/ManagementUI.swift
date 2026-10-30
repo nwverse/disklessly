@@ -485,6 +485,10 @@ public struct ManagementActions {
                 progress.phase("running")
             case .evict:
                 progress.phase("evict")
+                // The dashboard has no --force, so say what to do here instead.
+                if engine.evictRefusal(manifest, force: false)?.reason == "pinned" {
+                    throw IsenoughError.busy("\(manifest.name) is pinned; unpin it first")
+                }
                 try engine.evict(manifest)
             case .unpack:
                 progress.phase("unpack")

@@ -599,9 +599,16 @@ public struct IsenoughEngine {
     }
     /// True when `path` is a live mount point. Launch leaves an empty folder behind
     /// after detach, so a folder that merely exists does not mean "mounted".
+    /// The parent is resolved first: through a symlinked parent, lstat of the
+    /// link itself would report the link's device, not the target folder's.
     static func isActiveMountPoint(_ path: String) -> Bool {
+        let name = (path as NSString).lastPathComponent
+        guard !name.isEmpty, name != "/", let real = realpath((path as NSString).deletingLastPathComponent, nil) else { return false }
+        let parentPath = String(cString: real)
+        free(real)
+        let child = (parentPath as NSString).appendingPathComponent(name)
         var mount = stat(), parent = stat()
-        guard lstat(path, &mount) == 0, lstat((path as NSString).deletingLastPathComponent, &parent) == 0 else { return false }
+        guard lstat(child, &mount) == 0, lstat(parentPath, &parent) == 0 else { return false }
         return mount.st_dev != parent.st_dev
     }
     /// design §4: refuses a pinned app unless `force`, and a mounted or in-use
@@ -616,7 +623,7 @@ public struct IsenoughEngine {
         var lines = try recoverPackJournals()
         lines.append(contentsOf: try recoverUnpackJournals())
         lines.append(contentsOf: try maintain(now: now, includeLegacy: includeLegacy).lines)
-        lines.append(contentsOf: reapOrphanMounts(deep: false).lines)
+        lines.append(contentsOf: reapOrphanMounts(deep: false).actionLines)
         let enforced = try enforceCacheQuota(justUsed: nil, now: now)
         lines.append(contentsOf: enforced.lines)
         return lines
@@ -886,12 +893,6 @@ public struct IsenoughEngine {
             return
         }
         let image=try prefetch(manifest)
-        #if os(macOS)
-        // Opportunistic: images a crashed watcher left attached. Fast scan only.
-        for line in reapOrphanMounts(deep: false, excluding: [manifest.imageId]).lines {
-            FileHandle.standardError.write(Data("isenough: \(line)\n".utf8))
-        }
-        #endif
         #if !os(macOS)
         throw IsenoughError.unsupported("launch requires macOS hdiutil and Launch Services")
         #else
@@ -921,6 +922,12 @@ public struct IsenoughEngine {
             try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"running",mountPoint:mount.path)
             let built = OpenInvocation.arguments(app: app.path, documents: documents, urls: urls, arguments: arguments, alreadyRunning: false)
             try run(built.argv[0], Array(built.argv.dropFirst()))
+        }
+        // Opportunistic, and only once the user's app is open: images a crashed
+        // watcher left attached. Fast scan; a recently failed detach is not retried.
+        // This process still holds the lease, so its own mount stays excluded.
+        for line in reapOrphanMounts(deep: false, excluding: [manifest.imageId], retryAfter: 600).actionLines {
+            FileHandle.standardError.write(Data("isenough: \(line)\n".utf8))
         }
         if handOff { return }
         if !wait {

@@ -239,6 +239,56 @@ final class LifecycleTests: XCTestCase {
         XCTAssertEqual(report.jsonObject()["ok"] as? Bool, false)
     }
 
+    /// A mount root that is a symlink to another volume: plain folders seen
+    /// through it are not mounts, and nothing hdiutil does not list is detached.
+    func testReaperIgnoresPlainFoldersUnderSymlinkedRoot() throws {
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let link = root.appendingPathComponent("linked-mnt")
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "/dev")
+        XCTAssertFalse(IsenoughEngine.isActiveMountPoint(link.appendingPathComponent("null").path))
+        var engine = try makeEngine()
+        engine.config.mountRoot = link.path
+        var detached: [String] = []
+        engine.mountOpsOverride = MountOps(listMounted: { [] }, isMounted: { IsenoughEngine.isActiveMountPoint($0) }, detach: { path, _ in detached.append(path) }, usage: { _ in .clean })
+        let report = engine.reapOrphanMounts(deep: false)
+        XCTAssertTrue(detached.isEmpty, "\(detached)")
+        XCTAssertTrue(report.detached.isEmpty && report.failed.isEmpty, "\(report)")
+    }
+
+    func testReaperFailsClosedOnUnreadableJournal() throws {
+        let engine = try makeEngine()
+        let restoreMount = try mount("restore-tx9")
+        let plain = try mount("plain")
+        let dir = URL(fileURLWithPath: engine.config.stateDir).appendingPathComponent("journals")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try Data("{truncated".utf8).write(to: dir.appendingPathComponent("broken.json"))
+        let report = engine.reapOrphanMounts()
+        XCTAssertEqual(report.detached, [plain])
+        XCTAssertEqual(report.skipped.map(\.path), [restoreMount])
+        XCTAssertTrue(fake.mounted.contains(restoreMount))
+    }
+
+    func testReaperBacksOffAfterFailureAndHidesSkipsFromActionLines() throws {
+        let engine = try makeEngine()
+        let wedged = try mount("wedged")
+        let leased = try mount("leased")
+        var lease = try XCTUnwrap(MountLease.tryAcquire(stateDir: engine.config.stateDir, name: "leased"))
+        defer { lease.release() }
+        fake.failDetach = true
+        let first = engine.reapOrphanMounts(deep: false, retryAfter: 600)
+        XCTAssertEqual(first.failed.map(\.path), [wedged])
+        XCTAssertEqual(first.skipped.map(\.path), [leased])
+        XCTAssertEqual(first.actionLines.count, 1, "kept mounts are diagnostics, not actions")
+        XCTAssertEqual(first.lines.count, 2)
+        let second = engine.reapOrphanMounts(deep: false, retryAfter: 600)
+        XCTAssertEqual(fake.detachCalls.count, 1, "a recent failure is not retried on launch")
+        XCTAssertTrue(second.actionLines.isEmpty)
+        fake.failDetach = false
+        let manual = engine.reapOrphanMounts()
+        XCTAssertEqual(manual.detached, [wedged], "an explicit reap still retries")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: URL(fileURLWithPath: engine.config.stateDir).appendingPathComponent("reap-failures.json").path))
+    }
+
     func testChildNameAndHdiutilInfoParsing() {
         XCTAssertEqual(MountReaper.childName("/tmp/root/abc", mountRoot: "/private/tmp/root"), "abc")
         XCTAssertEqual(MountReaper.childName("/private/tmp/root/abc/", mountRoot: "/tmp/root/"), "abc")
