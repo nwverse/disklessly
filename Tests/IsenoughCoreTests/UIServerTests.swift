@@ -191,6 +191,34 @@ final class UIServerTests: XCTestCase {
         XCTAssertFalse(remote.contains("http://"))
         XCTAssertFalse(remote.contains("https://"))
 
+        // Language comes from the browser; the shell carries no Chinese to flash before app.js runs.
+        XCTAssertTrue(html.contains("navigator.languages"))
+        XCTAssertFalse(html.contains("lang=\"zh"))
+        XCTAssertFalse(html.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }, "index.html hard-codes Chinese text")
+        // No cross-language sublines such as "Running OK · Healthy" or "运行正常 · Healthy".
+        XCTAssertFalse(js.contains("· Healthy"))
+        XCTAssertFalse(js.contains("Running OK ·"))
+        // Actions, confirmations, live results, accessibility hooks.
+        XCTAssertTrue(js.contains("/api/jobs/"))
+        XCTAssertFalse(js.contains("let busy"))
+        XCTAssertTrue(html.contains("<dialog id=\"confirm\""))
+        XCTAssertTrue(html.contains("aria-live=\"polite\""))
+        XCTAssertTrue(html.contains("role=\"radiogroup\""))
+        XCTAssertTrue(html.contains("id=\"onboarding\""))
+        XCTAssertTrue(js.contains("aria-checked"))
+        XCTAssertTrue(js.contains("Intl.NumberFormat"))
+        XCTAssertTrue(js.contains("Intl.RelativeTimeFormat"))
+        XCTAssertTrue(js.contains("永久还原到 /Applications…"))
+        XCTAssertTrue(js.contains("REFRESH_MS = 20000"))
+
+        let keys = try copyKeys(js)
+        XCTAssertGreaterThan(keys.zh.count, 100)
+        XCTAssertEqual(keys.zh.subtracting(keys.en).sorted(), [], "keys only in zh")
+        XCTAssertEqual(keys.en.subtracting(keys.zh).sorted(), [], "keys only in en")
+        for code in ["unknown_app", "offline", "integrity", "no_space", "busy", "unauthorized"] {
+            XCTAssertTrue(keys.en.contains("err" + code), code)
+        }
+
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let repo = root.appendingPathComponent("repo")
@@ -223,6 +251,25 @@ final class UIServerTests: XCTestCase {
         XCTAssertNotNil(cacheInfo["detachDelaySeconds"])
         let backend = try XCTUnwrap(object["backend"] as? [String: Any])
         XCTAssertEqual(backend["health"] as? String, "ok")
+    }
+
+    /// Top-level keys of `copy.zh` and `copy.en` in app.js (four-space indent inside the i18n markers).
+    private func copyKeys(_ js: String) throws -> (zh: Set<String>, en: Set<String>) {
+        let start = try XCTUnwrap(js.range(of: "// i18n:begin"))
+        let end = try XCTUnwrap(js.range(of: "// i18n:end"))
+        let block = String(js[start.upperBound..<end.lowerBound])
+        let split = try XCTUnwrap(block.range(of: "\n  en: {"))
+        func keys(_ text: Substring) -> Set<String> {
+            var found = Set<String>()
+            for line in text.split(separator: "\n") where line.hasPrefix("    ") && !line.hasPrefix("     ") {
+                let body = line.dropFirst(4)
+                guard let colon = body.firstIndex(of: ":") else { continue }
+                let name = body[..<colon]
+                if !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) { found.insert(String(name)) }
+            }
+            return found
+        }
+        return (keys(block[..<split.lowerBound]), keys(block[split.upperBound...]))
     }
 
     private func runJob(port: UInt16, path: String, token: String, app: String) throws -> [String: Any] {
