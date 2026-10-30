@@ -82,14 +82,13 @@ final class ReleaseAssetsTests: XCTestCase {
         XCTAssertTrue(guide.contains("使用指南"), "Chinese section missing")
         XCTAssertTrue(guide.contains("## English"), "English section missing")
         XCTAssertTrue(guide.contains("没有遥测") && guide.contains("No telemetry"), "privacy note missing")
-        XCTAssertTrue(guide.contains("本版本新增"), "the in-this-release section must stay clearly marked")
+        XCTAssertTrue(guide.contains("isenough sessions"), "user guide does not cover isenough sessions")
     }
 
     func testReadmeLinksTheGuideAndRelativeLinksResolve() throws {
         let readme = try text("README.md")
         XCTAssertTrue(readme.contains("docs/user-guide.md"))
         XCTAssertTrue(readme.contains("中文简介"), "keep the Chinese intro")
-        XCTAssertTrue(readme.contains("## In this release"), "features landing in parallel must be in a marked section")
         XCTAssertFalse(readme.lowercased().contains("placeholder command"))
 
         let pattern = try NSRegularExpression(pattern: #"\]\(([^)#:\s]+)(#[^)]*)?\)|src="([^"]+)""#)
@@ -103,6 +102,38 @@ final class ReleaseAssetsTests: XCTestCase {
                 let resolved = base.appendingPathComponent(target).standardizedFileURL
                 XCTAssertTrue(FileManager.default.fileExists(atPath: resolved.path), "\(file) links to missing \(target)")
             }
+        }
+    }
+
+    func testUninstallStepsWarnBeforeTheRepoIsDeleted() throws {
+        let guide = try text("docs/user-guide.md")
+        func section(_ start: String, _ end: String) throws -> String {
+            let from = try XCTUnwrap(guide.range(of: start), "missing \(start)")
+            let to = try XCTUnwrap(guide.range(of: end, range: from.upperBound..<guide.endIndex), "missing \(end)")
+            return String(guide[from.upperBound..<to.lowerBound])
+        }
+        let zh = try section("## 卸载 256isenough", "## 隐私")
+        let en = try section("### Uninstall", "### Privacy")
+        for (name, body, warning) in [("zh", zh, "永久丢失"), ("en", en, "destroys data for good")] {
+            XCTAssertTrue(body.contains(warning), "\(name) uninstall must warn that deleting the repo is permanent")
+            XCTAssertTrue(body.contains("isenough unpack"), "\(name) uninstall must say to unpack apps first")
+            let restore = try XCTUnwrap(body.range(of: "isenough sessions restore"), "\(name) uninstall must mention sessions restore")
+            let repoStep = try XCTUnwrap(body.range(of: name == "zh" ? "才删除仓库文件夹" : "5. Delete the repo folder"))
+            XCTAssertLessThan(restore.lowerBound, repoStep.lowerBound, "\(name): restore sessions before deleting the repo")
+        }
+        let readme = try text("README.md")
+        XCTAssertTrue(readme.contains("isenough sessions restore"), "README uninstall must mention sessions restore")
+    }
+
+    /// The "landing now" sections are temporary. Once the CHANGELOG 0.1.0 entry is
+    /// dated (released), they must have been folded into the normal docs.
+    func testLandingNowSectionsAreGoneOnceReleased() throws {
+        let changelog = try text("CHANGELOG.md")
+        let released = !changelog.contains("## [0.1.0] - Unreleased")
+        guard released else { return }
+        for (file, marker) in [("README.md", "landing now"), ("CHANGELOG.md", "landing now"),
+                               ("docs/user-guide.md", "landing now"), ("docs/user-guide.md", "本版本新增")] {
+            XCTAssertFalse(try text(file).contains(marker), "\(file) still has the \(marker) section; see docs/release-checklist.md")
         }
     }
 

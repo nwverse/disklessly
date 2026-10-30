@@ -108,11 +108,18 @@ The menu-bar item has **Open Dashboard**, **Copy Dashboard URL**, the version, a
   leaves the stub.
 - To remove 256isenough completely:
   1. Run `isenough list` and `isenough unpack APP` for every app you want back.
-  2. Quit 256isenough from the menu bar and move it to the Trash (or `brew uninstall --cask 256isenough`).
-  3. Delete `~/Library/Application Support/256isenough/` and `~/Library/Caches/256isenough/`.
-  4. Delete the repo folder if no other Mac uses it.
+  2. If you used `isenough sessions --apply`, run `isenough sessions restore ID`
+     for every archived transcript you want back (`sessions search` finds them).
+     Keep the Keychain session key until this is done if you used `--encrypt`.
+  3. Quit 256isenough from the menu bar and move it to the Trash (or `brew uninstall --cask 256isenough`).
+  4. Delete `~/Library/Application Support/256isenough/` and `~/Library/Caches/256isenough/`.
+  5. Delete the repo folder only after steps 1 and 2, and only if no other Mac uses it.
 
-Stubs for apps you did not unpack stop working once step 3 removes the engine copy
+**Deleting the repo is permanent.** After `pack` the repo image is the only copy of
+the app, and `sessions --apply` deletes the local transcripts it archives. Apps you
+did not unpack and sessions you did not restore are gone with the repo.
+
+Stubs for apps you did not unpack stop working once step 4 removes the engine copy
 they run (`~/Library/Application Support/256isenough/bin/isenough`).
 
 ## Several Macs, one repo
@@ -163,8 +170,9 @@ configure. Details are in [PRIVACY.md](PRIVACY.md).
 
 ## In this release (landing now)
 
-> These are being merged into the 0.1 release branch while this README is
-> updated. `isenough help` on your build is authoritative.
+> Planned for 0.1; your build may not have them yet. A command that
+> `isenough help` does not list is not available (today `isenough detach`
+> reports "not available in this build").
 
 - `isenough evict APP --force` drops a cached image even while it is mounted,
   detaching it first.

@@ -67,8 +67,9 @@ First public release.
 
 ### In this release (landing now)
 
-These are being merged into `release/v0.1` in parallel with this entry; check
-`isenough help` on the tagged build.
+Planned for 0.1 and not in every build yet (`isenough detach` currently reports
+"not available in this build"). Fold these into Added or remove them before
+tagging; see `docs/release-checklist.md`.
 
 - `isenough evict APP --force` and `isenough detach APP`.
 - Reaping of images left mounted after their app quit.

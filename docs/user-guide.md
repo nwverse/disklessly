@@ -17,10 +17,11 @@
 9. [仓库后端：iCloud、SMB/NFS、WebDAV、OpenList](#仓库后端)
 10. [多台 Mac 共用一个仓库](#多台-mac-共用一个仓库)
 11. [菜单栏应用与仪表盘](#菜单栏应用与仪表盘)
-12. [排查问题 `doctor`](#排查问题-doctor)
-13. [卸载 256isenough](#卸载-256isenough)
-14. [隐私](#隐私)
-15. [本版本新增（开发中）](#本版本新增开发中)
+12. [编程助手会话 `sessions`](#编程助手会话-sessions)
+13. [排查问题 `doctor`](#排查问题-doctor)
+14. [卸载 256isenough](#卸载-256isenough)
+15. [隐私](#隐私)
+16. [本版本新增（开发中）](#本版本新增开发中)
 
 ## 它做什么
 
@@ -203,6 +204,23 @@ isenough devices forget DEVICEID --yes   # 永久不再使用的 Mac
 命令行也能打开同一个页面：`isenough ui --open`（在浏览器中打开）或 `isenough ui --json`（打印 `url`、`port`、`token`）。
 仪表盘只监听 `127.0.0.1`，并且每次启动都使用新的随机令牌，局域网中的其他机器无法访问。
 
+## 编程助手会话 `sessions`
+
+`isenough sessions` 把很久没动的 Claude Code、Codex、pi 会话记录（JSONL）归档到仓库里的只写一次的 zstd 段中，
+并在本机保留一个可搜索的索引。默认只是演练，加 `--apply` 才会上传；上传并校验成功后，**本地的 JSONL 会被删除**，
+之后这些会话只存在于仓库中。
+
+```sh
+isenough sessions                 # 演练：列出将要归档的文件
+isenough sessions --apply         # 归档，并删除已归档的本地文件
+isenough sessions key init        # 创建会话加密密钥（保存在钥匙串）
+isenough sessions --apply --encrypt
+isenough sessions search QUERY    # 搜索已归档的会话
+isenough sessions restore ID      # 把会话写回原来的位置
+```
+
+加密的会话段只能用钥匙串里的那把密钥解开，丢失密钥就无法恢复。详见 [sessions.md](sessions.md)。
+
 ## 排查问题 `doctor`
 
 ```sh
@@ -228,12 +246,20 @@ isenough doctor --fix    # 回放本机未完成的 unpack / restore 日志
 
 ## 卸载 256isenough
 
-1. `isenough list`，对每个想留下的应用执行 `isenough unpack APP`（或在仪表盘里点「放回」）。
-2. 从菜单栏退出 256isenough，把它移到废纸篓（或 `brew uninstall --cask 256isenough`）。
-3. 删除 `~/Library/Application Support/256isenough/` 和 `~/Library/Caches/256isenough/`。
-4. 如果没有其他 Mac 在用，删除仓库文件夹。
+> **警告：删除仓库会永久丢失数据。** `pack` 之后，仓库里的镜像就是这个应用唯一的副本；
+> `isenough sessions --apply` 归档的编程助手会话记录也只存在于仓库中（本地 JSONL 已删除）。
+> 删除仓库文件夹前没有放回的应用和没有恢复的会话都无法找回。
 
-注意：第 3 步会删除替身依赖的引擎副本，之后没有放回的替身将无法打开。
+1. `isenough list`，对每个想留下的应用执行 `isenough unpack APP`（或在仪表盘里点「放回」）。
+   再次运行 `isenough list` 和 `isenough status`，确认已经没有替身。
+2. 如果用过 `isenough sessions --apply`：用 `isenough sessions search QUERY` 找到需要的会话，
+   逐个执行 `isenough sessions restore ID` 写回原位置。加密的会话段需要钥匙串里的会话密钥，
+   恢复完成前不要删除这把密钥。
+3. 从菜单栏退出 256isenough，把它移到废纸篓（或 `brew uninstall --cask 256isenough`）。
+4. 删除 `~/Library/Application Support/256isenough/`（含会话索引）和 `~/Library/Caches/256isenough/`。
+5. 只有在完成第 1、2 步并且没有其他 Mac 在用时，才删除仓库文件夹。
+
+注意：第 4 步会删除替身依赖的引擎副本，之后没有放回的替身将无法打开。
 
 ## 隐私
 
@@ -242,7 +268,8 @@ NAS / WebDAV 密码和会话加密密钥保存在钥匙串中。详见 [PRIVACY.
 
 ## 本版本新增（开发中）
 
-> 以下功能正在 0.1 发布分支上合入，命令和选项以 `isenough help` 的实际输出为准。
+> 以下功能计划在 0.1 中提供，你手上的版本可能还没有。`isenough help` 里没有列出的命令就是还不可用
+> （例如目前运行 `isenough detach` 会提示 not available in this build）。
 
 - `isenough evict APP --force`：应用镜像仍处于挂载状态时也能强制清除缓存（会先尝试卸载镜像）。
 - `isenough detach APP`：立即卸载一个应用的镜像，不必等待卸载延迟。
@@ -318,6 +345,16 @@ cache use against the quota, packed apps, pins, other Macs, and recommendations,
 and can open, prefetch, pin, evict, and unpack apps (packing a new app is `isenough pack` for now). It listens only on `127.0.0.1` with a fresh
 random token.
 
+### Coding-agent sessions
+
+`isenough sessions` (dry run by default) archives cold Claude Code, Codex, and pi
+transcripts into write-once zstd segments in the repo and keeps a local search
+index. `--apply` uploads them and then **deletes the local JSONL**, so archived
+sessions live only in the repo. `sessions key init` plus `--encrypt` encrypts
+segments with a Keychain key; without that key they cannot be read.
+`isenough sessions search QUERY` finds them and `isenough sessions restore ID`
+writes one back. See [sessions.md](sessions.md).
+
 ### Troubleshooting
 
 Run `isenough doctor` (each check is time-bounded) and `doctor --fix` to replay
@@ -328,10 +365,23 @@ adds Foundation error details. After an upgrade run `isenough install-engine` an
 
 ### Uninstall
 
-Unpack every app you want back, quit and trash 256isenough.app, then delete
-`~/Library/Application Support/256isenough/` and `~/Library/Caches/256isenough/`,
-and the repo folder if no other Mac uses it. Stubs you did not unpack stop working
-once the engine copy is gone.
+> **Warning: deleting the repo destroys data for good.** After `pack`, the repo
+> image is the only copy of that app, and transcripts archived by
+> `isenough sessions --apply` exist only in the repo (their local JSONL was
+> deleted). Apps you did not unpack and sessions you did not restore cannot be
+> recovered once the repo folder is gone.
+
+1. Run `isenough list` and `isenough unpack APP` for every app you want back.
+   Run `isenough list` and `isenough status` again to check no stubs are left.
+2. If you used `isenough sessions --apply`, find what you need with
+   `isenough sessions search QUERY` and run `isenough sessions restore ID` for
+   each one. Encrypted segments need the session key in the Keychain; keep it
+   until the restore is done.
+3. Quit 256isenough from the menu bar and move it to the Trash.
+4. Delete `~/Library/Application Support/256isenough/` (it holds the session
+   index) and `~/Library/Caches/256isenough/`. Stubs you did not unpack stop
+   working once the engine copy is gone.
+5. Delete the repo folder only after steps 1 and 2, and only if no other Mac uses it.
 
 ### Privacy
 
@@ -340,7 +390,8 @@ to the repo you configure. See [PRIVACY.md](../PRIVACY.md).
 
 ### New in this release (landing now)
 
-> These are being merged into the 0.1 release branch; `isenough help` is authoritative.
+> Planned for 0.1; your build may not have them yet. A command that `isenough help`
+> does not list is not available (today `isenough detach` reports "not available in this build").
 
 - `isenough evict APP --force` evicts a cached image even while it is mounted (it detaches first).
 - `isenough detach APP` detaches an app's image now instead of waiting for the detach delay.
