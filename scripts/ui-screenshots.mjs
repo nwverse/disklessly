@@ -101,13 +101,14 @@ const apps = [
   { name: "Reaper", imageId: "", version: "4.8.0", mode: "mount", pinned: false, cached: false, remote: true, restored: true, state: "needsResolution", needsResolution: true, cachedBytes: 0, imageBytes: 640 * MiB, bundleId: "com.cockos.reaper", installPath: "/Applications/Reaper.app" },
 ];
 
-function status({ usedGiB = 12.4, health = "ok", list = apps, appsError = "" } = {}) {
+function status({ usedGiB = 12.4, health = "ok", list = apps, appsError = "", appsErrorCode = "" } = {}) {
   return {
     ok: true,
     backend: backend(health),
     cache: cache(usedGiB),
     apps: list,
     appsError,
+    appsErrorCode,
     jobs: [],
     devices: list.length ? [{ deviceId: "a", displayName: "Studio", hostname: "studio.local", arch: "arm64", osVersion: "15.1", self: true, images: [] }] : [],
     devicePlaceholders: [],
@@ -118,7 +119,7 @@ function status({ usedGiB = 12.4, health = "ok", list = apps, appsError = "" } =
         ? [
             { id: "a", tool: "Blender", path: "~/Projects/teaser/scene_03.blend", preview: "", tier: "cold", ageDays: 21, modified: daysAgo(21) },
             { id: "b", tool: "Krita", path: "~/Art/poster-v4.kra", preview: "", tier: "cold", ageDays: 18, modified: daysAgo(18) },
-            { id: "c", tool: "Reaper", path: "~/Music/session-jan.rpp", preview: "", tier: "warm", ageDays: 3, modified: daysAgo(3) },
+            { id: "c", tool: "Reaper", path: "~/Music/session-jan.rpp", preview: "", tier: "cold", ageDays: 15, modified: daysAgo(15) },
           ]
         : [],
     },
@@ -132,7 +133,9 @@ const fixtures = {
   critical: () => status({ usedGiB: 62.1 }),
   empty: () => status({ usedGiB: 0.2, list: [] }),
   degraded: () => status({ health: "degraded" }),
-  offline: () => status({ health: "offline", list: [], appsError: "Backend unavailable: smb://nas.local/apps did not answer within 5 s" }),
+  offline: () => status({ health: "offline", list: [], appsError: "Backend unavailable: smb://nas.local/apps did not answer within 5 s", appsErrorCode: "offline" }),
+  // Reachable, healthy backend whose app list still failed: not "unreachable".
+  appsfailed: () => status({ list: [], appsError: "refusing to place a Keychain secret on the mount command line", appsErrorCode: "failed" }),
 };
 
 const recommend = {

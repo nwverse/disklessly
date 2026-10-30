@@ -23,22 +23,25 @@ public enum ManagementUI {
     public static func dashboard(_ engine: IsenoughEngine, context: ManagementUIContext) -> [String: Any] {
         var apps: [[String: Any]] = []
         var appsError = ""
+        var appsErrorCode = ""
         let isoFormatter = ISO8601DateFormatter()
         let loaded = StateStore(engine.config.stateDir).load()
         let state = loaded.dictionary()
         let stored = state["apps"] as? [String: [String: Any]] ?? [:]
-        let loadedApps = UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> (DeviceListing?, [ImageManifest], String) in
+        let loadedApps = UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> (DeviceListing?, [ImageManifest], (code: String, message: String)) in
             let listing = try? engine.deviceListing(createLocal: false)
             do {
-                return (listing, try engine.list(), "")
+                return (listing, try engine.list(), ("", ""))
             } catch {
-                return (listing, [], (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+                // Same codes as API failures: only `offline` means the backend is unreachable.
+                return (listing, [], errorInfo(error))
             }
         }
         let listing = loadedApps.0
         let deviceRows = listing?.devices ?? []
         let manifests = loadedApps.1
-        appsError = loadedApps.2
+        appsError = loadedApps.2.message
+        appsErrorCode = loadedApps.2.code
         for manifest in manifests {
                 let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
                 let exists = FileManager.default.fileExists(atPath: cached.path)
@@ -81,15 +84,15 @@ public enum ManagementUI {
         let formatter = ISO8601DateFormatter()
         let now = Date()
         let sessions: [[String: Any]] = index.entries.map { entry in
-            let tier = sessionTier(modified: entry.modified, coldDays: engine.config.sessionColdDays, now: now)
+            // Only cold files are ever archived, so every indexed entry is cold.
             return [
                 "id": entry.id,
                 "tool": entry.tool,
                 "path": entry.path,
                 "preview": entry.preview,
                 "archive": entry.archive,
-                "tier": tier.tier,
-                "ageDays": NSNumber(value: tier.ageDays),
+                "tier": "cold",
+                "ageDays": NSNumber(value: sessionAgeDays(modified: entry.modified, now: now)),
                 "modified": formatter.string(from: entry.modified),
             ]
         }
@@ -118,6 +121,7 @@ public enum ManagementUI {
             "cache": cache,
             "apps": apps,
             "appsError": appsError,
+            "appsErrorCode": appsErrorCode,
             "devices": deviceRows.map { device in
                 [
                     "deviceId": device.deviceId,
@@ -220,10 +224,9 @@ public enum ManagementUI {
         return UInt64(max(0, reach))
     }
 
-    /// Archived sessions untouched for `coldDays` or more are cold, newer ones warm.
-    public static func sessionTier(modified: Date, coldDays: Int, now: Date) -> (tier: String, ageDays: Int) {
-        let age = max(0, Int(now.timeIntervalSince(modified) / 86_400))
-        return (age >= max(coldDays, 0) ? "cold" : "warm", age)
+    /// Whole days since the archived file was last modified.
+    public static func sessionAgeDays(modified: Date, now: Date) -> Int {
+        max(0, Int(now.timeIntervalSince(modified) / 86_400))
     }
 
     private static func api(engine: IsenoughEngine, request: UIRequest, context: ManagementUIContext) -> UIResponse {
@@ -705,9 +708,12 @@ public final class ManagementUIContext {
 // MARK: - Backend health
 
 /// Probes the backend off the request thread. A probe that runs past `timeout`
-/// reports `offline` (timed out) at once; it keeps running, and its real answer
-/// replaces the timeout when it lands. Callers share one probe per backend, and
-/// a result stays fresh for `maxAge` seconds.
+/// reports `offline` (timed out); it keeps running, and its real answer replaces
+/// the timeout when it lands. Callers share one probe per backend, and a result
+/// stays fresh for `maxAge` seconds. A caller waits on a probe only when it
+/// started one itself; while a probe is still running, everyone else gets the
+/// last result at once (stale-while-revalidate), so a hung backend costs one
+/// `timeout`, not one per refresh.
 public final class BackendHealthProbe: @unchecked Sendable {
     public struct Result: Equatable {
         /// `ok`, `degraded` (answers slowly), `missing` (no repo.json), or `offline`.
@@ -722,13 +728,20 @@ public final class BackendHealthProbe: @unchecked Sendable {
     /// Returns nil when the repo answers, or a reason when it answers but is incomplete. Throws when unreachable.
     public typealias Check = (IsenoughEngine) throws -> String?
 
+    private struct Inflight {
+        let group: DispatchGroup
+        let generation: Int
+        let started: Date
+    }
+
     public let timeout: TimeInterval
     public let maxAge: TimeInterval
     public let slowMs: Int
     private let check: Check
     private let lock = NSLock()
     private var results: [String: Result] = [:]
-    private var inflight: [String: DispatchGroup] = [:]
+    private var inflight: [String: Inflight] = [:]
+    private var generation = 0
 
     public init(timeout: TimeInterval = 5, maxAge: TimeInterval = 10, slowMs: Int = 500, check: Check? = nil) {
         self.timeout = timeout
@@ -742,49 +755,40 @@ public final class BackendHealthProbe: @unchecked Sendable {
         return try backend.stat("repo.json") != nil ? nil : "repo.json is not in the backend"
     }
 
+    /// `fresh` skips the cache. With a probe already hung past `timeout`, it
+    /// starts a new probe instead of joining the stuck one, so Retry can see a
+    /// backend that has recovered.
     public func current(_ engine: IsenoughEngine, fresh: Bool = false) -> Result {
         let key = [engine.config.backend, engine.config.activeBackendId ?? "", engine.config.repoPath].joined(separator: "|")
         lock.lock()
-        if !fresh, let last = results[key], Date().timeIntervalSince(last.checkedAt) < maxAge {
+        let last = results[key]
+        if !fresh, let last, Date().timeIntervalSince(last.checkedAt) < maxAge {
             lock.unlock()
             return last
         }
-        let group: DispatchGroup
+        let probe: Inflight
         if let running = inflight[key] {
-            group = running
-        } else {
-            group = DispatchGroup()
-            group.enter()
-            inflight[key] = group
-            let check = self.check
-            let timeout = self.timeout
-            let slowMs = self.slowMs
-            DispatchQueue.global(qos: .userInitiated).async { [self] in
-                let started = Date()
-                var result: Result
-                do {
-                    let problem = try check(engine)
-                    let latency = Int((Date().timeIntervalSince(started) * 1000).rounded())
-                    let status = problem != nil ? "missing" : (latency >= slowMs ? "degraded" : "ok")
-                    result = Result(status: status, detail: problem ?? "", latencyMs: latency, timedOut: false, timeout: timeout, checkedAt: Date())
-                } catch {
-                    let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                    result = Result(status: "offline", detail: detail, latencyMs: nil, timedOut: false, timeout: timeout, checkedAt: Date())
-                }
-                lock.lock()
-                results[key] = result
-                inflight[key] = nil
+            let hung = Date().timeIntervalSince(running.started) >= timeout
+            if fresh {
+                // Retry: join a probe that is still within its timeout, replace a hung one.
+                probe = hung ? start(engine, key: key) : running
+            } else if let last {
+                // A probe is already on it: answer from the last result, do not wait.
                 lock.unlock()
-                group.leave()
+                return last
+            } else {
+                probe = running
             }
+        } else {
+            probe = start(engine, key: key)
         }
         lock.unlock()
-        if group.wait(timeout: .now() + timeout) == .timedOut {
+        if probe.group.wait(timeout: .now() + timeout) == .timedOut {
             let timedOut = Result(status: "offline", detail: "timeout", latencyMs: nil, timedOut: true, timeout: timeout, checkedAt: Date())
             lock.lock()
             defer { lock.unlock() }
             // Still running: remember the timeout so the next refresh does not wait again.
-            if inflight[key] === group {
+            if inflight[key]?.generation == probe.generation {
                 results[key] = timedOut
                 return timedOut
             }
@@ -793,5 +797,37 @@ public final class BackendHealthProbe: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return results[key] ?? Result(status: "offline", detail: "", latencyMs: nil, timedOut: false, timeout: timeout, checkedAt: Date())
+    }
+
+    /// Call with `lock` held. A probe superseded by a newer generation drops its answer.
+    private func start(_ engine: IsenoughEngine, key: String) -> Inflight {
+        generation += 1
+        let probe = Inflight(group: DispatchGroup(), generation: generation, started: Date())
+        probe.group.enter()
+        inflight[key] = probe
+        let check = self.check
+        let timeout = self.timeout
+        let slowMs = self.slowMs
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let started = Date()
+            var result: Result
+            do {
+                let problem = try check(engine)
+                let latency = Int((Date().timeIntervalSince(started) * 1000).rounded())
+                let status = problem != nil ? "missing" : (latency >= slowMs ? "degraded" : "ok")
+                result = Result(status: status, detail: problem ?? "", latencyMs: latency, timedOut: false, timeout: timeout, checkedAt: Date())
+            } catch {
+                let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                result = Result(status: "offline", detail: detail, latencyMs: nil, timedOut: false, timeout: timeout, checkedAt: Date())
+            }
+            lock.lock()
+            if inflight[key]?.generation == probe.generation {
+                results[key] = result
+                inflight[key] = nil
+            }
+            lock.unlock()
+            probe.group.leave()
+        }
+        return probe
     }
 }

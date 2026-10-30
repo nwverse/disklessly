@@ -123,6 +123,7 @@ const copy = {
     loading: "正在读取后端…",
     loadFailed: "未能加载应用",
     unreachable: "无法连接后端",
+    appsLoadFailed: "无法读取应用列表",
     confirmEvictTitle: (name) => `清除 ${name} 的缓存？`,
     confirmEvictBody: (size) => `本机会腾出 ${size}。仓库里的镜像保留，下次打开时会重新下载。`,
     confirmEvictOk: "清除缓存",
@@ -176,8 +177,6 @@ const copy = {
     offloadedCount: (n) => `已卸载 ${n} 个`,
     emptySessions: "还没有归档的会话",
     tiercold: "冷",
-    tierwarm: "温",
-    tierhot: "热",
     daysAgo: (n) => (n <= 0 ? "今天" : `${n} 天前`),
     recommend: "值得卸载",
     recommendWarn: "不建议卸载",
@@ -329,6 +328,7 @@ const copy = {
     loading: "Loading",
     loadFailed: "Could not load apps",
     unreachable: "Backend unreachable",
+    appsLoadFailed: "Couldn't load the app list",
     confirmEvictTitle: (name) => `Evict ${name} from the cache?`,
     confirmEvictBody: (size) => `This frees ${size} on this Mac. The image stays in the repo and downloads again the next time you open the app.`,
     confirmEvictOk: "Evict",
@@ -382,8 +382,6 @@ const copy = {
     offloadedCount: (n) => `${n} offloaded`,
     emptySessions: "No archived sessions",
     tiercold: "Cold",
-    tierwarm: "Warm",
-    tierhot: "Hot",
     daysAgo: (n) => (n <= 0 ? "today" : n === 1 ? "1 day ago" : `${n} days ago`),
     recommend: "Worth offloading",
     recommendWarn: "Poor candidates",
@@ -1218,16 +1216,20 @@ function emptyState() {
   return empty;
 }
 
-/// Red panel with the endpoint, the reason, raw details and Retry.
+/// Red panel with the endpoint, the reason, raw details and Retry. Only an
+/// `offline` code claims the backend is unreachable; anything else (a corrupt
+/// manifest on a reachable repo, say) reads as "couldn't load the app list".
 function errorState(code, raw) {
+  const offline = !code || code === "offline";
+  const titleKey = offline ? "unreachable" : "appsLoadFailed";
   const panel = el("div", "state-error");
   panel.setAttribute("role", "alert");
   const box = el("div", "error-box");
   const head = el("div", "error-head");
   head.append(svgIcon(iconAlert, 18));
   const words = el("div");
-  words.append(el("strong", "", t("unreachable")));
-  const second = el("span", "", tl(secondary, "unreachable"));
+  words.append(el("strong", "", t(titleKey)));
+  const second = el("span", "", tl(secondary, titleKey));
   second.lang = langTag[secondary];
   words.append(second);
   head.append(words);
@@ -1235,7 +1237,7 @@ function errorState(code, raw) {
   const backend = lastStatus && lastStatus.backend;
   const where = (backend && (backend.activeId || "local")) || "";
   const reasonParts = [where];
-  if (backend && backend.timedOut) reasonParts.push(t("timedOut", Math.round(Number(backend.timeoutMs || 5000) / 1000)));
+  if (offline && backend && backend.timedOut) reasonParts.push(t("timedOut", Math.round(Number(backend.timeoutMs || 5000) / 1000)));
   else if (code) reasonParts.push(t(errorKey(code)));
   box.append(el("p", "error-where mono", reasonParts.filter(Boolean).join(" · ")));
   if (raw) box.append(detailsFold(raw));
@@ -1443,7 +1445,12 @@ function adoptServerJobs(status) {
 }
 
 function rerenderApps() {
-  if (lastStatus) renderApps(lastStatus.apps || [], lastStatus.appsError ? { code: "offline", message: lastStatus.appsError } : null);
+  if (lastStatus) renderApps(lastStatus.apps || [], lastStatus.appsError ? { code: appsErrorCode(lastStatus), message: lastStatus.appsError } : null);
+}
+
+/// Server code for an app-list failure; older servers sent only the text.
+function appsErrorCode(status) {
+  return status.appsErrorCode || "failed";
 }
 
 // ---- sessions -------------------------------------------------------------
@@ -1467,9 +1474,8 @@ function renderSessions(sessions) {
   const sorted = [...offloaded].sort((a, b) => (Date.parse(b.modified || "") || 0) - (Date.parse(a.modified || "") || 0));
   for (const entry of sorted) {
     const item = el("li", "session-row");
-    const tier = String(entry.tier || "cold");
-    const tierKey = has("tier" + tier) ? "tier" + tier : "tiercold";
-    item.append(pill(tier === "warm" ? "amber" : tier === "hot" ? "red" : "grey", tierKey));
+    // Only cold files are archived, so every offloaded row is cold.
+    item.append(pill("grey", "tiercold"));
     item.append(el("span", "session-tool", entry.tool || ""));
     const path = el("span", "session-path mono", entry.path || "");
     path.title = [entry.path, entry.preview].filter(Boolean).join("\n");
@@ -1701,7 +1707,7 @@ function render(status) {
   renderOnboarding(status);
   renderBackend(status.backend || null);
   renderCache(status.cache || null);
-  if (status.appsError) showBanner("offline", status.appsError);
+  if (status.appsError) showBanner(appsErrorCode(status), status.appsError);
   rerenderApps();
   renderDevices(status);
   renderSessions(status.sessions || null);

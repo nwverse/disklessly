@@ -121,6 +121,32 @@ final class UIDashboardTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(recovered.latencyMs ?? 0, 300)
     }
 
+    func testHungProbeAnswersAtOnceAfterMaxAgeAndRetryStartsANewProbe() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let calls = Answers(["hang", "ok"])
+        let release = DispatchSemaphore(value: 0)
+        defer { release.signal() }
+        let probe = BackendHealthProbe(timeout: 0.3, maxAge: 0.05) { _ in
+            if calls.next() == "hang" { _ = release.wait(timeout: .now() + 30) }
+            return nil
+        }
+        XCTAssertTrue(probe.current(fixture.engine).timedOut, "the first caller waits one timeout")
+        // Past maxAge with the probe still hung: every refresh answers at once.
+        for _ in 0..<3 {
+            Thread.sleep(forTimeInterval: 0.1)
+            let started = Date()
+            let result = probe.current(fixture.engine)
+            XCTAssertLessThan(Date().timeIntervalSince(started), 0.15)
+            XCTAssertTrue(result.timedOut)
+            XCTAssertEqual(result.status, "offline")
+        }
+        // Retry (fresh) does not join the hung probe; a recovered backend reads ok.
+        let retried = probe.current(fixture.engine, fresh: true)
+        XCTAssertFalse(retried.timedOut)
+        XCTAssertEqual(retried.status, "ok")
+    }
+
     func testHealthStatesAndFreshProbe() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -166,26 +192,47 @@ final class UIDashboardTests: XCTestCase {
         XCTAssertEqual(ManagementUI.cacheLevel(used: 5, quota: 0), "ok")
     }
 
-    func testSessionTiersFollowColdDays() throws {
+    func testOffloadedSessionsAreAlwaysCold() throws {
         let now = Date(timeIntervalSince1970: 1_800_000_000)
-        XCTAssertEqual(ManagementUI.sessionTier(modified: now.addingTimeInterval(-3 * 86_400), coldDays: 14, now: now).tier, "warm")
-        let cold = ManagementUI.sessionTier(modified: now.addingTimeInterval(-21 * 86_400), coldDays: 14, now: now)
-        XCTAssertEqual(cold.tier, "cold")
-        XCTAssertEqual(cold.ageDays, 21)
+        XCTAssertEqual(ManagementUI.sessionAgeDays(modified: now.addingTimeInterval(-21 * 86_400), now: now), 21)
+        XCTAssertEqual(ManagementUI.sessionAgeDays(modified: now.addingTimeInterval(3600), now: now), 0)
 
         let fixture = try Fixture()
         defer { fixture.cleanup() }
+        // Only cold files are archived; even an entry archived with a short --cold-days stays cold.
         let entries = [
-            SessionIndexEntry(id: "w", tool: "pi", path: "/tmp/warm.jsonl", sha256: "a", size: 1, modified: Date().addingTimeInterval(-2 * 86_400), archive: "a.tar", member: "w", preview: ""),
+            SessionIndexEntry(id: "w", tool: "pi", path: "/tmp/recent.jsonl", sha256: "a", size: 1, modified: Date().addingTimeInterval(-2 * 86_400), archive: "a.tar", member: "w", preview: ""),
             SessionIndexEntry(id: "c", tool: "pi", path: "/tmp/cold.jsonl", sha256: "b", size: 1, modified: Date().addingTimeInterval(-30 * 86_400), archive: "a.tar", member: "c", preview: ""),
         ]
         try SessionArchive.saveIndex(SessionIndex(entries: entries), stateDir: fixture.config.stateDir)
         let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
         let sessions = try XCTUnwrap(try fixture.get("/api/status", context: context)["sessions"] as? [String: Any])
         let rows = try XCTUnwrap(sessions["offloaded"] as? [[String: Any]])
-        XCTAssertEqual(rows.first { $0["id"] as? String == "w" }?["tier"] as? String, "warm")
-        XCTAssertEqual(rows.first { $0["id"] as? String == "c" }?["tier"] as? String, "cold")
+        XCTAssertEqual(Set(rows.compactMap { $0["tier"] as? String }), ["cold"])
         XCTAssertEqual((rows.first { $0["id"] as? String == "c" }?["ageDays"] as? NSNumber)?.intValue, 30)
+    }
+
+    func testAppsErrorCarriesTheServerErrorCode() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let healthy = try fixture.get("/api/status", context: context)
+        XCTAssertEqual(healthy["appsError"] as? String, "")
+        XCTAssertEqual(healthy["appsErrorCode"] as? String, "")
+
+        // An undecodable manifest is skipped, not an app-list failure.
+        try LocalFolderBackend(root: URL(fileURLWithPath: fixture.config.repoPath)).put("manifests/broken.json", data: Data("not json".utf8))
+        let skipped = try fixture.get("/api/status", context: context)
+        XCTAssertEqual(skipped["appsErrorCode"] as? String, "")
+        XCTAssertEqual((skipped["apps"] as? [[String: Any]])?.count, 1)
+
+        // A listing that fails at the backend is coded `offline`, the same as API failures.
+        var engine = fixture.engine
+        engine.backendOverride = try FaultyBackend(root: URL(fileURLWithPath: fixture.config.repoPath), failList: ["manifests"])
+        let response = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/status"), context: context)
+        let status = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        XCTAssertFalse((status["appsError"] as? String ?? "").isEmpty)
+        XCTAssertEqual(status["appsErrorCode"] as? String, "offline")
     }
 
     func testPinnedEvictIsRefusedUnlessForced() throws {
