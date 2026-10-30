@@ -7,31 +7,60 @@ import Darwin
 import Glibc
 #endif
 
+let helpText = """
+isenough: keep rarely used Mac apps in a repo and open them on demand.
+Usage: isenough [--json] [--config PATH] [--state-dir PATH] <command> [options]
+
+Get started
+  init [--backend local|icloud] [--root DIR] [--cache-dir DIR]
+  recommend [--all] [--min-size SIZE] [--limit N] [--min-idle-days N]
+  pack APP.app [--mode mount|restore] [--image-format ULMO|ULFO] [--no-stub] [--keep-original] [--stub-dir DIR]
+  ui [--open]                     dashboard on 127.0.0.1 (prints its URL; --json prints url, port, token)
+
+Use offloaded apps
+  list | status [APP]
+  launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
+  restore APP                     launch with restore mode forced
+  resolve APP --keep-updated|--trust|--export DIR|--discard
+  prefetch APP | pin APP | unpin APP | evict APP
+
+Bring an app back
+  unpack APP [--to DIR]           put the real app back in place of its stub (or copy it to DIR)
+
+Keep things tidy
+  gc [--dry-run] [--include-legacy]
+  evict-local | cleanup-backups | doctor [--fix]
+  install-engine | stub refresh --app ID | icons backfill [--app ID]
+
+Repos and Macs
+  backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
+  devices [list] | devices rename NAME | devices forget DEVICEID --yes
+
+Coding-agent sessions
+  sessions [--apply] [--days N] [--home DIR] [--encrypt] | sessions search QUERY [--limit N]
+  sessions restore ID|PATH [--to PATH] | sessions reindex | sessions migrate | sessions verify [--legacy]
+  sessions key init | sessions key status
+
+Other
+  version | help
+
+gc replays local journals, applies the repo garbage rules, and enforces the cache quota.
+gc --dry-run prints trash candidates, legacy images, and cache LRU victims and changes nothing.
+doctor --fix replays local unpack and restore journals only.
+--json is accepted before or after the command. Without it, output is meant for people.
+Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
+  ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,
+  ISENOUGH_QUOTA_BYTES, ISENOUGH_MIN_FREE_BYTES, ISENOUGH_SIGN_IDENTITY,
+  ISENOUGH_DOCTOR_TIMEOUT, ISENOUGH_WEB_ROOT, ISENOUGH_DEBUG
+"""
 func usage() -> Never {
-    print("""
-    isenough — remote app image manager
-    Usage: isenough [--json] [--config PATH] [--state-dir PATH] [--help] <command>
-      init [--backend local|icloud] [--root DIR] [--cache-dir DIR]
-      pack APP.app [--mode mount|restore] [--image-format ULMO|ULFO] [--no-stub] [--keep-original] [--stub-dir DIR]
-      install-engine | stub refresh --app ID | stub rebuild APP | icons backfill [--app ID]
-      list | status [APP] | prefetch APP | launch APP [--doc PATH] [--url URL] [--arg ARG] [--no-wait]
-      pin APP | unpin APP | evict APP | evict-local | gc [--dry-run] [--include-legacy] | cleanup-backups | restore APP | unpack APP [--to DIR]
-      devices [list] | devices rename NAME | devices forget DEVICEID --yes
-      backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
-      sessions [--apply] [--days N] [--home DIR] [--encrypt] | sessions search QUERY [--limit N]
-      sessions restore ID|PATH [--to PATH] | sessions reindex | sessions migrate | sessions verify [--legacy]
-      sessions key init | sessions key status
-      recommend [--json] [--all] [--min-size SIZE] [--limit N] [--min-idle-days N]
-      ui | hooks list|enable|disable APP | doctor [--fix] | version | help
-    doctor --fix replays local unpack and restore journals only. It does not run remote gc or cache LRU.
-    gc --dry-run prints trash candidates, legacy images, and cache LRU victims and does not delete or move anything.
-    help, --help, and -h print this text. --json is accepted before or after the command.
-    Environment overrides: ISENOUGH_REPO_PATH, ISENOUGH_CACHE_DIR, ISENOUGH_STATE_DIR,
-      ISENOUGH_MOUNT_ROOT, ISENOUGH_STUB_DIR, ISENOUGH_CONFIG, ISENOUGH_DETACH_DELAY,
-      ISENOUGH_QUOTA_BYTES, ISENOUGH_MIN_FREE_BYTES, ISENOUGH_SIGN_IDENTITY,
-      ISENOUGH_DOCTOR_TIMEOUT
-    """)
+    print(helpText)
     exit(0)
+}
+/// `isenough` with no command. Exit 64 is EX_USAGE from sysexits(3).
+func noCommand() -> Never {
+    fputs("isenough: no command given.\nRun `isenough help` for the commands, `isenough recommend` to find apps worth offloading, or `isenough ui --open` for the dashboard.\n", stderr)
+    exit(64)
 }
 let invocation: GlobalArguments
 do { invocation = try GlobalArguments.parse(Array(CommandLine.arguments.dropFirst())) }
@@ -49,9 +78,11 @@ if let stateDir=invocation.stateDir { setenv("ISENOUGH_STATE_DIR", stateDir, 1) 
 var config=RuntimeConfig.resolved(environment:env, home:NSHomeDirectory(), stateDirOverride:invocation.stateDir, explicitConfig:configPath)
 if let n=env["ISENOUGH_DETACH_DELAY"].flatMap(UInt64.init) { config.detachDelaySeconds=n }
 var engine=IsenoughEngine(config:config)
-func emit(_ data:Any) { if json, JSONSerialization.isValidJSONObject(data), let d=try? JSONSerialization.data(withJSONObject:data,options:[.prettyPrinted,.sortedKeys]), let s=String(data:d,encoding:.utf8) { print(s) } else { print(data) } }
+func emit(_ data:Any) { if json, JSONSerialization.isValidJSONObject(data), let d=try? JSONSerialization.data(withJSONObject:data,options:[.prettyPrinted,.sortedKeys,.withoutEscapingSlashes]), let s=String(data:d,encoding:.utf8) { print(s) } else { print(data) } }
 func sizeText(_ bytes: UInt64) -> String { RecommendFormatting.byteText(bytes) }
-func printVersionLine() { print("isenough \(EngineInstall.version) revision \(EngineInstall.revision) schema image/1") }
+func printVersionLine() { print("isenough \(EngineInstall.version) (\(EngineInstall.commit), built \(EngineInstall.buildDate), \(EngineInstall.arch)) revision \(EngineInstall.revision) schema image/1") }
+/// `--json` prints `object`; otherwise `text` is printed for people.
+func say(_ object: @autoclosure () -> Any, _ text: @autoclosure () -> String) { if json { emit(object()) } else { print(text()) } }
 func printImageList(_ manifests: [ImageManifest]) {
     if manifests.isEmpty { print("no images"); return }
     for manifest in manifests {
@@ -97,16 +128,6 @@ func printEvict(_ report: LocalEvictReport, files: [MaterialFile]) {
     for line in report.skipped { print("skipped  \(decorated(line))"); count += 1 }
     if count == 0 { print("nothing to evict") }
 }
-func printMaintenance(_ report: MaintenanceReport) {
-    var count = 0
-    for warning in report.warnings { print("warning  \(warning)"); count += 1 }
-    for id in report.trashed { print("trashed  \(id)"); count += 1 }
-    for id in report.restored { print("restored  \(id)"); count += 1 }
-    for id in report.purged { print("purged  \(id)"); count += 1 }
-    for path in report.evictedLocal { print("evicted  \(path)"); count += 1 }
-    for journal in report.journals { print("recovered  \(journal)"); count += 1 }
-    if count == 0 { print("nothing to remove") }
-}
 func liveSessionOpen(_ path: String) -> Bool {
     let lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].first { FileManager.default.isExecutableFile(atPath: $0) }
     guard let lsof else { return false }
@@ -136,9 +157,28 @@ func serveUntilSignaled(_ server: LoopbackUIServer) -> Never {
     intr.resume()
     dispatchMain()
 }
-func find(_ name:String) throws -> ImageManifest { guard let m=engine.manifest(named: name, in: try engine.list()) else { throw IsenoughError.usage("Unknown app: \(name)") }; return m }
+func find(_ name:String) throws -> ImageManifest {
+    let manifests = try engine.list()
+    guard let m=engine.manifest(named: name, in: manifests) else {
+        throw IsenoughError.usage(CLIText.unknownApp(name, suggestions: CLIText.suggestions(for: name, in: manifests)))
+    }
+    return m
+}
+func openInBrowser(_ url: String) {
+    #if os(macOS)
+    let tool = "/usr/bin/open"
+    #else
+    let tool = "/usr/bin/xdg-open"
+    #endif
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: tool)
+    process.arguments = [url]
+    process.standardOutput = FileHandle.nullDevice
+    process.standardError = FileHandle.nullDevice
+    if (try? process.run()) == nil { fputs("isenough: could not open a browser; open the URL yourself\n", stderr) }
+}
 do {
-    guard let command=args.first else { usage() }; args.removeFirst()
+    guard let command=args.first else { noCommand() }; args.removeFirst()
     // The stub is a session leader. A hangup must not kill `launch` / `hook watch`
     // before the journal reaches a terminal phase. SIGKILL faults still apply.
     if command == "launch" || command == "hook" || command == "restore" {
@@ -147,17 +187,18 @@ do {
     switch command {
     case "help", "--help", "-h": usage()
     case "version":
-        if json { emit(["version":EngineInstall.version,"revision":EngineInstall.revision,"schema":"image/1"]) }
+        if json { emit(["version":EngineInstall.version,"revision":EngineInstall.revision,"schema":"image/1","commit":EngineInstall.commit,"buildDate":EngineInstall.buildDate,"arch":EngineInstall.arch,"schemas":["stub":"stub/1","state":"state/2","image":"image/1"]] as [String: Any]) }
         else { printVersionLine() }
     case "init":
         while !args.isEmpty { let a=args.removeFirst(); if a=="--backend", !args.isEmpty { config.backend=args.removeFirst() } else if a=="--root", !args.isEmpty { config.repoPath=args.removeFirst() } else if a=="--cache-dir", !args.isEmpty { config.cacheDir=args.removeFirst() } }
-        try IsenoughEngine(config:config).initialize(); emit(["ok":true,"repo":config.repoPath])
+        try IsenoughEngine(config:config).initialize()
+        say(["ok":true,"repo":config.repoPath,"cacheDir":config.cacheDir,"quotaBytes":NSNumber(value: config.quotaBytes)], CLIText.initialized(config))
     case "pack":
         let parsed = try PackArguments.parse(args)
         if let stubDir = parsed.stubDir { config.stubDir = stubDir }
         let published=try engine.pack(parsed.app,mode:parsed.mode,keepOriginal:parsed.keepOriginal,noStub:parsed.noStub,imageFormat:parsed.imageFormat); let m=published.manifest
         let path = parsed.app
-        for warning in published.warnings { fputs("isenough: \(warning)\n", stderr) }
+        if json { for warning in published.warnings { fputs("isenough: \(warning)\n", stderr) } }
         for path in published.evicted { fputs("isenough: evicted local iCloud copy \(path)\n", stderr) }
         if let kept = published.originalKept {
             let retained = URL(fileURLWithPath: config.stubDir).appendingPathComponent(URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent + ".256orig.app")
@@ -165,27 +206,44 @@ do {
         }
         var packed: [String: Any] = ["ok":true,"imageId":m.imageId,"bundleId":m.bundleId,"mode":m.mode.rawValue,"sha256":m.image.sha256,"reused":published.reused,"uploaded":published.uploaded,"warnings":published.warnings,"evicted":published.evicted]
         if let kept = published.originalKept { packed["originalKept"] = kept }
-        emit(packed)
+        say(packed, CLIText.packed(published, appPath: path, stubDir: config.stubDir, noStub: parsed.noStub, keepOriginal: parsed.keepOriginal))
     case "list":
         let manifests = try engine.list()
         if json { emit(manifests.map { ["imageId":$0.imageId,"bundleId":$0.bundleId,"name":$0.name,"version":$0.version,"mode":$0.mode.rawValue,"iconPath": AppIcon.existingPath(stateDir: config.stateDir, repoPath: config.repoPath, imageId: $0.imageId) ?? ""] }) }
         else { printImageList(manifests) }
-    case "status": emit(engine.status())
-    case "prefetch": guard let n=args.first else { throw IsenoughError.usage("prefetch requires app") }; let m=try find(n); emit(["ok":true,"path":try engine.prefetch(m).path])
+    case "status":
+        if json { emit(engine.status()) }
+        else { print(CLIText.status(config, state: StateStore(config.stateDir).load(), app: args.first)) }
+    case "prefetch":
+        guard let n=args.first else { throw IsenoughError.usage("prefetch requires app") }
+        let m=try find(n); let cached=try engine.prefetch(m).path
+        say(["ok":true,"path":cached], CLIText.prefetched(m, path: cached))
     case "launch":
         let parsed=try LaunchArguments.parse(args)
-        try engine.launch(find(parsed.app),documents:parsed.documents,urls:parsed.urls,arguments:parsed.arguments,wait:parsed.wait); emit(["ok":true])
+        let manifest=try find(parsed.app)
+        try engine.launch(manifest,documents:parsed.documents,urls:parsed.urls,arguments:parsed.arguments,wait:parsed.wait)
+        say(["ok":true], CLIText.launched(manifest, wait: parsed.wait, restore: manifest.mode == .restore))
     case "restore":
         let parsed=try LaunchArguments.parse(args)
         var manifest=try find(parsed.app)
         manifest.mode = .restore
-        try engine.launch(manifest,documents:parsed.documents,urls:parsed.urls,arguments:parsed.arguments,wait:parsed.wait); emit(["ok":true])
+        try engine.launch(manifest,documents:parsed.documents,urls:parsed.urls,arguments:parsed.arguments,wait:parsed.wait)
+        say(["ok":true], CLIText.launched(manifest, wait: parsed.wait, restore: true))
     case "unpack":
         let parsed = try UnpackArguments.parse(args)
-        try engine.unpack(try find(parsed.app), to: parsed.directory)
-        emit(["ok": true])
-    case "pin", "unpin": guard let n=args.first else { throw IsenoughError.usage("\(command) requires app") }; try engine.setPinned(try find(n), pinned: command=="pin"); emit(["ok":true,"pinned":command=="pin"])
-    case "evict": guard let n=args.first else { throw IsenoughError.usage("evict requires app") }; try engine.evict(find(n)); emit(["ok":true])
+        let manifest = try find(parsed.app)
+        try engine.unpack(manifest, to: parsed.directory)
+        say(["ok": true], CLIText.unpacked(manifest, to: parsed.directory))
+    case "pin", "unpin":
+        guard let n=args.first else { throw IsenoughError.usage("\(command) requires app") }
+        let manifest=try find(n)
+        try engine.setPinned(manifest, pinned: command=="pin")
+        say(["ok":true,"pinned":command=="pin"], CLIText.pinned(manifest, pinned: command=="pin"))
+    case "evict":
+        guard let n=args.first else { throw IsenoughError.usage("evict requires app") }
+        let manifest=try find(n)
+        try engine.evict(manifest)
+        say(["ok":true], CLIText.evicted(manifest))
     case "evict-local":
         let files = engine.materialFiles()
         let eviction = engine.evictLocalCopies()
@@ -220,13 +278,9 @@ do {
             }
             break
         }
-        let report = try engine.maintain(includeLegacy: includeLegacy)
-        if json {
-            for path in report.evictedLocal { fputs("isenough: evicted local iCloud copy \(path)\n", stderr) }
-            emit(["ok":true,"removed":report.purged,"trashed":report.trashed,"restored":report.restored,"warnings":report.warnings,"recovered":report.journals,"evicted":report.evictedLocal])
-        } else {
-            printMaintenance(report)
-        }
+        // gc replays journals, runs repo maintenance, and enforces the cache quota.
+        let lines = try engine.gc(includeLegacy: includeLegacy)
+        say(["ok": true, "lines": lines], CLIText.gc(lines))
     case "devices":
         let sub = args.first ?? "list"
         if !args.isEmpty { args.removeFirst() }
@@ -370,29 +424,54 @@ do {
         let installed=try engine.installEngine()
         emit(["ok":true,"path":installed.path,"version":EngineInstall.version,"revision":EngineInstall.revision])
     case "stub":
-        if args.first=="rebuild" { emit(["ok":false,"message":"Stub rebuild requires macOS and a manifest-backed installed app" ]) }
+        if args.first=="rebuild" { throw IsenoughError.unsupported("stub rebuild is not available in this build; use isenough stub refresh --app ID") }
         else if args.first=="refresh" {
             args.removeFirst()
             guard args.first=="--app", args.count>=2 else { throw IsenoughError.usage("stub refresh requires --app ID") }
-            emit(["ok":true,"updated":try engine.refreshStubs(appId:args[1])])
-        } else { usage() }
+            let updated=try engine.refreshStubs(appId:args[1])
+            say(["ok":true,"updated":updated], "Refreshed stubs for \(args[1]): \(updated)")
+        } else { throw IsenoughError.usage("stub requires refresh --app ID") }
+    // Placeholder kept for old scripts. Hidden from help.
     case "hooks": emit(["ok":true,"hooks":[] as [String]])
     case "ui":
-        let webRoot = ProcessInfo.processInfo.environment["ISENOUGH_WEB_ROOT"].map { URL(fileURLWithPath: $0, isDirectory: true) }
-            ?? Bundle.module.url(forResource: "web", withExtension: nil)
-        let ui = LoopbackUIServer { request in ManagementUI.respond(engine: engine, webRoot: webRoot, request: request) }
+        var openBrowser = false
+        while let flag = args.first {
+            args.removeFirst()
+            if flag == "--open" { openBrowser = true }
+            else if flag == "--help" || flag == "-h" { usage() }
+            else { throw IsenoughError.usage("Unknown option: \(flag)") }
+        }
+        let webRoot = try WebRoot.resolve(environment: env, executable: EngineInstall.runningExecutable())
+        let ui = LoopbackUIServer(token: UUID().uuidString) { request in ManagementUI.respond(engine: engine, webRoot: webRoot, request: request) }
         try ui.start()
-        print("http://127.0.0.1:\(ui.port)/?token=\(ui.token)")
+        let url = "http://127.0.0.1:\(ui.port)/?token=\(ui.token)"
+        if json {
+            let payload: [String: Any] = ["url": url, "port": Int(ui.port), "token": ui.token]
+            if let data = try? JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys, .withoutEscapingSlashes]), let line = String(data: data, encoding: .utf8) { print(line) }
+        } else {
+            print(url)
+            fputs("isenough: serving the dashboard on 127.0.0.1; press Ctrl-C to stop\n", stderr)
+        }
         fflush(stdout)
+        if openBrowser { openInBrowser(url) }
         serveUntilSignaled(ui)
-    case "serve": emit(["ok":false,"message":"HTTP server not yet available; use isenough ui" ])
-    case "daemon": emit(["ok":false,"message":"Daemon management is not implemented in MVP build"])
-    case "detach", "trust": throw IsenoughError.unsupported("\(command) is not available in this MVP build")
+    case "serve": throw IsenoughError.unsupported("serve is not available in this build; use isenough ui")
+    case "daemon": throw IsenoughError.unsupported("daemon is not available in this build")
+    case "detach", "trust": throw IsenoughError.unsupported("\(command) is not available in this build")
     default: throw IsenoughError.usage(command.hasPrefix("--") ? "Unknown option: \(command)" : "Unknown command: \(command)")
     }
-} catch let e as IsenoughError { if json { emit(["ok":false,"error":["code":e.exitCode,"message":e.errorDescription ?? String(describing: e)]]) } else { fputs("isenough: \(e.errorDescription ?? String(describing:e))\n",stderr) }; exit(Int32(e.exitCode)) } catch {
+} catch let e as IsenoughError {
+    if json { emit(["ok":false,"error":["code":e.exitCode,"message":e.errorDescription ?? String(describing: e)]]) }
+    else { fputs("isenough: \(e.errorDescription ?? String(describing:e))\n",stderr) }
+    exit(Int32(e.exitCode))
+} catch {
     let nsError = error as NSError
-    fputs("isenough: \(error.localizedDescription) [\(nsError.domain) \(nsError.code)]\n", stderr)
-    if !nsError.userInfo.isEmpty { fputs("details: \(nsError.userInfo)\n", stderr) }
+    if json { emit(["ok":false,"error":["code":1,"message":error.localizedDescription]]) }
+    else { fputs("isenough: \(error.localizedDescription)\n", stderr) }
+    // Foundation userInfo can hold long paths and nested errors. Print it only when asked.
+    if let debug = env["ISENOUGH_DEBUG"], !debug.isEmpty, debug != "0" {
+        fputs("isenough: [\(nsError.domain) \(nsError.code)]\n", stderr)
+        if !nsError.userInfo.isEmpty { fputs("details: \(nsError.userInfo)\n", stderr) }
+    }
     exit(1)
 }

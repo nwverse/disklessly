@@ -9,7 +9,23 @@ import Foundation
 /// the copy before the baked path. `revision` moves when the CLI gains behavior
 /// the previous binary does not have; the `0.1.0` version string alone does not.
 public enum EngineInstall {
+    // scripts/gen-version.sh rewrites the lines between the BEGIN/END markers for
+    // release builds. Checked-in values describe an unstamped development build.
+    // BEGIN GENERATED VERSION
     public static let version = "0.1.0"
+    public static let commit = "unknown"
+    public static let buildDate = "unknown"
+    // END GENERATED VERSION
+    /// Slice of the running binary. A universal binary reports the slice that is executing.
+    public static var arch: String {
+        #if arch(arm64)
+        return "arm64"
+        #elseif arch(x86_64)
+        return "x86_64"
+        #else
+        return "unknown"
+        #endif
+    }
     /// 1 was the pre-streaming-hash CLI. 2 is the copy installed beside the stamp.
     public static let revision = 2
 
@@ -23,7 +39,14 @@ public enum EngineInstall {
 
     public static func runningExecutable() -> URL {
         if let bundled = Bundle.main.executableURL {
-            return bundled.resolvingSymlinksInPath()
+            let resolved = bundled.resolvingSymlinksInPath()
+            // Inside 256isenough.app the main executable is the menu-bar app. The
+            // engine is the `isenough` CLI shipped next to it in Contents/MacOS.
+            if Bundle.main.bundleURL.pathExtension == "app", resolved.lastPathComponent != "isenough" {
+                let cli = resolved.deletingLastPathComponent().appendingPathComponent("isenough")
+                if FileManager.default.isExecutableFile(atPath: cli.path) { return cli }
+            }
+            return resolved
         }
         return URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
     }
