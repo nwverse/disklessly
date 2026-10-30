@@ -1,5 +1,6 @@
 import Foundation
 import IsenoughCore
+import IsenoughStubSupport
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -452,8 +453,10 @@ extension IsenoughEngine {
         let backend = try repo
         try ensureRepoCollections(backend)
         let local = try LocalDeviceStore.loadOrCreate(stateDir: stateDirectory, suggestedName: currentDeviceFacts().hostname)
-        let claims = try stubClaims(backend: backend, now: now)
-        _ = try upsertDevice(local: local, manifest: nil, claims: claims, backend: backend, now: now)
+        let manifests = try readManifests(backend)
+        let scope = try stubScope(backend, manifests: manifests)
+        let claims = stubClaims(manifests: manifests, scope: scope, now: now)
+        _ = try upsertDevice(local: local, manifest: nil, claims: claims, expel: { self.isForeignStubRef($0, scope: scope) }, backend: backend, now: now)
         try snapshotLegacyIfAbsent(backend)
     }
 
@@ -464,7 +467,7 @@ extension IsenoughEngine {
     /// The image set may shrink only when `manifest` replaces the ref with the same
     /// image id or the same bundle id at the same install path, or `unregister`
     /// drops one ref. Every other write must be a superset.
-    private func upsertDevice(local: LocalDevice, manifest: ImageManifest?, installPath: String? = nil, claims: [DeviceImageRef] = [], unregister: Unregister? = nil, backend: any StorageBackend, now: Date) throws -> DeviceRecord {
+    private func upsertDevice(local: LocalDevice, manifest: ImageManifest?, installPath: String? = nil, claims: [DeviceImageRef] = [], unregister: Unregister? = nil, expel: ((DeviceImageRef) -> Bool)? = nil, backend: any StorageBackend, now: Date) throws -> DeviceRecord {
         guard local.deviceId == LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId else {
             throw IsenoughError.integrity("refusing to write a device file for another Mac")
         }
@@ -472,7 +475,14 @@ extension IsenoughEngine {
         let remote = try ownDeviceRecord()
         let mirror = loadDeviceMirror()
         var images = mergeDeviceImages(remote?.images ?? [], mirror?.images ?? [])
-        let previousIds = Set(images.map(\.mergeKey))
+        var previousIds = Set(images.map(\.mergeKey))
+        if let expel {
+            // Another repo's stub claims, written by an older engine. Dropping
+            // them is the one shrink a plain refresh may make.
+            let expelled = Set(images.filter(expel).map(\.mergeKey))
+            images.removeAll { expelled.contains($0.mergeKey) }
+            previousIds.subtract(expelled)
+        }
         if let manifest {
             let reference = DeviceImageRef(imageId: manifest.imageId, bundleId: manifest.bundleId, version: manifest.version, build: manifest.build, architectures: manifest.architectures, mode: manifest.mode.rawValue, packedAt: now, installPath: installPath)
             images.removeAll { ref in
@@ -637,14 +647,49 @@ extension IsenoughEngine {
         return GCPlan(trash: trashed, restoreFromTrash: plan.restoreFromTrash, purge: plan.purge, warnings: warnings, kept: plan.kept + census.placeholders.filter { plan.trash.contains($0) }.sorted())
     }
 
-    private func stubSearchRoots() -> [URL] {
+    func stubSearchRoots() -> [URL] {
         if let stubRootsOverride { return stubRootsOverride }
         return BackupScanner.defaultRoots(stubDir: config.stubDir, home: NSHomeDirectory())
     }
 
+    /// What this repo is: its id and the images it has manifests or image files for.
+    /// Stub claims are filtered through it so another repo's stubs on this Mac
+    /// (for example the user's real `/Applications` stubs seen from a test repo)
+    /// are never counted.
+    struct StubScope {
+        var repoId: String?
+        /// Image ids with a manifest in `manifests/`, placeholders included.
+        var manifestIds: Set<String>
+        /// Image ids with a file in `images/`, placeholders included.
+        var imageIds: Set<String>
+
+        func owns(_ stub: StubIdentity, imageId: String) -> Bool {
+            stub.belongs(toRepo: repoId, imageInRepo: manifestIds.contains(imageId))
+        }
+    }
+
+    func stubScope(_ backend: any StorageBackend, manifests: [ImageManifest]) throws -> StubScope {
+        let repoId = try RepoIdentity.ensure(backend)
+        if let repoId { RepoIdentity.remember(repoId, config: config) }
+        var manifestIds = Set(manifests.map(\.imageId))
+        for name in try listRepo(backend, "manifests") where !RepoFileNames.isConflictCopy(name) {
+            let logical = RepoFileNames.logicalName(name)
+            guard logical.hasSuffix(".json") else { continue }
+            manifestIds.insert((logical as NSString).deletingPathExtension)
+        }
+        let census = try imageCensus(backend)
+        return StubScope(repoId: repoId, manifestIds: manifestIds, imageIds: Set(census.ids))
+    }
+
     /// Stubs in the Applications folders, plus journals whose destination is a stub on this Mac.
+    /// Only stubs of this repo count (see `StubIdentity.belongs`).
     private func stubClaims(backend: any StorageBackend, now: Date) throws -> [DeviceImageRef] {
         let manifests = try readManifests(backend)
+        let scope = try stubScope(backend, manifests: manifests)
+        return stubClaims(manifests: manifests, scope: scope, now: now)
+    }
+
+    private func stubClaims(manifests: [ImageManifest], scope: StubScope, now: Date) -> [DeviceImageRef] {
         let byId = Dictionary(manifests.map { ($0.imageId, $0) }, uniquingKeysWith: { current, _ in current })
         // De-duplicated by image id: two stubs for one bundle id with different
         // images are two claims; two stubs for the same image are one.
@@ -652,7 +697,7 @@ extension IsenoughEngine {
         var seen = Set<String>()
         for root in stubSearchRoots() {
             for app in RecommendPaths.topLevelApps(in: root) {
-                guard let claim = stubClaim(app: app, manifests: byId, now: now) else { continue }
+                guard let claim = stubClaim(app: app, manifests: byId, scope: scope, now: now) else { continue }
                 if seen.insert(claim.mergeKey).inserted { claims.append(claim) }
             }
         }
@@ -660,8 +705,8 @@ extension IsenoughEngine {
         for journal in journals {
             guard !journal.dest.isEmpty else { continue }
             let dest = URL(fileURLWithPath: journal.dest)
-            guard FileManager.default.fileExists(atPath: dest.appendingPathComponent("Contents/Resources/stub.json").path) else { continue }
-            let claim = stubClaim(app: dest, manifests: byId, now: journal.createdAt)
+            guard let stub = StubIdentity.read(bundle: dest), !stub.isForeign(toRepo: scope.repoId) else { continue }
+            let claim = stubClaim(app: dest, manifests: byId, scope: scope, now: journal.createdAt)
                 ?? byId[journal.imageId].map { deviceRef($0, installPath: dest.path) }
             guard let claim, seen.insert(claim.mergeKey).inserted else { continue }
             claims.append(claim)
@@ -669,10 +714,23 @@ extension IsenoughEngine {
         return claims
     }
 
-    private func stubClaim(app: URL, manifests: [String: ImageManifest], now: Date) -> DeviceImageRef? {
+    /// Refs in this Mac's device file that an older engine claimed from another
+    /// repo's stub. A ref goes only when its stub is still on disk at
+    /// `installPath`, names the same image, is not this repo's, and the image has
+    /// neither a manifest nor an image file here, so nothing of this repo loses
+    /// GC protection.
+    func isForeignStubRef(_ ref: DeviceImageRef, scope: StubScope) -> Bool {
+        guard !ref.imageId.isEmpty, let path = ref.installPath, !path.isEmpty,
+              !scope.manifestIds.contains(ref.imageId), !scope.imageIds.contains(ref.imageId) else { return false }
+        guard let stub = StubIdentity.read(bundle: URL(fileURLWithPath: path)) else { return false }
+        if let image = stub.imageId, image != ref.imageId { return false }
+        return !scope.owns(stub, imageId: ref.imageId)
+    }
+
+    private func stubClaim(app: URL, manifests: [String: ImageManifest], scope: StubScope, now: Date) -> DeviceImageRef? {
         let resources = app.appendingPathComponent("Contents/Resources")
-        guard let data = try? Data(contentsOf: resources.appendingPathComponent("stub.json"), options: []),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        guard let object = StubIdentity.readObject(bundle: app) else { return nil }
+        let stub = StubIdentity(object: object)
         let embedded: ImageManifest?
         if let bytes = try? Data(contentsOf: resources.appendingPathComponent("manifest.json"), options: []),
            let manifest = try? ImageManifest.decode(bytes) {
@@ -683,6 +741,7 @@ extension IsenoughEngine {
         let stated = object["imageId"] as? String
         let resolvedId = (stated?.isEmpty == false ? stated : nil) ?? embedded?.imageId
         guard let resolvedId, !resolvedId.isEmpty else { return nil }
+        guard scope.owns(stub, imageId: resolvedId) else { return nil }
         let path = app.standardizedFileURL.path
         if let manifest = embedded, manifest.imageId == resolvedId { return deviceRef(manifest, installPath: path) }
         if let manifest = manifests[resolvedId] { return deviceRef(manifest, installPath: path) }

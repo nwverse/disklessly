@@ -330,7 +330,7 @@ enum StubRebuilder {
         } else {
             enginePath = cli.path
         }
-        let stubInfo: [String: Any] = [
+        var stubInfo: [String: Any] = [
             "schema": "stub/1",
             "appId": journal.appId,
             "imageId": journal.imageId,
@@ -339,6 +339,8 @@ enum StubRebuilder {
             "engineRevision": EngineInstall.revision,
             "stubVersion": 1,
         ]
+        // The repo is not read here; use the id last seen for the configured repo.
+        if let repoId = RepoIdentity.remembered(config: config) { stubInfo["repoId"] = repoId }
         let stubData = try JSONSerialization.data(withJSONObject: stubInfo, options: [.prettyPrinted, .sortedKeys])
         try stubData.write(to: temp.appendingPathComponent("Contents/Resources/stub.json"))
         #if os(macOS)
