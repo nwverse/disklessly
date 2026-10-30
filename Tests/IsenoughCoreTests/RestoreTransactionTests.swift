@@ -771,7 +771,9 @@ final class RestoreTransactionTests: XCTestCase {
         try Data("probe\n".utf8).write(to: marker)
         let app = try DetachedProcess.spawn(
             executable: "/bin/sh",
-            arguments: ["/bin/sh", "-c", "sleep 60", "isenough-fake-app", root.path],
+            // macOS /bin/sh (bash) execs a lone simple command, which drops the path
+            // operands from argv; the trailing `exit 0` keeps the shell, and its argv, alive.
+            arguments: ["/bin/sh", "-c", "sleep 60; exit 0", "isenough-fake-app", root.path],
             redirectOutput: nil,
             newSession: true
         )
@@ -843,7 +845,9 @@ final class RestoreTransactionTests: XCTestCase {
         world.engine.restore.services.probe = { roots in ProcessProbe.usage(roots: roots) }
         let app = try DetachedProcess.spawn(
             executable: "/bin/sh",
-            arguments: ["/bin/sh", "-c", "sleep 60", "isenough-fake-app", world.dest.path],
+            // macOS /bin/sh (bash) execs a lone simple command, which drops the path
+            // operands from argv; the trailing `exit 0` keeps the shell, and its argv, alive.
+            arguments: ["/bin/sh", "-c", "sleep 60; exit 0", "isenough-fake-app", world.dest.path],
             redirectOutput: nil,
             newSession: true
         )
