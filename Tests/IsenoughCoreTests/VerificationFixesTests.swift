@@ -248,7 +248,12 @@ final class VerificationFixesTests: XCTestCase {
         let first = try engine.backfillIcons(appId: nil)
         XCTAssertEqual(first.skipped, ["cached"])
         XCTAssertTrue(first.updated.isEmpty)
-        #if !os(macOS)
+        #if os(macOS)
+        // images/mount.dmg is three bytes, not a disk image. diskutil refuses it
+        // ("The disk image is corrupted"); backfill must report that as a warning.
+        XCTAssertTrue(first.warnings.contains { $0.hasPrefix("mount:") }, "\(first.warnings)")
+        XCTAssertFalse(first.updated.contains("mount"))
+        #else
         XCTAssertTrue(first.warnings.contains("mount: icon backfill requires macOS"))
         #endif
         let firstCalls = faulty.calls.dropFirst(before)
