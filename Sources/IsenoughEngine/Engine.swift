@@ -908,6 +908,7 @@ public struct IsenoughEngine {
         while true {
             Thread.sleep(forTimeInterval:0.5)
             let p=Process(); p.executableURL=URL(fileURLWithPath:"/usr/bin/pgrep"); p.arguments=["-f",app.appendingPathComponent("Contents/MacOS/"+manifest.app.executable).path]
+            p.standardOutput=FileHandle.nullDevice; p.standardError=FileHandle.nullDevice
             try? p.run(); p.waitUntilExit()
             if p.terminationStatus == 0 { continue }
             Thread.sleep(forTimeInterval:Double(config.detachDelaySeconds))

@@ -45,9 +45,31 @@ public enum ProcessStart {
 
     public static func isAlive(_ owner: ProcessOwner) -> Bool {
         guard owner.pid > 0, kill(owner.pid, 0) == 0 else { return false }
+        // kill(pid, 0) succeeds for a zombie. A killed `hook watch` child that its
+        // parent has not reaped yet must not look like a live journal owner.
+        if isZombie(owner.pid) { return false }
         let start = ticks(for: owner.pid)
-        if owner.start == 0 || start == 0 { return true }
+        if owner.start == 0 { return true }
+        // Process info that can no longer be read for a recorded owner means it is gone.
+        if start == 0 { return false }
         return start == owner.start
+    }
+
+    static func isZombie(_ pid: Int32) -> Bool {
+        #if os(Linux)
+        guard let text = try? String(contentsOfFile: "/proc/\(pid)/stat", encoding: .utf8),
+              let paren = text.lastIndex(of: ")") else { return false }
+        return text[text.index(after: paren)...].split(separator: " ").first == "Z"
+        #elseif os(macOS)
+        // proc_pidinfo fails for zombies; the kinfo_proc state still says SZOMB.
+        var mib: [Int32] = [CTL_KERN, KERN_PROC, KERN_PROC_PID, pid]
+        var info = kinfo_proc()
+        var size = MemoryLayout<kinfo_proc>.stride
+        guard sysctl(&mib, UInt32(mib.count), &info, &size, nil, 0) == 0, size > 0 else { return false }
+        return info.kp_proc.p_stat == CChar(SZOMB)
+        #else
+        return false
+        #endif
     }
 }
 
