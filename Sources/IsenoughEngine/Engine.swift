@@ -933,6 +933,9 @@ public struct IsenoughEngine {
         var lease: MountLease?
         defer { lease?.release() }
         try restore.withLock(manifest.bundleId) {
+            // Taken before the reuse check too: an existing mount must not be reaped
+            // in the window before the app process shows up in the usage probe.
+            lease = MountLease.acquire(stateDir: config.stateDir, name: manifest.imageId, waitSeconds: 0.5)
             let recorded = state.load().apps[manifest.bundleId]?.mountPoint
             let info = ProcessRunner.capture("/usr/bin/hdiutil", ["info", "-plist"])
             let listed = recorded.map { DiskImageTool.plistListsMountPoint(Data(info.utf8), $0) } ?? false
@@ -944,7 +947,6 @@ public struct IsenoughEngine {
                 if busy { handOff = true }
                 return
             }
-            lease = MountLease.acquire(stateDir: config.stateDir, name: manifest.imageId, waitSeconds: 0.5)
             try LiveDiskImage.attach(image: image, mountPoint: mount)
             try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"running",mountPoint:mount.path)
             let built = OpenInvocation.arguments(app: app.path, documents: documents, urls: urls, arguments: arguments, alreadyRunning: false)
