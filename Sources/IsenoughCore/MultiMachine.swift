@@ -174,31 +174,136 @@ public enum PublishPlanner {
     }
 }
 
+/// Outcome of a write-once publish.
+public enum WriteOnceResult: Equatable {
+    /// This call created the object.
+    case written
+    /// The object already held the same bytes (this Mac or another one wrote them).
+    case reused
+    /// The object exists with other bytes, or is a placeholder that cannot be compared.
+    /// Nothing was overwritten. The caller must not install a stub that points here.
+    case conflict(String)
+}
+
+/// Result of `WriteOnce.confirmCanonical`.
+public enum CanonicalStatus: Equatable {
+    /// The manifest names this sha and the image bytes hash to it.
+    case verified
+    /// The manifest names this sha, but the image is a placeholder (or not on this
+    /// Mac) so its bytes could not be hashed here.
+    case manifestOnly
+}
+
 public enum WriteOnce {
-    public static func put(backend: any StorageBackend, path: String, data: Data) throws {
+    /// Throws `IsenoughError.integrity` on a conflict. Use `publish(backend:path:data:)`
+    /// to get the conflict as a value.
+    @discardableResult
+    public static func put(backend: any StorageBackend, path: String, data: Data) throws -> WriteOnceResult {
+        let result = try publish(backend: backend, path: path, data: data)
+        if case .conflict(let message) = result { throw IsenoughError.integrity(message) }
+        return result
+    }
+
+    /// Throws `IsenoughError.integrity` on a conflict. Use `publishFile` to get the conflict as a value.
+    @discardableResult
+    public static func putFile(backend: any StorageBackend, path: String, file: URL, sha256: String) throws -> WriteOnceResult {
+        let result = try publishFile(backend: backend, path: path, file: file, sha256: sha256)
+        if case .conflict(let message) = result { throw IsenoughError.integrity(message) }
+        return result
+    }
+
+    public static func publish(backend: any StorageBackend, path: String, data: Data) throws -> WriteOnceResult {
         let digest = SHA256Digest.hex(data)
-        switch try probe(backend, path) {
-        case .absent:
+        return try publish(backend, path, sha256: digest) {
             try backend.put(path, data: data)
-        case .sha256(let sha) where sha == digest:
-            return
-        case .placeholder:
-            throw IsenoughError.integrity("refusing to overwrite iCloud placeholder \(path)")
-        case .sha256:
-            throw IsenoughError.integrity("refusing to overwrite \(path): the existing bytes differ")
         }
     }
 
-    public static func putFile(backend: any StorageBackend, path: String, file: URL, sha256: String) throws {
+    public static func publishFile(backend: any StorageBackend, path: String, file: URL, sha256: String) throws -> WriteOnceResult {
+        try publish(backend, path, sha256: sha256.lowercased()) {
+            try backend.put(path, file: file)
+        }
+    }
+
+    /// Probe, then publish exclusively. Losing a race (`WriteOnceConflict`) re-probes:
+    /// identical bytes are `.reused`, anything else is `.conflict`.
+    private static func publish(_ backend: any StorageBackend, _ path: String, sha256 digest: String, upload: () throws -> Void) throws -> WriteOnceResult {
         switch try probe(backend, path) {
         case .absent:
-            try backend.put(path, file: file)
-        case .sha256(let sha) where sha == sha256:
-            return
+            do {
+                try WriteOnceScope.run(upload)
+                return .written
+            } catch is WriteOnceConflict {
+                return try reprobe(backend, path, digest)
+            }
+        case .sha256(let sha) where sha == digest:
+            return .reused
         case .placeholder:
-            throw IsenoughError.integrity("refusing to overwrite iCloud placeholder \(path)")
+            return .conflict("refusing to overwrite iCloud placeholder \(path)")
         case .sha256:
-            throw IsenoughError.integrity("refusing to overwrite \(path): the existing bytes differ")
+            return .conflict("refusing to overwrite \(path): the existing bytes differ")
+        }
+    }
+
+    private static func reprobe(_ backend: any StorageBackend, _ path: String, _ digest: String) throws -> WriteOnceResult {
+        switch try probe(backend, path) {
+        case .sha256(let sha) where sha == digest:
+            return .reused
+        case .sha256:
+            return .conflict("refusing to overwrite \(path): another Mac published different bytes first")
+        case .placeholder:
+            return .conflict("refusing to overwrite iCloud placeholder \(path): another Mac published it first")
+        case .absent:
+            return .conflict("\(path) was published by another writer and then disappeared; nothing was overwritten")
+        }
+    }
+
+    /// Re-reads `manifests/<imageId>.json` and the image it names and confirms that
+    /// `imageSha` is the canonical pair for `imageId`. Throws `IsenoughError.integrity`
+    /// when the manifest is missing, names another sha, or the image bytes hash to
+    /// something else; throws `.backend` when the repo cannot be read.
+    ///
+    /// Call this after publishing and before deleting the original app. `publish`
+    /// in Devices.swift already does; the pack transaction in Engine.swift should
+    /// also call it right before it removes the original (`.manifestOnly` means
+    /// the bytes are a placeholder and the caller should keep the original unless
+    /// it has other upload evidence).
+    @discardableResult
+    public static func confirmCanonical(backend: any StorageBackend, imageId: String, imageSha: String) throws -> CanonicalStatus {
+        let wanted = imageSha.lowercased()
+        let manifestPath = "manifests/\(imageId).json"
+        let data: Data
+        do {
+            guard try backend.stat(manifestPath) != nil else {
+                throw IsenoughError.integrity("\(manifestPath) is missing after publish; the original app was not changed")
+            }
+            data = try backend.get(manifestPath, range: nil)
+        } catch let error as IsenoughError {
+            throw error
+        } catch {
+            throw IsenoughError.backend("cannot read \(manifestPath): \(error.localizedDescription)")
+        }
+        let manifest: ImageManifest
+        do {
+            manifest = try ImageManifest.decode(data)
+        } catch {
+            throw IsenoughError.integrity("\(manifestPath) cannot be decoded; the original app was not changed")
+        }
+        guard manifest.imageId == imageId else {
+            throw IsenoughError.integrity("\(manifestPath) names image \(manifest.imageId); the original app was not changed")
+        }
+        guard manifest.image.sha256.lowercased() == wanted else {
+            throw IsenoughError.integrity("\(manifestPath) names sha256 \(manifest.image.sha256), not this Mac's image \(wanted). Another Mac published \(imageId) first; the original app was not changed")
+        }
+        switch try probe(backend, manifest.image.file) {
+        case .sha256(let sha) where sha == wanted:
+            return .verified
+        case .sha256(let sha):
+            throw IsenoughError.integrity("\(manifest.image.file) hashes to \(sha), not \(wanted); the original app was not changed")
+        case .placeholder:
+            return .manifestOnly
+        case .absent:
+            throw IsenoughError.integrity("\(manifest.image.file) is missing after publish; the original app was not changed")
         }
     }
 
@@ -219,7 +324,17 @@ public enum WriteOnce {
             let url = root.appendingPathComponent(path)
             return .sha256(try SHA256Digest.hexFile(url))
         }
-        return .sha256(SHA256Digest.hex(try backend.get(path, range: nil)))
+        // No local directory (WebDAV): stream the object onto disk and hash it in
+        // chunks instead of holding a multi-gigabyte image in memory.
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-probe-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let staging = folder.appendingPathComponent("object")
+        _ = try backend.download(path, to: staging, offset: 0)
+        if !FileManager.default.fileExists(atPath: staging.path) {
+            return .sha256(SHA256Digest.hex(Data()))
+        }
+        return .sha256(try SHA256Digest.hexFile(staging))
     }
 }
 
@@ -247,7 +362,11 @@ public struct LocalDevice: Equatable, Codable {
     }
 }
 
+/// One image this Mac references. Refs are keyed by `imageId`: two copies of one
+/// bundle id (two versions, or two install paths) are two refs.
 public struct DeviceImageRef: Equatable, Codable {
+    /// Empty only on records written before refs carried an image id. Such a ref
+    /// is matched by bundle id.
     public var imageId: String
     public var bundleId: String
     public var version: String
@@ -255,7 +374,9 @@ public struct DeviceImageRef: Equatable, Codable {
     public var architectures: [String]
     public var mode: String
     public var packedAt: Date
-    public init(imageId: String, bundleId: String, version: String, build: String, architectures: [String], mode: String, packedAt: Date) {
+    /// Where the stub for this image is installed. Nil on older records.
+    public var installPath: String?
+    public init(imageId: String, bundleId: String, version: String, build: String, architectures: [String], mode: String, packedAt: Date, installPath: String? = nil) {
         self.imageId = imageId
         self.bundleId = bundleId
         self.version = version
@@ -263,7 +384,27 @@ public struct DeviceImageRef: Equatable, Codable {
         self.architectures = architectures
         self.mode = mode
         self.packedAt = packedAt
+        self.installPath = installPath
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case imageId, bundleId, version, build, architectures, mode, packedAt, installPath
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        imageId = try container.decodeIfPresent(String.self, forKey: .imageId) ?? ""
+        bundleId = try container.decode(String.self, forKey: .bundleId)
+        version = try container.decodeIfPresent(String.self, forKey: .version) ?? ""
+        build = try container.decodeIfPresent(String.self, forKey: .build) ?? ""
+        architectures = try container.decodeIfPresent([String].self, forKey: .architectures) ?? []
+        mode = try container.decodeIfPresent(String.self, forKey: .mode) ?? "mount"
+        packedAt = try container.decodeIfPresent(Date.self, forKey: .packedAt) ?? .distantPast
+        installPath = try container.decodeIfPresent(String.self, forKey: .installPath)
+    }
+
+    /// Key used when merging ref lists. Legacy refs without an image id fall back to the bundle id.
+    public var mergeKey: String { imageId.isEmpty ? "bundle:\(bundleId)" : imageId }
 }
 
 public struct DeviceRecord: Equatable, Codable {
@@ -309,9 +450,21 @@ public struct DeviceRecord: Equatable, Codable {
         return record
     }
 
-    /// The image this Mac's stub is allowed to launch for `bundleId`.
+    /// The most recently packed image for `bundleId`. Kept for callers that want
+    /// one answer; a bundle id can have several refs (see `images(forBundleId:)`).
     public func currentImage(bundleId: String) -> DeviceImageRef? {
-        images.filter { $0.bundleId == bundleId }.sorted { $0.packedAt > $1.packedAt }.first
+        images(forBundleId: bundleId).first
+    }
+
+    /// Every ref for `bundleId`, newest first.
+    public func images(forBundleId bundleId: String) -> [DeviceImageRef] {
+        images.filter { $0.bundleId == bundleId }.sorted { $0.packedAt > $1.packedAt }
+    }
+
+    /// The ref for exactly this image id.
+    public func image(id imageId: String) -> DeviceImageRef? {
+        guard !imageId.isEmpty else { return nil }
+        return images.first { $0.imageId == imageId }
     }
 }
 
@@ -384,14 +537,24 @@ public enum StubLaunchDecision: Equatable {
 }
 
 public enum StubLaunch {
-    /// A stub launches the image id recorded for this Mac. Another version or architecture is refused.
+    /// A stub launches an image id recorded for this Mac. The check compares the
+    /// stub's own image id against every ref for the bundle, so two installed
+    /// copies of one bundle id both launch. An image this Mac never recorded for
+    /// the bundle (another version or architecture) is refused.
     public static func check(record: DeviceRecord?, manifest: ImageManifest) -> StubLaunchDecision {
-        guard let record, let current = record.currentImage(bundleId: manifest.bundleId) else { return .allowed }
-        let recordedArch = current.architectures
+        guard let record else { return .allowed }
+        let refs = record.images(forBundleId: manifest.bundleId)
+        guard let newest = refs.first else { return .allowed }
         let wantedArch = manifest.architectures
-        let sameImage = current.imageId == manifest.imageId
-        let sameArch = recordedArch == wantedArch || recordedArch.isEmpty || wantedArch.isEmpty
-        if sameImage && sameArch { return .allowed }
+        if let own = refs.first(where: { $0.imageId == manifest.imageId }) {
+            let recordedArch = own.architectures
+            if recordedArch == wantedArch || recordedArch.isEmpty || wantedArch.isEmpty { return .allowed }
+        } else if refs.allSatisfy({ $0.imageId.isEmpty }) {
+            // Legacy refs without an image id cannot be compared; do not block them.
+            return .allowed
+        }
+        let current = refs.first(where: { $0.imageId == manifest.imageId }) ?? newest
+        let recordedArch = current.architectures
         let recordedLabel = recordedArch.isEmpty ? "unknown" : recordedArch.joined(separator: "+")
         let wantedLabel = wantedArch.isEmpty ? "unknown" : wantedArch.joined(separator: "+")
         let message = "Refusing to launch \(manifest.bundleId) \(manifest.version) (\(wantedLabel)) image \(manifest.imageId). This Mac recorded \(current.version) (\(recordedLabel)) image \(current.imageId). A stub opens only the image this Mac recorded, so a different version or architecture is not launched."

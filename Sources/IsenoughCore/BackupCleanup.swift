@@ -8,17 +8,28 @@ public struct BackupFact: Equatable {
     public var stubSHA: String?
     /// SHA-256 recorded in the repo manifest for that image.
     public var repoSHA: String?
-    /// SHA-256 of the local image bytes, when they could be read. Nil for a dataless copy.
+    /// SHA-256 of the local image bytes, when they could be read. Nil when the
+    /// image is empty, could not be hashed, or is a dataless iCloud copy. Nil is
+    /// never treated as verified.
     public var imageSHA: String?
     public var imageObjectExists: Bool
+    /// The image is an iCloud placeholder (`.icloud` file or dataless item).
+    public var imagePlaceholder: Bool
+    /// Size the placeholder reports for the cloud copy, when known.
+    public var placeholderSize: UInt64?
+    /// Image size recorded in the repo manifest.
+    public var repoSize: UInt64?
 
-    public init(path: String, bundleId: String, stubSHA: String?, repoSHA: String?, imageSHA: String?, imageObjectExists: Bool) {
+    public init(path: String, bundleId: String, stubSHA: String?, repoSHA: String?, imageSHA: String?, imageObjectExists: Bool, imagePlaceholder: Bool = false, placeholderSize: UInt64? = nil, repoSize: UInt64? = nil) {
         self.path = path
         self.bundleId = bundleId
         self.stubSHA = stubSHA
         self.repoSHA = repoSHA
         self.imageSHA = imageSHA
         self.imageObjectExists = imageObjectExists
+        self.imagePlaceholder = imagePlaceholder
+        self.placeholderSize = placeholderSize
+        self.repoSize = repoSize
     }
 }
 
@@ -56,11 +67,20 @@ public enum BackupCleanup {
         guard fact.imageObjectExists else {
             return .keep("repo image is missing")
         }
-        if let imageSHA = fact.imageSHA, imageSHA != stubSHA {
-            return .keep("image sha does not match the stub")
+        if let imageSHA = fact.imageSHA {
+            guard imageSHA == stubSHA else { return .keep("image sha does not match the stub") }
+            return .remove
         }
-        return .remove
+        // No hash: a 0-byte DMG, a read failure, or an iCloud placeholder. Only a
+        // placeholder whose cloud size equals the manifest size counts, which is
+        // the rule PublishPlanner uses before it lets a pack drop the original.
+        if fact.imagePlaceholder, let size = fact.placeholderSize, let expected = fact.repoSize, size > 0, size == expected {
+            return .remove
+        }
+        return .keep(unverifiedReason)
     }
+
+    public static let unverifiedReason = "kept: image unverified (the repo image is empty, unreadable, or an iCloud placeholder whose size does not match the manifest)"
 }
 
 public enum BackupRemoval {
@@ -148,15 +168,18 @@ public enum BackupScanner {
     private static func fact(backup: URL, root: URL, repoPath: String) -> BackupFact {
         let bundleId = bundleIdentifier(backup) ?? ""
         let match = stubMatch(bundleId: bundleId, root: root, ignoring: backup)
-        let repoSHA = match.flatMap { manifestSHA(imageId: $0.imageId, repoPath: repoPath) }
+        let repo = match.flatMap { manifestImage(imageId: $0.imageId, repoPath: repoPath) }
         let image = match.flatMap { imageState(imageId: $0.imageId, repoPath: repoPath) }
         return BackupFact(
             path: backup.path,
             bundleId: bundleId,
             stubSHA: match?.sha,
-            repoSHA: repoSHA,
+            repoSHA: repo?.sha256,
             imageSHA: image?.sha,
-            imageObjectExists: image?.exists == true
+            imageObjectExists: image?.exists == true,
+            imagePlaceholder: image?.placeholder == true,
+            placeholderSize: image?.placeholderSize,
+            repoSize: repo?.size
         )
     }
 
@@ -189,15 +212,17 @@ public enum BackupScanner {
         return matches.count == 1 ? matches[0] : nil
     }
 
-    private static func manifestSHA(imageId: String, repoPath: String) -> String? {
+    private static func manifestImage(imageId: String, repoPath: String) -> ImageManifest.Image? {
         let url = URL(fileURLWithPath: repoPath).appendingPathComponent("manifests/\(imageId).json")
         guard let data = try? Data(contentsOf: url, options: []), let manifest = try? ImageManifest.decode(data) else { return nil }
-        return manifest.image.sha256
+        return manifest.image
     }
 
     private struct ImageState {
         var exists: Bool
         var sha: String?
+        var placeholder: Bool = false
+        var placeholderSize: UInt64?
     }
 
     private static func imageState(imageId: String, repoPath: String) -> ImageState {
@@ -208,16 +233,34 @@ public enum BackupScanner {
             images.appendingPathComponent(".\(imageId).dmg.icloud"),
         ]
         if FileManager.default.fileExists(atPath: file.path) {
+            #if os(macOS)
+            if let values = try? file.resourceValues(forKeys: [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey, .fileSizeKey]),
+               values.isUbiquitousItem == true, values.ubiquitousItemDownloadingStatus == .notDownloaded {
+                // Dataless: hashing would download the image, so report the cloud size instead.
+                return ImageState(exists: true, sha: nil, placeholder: true, placeholderSize: values.fileSize.map { UInt64(max(0, $0)) })
+            }
+            #endif
             let bytes = (try? ChunkedIO.byteCount(file)) ?? 0
             if bytes > 0, let sha = try? SHA256Digest.hexFile(file) {
                 return ImageState(exists: true, sha: sha)
             }
+            // 0 bytes or unreadable: exists, but unverified.
             return ImageState(exists: true, sha: nil)
         }
-        if placeholders.contains(where: { FileManager.default.fileExists(atPath: $0.path) }) {
-            return ImageState(exists: true, sha: nil)
+        if let stub = placeholders.first(where: { FileManager.default.fileExists(atPath: $0.path) }) {
+            return ImageState(exists: true, sha: nil, placeholder: true, placeholderSize: placeholderSize(stub))
         }
         return ImageState(exists: false, sha: nil)
+    }
+
+    /// `.icloud` placeholder files are small property lists that carry the cloud
+    /// copy's size under `NSURLFileSizeKey`.
+    static func placeholderSize(_ url: URL) -> UInt64? {
+        guard let data = try? ChunkedIO.prefix(url, maxBytes: 64 * 1024),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any] else { return nil }
+        if let number = plist["NSURLFileSizeKey"] as? NSNumber { return number.uint64Value }
+        if let number = plist["NSURLFileSizeKey"] as? Int, number >= 0 { return UInt64(number) }
+        return nil
     }
 
     private static func jsonObject(_ url: URL) -> [String: Any]? {

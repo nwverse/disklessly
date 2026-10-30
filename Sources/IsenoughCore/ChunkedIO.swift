@@ -5,6 +5,16 @@ import Glibc
 import Darwin
 #endif
 
+/// A write-once publish found the destination already present. The bytes that
+/// were there first are left untouched.
+public struct WriteOnceConflict: Error, LocalizedError, Equatable {
+    public var path: String
+    public init(path: String) { self.path = path }
+    public var errorDescription: String? {
+        "refusing to overwrite \(path): another writer published it first"
+    }
+}
+
 /// Fixed-size file IO. Callers that move disk images, session archives, or cache
 /// objects use this instead of `Data(contentsOf:)`, which maps the whole file.
 public enum ChunkedIO {
@@ -99,6 +109,70 @@ public enum ChunkedIO {
             return
         }
         throw IsenoughError.failure("cannot replace \(destination.path) (errno \(errorCode))")
+    }
+
+    /// Move `temp` to `dest` only when `dest` does not exist yet. This is the
+    /// publish step for write-once repo objects (images, manifests). It never
+    /// replaces an existing file: when another writer got there first, `temp` is
+    /// removed and `WriteOnceConflict` is thrown. Mutable files (device records,
+    /// state) keep using `replaceFile`.
+    ///
+    /// Darwin uses `renamex_np(RENAME_EXCL)`. Linux, and Darwin file systems that
+    /// do not support the flag, use `link(2)` then `unlink(2)` of the temp name.
+    /// When neither is supported (some SMB servers have no hard links), an
+    /// `O_CREAT | O_EXCL` reservation of `dest` decides the winner and the temp is
+    /// then renamed over that reservation.
+    public static func publishExclusive(temp: URL, dest: URL) throws {
+        try FileManager.default.createDirectory(at: dest.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let conflict = { () -> WriteOnceConflict in
+            try? FileManager.default.removeItem(at: temp)
+            return WriteOnceConflict(path: dest.path)
+        }
+        #if canImport(Darwin)
+        var renameError: Int32 = 0
+        let renamed = temp.path.withCString { src in
+            dest.path.withCString { dst -> Bool in
+                if renamex_np(src, dst, UInt32(RENAME_EXCL)) == 0 { return true }
+                renameError = errno
+                return false
+            }
+        }
+        if renamed { return }
+        if renameError == EEXIST { throw conflict() }
+        guard renameError == ENOTSUP || renameError == EINVAL || renameError == ENOSYS || renameError == EOPNOTSUPP else {
+            throw IsenoughError.failure("cannot publish \(dest.path) (errno \(renameError))")
+        }
+        #endif
+        var linkError: Int32 = 0
+        let linked = temp.path.withCString { src in
+            dest.path.withCString { dst -> Bool in
+                if link(src, dst) == 0 { return true }
+                linkError = errno
+                return false
+            }
+        }
+        if linked {
+            _ = temp.path.withCString { unlink($0) }
+            return
+        }
+        if linkError == EEXIST { throw conflict() }
+        guard [EPERM, ENOTSUP, EOPNOTSUPP, EMLINK, ENOSYS, EINVAL].contains(linkError) else {
+            throw IsenoughError.failure("cannot publish \(dest.path) (errno \(linkError))")
+        }
+        let reservation = open(dest.path, O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC, mode_t(0o644))
+        if reservation < 0 {
+            let code = errno
+            if code == EEXIST { throw conflict() }
+            throw IsenoughError.failure("cannot publish \(dest.path) (errno \(code))")
+        }
+        _ = close(reservation)
+        do {
+            // The reservation is ours alone: every other writer got EEXIST above.
+            try replaceFile(dest, with: temp)
+        } catch {
+            _ = dest.path.withCString { unlink($0) }
+            throw error
+        }
     }
 
     public static func appendFile(_ source: URL, to destination: URL) throws {
