@@ -85,7 +85,7 @@ final class StreamingIOTests: XCTestCase {
         XCTAssertTrue(combined.contains("仅远端"))
         XCTAssertTrue(combined.contains("已固定"))
         XCTAssertTrue(combined.contains("已还原"))
-        XCTAssertTrue(combined.contains("冷会话"))
+        XCTAssertTrue(combined.contains("会话分层"))
         XCTAssertFalse(combined.lowercased().contains("wupan"))
     }
 }

@@ -1,0 +1,239 @@
+import XCTest
+import Foundation
+import IsenoughCore
+import IsenoughEngine
+
+/// JSON the dashboard page needs: backend health with latency and timeout, endpoint
+/// states, cache levels and the free-floor marker, session tiers, and pinned evict.
+final class UIDashboardTests: XCTestCase {
+    private struct Fixture {
+        let root: URL
+        let config: RuntimeConfig
+        let engine: IsenoughEngine
+        let manifest: ImageManifest
+
+        init(backends: [BackendEndpoint] = [], activeId: String? = nil, installPath: String = "/Users/me/Applications/Test.app") throws {
+            root = FileManager.default.temporaryDirectory.appendingPathComponent("isenough-dash-\(UUID().uuidString)")
+            let repo = root.appendingPathComponent("repo")
+            var config = RuntimeConfig(repoPath: repo.path, cacheDir: root.appendingPathComponent("cache").path, stateDir: root.appendingPathComponent("state").path, mountRoot: root.appendingPathComponent("mounts").path, stubDir: root.appendingPathComponent("apps").path)
+            config.backends = backends
+            config.activeBackendId = activeId
+            self.config = config
+            var engine = IsenoughEngine(config: config, secrets: MemorySecretStore())
+            engine.backendOverride = try LocalFolderBackend(root: repo)
+            engine.recommendEnvironment = .unavailable
+            try engine.initialize()
+            let bytes = Data("remote image".utf8)
+            let image = ImageManifest.Image(file: "images/test.dmg", format: "ULMO", sha256: SHA256Digest.hex(bytes), size: UInt64(bytes.count), volumeName: "Test", appPathInVolume: "Test.app")
+            manifest = ImageManifest(bundleId: "com.test.app", name: "Test", version: "1", image: image, app: .init(originalPath: installPath, executable: "Test", documentTypes: [], urlTypes: []))
+            try LocalFolderBackend(root: repo).put("manifests/\(manifest.imageId).json", data: try manifest.encode())
+            self.engine = engine
+        }
+
+        func cleanup() { try? FileManager.default.removeItem(at: root) }
+
+        func get(_ path: String, query: [String: String] = [:], context: ManagementUIContext) throws -> [String: Any] {
+            let response = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: path, query: query), context: context)
+            return try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+        }
+
+        func post(_ path: String, body: [String: Any], context: ManagementUIContext) throws -> (status: Int, object: [String: Any]) {
+            let data = try JSONSerialization.data(withJSONObject: body)
+            let response = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "POST", path: path, body: data), context: context)
+            return (response.status, try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any]))
+        }
+    }
+
+    func testStatusCarriesHealthEndpointsCacheAndInstallPath() throws {
+        let fixture = try Fixture(backends: [
+            BackendEndpoint(id: "office", type: "webdav", url: "https://dav.example.lan/apps"),
+            BackendEndpoint(id: "nas", type: "smb", host: "nas.local", share: "apps", mountPoint: "/Volumes/apps"),
+            BackendEndpoint(id: "usb", type: "local", root: "/Volumes/Archive"),
+        ], activeId: "nas")
+        defer { fixture.cleanup() }
+        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let status = try fixture.get("/api/status", context: context)
+
+        let backend = try XCTUnwrap(status["backend"] as? [String: Any])
+        XCTAssertEqual(backend["health"] as? String, "ok")
+        XCTAssertEqual(backend["kind"] as? String, "smb")
+        XCTAssertEqual(backend["location"] as? String, "remote")
+        XCTAssertEqual(backend["activeId"] as? String, "nas")
+        XCTAssertEqual(backend["activePlace"] as? String, "nas.local/apps")
+        XCTAssertNotNil(backend["latencyMs"] as? NSNumber)
+        XCTAssertEqual((backend["timeoutMs"] as? NSNumber)?.intValue, 5000)
+        XCTAssertEqual(backend["timedOut"] as? Bool, false)
+        let endpoints = try XCTUnwrap(backend["endpoints"] as? [[String: Any]])
+        XCTAssertEqual(endpoints.map { $0["id"] as? String }, ["office", "nas", "usb"])
+        XCTAssertEqual(endpoints.map { $0["state"] as? String }, ["standby", "active", "local"])
+        XCTAssertEqual(endpoints.first?["place"] as? String, "https://dav.example.lan/apps")
+
+        let cache = try XCTUnwrap(status["cache"] as? [String: Any])
+        XCTAssertEqual(cache["level"] as? String, "ok")
+        XCTAssertNotNil(cache["diskFreeBytes"] as? NSNumber)
+        XCTAssertEqual((cache["quotaLeftBytes"] as? NSNumber)?.uint64Value, fixture.config.quotaBytes)
+        XCTAssertEqual((cache["detachDelaySeconds"] as? NSNumber)?.uint64Value, fixture.config.detachDelaySeconds)
+
+        let app = try XCTUnwrap((status["apps"] as? [[String: Any]])?.first)
+        XCTAssertEqual(app["installPath"] as? String, "/Users/me/Applications/Test.app")
+        XCTAssertNotNil(status["generatedAt"] as? String)
+    }
+
+    func testPlainFolderRepoListsOneActiveLocalEndpoint() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let backend = try XCTUnwrap(try fixture.get("/api/status", context: context)["backend"] as? [String: Any])
+        XCTAssertEqual(backend["location"] as? String, "local")
+        let endpoints = try XCTUnwrap(backend["endpoints"] as? [[String: Any]])
+        XCTAssertEqual(endpoints.count, 1)
+        XCTAssertEqual(endpoints.first?["state"] as? String, "active")
+        XCTAssertEqual(endpoints.first?["place"] as? String, fixture.config.repoPath)
+    }
+
+    func testHealthProbeTimesOutWithoutBlockingAndRecovers() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let release = DispatchSemaphore(value: 0)
+        let probe = BackendHealthProbe(timeout: 0.3, maxAge: 60, slowMs: 200) { _ in
+            _ = release.wait(timeout: .now() + 5)
+            return nil
+        }
+        let started = Date()
+        let first = probe.current(fixture.engine)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+        XCTAssertEqual(first.status, "offline")
+        XCTAssertTrue(first.timedOut)
+        XCTAssertNil(first.latencyMs)
+        // A refresh within maxAge reuses the timeout instead of waiting again.
+        let again = Date()
+        XCTAssertTrue(probe.current(fixture.engine).timedOut)
+        XCTAssertLessThan(Date().timeIntervalSince(again), 0.2)
+        // The late answer replaces the timeout once it lands.
+        release.signal()
+        var recovered = probe.current(fixture.engine)
+        for _ in 0..<100 where recovered.timedOut {
+            Thread.sleep(forTimeInterval: 0.02)
+            recovered = probe.current(fixture.engine)
+        }
+        XCTAssertFalse(recovered.timedOut)
+        XCTAssertEqual(recovered.status, "degraded", "a probe slower than slowMs reads as degraded")
+        XCTAssertGreaterThanOrEqual(recovered.latencyMs ?? 0, 300)
+    }
+
+    func testHealthStatesAndFreshProbe() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let answers = Answers(["ok", "missing", "throw"])
+        let probe = BackendHealthProbe(timeout: 2, maxAge: 60) { _ in
+            switch answers.next() {
+            case "missing": return "repo.json is not in the backend"
+            case "throw": throw IsenoughError.backend("share is not mounted")
+            default: return nil
+            }
+        }
+        XCTAssertEqual(probe.current(fixture.engine).status, "ok")
+        XCTAssertEqual(probe.current(fixture.engine).status, "ok", "cached within maxAge")
+        XCTAssertEqual(probe.current(fixture.engine, fresh: true).status, "missing")
+        let offline = probe.current(fixture.engine, fresh: true)
+        XCTAssertEqual(offline.status, "offline")
+        XCTAssertFalse(offline.timedOut)
+        XCTAssertTrue(offline.detail.contains("share is not mounted"))
+
+        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in }, health: probe)
+        let health = try fixture.get("/api/health", context: context)
+        XCTAssertEqual(health["ok"] as? Bool, true)
+        XCTAssertEqual(health["health"] as? String, "offline")
+    }
+
+    func testFloorMarkerIsWhereCacheGrowthHitsTheDiskFloor() {
+        let GiB: UInt64 = 1 << 30
+        // 12 GiB cached, 50 GiB free, keep 8 GiB: the floor binds at 54 GiB of a 64 GiB quota.
+        XCTAssertEqual(ManagementUI.floorMarker(used: 12 * GiB, diskFree: 50 * GiB, floor: 8 * GiB, quota: 64 * GiB), 54 * GiB)
+        // Plenty of disk: the floor never binds before the quota, so no marker.
+        XCTAssertNil(ManagementUI.floorMarker(used: 12 * GiB, diskFree: 500 * GiB, floor: 8 * GiB, quota: 64 * GiB))
+        // Disk already below the floor: clamped to zero.
+        XCTAssertEqual(ManagementUI.floorMarker(used: 2 * GiB, diskFree: 1 * GiB, floor: 8 * GiB, quota: 64 * GiB), 0)
+        XCTAssertNil(ManagementUI.floorMarker(used: 0, diskFree: 1, floor: 0, quota: 64 * GiB))
+        XCTAssertNil(ManagementUI.floorMarker(used: 0, diskFree: 1, floor: 8, quota: 0))
+    }
+
+    func testCacheLevelThresholds() {
+        XCTAssertEqual(ManagementUI.cacheLevel(used: 79, quota: 100), "ok")
+        XCTAssertEqual(ManagementUI.cacheLevel(used: 80, quota: 100), "near")
+        XCTAssertEqual(ManagementUI.cacheLevel(used: 94, quota: 100), "near")
+        XCTAssertEqual(ManagementUI.cacheLevel(used: 95, quota: 100), "critical")
+        XCTAssertEqual(ManagementUI.cacheLevel(used: 5, quota: 0), "ok")
+    }
+
+    func testSessionTiersFollowColdDays() throws {
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        XCTAssertEqual(ManagementUI.sessionTier(modified: now.addingTimeInterval(-3 * 86_400), coldDays: 14, now: now).tier, "warm")
+        let cold = ManagementUI.sessionTier(modified: now.addingTimeInterval(-21 * 86_400), coldDays: 14, now: now)
+        XCTAssertEqual(cold.tier, "cold")
+        XCTAssertEqual(cold.ageDays, 21)
+
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let entries = [
+            SessionIndexEntry(id: "w", tool: "pi", path: "/tmp/warm.jsonl", sha256: "a", size: 1, modified: Date().addingTimeInterval(-2 * 86_400), archive: "a.tar", member: "w", preview: ""),
+            SessionIndexEntry(id: "c", tool: "pi", path: "/tmp/cold.jsonl", sha256: "b", size: 1, modified: Date().addingTimeInterval(-30 * 86_400), archive: "a.tar", member: "c", preview: ""),
+        ]
+        try SessionArchive.saveIndex(SessionIndex(entries: entries), stateDir: fixture.config.stateDir)
+        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let sessions = try XCTUnwrap(try fixture.get("/api/status", context: context)["sessions"] as? [String: Any])
+        let rows = try XCTUnwrap(sessions["offloaded"] as? [[String: Any]])
+        XCTAssertEqual(rows.first { $0["id"] as? String == "w" }?["tier"] as? String, "warm")
+        XCTAssertEqual(rows.first { $0["id"] as? String == "c" }?["tier"] as? String, "cold")
+        XCTAssertEqual((rows.first { $0["id"] as? String == "c" }?["ageDays"] as? NSNumber)?.intValue, 30)
+    }
+
+    func testPinnedEvictIsRefusedUnlessForced() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        try StateStore(fixture.config.stateDir).update { state in
+            var item = state.apps[fixture.manifest.bundleId] ?? AppState()
+            item.pinned = true
+            state.apps[fixture.manifest.bundleId] = item
+        }
+        let context = ManagementUIContext()
+        let refused = try fixture.post("/api/evict", body: ["app": "Test", "force": false], context: context)
+        XCTAssertEqual(refused.status, 202)
+        let job = try XCTUnwrap(context.jobs.wait(try XCTUnwrap(refused.object["jobId"] as? String), timeout: 10))
+        XCTAssertEqual(job.state, .failed)
+        XCTAssertEqual(job.errorCode, "pinned")
+        // Without a force field the default is false too.
+        let implicit = try fixture.post("/api/evict", body: ["app": "Test"], context: context)
+        XCTAssertEqual(context.jobs.wait(try XCTUnwrap(implicit.object["jobId"] as? String), timeout: 10)?.errorCode, "pinned")
+        let forced = try fixture.post("/api/evict", body: ["app": "Test", "force": true], context: context)
+        XCTAssertEqual(context.jobs.wait(try XCTUnwrap(forced.object["jobId"] as? String), timeout: 10)?.state, .done)
+    }
+
+    func testForceFlagReachesActions() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let seen = Answers([])
+        let context = ManagementUIContext(actions: ManagementActions(perform: { kind, app, options, _ in
+            seen.record("\(kind.rawValue):\(app):\(options.force)")
+        }))
+        let plain = try fixture.post("/api/evict", body: ["app": "Test"], context: context)
+        _ = context.jobs.wait(try XCTUnwrap(plain.object["jobId"] as? String), timeout: 5)
+        let forced = try fixture.post("/api/evict", body: ["app": "Test", "force": true], context: context)
+        _ = context.jobs.wait(try XCTUnwrap(forced.object["jobId"] as? String), timeout: 5)
+        XCTAssertEqual(seen.recorded, ["evict:Test:false", "evict:Test:true"])
+        XCTAssertEqual(ManagementUI.errorInfo(UIJobError.pinned("Test")).code, "pinned")
+    }
+}
+
+private final class Answers: @unchecked Sendable {
+    private let lock = NSLock()
+    private var queue: [String]
+    private var log: [String] = []
+    init(_ queue: [String]) { self.queue = queue }
+    func next() -> String {
+        lock.lock(); defer { lock.unlock() }
+        return queue.isEmpty ? "ok" : queue.removeFirst()
+    }
+    func record(_ value: String) { lock.lock(); log.append(value); lock.unlock() }
+    var recorded: [String] { lock.lock(); defer { lock.unlock() }; return log }
+}

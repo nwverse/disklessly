@@ -88,7 +88,12 @@ final class UIServerTests: XCTestCase {
         XCTAssertEqual(pin["state"] as? String, "done")
         let pinned = StateStore(config.stateDir).read()["apps"] as? [String: [String: Any]]
         XCTAssertEqual(pinned?["com.test.app"]?["pinned"] as? Bool, true)
-        let evict = try runJob(port: server.port, path: "/api/evict", token: "page-token", app: "Test")
+        // Pinned apps are not evicted unless the caller forces it.
+        let refused = try runJob(port: server.port, path: "/api/evict", token: "page-token", app: "Test")
+        XCTAssertEqual(refused["state"] as? String, "failed")
+        XCTAssertEqual((refused["error"] as? [String: Any])?["code"] as? String, "pinned")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cached.path))
+        let evict = try runJob(port: server.port, path: "/api/evict", token: "page-token", app: "Test", force: true)
         XCTAssertEqual(evict["state"] as? String, "done")
         XCTAssertFalse(FileManager.default.fileExists(atPath: cached.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: repo.appendingPathComponent("manifests/\(manifest.imageId).json").path))
@@ -206,31 +211,45 @@ final class UIServerTests: XCTestCase {
         XCTAssertFalse(remote.contains("http://"))
         XCTAssertFalse(remote.contains("https://"))
 
-        // Language comes from the browser; the shell carries no Chinese to flash before app.js runs.
-        XCTAssertTrue(html.contains("navigator.languages"))
+        // All text lives in app.js's one string table; the shell carries no Chinese to flash before it runs.
         XCTAssertFalse(html.contains("lang=\"zh"))
         XCTAssertFalse(html.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }, "index.html hard-codes Chinese text")
-        // No cross-language sublines such as "Running OK · Healthy" or "运行正常 · Healthy".
-        XCTAssertFalse(js.contains("· Healthy"))
-        XCTAssertFalse(js.contains("Running OK ·"))
+        // Bilingual inline labels replace the language toggle; ?lang=en only reorders them.
+        XCTAssertFalse(html.contains("id=\"lang\""))
+        XCTAssertTrue(html.contains("lang === \"en\""))
+        XCTAssertTrue(js.contains("function bi("))
+        // Theme follows the system.
+        XCTAssertTrue(css.contains("prefers-color-scheme: dark"))
+        XCTAssertTrue(css.contains("max-width: 720px"))
         // Actions, confirmations, live results, accessibility hooks.
         XCTAssertTrue(js.contains("/api/jobs/"))
         XCTAssertFalse(js.contains("let busy"))
         XCTAssertTrue(html.contains("<dialog id=\"confirm\""))
         XCTAssertTrue(html.contains("aria-live=\"polite\""))
-        XCTAssertTrue(html.contains("role=\"radiogroup\""))
         XCTAssertTrue(html.contains("id=\"onboarding\""))
-        XCTAssertTrue(js.contains("aria-checked"))
+        XCTAssertTrue(html.contains("id=\"sessions-section\""))
+        XCTAssertTrue(html.contains("id=\"devices-section\""))
         XCTAssertTrue(js.contains("Intl.NumberFormat"))
         XCTAssertTrue(js.contains("Intl.RelativeTimeFormat"))
-        XCTAssertTrue(js.contains("永久还原到 /Applications…"))
         XCTAssertTrue(js.contains("REFRESH_MS = 20000"))
+        // Mockup states: loading, empty, error with retry, near quota, health.
+        for text in ["正在读取后端…", "暂无已卸载应用", "无法连接后端", "Backend unreachable", "低于空闲下限时自动清除未固定的缓存", "会话分层", "Session tiers", "空闲下限", "分离延迟", "缓慢", "Degraded", "离线"] {
+            XCTAssertTrue(js.contains(text), text)
+        }
+        // QA fixes: unpack names the app's own folder, raw server text is folded, pinned evict is never forced.
+        XCTAssertFalse(js.contains("永久还原到 /Applications"))
+        XCTAssertFalse(js.contains("Restore to /Applications"))
+        XCTAssertTrue(js.contains("installPath"))
+        XCTAssertTrue(js.contains("function detailsFold("))
+        XCTAssertFalse(js.contains("${base} (${message})"))
+        XCTAssertTrue(js.contains("force: false"))
+        XCTAssertTrue(js.contains("evictPinned"))
 
         let keys = try copyKeys(js)
         XCTAssertGreaterThan(keys.zh.count, 100)
         XCTAssertEqual(keys.zh.subtracting(keys.en).sorted(), [], "keys only in zh")
         XCTAssertEqual(keys.en.subtracting(keys.zh).sorted(), [], "keys only in en")
-        for code in ["unknown_app", "offline", "integrity", "no_space", "busy", "unauthorized"] {
+        for code in ["unknown_app", "offline", "integrity", "no_space", "busy", "unauthorized", "pinned"] {
             XCTAssertTrue(keys.en.contains("err" + code), code)
         }
 
@@ -287,8 +306,9 @@ final class UIServerTests: XCTestCase {
         return (keys(block[..<split.lowerBound]), keys(block[split.upperBound...]))
     }
 
-    private func runJob(port: UInt16, path: String, token: String, app: String) throws -> [String: Any] {
-        let body = try JSONSerialization.data(withJSONObject: ["app": app])
+    private func runJob(port: UInt16, path: String, token: String, app: String, force: Bool = false) throws -> [String: Any] {
+        let fields: [String: Any] = force ? ["app": app, "force": true] : ["app": app]
+        let body = try JSONSerialization.data(withJSONObject: fields)
         let started = try request(port: port, path: path, token: token, method: "POST", body: body)
         XCTAssertEqual(started.status, 202)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: started.body) as? [String: Any])
