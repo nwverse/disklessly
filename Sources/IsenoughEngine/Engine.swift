@@ -441,6 +441,8 @@ public struct IsenoughEngine {
         let usage = packUsageOverride?(app.path) ?? ProcessProbe.usage(roots: [app.path])
         if let blocked = PackPreflight.running(usage, name: name) { throw blocked }
         let allocated = AllocatedSize.tree(app)
+        // A fresh state (first pack on this Mac) has no cache folder yet.
+        try FileManager.default.createDirectory(atPath: config.cacheDir, withIntermediateDirectories: true)
         let free = try VolumeSpace.availableBytes(at: config.cacheDir)
         let cacheDevice = PackPreflight.deviceID(config.cacheDir)
         let cloneSupported = cacheDevice != nil && cacheDevice == PackPreflight.deviceID(app.path)
@@ -818,6 +820,9 @@ public struct IsenoughEngine {
     public func watch(appId: String) throws {
         restore.loadConfiguredFaults()
         try restore.watch(appId: appId)
+        #if os(macOS)
+        try superviseRunningMount(appId: appId)
+        #endif
     }
     public func prefetch(_ manifest:ImageManifest) throws -> URL {
         let backend = try repo
@@ -838,6 +843,7 @@ public struct IsenoughEngine {
                 return cache
             }
         }
+        try FileManager.default.createDirectory(atPath: config.cacheDir, withIntermediateDirectories: true)
         let free = try VolumeSpace.availableBytes(at: config.cacheDir)
         guard SpaceFloor.admits(freeBytes: free, incoming: manifest.image.size, floor: config.minFreeBytes) else {
             throw IsenoughError.noSpace("free space \(free) bytes would fall below the \(config.minFreeBytes) byte floor after fetching \(manifest.image.size) bytes")
@@ -904,31 +910,64 @@ public struct IsenoughEngine {
             let built = OpenInvocation.arguments(app: app.path, documents: documents, urls: urls, arguments: arguments, alreadyRunning: false)
             try run(built.argv[0], Array(built.argv.dropFirst()))
         }
-        if handOff || !wait { return }
+        if handOff { return }
+        if !wait {
+            // design: `--no-wait` returns once the app runs; a detached supervisor
+            // still detaches the image after the app quits.
+            do { _ = try ProcessRunner.spawnWatch(appId: manifest.bundleId, stateDir: config.stateDir) }
+            catch { FileHandle.standardError.write(Data("isenough: could not start the detach supervisor: \(error)\n".utf8)) }
+            return
+        }
+        try superviseMount(manifest, app: app, mount: mount)
+        #endif
+    }
+    #if os(macOS)
+    /// Waits for a mount-mode app to quit, then detaches its image after the delay.
+    private func superviseMount(_ manifest: ImageManifest, app: URL, mount: URL) throws {
+        let state = StateStore(config.stateDir)
         while true {
             Thread.sleep(forTimeInterval:0.5)
+            if !Self.isActiveMountPoint(mount.path) {
+                // Someone else (another supervisor, a manual detach) already detached it.
+                if state.load().apps[manifest.bundleId]?.state == "running" { try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"cached") }
+                return
+            }
             let p=Process(); p.executableURL=URL(fileURLWithPath:"/usr/bin/pgrep"); p.arguments=["-f",app.appendingPathComponent("Contents/MacOS/"+manifest.app.executable).path]
             p.standardOutput=FileHandle.nullDevice; p.standardError=FileHandle.nullDevice
             try? p.run(); p.waitUntilExit()
             if p.terminationStatus == 0 { continue }
             Thread.sleep(forTimeInterval:Double(config.detachDelaySeconds))
-            if ProcessProbe.usage(roots: [mount.path]) == .busy { continue }
-            try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"detaching",mountPoint:mount.path)
-            do {
-                try LiveDiskImage.detach(mountPoint: mount, force: false)
-                if !Self.isActiveMountPoint(mount.path) { rmdir(mount.path) }
-                try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"cached")
+            var detached = false
+            // Under the app lock so a concurrent launch cannot open the app mid-detach.
+            try restore.withLock(manifest.bundleId) {
+                guard Self.isActiveMountPoint(mount.path), ProcessProbe.usage(roots: [mount.path]) != .busy else { return }
+                try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"detaching",mountPoint:mount.path)
+                do {
+                    try LiveDiskImage.detach(mountPoint: mount, force: false)
+                    if !Self.isActiveMountPoint(mount.path) { rmdir(mount.path) }
+                    try state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"cached")
+                    detached = true
+                } catch {
+                    try? state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"backoff",mountPoint:mount.path)
+                    FileHandle.standardError.write(Data("isenough: detach failed: \(error)\n".utf8))
+                    throw error
+                }
+            }
+            if detached {
                 _ = try enforceCacheQuota(justUsed: manifest.imageId)
-                break
-            } catch {
-                try? state.setAppState(bundleId:manifest.bundleId,imageId:manifest.imageId,state:"backoff",mountPoint:mount.path)
-                FileHandle.standardError.write(Data("isenough: detach failed: \(error)\n".utf8))
-                throw error
+                return
             }
         }
-        #endif
     }
-    #if os(macOS)
+
+    /// `hook watch` for a mount-mode app started with `launch --no-wait`.
+    func superviseRunningMount(appId: String) throws {
+        guard let record = StateStore(config.stateDir).load().apps[appId], record.state == "running",
+              let imageId = record.imageId, let mountPath = record.mountPoint,
+              let manifest = try list().first(where: { $0.imageId == imageId }), manifest.mode == .mount else { return }
+        let mount = URL(fileURLWithPath: mountPath)
+        try superviseMount(manifest, app: mount.appendingPathComponent(manifest.image.appPathInVolume), mount: mount)
+    }
     private func run(_ path:String,_ args:[String]) throws {
         let p=ParsedCommand.process(path:path, arguments:args)
         let output=Pipe(); p.standardOutput=output; p.standardError=output

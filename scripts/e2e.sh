@@ -487,7 +487,7 @@ pass 'cleanup-backups completes on the local repo'
 
 # Mount-mode fixture: one attach across two launches, then unpack back to a signed app.
 UNPACK_ID="io.github.s546126.256isenough.e2eunpack"
-mkdir -p "$TMP/unpack-src/Unpack.app/Contents/MacOS" "$TMP/unpack-docs"
+mkdir -p "$TMP/unpack-apps/Unpack.app/Contents/MacOS" "$TMP/unpack-docs"
 cat > "$TMP/UnpackInfo.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -502,11 +502,11 @@ cat > "$TMP/UnpackInfo.plist" <<PLIST
 <key>IsenoughE2EPidFile</key><string>$TMP/unpack.pid</string>
 </dict></plist>
 PLIST
-cp "$TMP/UnpackInfo.plist" "$TMP/unpack-src/Unpack.app/Contents/Info.plist"
-swiftc -parse-as-library "$TMP/Fixture.swift" -framework AppKit -o "$TMP/unpack-src/Unpack.app/Contents/MacOS/Unpack" >>"$LOG" 2>&1 || fail 'compile unpack fixture'
-/usr/bin/codesign --force --sign - "$TMP/unpack-src/Unpack.app" >>"$LOG" 2>&1 || fail 'sign unpack fixture'
+cp "$TMP/UnpackInfo.plist" "$TMP/unpack-apps/Unpack.app/Contents/Info.plist"
+swiftc -parse-as-library "$TMP/Fixture.swift" -framework AppKit -o "$TMP/unpack-apps/Unpack.app/Contents/MacOS/Unpack" >>"$LOG" 2>&1 || fail 'compile unpack fixture'
+/usr/bin/codesign --force --sign - "$TMP/unpack-apps/Unpack.app" >>"$LOG" 2>&1 || fail 'sign unpack fixture'
 ISENOUGH_STATE_DIR="$TMP/state" ISENOUGH_STUB_DIR="$TMP/unpack-apps" \
-  "$ROOT/.build/debug/isenough" pack "$TMP/unpack-src/Unpack.app" --mode mount --stub-dir "$TMP/unpack-apps" >>"$LOG" 2>&1 || fail 'pack unpack fixture'
+  "$ROOT/.build/debug/isenough" pack "$TMP/unpack-apps/Unpack.app" --mode mount --stub-dir "$TMP/unpack-apps" >>"$LOG" 2>&1 || fail 'pack unpack fixture'
 UNPACK_STUB="$TMP/unpack-apps/Unpack.app"
 UNPACK_IMAGE="$(/usr/bin/python3 - "$UNPACK_STUB/Contents/Resources/stub.json" <<'PY'
 import json, sys

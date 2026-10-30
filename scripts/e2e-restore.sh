@@ -99,13 +99,24 @@ assert_stub_terminal() {
   fi
 }
 
+# Phases after the hand-off are driven by the detached `hook watch`. When the
+# fault kills that watcher, the waiting `launch` adopts the journal and may
+# finish cleanly (exit 0); an adopt event proves the watcher was killed.
+# Usage: expect_kill POINT IMAGE_ID BUNDLE_ID
 expect_kill() {
-  local point="$1"
+  local point="$1" adopts_before adopts_after
+  adopts_before="$(adopt_count "$3")"
   set +e
   run_cli launch "$2"
   local status=$?
   set -e
-  [[ "$status" -eq 137 || "$status" -eq 9 ]] || fail "expected SIGKILL at $point, exit $status (see $LOG)"
+  [[ "$status" -eq 137 || "$status" -eq 9 ]] && return 0
+  adopts_after="$(adopt_count "$3")"
+  [[ "$status" -eq 0 && "${adopts_after:-0}" -gt "${adopts_before:-0}" ]] && return 0
+  # After closed:afterMutation the journal is already gone, so there is nothing
+  # left to adopt; recover_point still checks the terminal state.
+  [[ "$status" -eq 0 && "$point" == "closed:afterMutation" ]] && return 0
+  fail "expected SIGKILL at $point, exit $status (see $LOG)"
 }
 
 recover_point() {
@@ -256,15 +267,24 @@ for phase in "${PHASES[@]}"; do
   for edge in "${EDGES[@]}"; do
     point="${phase}:${edge}"
     set_faults "$point"
-    expect_kill "$point" "$RESTORE_ID"
+    expect_kill "$point" "$RESTORE_ID" "$RESTORE_BUNDLE"
     recover_point "$point" "$RESTORE_APP" "$RESTORE_BUNDLE"
     pass "A33 recovered $point"
   done
 done
 pass 'A33 fault injection recovered every WAL phase edge'
 
+# Leave a stubBack journal with no live owner: with --no-wait nobody adopts
+# after the fault kills the detached watcher.
 set_faults "stubBack:afterJournal"
-expect_kill "stubBack:afterJournal" "$RESTORE_ID"
+run_cli launch "$RESTORE_ID" --no-wait || fail 'stubBack --no-wait launch'
+stub_back_orphaned() {
+  [[ "$(journal_field "$RESTORE_BUNDLE" phase 2>/dev/null)" == "stubBack" ]] || return 1
+  local owner
+  owner="$(journal_field "$RESTORE_BUNDLE" owner | python3 -c 'import json,sys; print(json.load(sys.stdin)["pid"])')" || return 1
+  ! kill -0 "$owner" 2>/dev/null
+}
+wait_for 90 'watcher killed at stubBack:afterJournal' stub_back_orphaned
 STAGING="$(journal_field "$RESTORE_BUNDLE" staging)" || fail 'stubBack journal has no staging path'
 [[ -d "$STAGING/stub.app" ]] || fail "parked stub missing at $STAGING/stub.app before regeneration"
 rm -rf "$STAGING/stub.app"
