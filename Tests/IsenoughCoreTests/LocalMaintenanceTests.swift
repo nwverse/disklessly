@@ -142,7 +142,8 @@ final class LocalMaintenanceTests: XCTestCase {
             XCTFail("a different image hash must be kept")
         }
         let dataless = BackupFact(path: "/Applications/.isenough-original-DDD.app", bundleId: "com.example.App", stubSHA: sha, repoSHA: sha, imageSHA: nil, imageObjectExists: true)
-        XCTAssertEqual(BackupCleanup.decide(dataless), .remove)
+        // No hash is never verified (P1-repo-safety): a dataless copy is kept.
+        XCTAssertEqual(BackupCleanup.decide(dataless), .keep(BackupCleanup.unverifiedReason))
         let missing = BackupFact(path: "/Applications/.isenough-original-EEE.app", bundleId: "com.example.App", stubSHA: sha, repoSHA: sha, imageSHA: nil, imageObjectExists: false)
         if case .keep(let reason) = BackupCleanup.decide(missing) {
             XCTAssertTrue(reason.contains("missing"))

@@ -307,6 +307,18 @@ public enum ParsedCommand {
     }
 }
 
+/// Marks backend writes as write-once. `WriteOnce` wraps its `put` calls in
+/// `run`, and `LocalFolderBackend.put` (used by the local, iCloud, and SMB
+/// backends) then refuses to replace an existing object. Code outside the scope
+/// keeps the ordinary replace semantics for mutable files.
+public enum WriteOnceScope {
+    @TaskLocal public static var exclusive = false
+
+    public static func run<T>(_ body: () throws -> T) rethrows -> T {
+        try $exclusive.withValue(true, operation: body)
+    }
+}
+
 public struct BackendStat: Equatable { public var size: UInt64; public var modified: Date; public init(size: UInt64, modified: Date) { self.size=size; self.modified=modified } }
 public struct LocalFolderBackend: StorageBackend {
     public let root: URL
@@ -372,19 +384,41 @@ public struct LocalFolderBackend: StorageBackend {
         return try ChunkedIO.readAll(file)
     }
 
+    /// Inside `WriteOnceScope.run` the object is published with
+    /// `ChunkedIO.publishExclusive` and an existing file is never replaced.
+    /// iCloud and SMB delegate here, so they get the same behavior.
     public func put(_ path: String, data: Data) throws {
         let destination = try url(path)
-        try ChunkedIO.writeAtomically(data, to: destination)
+        guard WriteOnceScope.exclusive else {
+            try ChunkedIO.writeAtomically(data, to: destination)
+            return
+        }
+        let fm = FileManager.default
+        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let temporary = Self.temporarySibling(destination)
+        do {
+            try data.write(to: temporary)
+            Self.fsync(temporary)
+            try ChunkedIO.publishExclusive(temp: temporary, dest: destination)
+        } catch {
+            try? fm.removeItem(at: temporary)
+            throw error
+        }
     }
 
     public func put(_ path: String, file: URL) throws {
         let destination = try url(path)
         let fm = FileManager.default
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).tmp-\(UUID().uuidString)")
+        let temporary = Self.temporarySibling(destination)
         do {
             try ChunkedIO.copyFile(from: file, to: temporary)
-            try ChunkedIO.replaceFile(destination, with: temporary)
+            if WriteOnceScope.exclusive {
+                Self.fsync(temporary)
+                try ChunkedIO.publishExclusive(temp: temporary, dest: destination)
+            } else {
+                try ChunkedIO.replaceFile(destination, with: temporary)
+            }
         } catch {
             try? fm.removeItem(at: temporary)
             throw error
@@ -419,6 +453,21 @@ public struct LocalFolderBackend: StorageBackend {
     }
 
     public func localRoot() -> URL? { root }
+
+    private static func temporarySibling(_ destination: URL) -> URL {
+        destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).tmp-\(UUID().uuidString)")
+    }
+
+    private static func fsync(_ url: URL) {
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { return }
+        #if canImport(Glibc)
+        _ = Glibc.fsync(fd)
+        #else
+        _ = Darwin.fsync(fd)
+        #endif
+        _ = close(fd)
+    }
 
     public func ensureCollection(_ path: String) throws {
         try FileManager.default.createDirectory(at: url(path), withIntermediateDirectories: true)

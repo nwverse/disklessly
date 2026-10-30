@@ -215,7 +215,7 @@ extension IsenoughEngine {
         try ensureDevice(now: now)
         switch decision {
         case .reuse(let manifest, let disposition):
-            try register(manifest, backend: backend, now: now)
+            try register(manifest, backend: backend, now: now, installPath: request.originalPath)
             try rewriteCatalog(backend, now: now)
             let kept: String?
             if case .keep(let reason) = disposition { kept = reason } else { kept = nil }
@@ -230,13 +230,33 @@ extension IsenoughEngine {
             guard size > 0 else { throw IsenoughError.integrity("image file is empty") }
             let image = ImageManifest.Image(file: "images/\(imageId).dmg", format: request.imageFormat, sha256: sha, size: size, volumeName: request.volumeName, appPathInVolume: request.appPathInVolume)
             let app = ImageManifest.App(originalPath: request.originalPath, executable: request.executable, documentTypes: request.documentTypes, urlTypes: request.urlTypes, cdhash: request.cdhash, treeHash: request.postImageTreeHash ?? request.identity.treeHash)
-            let manifest = ImageManifest(bundleId: request.identity.bundleId, name: request.name, version: request.identity.version, image: image, app: app, mode: request.mode, createdAt: now, build: request.identity.build, architectures: request.identity.architectures, contentTreeHash: request.identity.treeHash, imageId: imageId)
+            var manifest = ImageManifest(bundleId: request.identity.bundleId, name: request.name, version: request.identity.version, image: image, app: app, mode: request.mode, createdAt: now, build: request.identity.build, architectures: request.identity.architectures, contentTreeHash: request.identity.treeHash, imageId: imageId)
             try manifest.validate()
-            try WriteOnce.putFile(backend: backend, path: manifest.image.file, file: imageFile, sha256: sha)
-            try WriteOnce.put(backend: backend, path: "manifests/\(manifest.imageId).json", data: try manifest.encode())
-            try register(manifest, backend: backend, now: now)
+            // Exclusive publish: a Mac that loses the race for the image path never
+            // writes a manifest, so the stub it would install is never created.
+            let imageResult = try WriteOnce.publishFile(backend: backend, path: manifest.image.file, file: imageFile, sha256: sha)
+            if case .conflict(let message) = imageResult {
+                throw IsenoughError.integrity("\(message). The original app was not changed; retry the pack to reuse the published image.")
+            }
+            let manifestPath = "manifests/\(manifest.imageId).json"
+            switch try WriteOnce.publish(backend: backend, path: manifestPath, data: try manifest.encode()) {
+            case .written, .reused:
+                break
+            case .conflict(let message):
+                // Another Mac wrote the manifest for the same image bytes (its
+                // createdAt or originalPath differ). Adopt it when it names our sha.
+                guard let existing = try? ImageManifest.decode(backend.get(manifestPath, range: nil)),
+                      existing.imageId == manifest.imageId,
+                      existing.image.sha256 == sha,
+                      existing.image.file == manifest.image.file else {
+                    throw IsenoughError.integrity("\(message). The original app was not changed.")
+                }
+                manifest = existing
+            }
+            try WriteOnce.confirmCanonical(backend: backend, imageId: manifest.imageId, imageSha: sha)
+            try register(manifest, backend: backend, now: now, installPath: request.originalPath)
             try rewriteCatalog(backend, now: now)
-            return PublishResult(manifest: manifest, reused: false, uploaded: true)
+            return PublishResult(manifest: manifest, reused: imageResult == .reused, uploaded: imageResult == .written)
         }
     }
 
@@ -384,17 +404,47 @@ extension IsenoughEngine {
         return created
     }
 
-    func register(_ manifest: ImageManifest, backend: any StorageBackend, now: Date) throws {
+    /// Records `manifest` for this Mac. `installPath` is where the stub goes; it
+    /// defaults to the manifest's original path. Only a ref with the same image id,
+    /// or the same bundle id at the same install path, is replaced.
+    func register(_ manifest: ImageManifest, backend: any StorageBackend, now: Date, installPath: String? = nil) throws {
         let local = try LocalDeviceStore.loadOrCreate(stateDir: stateDirectory, suggestedName: currentDeviceFacts().hostname)
-        _ = try upsertDevice(local: local, manifest: manifest, backend: backend, now: now)
+        let path = installPath ?? manifest.app.originalPath
+        _ = try upsertDevice(local: local, manifest: manifest, installPath: path.isEmpty ? nil : path, backend: backend, now: now)
         try rememberLocal(manifest)
     }
 
-    /// Drops one bundle from this Mac's device file. Only `unpack` calls this.
-    func unregister(bundleId: String, now: Date = Date()) throws {
+    /// Drops one image from this Mac's device file. Only `unpack` calls this.
+    ///
+    /// Pass `imageId` (and `installPath` when known) so only that ref goes. With
+    /// only a bundle id, every ref for the bundle is a candidate, but any image
+    /// still claimed by a stub on disk (another installed copy) is kept.
+    /// TODO(P2): Unpack.swift should pass `imageId: journal.imageId, installPath: journal.dest`.
+    func unregister(bundleId: String, imageId: String? = nil, installPath: String? = nil, now: Date = Date()) throws {
         let backend = try repo
         let local = try LocalDeviceStore.loadOrCreate(stateDir: stateDirectory, suggestedName: currentDeviceFacts().hostname)
-        _ = try upsertDevice(local: local, manifest: nil, unregisterBundleId: bundleId, backend: backend, now: now)
+        let target = Unregister(bundleId: bundleId, imageId: imageId?.isEmpty == false ? imageId : nil, installPath: installPath?.isEmpty == false ? installPath : nil)
+        let claims = try stubClaims(backend: backend, now: now)
+        _ = try upsertDevice(local: local, manifest: nil, claims: claims, unregister: target, backend: backend, now: now)
+    }
+
+    private struct Unregister {
+        var bundleId: String
+        var imageId: String?
+        var installPath: String?
+
+        func matches(_ ref: DeviceImageRef) -> Bool {
+            if let imageId { return ref.imageId == imageId }
+            guard ref.bundleId == bundleId else { return false }
+            if let installPath, let recorded = ref.installPath {
+                return Self.samePath(recorded, installPath)
+            }
+            return true
+        }
+
+        static func samePath(_ a: String, _ b: String) -> Bool {
+            URL(fileURLWithPath: a).standardizedFileURL.path == URL(fileURLWithPath: b).standardizedFileURL.path
+        }
     }
 
     /// Creates this Mac's device file, fills gaps from local stubs, then freezes
@@ -408,12 +458,14 @@ extension IsenoughEngine {
         try snapshotLegacyIfAbsent(backend)
     }
 
-    /// Writes only `devices/<this Mac's id>.json`.
-    /// Stub claims fill bundle ids this file does not already name. A pack that
-    /// already recorded the bundle is left in place.
-    /// The image set may shrink only when `manifest` replaces the same bundle id
-    /// or `unregisterBundleId` drops one bundle. Every other write must be a superset.
-    private func upsertDevice(local: LocalDevice, manifest: ImageManifest?, claims: [DeviceImageRef] = [], unregisterBundleId: String? = nil, backend: any StorageBackend, now: Date) throws -> DeviceRecord {
+    /// Writes only `devices/<this Mac's id>.json`. Refs are keyed by image id.
+    /// Stub claims found on disk are always unioned in (de-duplicated by image id),
+    /// so an installed stub's image stays referenced even when another copy of
+    /// the same bundle id was packed later.
+    /// The image set may shrink only when `manifest` replaces the ref with the same
+    /// image id or the same bundle id at the same install path, or `unregister`
+    /// drops one ref. Every other write must be a superset.
+    private func upsertDevice(local: LocalDevice, manifest: ImageManifest?, installPath: String? = nil, claims: [DeviceImageRef] = [], unregister: Unregister? = nil, backend: any StorageBackend, now: Date) throws -> DeviceRecord {
         guard local.deviceId == LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId else {
             throw IsenoughError.integrity("refusing to write a device file for another Mac")
         }
@@ -421,24 +473,37 @@ extension IsenoughEngine {
         let remote = try ownDeviceRecord()
         let mirror = loadDeviceMirror()
         var images = mergeDeviceImages(remote?.images ?? [], mirror?.images ?? [])
-        let previousIds = Set(images.map(\.imageId))
-        for claim in claims where !images.contains(where: { $0.bundleId == claim.bundleId }) {
-            images.append(claim)
-        }
+        let previousIds = Set(images.map(\.mergeKey))
         if let manifest {
-            let reference = DeviceImageRef(imageId: manifest.imageId, bundleId: manifest.bundleId, version: manifest.version, build: manifest.build, architectures: manifest.architectures, mode: manifest.mode.rawValue, packedAt: now)
-            images.removeAll { $0.bundleId == manifest.bundleId }
+            let reference = DeviceImageRef(imageId: manifest.imageId, bundleId: manifest.bundleId, version: manifest.version, build: manifest.build, architectures: manifest.architectures, mode: manifest.mode.rawValue, packedAt: now, installPath: installPath)
+            images.removeAll { ref in
+                if ref.imageId == manifest.imageId { return true }
+                guard ref.bundleId == manifest.bundleId else { return false }
+                // A legacy ref without an image id was keyed by bundle id; the new pack supersedes it.
+                if ref.imageId.isEmpty { return true }
+                guard let installPath, let recorded = ref.installPath else { return false }
+                return Unregister.samePath(recorded, installPath)
+            }
             images.append(reference)
         }
-        if let unregisterBundleId {
-            images.removeAll { $0.bundleId == unregisterBundleId }
+        if let unregister {
+            images.removeAll { unregister.matches($0) }
         }
-        let explicitShrink = manifest != nil || unregisterBundleId != nil
-        if !explicitShrink && !previousIds.isSubset(of: Set(images.map(\.imageId))) {
+        for claim in claims {
+            if let index = images.firstIndex(where: { $0.mergeKey == claim.mergeKey }) {
+                if images[index].installPath == nil, let path = claim.installPath {
+                    images[index].installPath = path
+                }
+            } else {
+                images.append(claim)
+            }
+        }
+        let explicitShrink = manifest != nil || unregister != nil
+        if !explicitShrink && !previousIds.isSubset(of: Set(images.map(\.mergeKey))) {
             throw IsenoughError.integrity("device record would shrink")
         }
         let generation = max(remote?.generation ?? 0, mirror?.generation ?? 0) + 1
-        let record = DeviceRecord(deviceId: local.deviceId, hostname: facts.hostname, displayName: local.displayName, arch: facts.arch, osVersion: facts.osVersion, lastSeen: now, images: images.sorted { $0.imageId < $1.imageId }, generation: generation, writer: EngineInstall.version)
+        let record = DeviceRecord(deviceId: local.deviceId, hostname: facts.hostname, displayName: local.displayName, arch: facts.arch, osVersion: facts.osVersion, lastSeen: now, images: images.sorted { ($0.imageId, $0.bundleId) < ($1.imageId, $1.bundleId) }, generation: generation, writer: EngineInstall.version)
         let data = try record.encode()
         let relative = "devices/\(local.deviceId).json"
         if let root = backend.localRoot() {
@@ -460,8 +525,12 @@ extension IsenoughEngine {
     /// Union by image id. The remote copy wins when both sides name the same id.
     private func mergeDeviceImages(_ remote: [DeviceImageRef], _ mirror: [DeviceImageRef]) -> [DeviceImageRef] {
         var byId: [String: DeviceImageRef] = [:]
-        for image in mirror { byId[image.imageId] = image }
-        for image in remote { byId[image.imageId] = image }
+        for image in mirror { byId[image.mergeKey] = image }
+        for image in remote {
+            var merged = image
+            if merged.installPath == nil { merged.installPath = byId[image.mergeKey]?.installPath }
+            byId[image.mergeKey] = merged
+        }
         return Array(byId.values)
     }
 
@@ -578,12 +647,14 @@ extension IsenoughEngine {
     private func stubClaims(backend: any StorageBackend, now: Date) throws -> [DeviceImageRef] {
         let manifests = try readManifests(backend)
         let byId = Dictionary(manifests.map { ($0.imageId, $0) }, uniquingKeysWith: { current, _ in current })
+        // De-duplicated by image id: two stubs for one bundle id with different
+        // images are two claims; two stubs for the same image are one.
         var claims: [DeviceImageRef] = []
         var seen = Set<String>()
         for root in stubSearchRoots() {
             for app in RecommendPaths.topLevelApps(in: root) {
                 guard let claim = stubClaim(app: app, manifests: byId, now: now) else { continue }
-                if seen.insert(claim.bundleId).inserted { claims.append(claim) }
+                if seen.insert(claim.mergeKey).inserted { claims.append(claim) }
             }
         }
         let journals = (try? JournalStore.loadAll(stateDir: config.stateDir)) ?? []
@@ -592,8 +663,8 @@ extension IsenoughEngine {
             let dest = URL(fileURLWithPath: journal.dest)
             guard FileManager.default.fileExists(atPath: dest.appendingPathComponent("Contents/Resources/stub.json").path) else { continue }
             let claim = stubClaim(app: dest, manifests: byId, now: journal.createdAt)
-                ?? byId[journal.imageId].map(deviceRef)
-            guard let claim, seen.insert(claim.bundleId).inserted else { continue }
+                ?? byId[journal.imageId].map { deviceRef($0, installPath: dest.path) }
+            guard let claim, seen.insert(claim.mergeKey).inserted else { continue }
             claims.append(claim)
         }
         return claims
@@ -613,16 +684,17 @@ extension IsenoughEngine {
         let stated = object["imageId"] as? String
         let resolvedId = (stated?.isEmpty == false ? stated : nil) ?? embedded?.imageId
         guard let resolvedId, !resolvedId.isEmpty else { return nil }
-        if let manifest = embedded, manifest.imageId == resolvedId { return deviceRef(manifest) }
-        if let manifest = manifests[resolvedId] { return deviceRef(manifest) }
+        let path = app.standardizedFileURL.path
+        if let manifest = embedded, manifest.imageId == resolvedId { return deviceRef(manifest, installPath: path) }
+        if let manifest = manifests[resolvedId] { return deviceRef(manifest, installPath: path) }
         let appId = object["appId"] as? String
         let bundleId = (appId?.isEmpty == false ? appId : nil) ?? embedded?.bundleId ?? ""
         guard !bundleId.isEmpty else { return nil }
-        return DeviceImageRef(imageId: resolvedId, bundleId: bundleId, version: embedded?.version ?? "", build: embedded?.build ?? "", architectures: embedded?.architectures ?? [], mode: embedded?.mode.rawValue ?? "mount", packedAt: embedded?.createdAt ?? now)
+        return DeviceImageRef(imageId: resolvedId, bundleId: bundleId, version: embedded?.version ?? "", build: embedded?.build ?? "", architectures: embedded?.architectures ?? [], mode: embedded?.mode.rawValue ?? "mount", packedAt: embedded?.createdAt ?? now, installPath: path)
     }
 
-    private func deviceRef(_ manifest: ImageManifest) -> DeviceImageRef {
-        DeviceImageRef(imageId: manifest.imageId, bundleId: manifest.bundleId, version: manifest.version, build: manifest.build, architectures: manifest.architectures, mode: manifest.mode.rawValue, packedAt: manifest.createdAt)
+    private func deviceRef(_ manifest: ImageManifest, installPath: String? = nil) -> DeviceImageRef {
+        DeviceImageRef(imageId: manifest.imageId, bundleId: manifest.bundleId, version: manifest.version, build: manifest.build, architectures: manifest.architectures, mode: manifest.mode.rawValue, packedAt: manifest.createdAt, installPath: installPath)
     }
 
     private func snapshotLegacyIfAbsent(_ backend: any StorageBackend) throws {
