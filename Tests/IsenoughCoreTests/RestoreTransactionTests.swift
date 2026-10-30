@@ -123,6 +123,9 @@ final class RestoreWorld {
         self.trace = trace
         engine.restore.probeIntervalOverride = 0
         engine.restore.detachDelayOverride = 0
+        // Stub claims default to /Applications and ~/Applications too. Keep this
+        // world to its own stub dir so stubs on the host Mac never leak into it.
+        engine.stubRootsOverride = [URL(fileURLWithPath: config.stubDir, isDirectory: true)]
     }
 
     func cleanup() { try? FileManager.default.removeItem(at: root) }
