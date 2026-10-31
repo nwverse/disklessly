@@ -12,7 +12,7 @@ Every macOS E2E run on `feat/mvp` since `b28a030` failed. Grouped by first faili
 | 39409905209 … 39411299054 (`1d298da` … `ef06d1b`) | `FAIL: CLI pack into fake repository and Applications` (codesign `--deep`, path `//` compare; fixed by `11b7b99`, `6d075ba`) |
 | 39411681853, 39411687126 (`6d075ba`), 39412171255, 39412179689 (`800965f`), 39412524894, 39412530041 (`0a21c4c`) | **identical**: `Unknown command: --doc` → `FAIL: pre-launch fetched image to isolated cache` |
 
-Key lines from the e2e log artifact (`macos-e2e-log`) of https://github.com/s546126/256isenough/actions/runs/39412530041:
+Key lines from the e2e log artifact (`macos-e2e-log`) of https://github.com/s546126/disklessly/actions/runs/39412530041:
 
 ```
 PASS: remote disk image exists
@@ -21,7 +21,7 @@ FAIL: pre-launch fetched image to isolated cache (missing: /var/folders/n6/.../d
 ```
 
 The same pair occurs in runs 39412524894, 39412179689 and 39411687126 (see
-https://github.com/s546126/256isenough/actions/runs/39412179689, …/39411687126). The "DMG missing from cache"
+https://github.com/s546126/disklessly/actions/runs/39412179689, …/39411687126). The "DMG missing from cache"
 failure and the "Unknown command: --doc" failure are **not two alternating bugs**: they are one failure. The
 error is printed by the CLI, and the cache assertion fails *because* launch (and therefore prefetch) never ran.
 The step-level log only shows the `FAIL:` line (stderr of the stub goes to the log file), which is why fix rounds

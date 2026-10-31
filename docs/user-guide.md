@@ -40,7 +40,7 @@ DMG 镜像，原位置只留下一个同名同图标的小**替身（stub）**�
 
 ## 安装
 
-**应用（推荐）**：从 [Releases](https://github.com/s546126/256isenough/releases) 下载
+**应用（推荐）**：从 [Releases](https://github.com/s546126/disklessly/releases) 下载
 `Disklessly-<版本>.dmg`，把 Disklessly 拖进「应用程序」并打开。菜单栏会出现一个图标，选择
 **Open Dashboard** 打开仪表盘。命令行工具在应用包里：
 

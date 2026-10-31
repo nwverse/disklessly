@@ -3,9 +3,9 @@
 # into a tap (for example s546126/homebrew-tap/Formula/disklessly-cli.rb).
 class DisklesslyCli < Formula
   desc "Offload rarely used Mac apps to a repo and launch them on demand"
-  homepage "https://github.com/s546126/256isenough"
+  homepage "https://github.com/s546126/disklessly"
   version "@VERSION@"
-  url "https://github.com/s546126/256isenough/releases/download/v#{version}/disklessly-#{version}-macos-universal.tar.gz"
+  url "https://github.com/s546126/disklessly/releases/download/v#{version}/disklessly-#{version}-macos-universal.tar.gz"
   sha256 "@SHA256_TARBALL@"
   license "MIT"
 
