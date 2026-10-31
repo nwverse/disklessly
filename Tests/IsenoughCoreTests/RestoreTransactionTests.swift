@@ -17,7 +17,7 @@ final class RestoreWorld {
     let bundleID = "com.example.foo"
     var stubBundleID: String { bundleID + ".256stub" }
     let manifest: ImageManifest
-    let engine: IsenoughEngine
+    var engine: IsenoughEngine
     let trace: RestoreTrace
     var probe: UsageClass = .clean
 
@@ -99,9 +99,15 @@ final class RestoreWorld {
                 trace.alive.insert(owner.pid)
                 return owner
             },
-            openApp: { url, _, _, _ in trace.opened.append(url.path) },
+            openApp: { url, docs, urls, _, _ in
+                trace.opened.append(url.path)
+                trace.openedDocuments.append(docs + urls)
+            },
             cdhash: { try BundleHasher.cdhash(of: $0) },
-            treeHash: { try BundleHasher.treeHash(of: $0) },
+            treeHash: {
+                trace.treeHashed.append($0.path)
+                return try BundleHasher.treeHash(of: $0)
+            },
             signatureValid: { trace.signatureValid($0) },
             archiveVerified: { RestoreArchive.verified($0, config: config) },
             buildStub: { dest, journal in try StubRebuilder.write(at: dest, journal: journal, config: config) },
@@ -117,6 +123,9 @@ final class RestoreWorld {
         self.trace = trace
         engine.restore.probeIntervalOverride = 0
         engine.restore.detachDelayOverride = 0
+        // Stub claims default to /Applications and ~/Applications too. Keep this
+        // world to its own stub dir so stubs on the host Mac never leak into it.
+        engine.stubRootsOverride = [URL(fileURLWithPath: config.stubDir, isDirectory: true)]
     }
 
     func cleanup() { try? FileManager.default.removeItem(at: root) }
@@ -226,6 +235,8 @@ final class RestoreTrace {
     var alive: Set<Int32> = []
     var spawned: [ProcessOwner] = []
     var opened: [String] = []
+    var openedDocuments: [[String]] = []
+    var treeHashed: [String] = []
     var attached: [URL] = []
     var detached: [URL] = []
     var plantSidecar = false
@@ -572,6 +583,8 @@ final class RestoreTransactionTests: XCTestCase {
         let parked = URL(fileURLWithPath: journal.staging).appendingPathComponent("stub.app")
         XCTAssertTrue(FileManager.default.fileExists(atPath: parked.path))
         try FileManager.default.removeItem(at: parked)
+        // A rebuild needs a real launcher; the old `exit 0` placeholder is gone.
+        try world.useFakeLauncher()
         try world.assertTerminalStub()
         XCTAssertEqual(world.bundleID(at: world.dest), world.stubBundleID)
         XCTAssertTrue(world.engine.restore.events.contains("stubRegenerated"))
@@ -702,7 +715,7 @@ final class RestoreTransactionTests: XCTestCase {
         case .idle, .terminal: break
         default: XCTFail("expected restore-out to finish, got \(done) \(world.debugDump())")
         }
-        XCTAssertGreaterThan(hashes, 1, "quitting still tree-hashes once to decide whether the bundle changed")
+        XCTAssertEqual(hashes, 1, "an unchanged tree fingerprint skips the content hash on quit")
         XCTAssertEqual(world.outcomeName, "restoredOut")
     }
 
@@ -763,7 +776,9 @@ final class RestoreTransactionTests: XCTestCase {
         try Data("probe\n".utf8).write(to: marker)
         let app = try DetachedProcess.spawn(
             executable: "/bin/sh",
-            arguments: ["/bin/sh", "-c", "sleep 60", "isenough-fake-app", root.path],
+            // macOS /bin/sh (bash) execs a lone simple command, which drops the path
+            // operands from argv; the trailing `exit 0` keeps the shell, and its argv, alive.
+            arguments: ["/bin/sh", "-c", "sleep 60; exit 0", "isenough-fake-app", root.path],
             redirectOutput: nil,
             newSession: true
         )
@@ -835,7 +850,9 @@ final class RestoreTransactionTests: XCTestCase {
         world.engine.restore.services.probe = { roots in ProcessProbe.usage(roots: roots) }
         let app = try DetachedProcess.spawn(
             executable: "/bin/sh",
-            arguments: ["/bin/sh", "-c", "sleep 60", "isenough-fake-app", world.dest.path],
+            // macOS /bin/sh (bash) execs a lone simple command, which drops the path
+            // operands from argv; the trailing `exit 0` keeps the shell, and its argv, alive.
+            arguments: ["/bin/sh", "-c", "sleep 60; exit 0", "isenough-fake-app", world.dest.path],
             redirectOutput: nil,
             newSession: true
         )
@@ -871,6 +888,21 @@ final class RestoreTransactionTests: XCTestCase {
         try world.launch(wait: false)
         XCTAssertEqual(world.trace.spawned.count, 1)
         XCTAssertEqual(world.trace.opened.count, 2)
+        XCTAssertEqual(world.journals().first?.owner.pid, 4242)
+        XCTAssertEqual(world.bundleID(at: world.dest), world.bundleID)
+    }
+
+    func testSecondLaunchWhileActiveForwardsDocuments() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        world.engine.restore.services.detachWatcher = true
+        try world.launch(wait: false)
+        world.trace.probe = .busy
+        try world.engine.launch(world.manifest, documents: ["/tmp/x.txt"], wait: false)
+        XCTAssertEqual(world.trace.opened.count, 2)
+        XCTAssertEqual(world.trace.attached.count, 1)
+        XCTAssertEqual(world.journals().count, 1)
+        XCTAssertEqual(world.trace.openedDocuments.last, ["/tmp/x.txt"])
         XCTAssertEqual(world.journals().first?.owner.pid, 4242)
         XCTAssertEqual(world.bundleID(at: world.dest), world.bundleID)
     }

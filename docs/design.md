@@ -338,13 +338,68 @@ processes matching it as potential dependents (§5.9 pass 3). Empty for typical 
 
 ### 3.4 Device file (`devices/<deviceId>.json`)
 ```json
-{ "schema": "device/1", "deviceId": "6F1C…", "host": "mini", "model": "Mac16,10", "os": "15.6",
-  "updatedAt": "…",
-  "apps": { "com.blender.blender": { "imageId": "com.blender.blender-4.2.1_b4.2.1-1a2b3c4d",
-            "stubPath": "/Applications/Blender.app", "pinned": false, "lastUsedAt": "…", "launchCount": 7 } } }
+{ "schema": "device/1", "deviceId": "6F1C…", "hostname": "mini", "displayName": "Mac mini",
+  "arch": "arm64", "osVersion": "15.6.1", "lastSeen": "2026-10-25T00:00:00Z",
+  "images": [ { "imageId": "com.blender.blender-4.2.1_b4.2.1-arm64-1a2b3c4d",
+                "bundleId": "com.blender.blender", "version": "4.2.1", "build": "4.2.1",
+                "architectures": ["arm64"], "mode": "mount", "packedAt": "2026-10-25T00:00:00Z" } ] }
 ```
-Used for multi-Mac visibility ("which Macs use which version") and safe trash/purge (`gc --remote` never deletes
-an image referenced by any device file updated within 90 days).
+`deviceId` is a UUID stored in the machine-local state directory (`device.json`). It is not derived from the
+hostname. Each Mac writes only `devices/<its own deviceId>.json`, atomically (temp file, fsync, rename). Pins and
+the image cache stay in that Mac's state and cache directories.
+
+Image identity is `bundleId + version + build + architecture slices + content tree hash`. The tree hash keeps the
+existing `BundleHasher` digest. The same app, version, build, and slices on two Macs resolve to one `imageId`.
+`pack` on the second Mac compares that hash, verifies the stored image sha256 when the file is downloaded, skips
+the upload, and only registers itself. A different version, build, or architecture is a new image. Manifests and
+images are write-once: differing bytes are refused, never overwritten. A stub launches the image id recorded for
+its own Mac and refuses a different version or architecture with an explicit diagnostic.
+
+`Contents/_MASReceipt` is per Apple ID and per Mac. It is excluded from the tree hash and stripped from the shared
+image. Each Mac keeps a copy under `<stateDir>/receipts/<bundleId>/receipt` and restore installs that copy.
+Restore does not trust a receipt found inside the image. If this Mac has no saved receipt, restore continues and
+warns that the App Store may need to refresh it.
+
+An image is deletable only when no `devices/*.json` references it. A device whose `lastSeen` is older than 90 days
+produces a warning and is still a reference. `gc` moves unreferenced images to `trash/` and purges them only after
+a 7 day grace period. A device file that is not downloaded, including an evicted `.icloud` placeholder, is treated
+as present, and nothing is deleted while one exists. Conflict copies (`file 2.json`, names containing
+`conflicted copy`) are reported by `doctor` and are never merged. `isenough devices` lists devices, renames this
+Mac, and forgets a device only with `--yes`. `recommend` marks a candidate that already matches bundle id, version,
+and architecture as already in the repo.
+
+The first repo command on a Mac (`devices`, `list`, `doctor`, `gc`, `pack`, and the other commands that read the
+repo) registers that Mac before it lists or deletes anything. It fills gaps in this Mac's device file from local
+stubs (`stub.json`'s `imageId`, or the manifest stored beside it) and from journals whose destination is a stub
+on this Mac. Only this repo's stubs count: a stub whose `stub.json` `repoId` names another repo is skipped, and a
+legacy stub without `repoId` counts only when its image has a manifest in this repo (live or in `trash/`). Refs an
+older engine wrote for another repo's stub (stub still at `installPath`, image absent from this repo's manifests,
+images, and trash) are dropped. `repo.json` gets a `repoId` only from `init` and `stub refresh`; routine commands
+only read it. It is never created beside an iCloud placeholder or conflict copy of `repo.json`, or in a repo that
+already has manifests or images. `stub refresh --all` stamps it on this repo's legacy stubs. A stub that names
+another repo id while its image is in this repo is reported as `mismatched`; `gc` keeps its image and
+`stub refresh --all --adopt` restamps it. `stub refresh --app` leaves other repos' stubs alone. A stub rebuilt
+during restore recovery keeps the `repoId` of the stub it replaced (recorded in the journal), or none.
+Images that are still unreferenced at that moment are written once to `catalog/legacy.json`. `gc`
+does not delete those images unless `--include-legacy` is passed, and it names each one it kept. A later forget
+of an image this Mac registered after that snapshot can still move it to trash.
+
+`devices`, `list`, `version`, `evict-local`, and `gc` print one line per item. Sizes use GiB or MiB. `--json` is
+unchanged. `help`, `--help`, and `-h` print the usage text. `evict-local` says `upload status is unavailable`
+when iCloud does not report `NSURLUbiquitousItemIsUploadedKey` or `IsUploadingKey`, and it appends the upload
+percent when `NSURLUbiquitousItemPercentUploadedKey` is present, so a slow upload is distinct from a missing status.
+
+After a successful `pack`, and again from `gc` and `isenough evict-local`, local bytes of uploaded
+iCloud images are dropped with `FileManager.evictUbiquitousItem`. `brctl` is not used. An unfinished
+upload is never evicted. A mounted image, an open restore, or a detach deadline that has not elapsed
+is skipped. "Cannot evict yet" is reported and is not an error. `doctor`'s `materialized` check states
+how much of the repo is still stored on this Mac.
+
+If removing `.isenough-original-<id>.app` fails after the stub is installed, `pack` exits 0 and names
+`isenough cleanup-backups`. That command verifies the stub manifest against the repo image, and when
+the local image bytes are readable it checks their sha256 too. Every verified backup is removed by one
+`osascript` administrator prompt. The tool never handles a password. `--keep-original` copies
+(`.256orig.app`) are not part of that cleanup.
 
 ### 3.5 Local state (`~/Library/Application Support/256isenough/`)
 ```
@@ -357,9 +412,10 @@ hooks/<bundleId>/pre-launch[.d/*], post-quit[.d/*]        local user hooks
 logs/isenough.log
 ```
 JSON file (not SQLite) is chosen: small (≤ few hundred apps), human-debuggable, Linux-testable, no dependency.
+The implemented file uses schema `state/2`. A missing schema or `state/1` migrates on the first update: the previous bytes are copied to `state.json.v1.bak` when that backup is absent, then the file is rewritten. Corrupt JSON is not overwritten. `load` returns an empty state, and `update` throws integrity (exit 5) after renaming the file to `state.json.corrupt-<timestamp>`.
 ```json
 {
-  "schema": "state/1", "deviceId": "6F1C…",
+  "schema": "state/2", "deviceId": "6F1C…",
   "apps": {
     "com.blender.blender": {
       "imageId": "com.blender.blender-4.2.1_b4.2.1-1a2b3c4d", "mode": "mount",
@@ -411,7 +467,7 @@ when a restored/updated bundle was retained and awaits a user decision (§5.8.7)
 `{ "retainedPath": "retained/<appId>/<ts>-Foo.app", "treeHash": "sha256:…", "cdhash": "…", "teamId": "…",
 "fromImageId": "…", "txid": "…", "since": "…" }` — the durable identity snapshot of the retained bundle. While it
 is set, `launch` **refuses** with `EX_RESOLUTION` (14) and `evict/unpack/gc` refuse the app (§5.8.7). Additional local directories:
-`journals/` (swap/pack/install transactions, §5.8), `locks/` (§5.6), `retained/` (never auto-deleted bundles, §5.8).
+`journals/` (swap/pack/install transactions, §5.8), `unpack-journals/` (in-place unpack, schema `unpack/1`, §5.8.5), `locks/` (§5.6), `retained/` (never auto-deleted bundles, §5.8).
 
 ### 3.6 Config (`config.json`)
 ```json
@@ -432,15 +488,12 @@ Backend types: `local` (`root` = any directory; tests use a temp dir as fake iCl
 (=`local` on a mounted path + `mountURL`), `webdav` (`url`, `user`, keychain item), `openlist` (`url`, `user`,
 token in keychain, `basePath`, `connections`). `forceDetachAfterSeconds: 0` = never force.
 
-**Image formats are fixed, not options (B1).** Remote images are always `ULMO` (best ratio, smallest transfer and
-iCloud footprint); there is no `pack.remoteFormat` and no `pack --format`. `cache.localFormat` accepts only `ULFO`
-(default: LZFSE, ~1.2–1.4× the ULMO size, fast random-read decompression at launch) or `UDRO` (uncompressed, fastest,
-largest; for very slow CPUs or test fixtures). `ULMO` as a local format is rejected at config load (`EX_USAGE`), as is
-any other value, and a remote manifest whose `image.format != "ULMO"` is refused at fetch (`EX_INTEGRITY`). Conversion
-cost (one `hdiutil convert` per fetched version, CPU-bound, roughly seconds per 100 MB on Apple silicon, plus
-temporary space, §6) is paid once per fetch and amortized over every later launch; that is the justification for not
-attaching ULMO locally. Unit tests: config with `localFormat: "ULMO"` or `"UDZO"` → `EX_USAGE`; manifest with
-`format: "ULFO"` → refused; `pack --format` → unknown option.
+**Image format flag.** `pack --image-format ULMO|ULFO` (case insensitive) selects the disk image `hdiutil create` writes.
+Mount mode publishes ULMO unless the flag says otherwise. Restore mode uses the flag when it is present, otherwise
+config `restoreImageFormat` (default `ULMO`, env `ISENOUGH_RESTORE_IMAGE_FORMAT`). The format is not part of the image id.
+`UDZO` and any other value are `EX_USAGE`. `pack --format` is still an unknown option. A manifest is accepted when
+`image.format` is `ULMO` or `ULFO`. The older design note that remote images are always ULMO, and that a local cache is
+converted to ULFO on fetch, is not what this build does: the cached file is the published image.
 
 ---
 
@@ -972,6 +1025,12 @@ rename stub → dest) → originalDisposed (Trash or --keep-original; Trash does
 N3) → closed`. A crash before `swapped` leaves the original untouched; after it, recovery finishes or reverses by
 renames. unpack: `extracted (from cache/image to staging, verified) → stubParked → installed → stubDeleted → closed`.
 
+**Implemented unpack journal.** In-place `unpack` writes `stateDir/unpack-journals/<txid>.json` with schema `unpack/1`.
+That directory is not `journals/`. Phases are `prepared`, `extracted`, `stubParked`, `installed`, `stubDeleted`; the file
+is removed at `closed`. `gc` and the next `unpack` recover an open journal. A layout that cannot be finished safely is
+saved as `needsAttention`. `doctor` reports that on the existing `journals` check and exits 14. `--to` copies the verified
+app and does not write this journal. `--delete-remote` is rejected.
+
 #### 5.8.6 Fault-injection tests
 `TxRunner` takes an injectable `FaultPoint` (`beforeJournal(phase)`, `afterJournal(phase)`, `afterMutation(phase)`,
 `hookFailure`, `selfUpdate(simulated tree change)`). Engine tests (fake FS on Linux; real APFS on macOS CI) enumerate
@@ -1113,6 +1172,8 @@ returned instance's path (§5.2.6); LS's preferred URL for the bundle id is only
 ---
 
 ## 6. Cache & LRU
+
+**Implementation status.** Local cache LRU is implemented. `CachePlanner.planEviction` orders leftovers first, then the oldest `lastUsed`, and evicts until `quotaBytes`. Pinned, mounted, in-use, and `protectedUntil` images are skipped. The image passed as just-used is considered last and is not evicted when it alone exceeds the quota. A pass that is still over quota warns `cache still exceeds quota by N bytes` and does not fail the command. The admission claims in §6.1 (final-size quota admission plus transient free-space claims, persisted before the first byte) are **not** implemented. Pack and prefetch still refuse with `EX_NOSPACE` when free space is below the preflight floor.
 
 - **Location**: `~/Library/Caches/256isenough/` (configurable): `images/` (verified, ready), `partial/` (`.part` +
   `.part.json` resume metadata: imageId, expected size/sha, bytes, partial hash state is *not* persisted → on resume
@@ -1328,9 +1389,10 @@ Implemented on the synchronous `StorageBackend` (`docs/backends.md`): SMB/NFS vi
     PkgInfo                                "APPL????"
     MacOS/isenough-stub                       universal (arm64+x86_64) launcher, identical bytes for every stub
     Resources/
+      AppIcon.icns                         copied from CFBundleIconFile, or rendered from the asset catalog
       <iconFile>.icns / Assets.car         copied from the real app (and doc-type icons)
       stub.json                            {"schema":"stub/1","appId":"com.blender.blender","imageId":"…",
-                                            "isenoughPath":"/Users/me/.local/bin/isenough","stubVersion":1,"createdAt":"…"}
+                                            "repoId":"<repo.json repoId>","isenoughPath":"/Users/me/.local/bin/isenough","stubVersion":1,"createdAt":"…"}
       <lang>.lproj/InfoPlist.strings       only CFBundleName/CFBundleDisplayName/CFBundleSpokenName
     _CodeSignature/
 ```
@@ -1860,7 +1922,7 @@ extra diagnostic, not a substitute.
 
 ## 13. Agent session file offloading with hot/cold tiering
 
-The command is `isenough sessions` (`docs/sessions.md`). A run without `--apply` is a dry run. Cold files are a monthly gzip tar on the active backend. The notes below are the original roadmap; the command, the 24 hour guard, and the index are what the code does.
+The command is `isenough sessions` (`docs/sessions.md`). A run without `--apply` is a dry run. Cold files are write-once per-device zstd segments (`sessions/<deviceId>/<tool>/…tar.zst`), indexed in `stateDir/sessions/index.sqlite`. v1 monthly `sessions/<tool>/<yyyy-MM>.tar.gz` archives are kept and are never overwritten. The notes below are the original roadmap, not the v2 layout.
 
 ## 13.1 Original roadmap notes
 

@@ -22,7 +22,7 @@ public struct RestoreServices {
     public var probe: ([String]) -> UsageClass
     public var isAlive: (ProcessOwner) -> Bool
     public var spawnWatch: (String) throws -> ProcessOwner
-    public var openApp: (URL, [String], [String], [String]) throws -> Void
+    public var openApp: (URL, [String], [String], [String], Bool) throws -> Void
     public var cdhash: (URL) throws -> String
     public var treeHash: (URL) throws -> String
     public var signatureValid: (URL) -> Bool
@@ -67,23 +67,23 @@ public struct RestoreServices {
             probe: { roots in ProcessProbe.usage(roots: roots) },
             isAlive: { ProcessStart.isAlive($0) },
             spawnWatch: { appId in try ProcessRunner.spawnWatch(appId: appId, stateDir: config.stateDir) },
-            openApp: { app, docs, urls, arguments in
+            openApp: { app, docs, urls, arguments, alreadyRunning in
                 #if os(macOS)
-                var args = ["/usr/bin/open", "-n", "-a", app.path]
-                args += docs
-                args += urls
-                if !arguments.isEmpty { args.append("--args"); args += arguments }
+                let built = OpenInvocation.arguments(app: app.path, documents: docs, urls: urls, arguments: arguments, alreadyRunning: alreadyRunning)
+                for warning in built.warnings {
+                    FileHandle.standardError.write(Data("isenough: \(warning)\n".utf8))
+                }
                 // `open` without a bound waits forever when the stub never checks in
                 // with Launch Services. The watcher must not sit inside that wait:
                 // the journal is already `active`, and a later manual `hook watch`
                 // is what used to finish it. A still-running `open` is ignored by
                 // the usage probe.
-                let pid = try DetachedProcess.spawn(executable: "/usr/bin/open", arguments: args, redirectOutput: nil, newSession: true)
+                let pid = try DetachedProcess.spawn(executable: built.argv[0], arguments: built.argv, redirectOutput: nil, newSession: true)
                 if let status = DetachedProcess.wait(pid: pid, timeout: 30), status != 0 {
                     throw IsenoughError.failure("open exited \(status)")
                 }
                 #else
-                _ = (app, docs, urls, arguments)
+                _ = (app, docs, urls, arguments, alreadyRunning)
                 throw IsenoughError.unsupported("opening an app requires macOS Launch Services")
                 #endif
             },
@@ -226,7 +226,7 @@ enum ProcessRunner {
     }
 
     static func spawnWatch(appId: String, stateDir: String, executable: String? = nil) throws -> ProcessOwner {
-        let exe = executable ?? CommandLine.arguments[0]
+        let exe = executable ?? EngineInstall.runningExecutable().path
         let args = [exe, "--state-dir", stateDir, "hook", "watch", "--app", appId]
         let logDirectory = URL(fileURLWithPath: stateDir).appendingPathComponent("logs")
         try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
@@ -244,26 +244,71 @@ enum ProcessRunner {
 }
 
 enum RestoreArchive {
+    /// The repo object is included only when reading it will not start an iCloud download.
+    static func candidates(config: RuntimeConfig, journal: RestoreJournal, isLocal: (URL) -> Bool) -> [URL] {
+        var urls = [URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(journal.imageId).dmg")]
+        let repo = URL(fileURLWithPath: config.repoPath).appendingPathComponent(journal.imageFile)
+        if isLocal(repo) { urls.append(repo) }
+        return urls
+    }
+
     static func verified(_ journal: RestoreJournal, config: RuntimeConfig) -> Bool {
-        let candidates = [
-            URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(journal.imageId).dmg"),
-            URL(fileURLWithPath: config.repoPath).appendingPathComponent(journal.imageFile),
-        ]
-        for url in candidates {
-            if (try? SHA256Digest.hexFile(url)) == journal.imageSha256 { return true }
+        let urls = candidates(config: config, journal: journal, isLocal: repoIsHashedLocally)
+        for url in urls {
+            if ArchiveVerificationCache.shared.verify(url: url, expected: journal.imageSha256, hasher: { try SHA256Digest.hexFile($0) }) {
+                return true
+            }
         }
         return false
+    }
+
+    private static func repoIsHashedLocally(_ url: URL) -> Bool {
+        #if os(macOS)
+        let keys: Set<URLResourceKey> = [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey]
+        guard let values = try? url.resourceValues(forKeys: keys), values.isUbiquitousItem == true else { return true }
+        return values.ubiquitousItemDownloadingStatus == .current
+        #else
+        _ = url
+        return true
+        #endif
     }
 }
 
 enum StubRebuilder {
-    static func write(at dest: URL, journal: RestoreJournal, config: RuntimeConfig) throws {
+    /// The manifest the stub embeds. Prefers the copy the restore staged next to the
+    /// journal, then the copy pack left in the cache. The repo is not read here.
+    static func manifestData(journal: RestoreJournal, config: RuntimeConfig) -> Data? {
+        let staged = URL(fileURLWithPath: journal.staging).appendingPathComponent("manifest.json")
+        for data in [try? Data(contentsOf: staged), StubManifestCache.load(imageId: journal.imageId, cacheDir: config.cacheDir)] {
+            if let data, let manifest = try? ImageManifest.decode(data), manifest.imageId == journal.imageId, manifest.bundleId == journal.appId {
+                return data
+            }
+        }
+        return nil
+    }
+
+    /// Build a working stub at `dest`, or throw and leave `dest` absent. The bundle
+    /// is assembled beside `dest` and renamed into place only once it is signed.
+    static func write(at dest: URL, journal: RestoreJournal, config: RuntimeConfig, environment: [String: String] = ProcessInfo.processInfo.environment, cli explicitCLI: URL? = nil) throws {
         let fm = FileManager.default
         if fm.fileExists(atPath: dest.path) {
             throw IsenoughError.busy("refusing to regenerate a stub over an existing destination \(dest.path)")
         }
-        try fm.createDirectory(at: dest.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
-        try fm.createDirectory(at: dest.appendingPathComponent("Contents/Resources"), withIntermediateDirectories: true)
+        let cli = explicitCLI ?? EngineInstall.runningExecutable()
+        let launcher: URL
+        do {
+            launcher = try StubGenerator.locateLauncher(cliExecutable: cli, environment: environment, isExecutable: { fm.isExecutableFile(atPath: $0) })
+        } catch {
+            throw IsenoughError.failure("cannot rebuild the stub at \(dest.path): \(error.localizedDescription)")
+        }
+        guard let manifest = manifestData(journal: journal, config: config) else {
+            throw IsenoughError.failure("cannot rebuild the stub at \(dest.path): no local copy of manifest \(journal.imageId)")
+        }
+        let temp = dest.deletingLastPathComponent().appendingPathComponent(".isenough-stub-\(UUID().uuidString).app")
+        var placed = false
+        defer { if !placed { try? fm.removeItem(at: temp) } }
+        try fm.createDirectory(at: temp.appendingPathComponent("Contents/MacOS"), withIntermediateDirectories: true)
+        try fm.createDirectory(at: temp.appendingPathComponent("Contents/Resources"), withIntermediateDirectories: true)
         let plist: [String: Any] = [
             "CFBundleIdentifier": journal.stubBundleId,
             "CFBundleExecutable": "isenough-stub",
@@ -274,19 +319,9 @@ enum StubRebuilder {
             "LSUIElement": true,
         ]
         let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-        try data.write(to: dest.appendingPathComponent("Contents/Info.plist"))
-        let exe = dest.appendingPathComponent("Contents/MacOS/isenough-stub")
-        let cli = URL(fileURLWithPath: CommandLine.arguments[0])
-        if let launcher = try? StubGenerator.locateLauncher(cliExecutable: cli, environment: ProcessInfo.processInfo.environment, isExecutable: { fm.isExecutableFile(atPath: $0) }) {
-            try fm.copyItem(at: launcher, to: exe)
-        } else {
-            try Data("#!/bin/sh\nexit 0\n".utf8).write(to: exe)
-            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: exe.path)
-        }
-        let manifest = URL(fileURLWithPath: config.repoPath).appendingPathComponent("manifests/\(journal.imageId).json")
-        if fm.fileExists(atPath: manifest.path) {
-            try fm.copyItem(at: manifest, to: dest.appendingPathComponent("Contents/Resources/manifest.json"))
-        }
+        try data.write(to: temp.appendingPathComponent("Contents/Info.plist"))
+        try fm.copyItem(at: launcher, to: temp.appendingPathComponent("Contents/MacOS/isenough-stub"))
+        try manifest.write(to: temp.appendingPathComponent("Contents/Resources/manifest.json"))
         let enginePath: String
         if cli.lastPathComponent == "isenough" {
             enginePath = (try? EngineInstall.install(stateDir: config.stateDir, source: cli).path) ?? cli.path
@@ -295,7 +330,7 @@ enum StubRebuilder {
         } else {
             enginePath = cli.path
         }
-        let stubInfo: [String: Any] = [
+        var stubInfo: [String: Any] = [
             "schema": "stub/1",
             "appId": journal.appId,
             "imageId": journal.imageId,
@@ -304,51 +339,26 @@ enum StubRebuilder {
             "engineRevision": EngineInstall.revision,
             "stubVersion": 1,
         ]
+        // The repo is not read here. Keep the replaced stub's repo; without one
+        // the rebuilt stub is legacy rather than a guess from the current config.
+        if let repoId = journal.stubRepoId, !repoId.isEmpty { stubInfo["repoId"] = repoId }
         let stubData = try JSONSerialization.data(withJSONObject: stubInfo, options: [.prettyPrinted, .sortedKeys])
-        try stubData.write(to: dest.appendingPathComponent("Contents/Resources/stub.json"))
+        try stubData.write(to: temp.appendingPathComponent("Contents/Resources/stub.json"))
         #if os(macOS)
-        try? ProcessRunner.run("/usr/bin/codesign", ["--force", "--sign", "-", dest.path])
+        StubIcon.backfill(stub: temp, imageId: journal.imageId, stateDir: config.stateDir, originals: StubIcon.originals(mountRoot: config.mountRoot, imageId: journal.imageId, stub: temp, recordedPath: nil), publish: { _ in })
+        let identity = SigningIdentity.resolve(configured: config.signIdentity, environment: environment)
+        try ProcessRunner.run("/usr/bin/codesign", ["--force", "--sign", identity, temp.path])
+        #endif
+        if fm.fileExists(atPath: dest.path) {
+            throw IsenoughError.busy("refusing to regenerate a stub over an existing destination \(dest.path)")
+        }
+        try fm.moveItem(at: temp, to: dest)
+        placed = true
+        #if os(macOS)
+        StubIcon.touch(dest)
+        StubIcon.register(dest)
         #endif
         try DurableIO.syncItem(dest.deletingLastPathComponent())
-    }
-}
-
-extension StateStore {
-    public func writeDurable(_ object: [String: Any]) throws {
-        try write(object)
-        try DurableIO.syncItem(dir.appendingPathComponent("state.json"))
-        try DurableIO.syncItem(dir)
-    }
-
-    public func applyRetirement(appId: String, imageId: String, outcome: String, at: Date, txid: String, needsResolution: [String: Any]?, updateLastUsed: Bool) throws {
-        var object = read()
-        var restored = object["restored"] as? [String: Any] ?? [:]
-        restored.removeValue(forKey: appId)
-        object["restored"] = restored
-        var apps = object["apps"] as? [String: [String: Any]] ?? [:]
-        var app = apps[appId] ?? [:]
-        let iso = ISO8601DateFormatter().string(from: at)
-        app["imageId"] = imageId
-        app["state"] = needsResolution == nil ? "cached" : "needsResolution"
-        app["lastOutcome"] = ["name": outcome, "at": iso, "txid": txid]
-        app.removeValue(forKey: "mountPoint")
-        if updateLastUsed { app["lastUsed"] = iso }
-        if let needsResolution {
-            app["needsResolution"] = needsResolution
-        } else {
-            app.removeValue(forKey: "needsResolution")
-        }
-        apps[appId] = app
-        object["apps"] = apps
-        if updateLastUsed {
-            var cache = object["cache"] as? [String: [String: Any]] ?? [:]
-            var entry = cache[imageId] ?? [:]
-            entry["lastUsed"] = iso
-            cache[imageId] = entry
-            object["cache"] = cache
-        }
-        if object["schema"] == nil { object["schema"] = "state/1" }
-        try writeDurable(object)
     }
 }
 
@@ -384,12 +394,16 @@ public final class RestoreCoordinator {
         }
     }
 
+    private func launchAlreadyRunning(_ journal: RestoreJournal) -> Bool {
+        journal.phase == .active && services.probe(probeRoots(journal)) == .busy
+    }
+
     public func launch(_ manifest: ImageManifest, documents: [String], urls: [String], arguments: [String], wait: Bool) throws {
         guard let cdhash = manifest.app.cdhash, let tree = manifest.app.treeHash, !cdhash.isEmpty, !tree.isEmpty else {
             throw IsenoughError.integrity("restore manifest is missing app.cdhash or app.treeHash")
         }
         if let journal = openJournal(manifest.bundleId), foreignOwnerAlive(journal) {
-            try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments)
+            try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments, launchAlreadyRunning(journal))
             return
         }
         let existing = try recover(appId: manifest.bundleId, wait: false, shortLived: false)
@@ -398,13 +412,13 @@ public final class RestoreCoordinator {
             throw IsenoughError.busy(message)
         case .waiting:
             guard let journal = openJournal(manifest.bundleId) else { break }
-            try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments)
+            try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments, launchAlreadyRunning(journal))
             try markLaunched(manifest.bundleId)
             try handoffOrWait(manifest.bundleId, wait: wait)
             return
         case .noop:
             if let journal = openJournal(manifest.bundleId) {
-                try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments)
+                try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments, launchAlreadyRunning(journal))
             }
             return
         case .idle, .terminal:
@@ -422,7 +436,7 @@ public final class RestoreCoordinator {
             throw IsenoughError.hook("pre-launch hook failed")
         }
         guard let journal = openJournal(manifest.bundleId) else { throw IsenoughError.failure("restore journal disappeared before launch") }
-        try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments)
+        try services.openApp(URL(fileURLWithPath: journal.dest), documents, urls, arguments, launchAlreadyRunning(journal))
         try markLaunched(manifest.bundleId)
         try handoffOrWait(manifest.bundleId, wait: wait)
     }
@@ -466,9 +480,7 @@ public final class RestoreCoordinator {
 
     public func recoverAll(shortLived: Bool) throws -> [String] {
         var ids = Set(try JournalStore.loadAll(stateDir: config.stateDir).map(\.appId))
-        let state = StateStore(config.stateDir).read()
-        let restored = state["restored"] as? [String: Any] ?? [:]
-        ids.formUnion(restored.keys)
+        ids.formUnion(StateStore(config.stateDir).load().restored.keys)
         var notes: [String] = []
         for appId in ids.sorted() {
             let result = try recover(appId: appId, wait: false, shortLived: shortLived)
@@ -486,14 +498,12 @@ public final class RestoreCoordinator {
                 if case .reject(let message) = decision.action { issues.append(message) }
             }
         }
-        let state = StateStore(config.stateDir).read()
-        let restored = state["restored"] as? [String: Any] ?? [:]
-        for (appId, _) in restored where openJournal(appId) == nil {
+        let state = StateStore(config.stateDir).load()
+        for appId in state.restored.keys where openJournal(appId) == nil {
             issues.append("restored mirror for \(appId) has no journal. Run isenough gc to retire it when the destination is the stub, or restore the missing journal before deleting anything.")
         }
-        let apps = state["apps"] as? [String: [String: Any]] ?? [:]
-        for (appId, app) in apps where app["needsResolution"] != nil {
-            let path = (app["needsResolution"] as? [String: Any])?["retainedPath"] as? String ?? ""
+        for (appId, app) in state.apps where app.needsResolution != nil {
+            let path = app.needsResolution?["retainedPath"]?.string ?? ""
             issues.append("\(appId) needs resolution before launch. Retained bundle: \(path). Use isenough resolve --discard, --export, or --keep-updated --trust.")
         }
         return issues
@@ -558,33 +568,29 @@ public final class RestoreCoordinator {
     }
 
     public func clearResolution(appId: String) throws {
-        var object = StateStore(config.stateDir).read()
-        var apps = object["apps"] as? [String: [String: Any]] ?? [:]
-        var app = apps[appId] ?? [:]
-        app.removeValue(forKey: "needsResolution")
-        if app["state"] as? String == "needsResolution" { app["state"] = "cached" }
-        apps[appId] = app
-        object["apps"] = apps
-        try StateStore(config.stateDir).writeDurable(object)
+        try StateStore(config.stateDir).update { state in
+            var app = state.apps[appId] ?? AppState()
+            app.needsResolution = nil
+            if app.state == "needsResolution" { app.state = "cached" }
+            state.apps[appId] = app
+        }
     }
 
     public func switchImage(appId: String, imageId: String, cdhash: String) throws {
-        var object = StateStore(config.stateDir).read()
-        var apps = object["apps"] as? [String: [String: Any]] ?? [:]
-        var app = apps[appId] ?? [:]
-        app["imageId"] = imageId
-        var trusted = app["trusted"] as? [String: Any] ?? [:]
-        trusted["cdhash"] = cdhash
-        trusted["approvedBy"] = "resolve"
-        app["trusted"] = trusted
-        apps[appId] = app
-        object["apps"] = apps
-        try StateStore(config.stateDir).writeDurable(object)
+        try StateStore(config.stateDir).update { state in
+            var app = state.apps[appId] ?? AppState()
+            app.imageId = imageId
+            var trusted = app.extra["trusted"]?.object ?? [:]
+            trusted["cdhash"] = .string(cdhash)
+            trusted["approvedBy"] = .string("resolve")
+            app.extra["trusted"] = .object(trusted)
+            state.apps[appId] = app
+        }
     }
 
     public func needsResolution(_ appId: String) -> [String: Any]? {
-        let apps = StateStore(config.stateDir).read()["apps"] as? [String: [String: Any]]
-        return apps?[appId]?["needsResolution"] as? [String: Any]
+        guard let needs = StateStore(config.stateDir).load().apps[appId]?.needsResolution else { return nil }
+        return needs.mapValues { $0.foundation() }
     }
 
     private func forward(_ manifest: ImageManifest, image: URL) throws {
@@ -609,16 +615,23 @@ public final class RestoreCoordinator {
         )
         let probe = services.probe([dest.path])
         if probe != .clean { throw IsenoughError.busy("\(manifest.name) is already in use at \(dest.path)") }
+        let manifestData = try? manifest.encode()
+        if let manifestData { StubManifestCache.store(manifestData, imageId: manifest.imageId, cacheDir: config.cacheDir) }
         try withLock(manifest.bundleId) {
             if openJournal(manifest.bundleId) != nil { throw IsenoughError.busy("a restore journal is already open for \(manifest.bundleId)") }
             let info = BundleFacts.readInfo(dest)
             guard (info?["CFBundleIdentifier"] as? String) == journal.stubBundleId else {
                 throw IsenoughError.unsupported("restore destination is not the isenough stub at \(dest.path)")
             }
+            journal.stubRepoId = StubIdentity.read(bundle: dest)?.repoId
             guard fm.isWritableFile(atPath: dest.deletingLastPathComponent().path) else {
                 throw IsenoughError.unsupported("restore destination parent is not writable: \(dest.deletingLastPathComponent().path)")
             }
             try phasePrepared(&journal)
+            // The journal's own copy, for a stub rebuild if the parked stub is lost.
+            if let manifestData {
+                try? manifestData.write(to: URL(fileURLWithPath: journal.staging).appendingPathComponent("manifest.json"))
+            }
             try phaseExtracted(&journal, manifest: manifest)
             try phaseStubParked(&journal)
             try phaseInstalled(&journal)
@@ -640,6 +653,10 @@ public final class RestoreCoordinator {
 
     private func phaseExtracted(_ journal: inout RestoreJournal, manifest: ImageManifest) throws {
         let mountPoint = URL(fileURLWithPath: config.mountRoot).appendingPathComponent("restore-\(journal.txid)")
+        // Held from before attach until this phase ends, so the orphan reaper
+        // never detaches the extraction mount even if the journal is unreadable.
+        var lease = MountLease.acquire(stateDir: config.stateDir, name: "restore-\(journal.txid)", waitSeconds: 0.5)
+        defer { lease?.release() }
         journal.mountPath = mountPoint.path
         try JournalStore.save(journal, stateDir: config.stateDir)
         let mounted = try services.attach(URL(fileURLWithPath: journal.imagePath), mountPoint)
@@ -660,6 +677,10 @@ public final class RestoreCoordinator {
             let tree = try services.treeHash(appNew)
             guard cdhash == journal.manifestCdhash, tree == journal.manifestTreeHash else {
                 throw IsenoughError.integrity("extracted bundle does not match manifest cdhash and tree hash (cdhash \(cdhash) vs \(journal.manifestCdhash), tree \(tree) vs \(journal.manifestTreeHash))")
+            }
+            if manifest.mode == .restore, let warning = try MASReceiptStore.reconcile(app: appNew, bundleId: manifest.bundleId, stateDir: URL(fileURLWithPath: config.stateDir)) {
+                events.append("masReceipt")
+                FileHandle.standardError.write(Data("isenough: \(warning)\n".utf8))
             }
             try Data("\(cdhash) \(tree)".utf8).write(to: staging.appendingPathComponent(".extracted-ok"))
             try services.detach(mounted)
@@ -720,6 +741,10 @@ public final class RestoreCoordinator {
         if fm.fileExists(atPath: appNew.path) && !fm.fileExists(atPath: dest.path) {
             try fm.moveItem(at: appNew, to: dest)
             try DurableIO.syncItem(dest.deletingLastPathComponent())
+        }
+        if fm.fileExists(atPath: dest.path) {
+            journal.installedFingerprint = try? TreeFingerprint.of(dest)
+            try JournalStore.save(journal, stateDir: config.stateDir)
         }
         try faults.hit("installed", "afterMutation")
         events.append("installed")
@@ -817,7 +842,18 @@ public final class RestoreCoordinator {
             try restoreStub(&journal)
             return .waiting("clean")
         case .regenerateStub:
-            try regenerate(&journal)
+            do {
+                try regenerate(&journal)
+            } catch let fault as InjectedFault {
+                throw fault
+            } catch {
+                // The app stays in staging/app.old. Say so instead of retrying forever.
+                journal.waitReason = "needsAttention"
+                try? JournalStore.save(journal, stateDir: config.stateDir)
+                events.append("stubRegenerationFailed")
+                let old = URL(fileURLWithPath: journal.staging).appendingPathComponent("app.old").path
+                return .rejected("needs attention: could not rebuild the stub at \(journal.dest) (\(error.localizedDescription)). The app is safe at \(old).")
+            }
             return .waiting("clean")
         case .deleteIdenticalCopy:
             try dispose(&journal, retain: false)
@@ -845,11 +881,18 @@ public final class RestoreCoordinator {
 
     private func inspect(_ journal: inout RestoreJournal) throws {
         let url = inspectURL(journal)
-        guard let ident = BundleFacts.identity(url, cdhash: services.cdhash, treeHash: services.treeHash) else {
-            throw IsenoughError.integrity("cannot inspect bundle at \(url.path)")
+        let fingerprint = try? TreeFingerprint.of(url)
+        let paranoid = ProcessInfo.processInfo.environment["ISENOUGH_PARANOID_INSPECT"] == "1"
+        let snapshot: InspectionSnapshot
+        if let fingerprint, fingerprint == journal.installedFingerprint, !paranoid {
+            snapshot = InspectionSnapshot(cdhash: journal.manifestCdhash, treeHash: journal.manifestTreeHash, bundleId: journal.appId, changed: false, inode: DurableIO.inode(url), fingerprint: fingerprint)
+        } else {
+            guard let ident = BundleFacts.identity(url, cdhash: services.cdhash, treeHash: services.treeHash) else {
+                throw IsenoughError.integrity("cannot inspect bundle at \(url.path)")
+            }
+            let changed = ident.cdhash != journal.manifestCdhash || ident.treeHash != journal.manifestTreeHash || ident.bundleId != journal.appId
+            snapshot = InspectionSnapshot(cdhash: ident.cdhash, treeHash: ident.treeHash, bundleId: ident.bundleId, changed: changed, inode: ident.inode, fingerprint: fingerprint)
         }
-        let changed = ident.cdhash != journal.manifestCdhash || ident.treeHash != journal.manifestTreeHash || ident.bundleId != journal.appId
-        let snapshot = InspectionSnapshot(cdhash: ident.cdhash, treeHash: ident.treeHash, bundleId: ident.bundleId, changed: changed, inode: ident.inode)
         if journal.phase.index < RestorePhase.inspected.index {
             try journalNext(.inspected, &journal) { $0.inspection = snapshot }
         } else {
@@ -1086,40 +1129,35 @@ public final class RestoreCoordinator {
     }
 
     private func writeMirror(_ journal: RestoreJournal) throws {
-        var object = StateStore(config.stateDir).read()
-        var restored = object["restored"] as? [String: [String: Any]] ?? [:]
-        restored[journal.appId] = [
-            "journal": "journals/\(journal.txid).json",
-            "txid": journal.txid,
-            "phase": journal.waitReason == nil ? "running" : "waiting",
-            "waitReason": journal.waitReason ?? "",
-            "dest": journal.dest,
-            "staging": journal.staging,
-            "epoch": journal.epoch,
-            "postQuitRanForEpoch": journal.postQuitRanForEpoch,
-            "owner": ["pid": Int(journal.owner.pid), "start": journal.owner.start],
-        ]
-        object["restored"] = restored
-        if object["schema"] == nil { object["schema"] = "state/1" }
-        try StateStore(config.stateDir).writeDurable(object)
+        try StateStore(config.stateDir).update { state in
+            state.restored[journal.appId] = RestoredMirror(
+                journal: "journals/\(journal.txid).json",
+                txid: journal.txid,
+                phase: journal.waitReason == nil ? "running" : "waiting",
+                waitReason: journal.waitReason ?? "",
+                dest: journal.dest,
+                staging: journal.staging,
+                epoch: journal.epoch,
+                postQuitRanForEpoch: journal.postQuitRanForEpoch,
+                owner: journal.owner
+            )
+        }
     }
 
     private func retireStaleMirror(_ appId: String) throws -> RecoverResult {
-        let state = StateStore(config.stateDir).read()
-        guard let restored = state["restored"] as? [String: [String: Any]], let mirror = restored[appId] else { return .idle }
-        let dest = mirror["dest"] as? String ?? ""
-        let staging = mirror["staging"] as? String ?? ""
+        let state = StateStore(config.stateDir).load()
+        guard let mirror = state.restored[appId] else { return .idle }
+        let dest = mirror.dest
+        let staging = mirror.staging
         let stubId = "\(appId).256stub"
         let destURL = URL(fileURLWithPath: dest)
         let stagingExists = !staging.isEmpty && fm.fileExists(atPath: staging)
         let info = BundleFacts.readInfo(destURL)
         let isStub = (info?["CFBundleIdentifier"] as? String) == stubId
         if isStub && !stagingExists {
-            var object = state
-            var copy = restored
-            copy.removeValue(forKey: appId)
-            object["restored"] = copy
-            try StateStore(config.stateDir).writeDurable(object)
+            _ = try StateStore(config.stateDir).update { state in
+                state.restored.removeValue(forKey: appId)
+            }
             return .terminal("mirrorRetired")
         }
         return .rejected("stale restored mirror for \(appId) has no journal and the destination is not the stub. Nothing was deleted. Repair: restore the stub at \(dest) or put the journal back, then run isenough gc.")
@@ -1134,7 +1172,7 @@ public final class RestoreCoordinator {
         let parked = staging.appendingPathComponent("stub.app")
         var unexpected: [String] = []
         if fm.fileExists(atPath: staging.path), let names = try? fm.contentsOfDirectory(atPath: staging.path) {
-            let known: Set<String> = [".txn", ".extracting", ".extracted-ok", "app.new", "app.old", "stub.app"]
+            let known: Set<String> = [".txn", ".extracting", ".extracted-ok", "app.new", "app.old", "stub.app", "manifest.json"]
             unexpected = names.filter { !known.contains($0) }.sorted()
         }
         let hasRole = exists(appNew) || exists(appOld) || exists(parked)
@@ -1160,9 +1198,9 @@ public final class RestoreCoordinator {
         // app on every probe repeated the same multi-gigabyte walk and did not feed
         // the decision.
         var memo = IdentityMemo()
-        let hashDestination = journal.phase == .inspected
+        let destination = destinationNode(journal, memo: &memo)
         return RestoreLayout(
-            destination: node(URL(fileURLWithPath: journal.dest), journal, full: hashDestination, memo: &memo),
+            destination: destination,
             appNew: node(appNew, journal, full: true, memo: &memo),
             appOld: node(appOld, journal, full: false, memo: &memo),
             parkedStub: node(parked, journal, full: false, memo: &memo),
@@ -1191,6 +1229,16 @@ public final class RestoreCoordinator {
             }
             return value
         }
+    }
+
+    private func destinationNode(_ journal: RestoreJournal, memo: inout IdentityMemo) -> BundleNode {
+        let url = URL(fileURLWithPath: journal.dest)
+        let paranoid = ProcessInfo.processInfo.environment["ISENOUGH_PARANOID_INSPECT"] == "1"
+        if journal.phase == .inspected, let snap = journal.inspection, !paranoid,
+           let current = try? TreeFingerprint.of(url), current == snap.fingerprint {
+            return .app(bundleId: snap.bundleId, cdhash: snap.cdhash, treeHash: snap.treeHash, inode: snap.inode)
+        }
+        return node(url, journal, full: journal.phase == .inspected, memo: &memo)
     }
 
     private func node(_ url: URL, _ journal: RestoreJournal, full: Bool, memo: inout IdentityMemo) -> BundleNode {
@@ -1302,8 +1350,7 @@ public final class RestoreCoordinator {
     }
 
     private func outcomeTxid(_ appId: String) -> String? {
-        let apps = StateStore(config.stateDir).read()["apps"] as? [String: [String: Any]]
-        return (apps?[appId]?["lastOutcome"] as? [String: Any])?["txid"] as? String
+        StateStore(config.stateDir).load().apps[appId]?.lastOutcome?.txid
     }
 
     private func runHooks(_ phase: String, appId: String) throws -> Int32 {
@@ -1345,7 +1392,7 @@ public final class RestoreCoordinator {
         return fm.fileExists(atPath: url.path, isDirectory: &isDir) && !isDir.boolValue
     }
 
-    private func withLock<T>(_ appId: String, _ body: () throws -> T) throws -> T {
+    func withLock<T>(_ appId: String, _ body: () throws -> T) throws -> T {
         let directory = URL(fileURLWithPath: config.stateDir).appendingPathComponent("locks/app")
         try fm.createDirectory(at: directory, withIntermediateDirectories: true)
         var lock = FileLock(path: directory.appendingPathComponent(appId + ".lock").path)

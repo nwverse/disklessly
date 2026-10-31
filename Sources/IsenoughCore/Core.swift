@@ -28,12 +28,19 @@ public enum IsenoughError: Error, LocalizedError, Equatable {
     }
 }
 
-public struct ImageManifest: Codable, Equatable {
+public struct ImageManifest: Equatable {
     public let schema: String
     public var imageId: String
     public var bundleId: String
     public var name: String
     public var version: String
+    /// `CFBundleVersion`. Empty on manifests written before multi-machine identity.
+    public var build: String
+    /// Mach-O slices the packed app contains, sorted. Empty on older manifests.
+    public var architectures: [String]
+    /// Tree hash that identifies the app across machines. Receipt bytes are not part of it.
+    /// When nil, `app.treeHash` is the only recorded digest.
+    public var contentTreeHash: String?
     public var image: Image
     public var app: App
     public var mode: Mode
@@ -50,23 +57,77 @@ public struct ImageManifest: Codable, Equatable {
         public var urlTypes: [[String: AnyCodable]]
         /// Code-directory hash recorded at pack. On macOS this is `codesign`'s CDHash when the bundle is signed; otherwise it is the sha256 of the main executable.
         public var cdhash: String?
-        /// Canonical tree hash from `BundleHasher`, recorded at pack.
+        /// Canonical tree hash from `BundleHasher`, recorded at pack. This is the post-image tree
+        /// restore verifies. It uses the same digest format as `contentTreeHash`.
         public var treeHash: String?
         public init(originalPath: String, executable: String, documentTypes: [[String: AnyCodable]], urlTypes: [[String: AnyCodable]], cdhash: String? = nil, treeHash: String? = nil) {
             self.originalPath=originalPath; self.executable=executable; self.documentTypes=documentTypes; self.urlTypes=urlTypes; self.cdhash=cdhash; self.treeHash=treeHash
         }
     }
-    public init(bundleId: String, name: String, version: String, image: Image, app: App, mode: Mode = .mount, createdAt: Date = Date()) {
+    public init(bundleId: String, name: String, version: String, image: Image, app: App, mode: Mode = .mount, createdAt: Date = Date(), build: String = "", architectures: [String] = [], contentTreeHash: String? = nil, imageId explicitImageId: String? = nil) {
         self.schema = "image/1"; self.bundleId = bundleId; self.name = name; self.version = version; self.image = image; self.app = app; self.mode = mode; self.createdAt = createdAt
-        self.imageId = "\(bundleId)-\(version)-\(String(image.sha256.prefix(8)))"
+        self.build = build
+        self.architectures = ImageIdentity.normalize(architectures)
+        self.contentTreeHash = contentTreeHash
+        if let explicitImageId {
+            self.imageId = explicitImageId
+        } else if let contentTreeHash, !contentTreeHash.isEmpty {
+            self.imageId = ImageIdentity(bundleId: bundleId, version: version, build: build, architectures: architectures, treeHash: contentTreeHash).imageId()
+        } else {
+            self.imageId = "\(bundleId)-\(version)-\(String(image.sha256.prefix(8)))"
+        }
         if self.image.file.isEmpty { self.image.file = "images/\(self.imageId).dmg" }
+    }
+    /// Identity used to recognize the same app on another Mac. Prefers the content hash.
+    public var resolvedIdentity: ImageIdentity? {
+        let hash = contentTreeHash ?? app.treeHash
+        guard let hash, !hash.isEmpty else { return nil }
+        return ImageIdentity(bundleId: bundleId, version: version, build: build, architectures: architectures, treeHash: hash)
     }
     public func validate() throws {
         guard schema == "image/1" else { throw IsenoughError.failure("Unsupported manifest schema: \(schema)") }
-        guard image.format == "ULMO", image.sha256.count == 64, image.size > 0 else { throw IsenoughError.integrity("Invalid image metadata") }
+        guard ["ULMO", "ULFO"].contains(image.format), image.sha256.count == 64, image.size > 0 else { throw IsenoughError.integrity("Invalid image metadata") }
     }
     public func encode() throws -> Data { let e = JSONEncoder(); e.outputFormatting = [.sortedKeys, .prettyPrinted]; e.dateEncodingStrategy = .iso8601; return try e.encode(self) }
     public static func decode(_ data: Data) throws -> Self { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; let m = try d.decode(Self.self, from: data); try m.validate(); return m }
+}
+
+extension ImageManifest: Codable {
+    private enum CodingKeys: String, CodingKey {
+        case schema, imageId, bundleId, name, version, build, architectures, contentTreeHash, image, app, mode, createdAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schema = try container.decodeIfPresent(String.self, forKey: .schema) ?? "image/1"
+        imageId = try container.decode(String.self, forKey: .imageId)
+        bundleId = try container.decode(String.self, forKey: .bundleId)
+        name = try container.decode(String.self, forKey: .name)
+        version = try container.decode(String.self, forKey: .version)
+        build = try container.decodeIfPresent(String.self, forKey: .build) ?? ""
+        architectures = try container.decodeIfPresent([String].self, forKey: .architectures) ?? []
+        contentTreeHash = try container.decodeIfPresent(String.self, forKey: .contentTreeHash)
+        image = try container.decode(Image.self, forKey: .image)
+        app = try container.decode(App.self, forKey: .app)
+        mode = try container.decode(Mode.self, forKey: .mode)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(schema, forKey: .schema)
+        try container.encode(imageId, forKey: .imageId)
+        try container.encode(bundleId, forKey: .bundleId)
+        try container.encode(name, forKey: .name)
+        try container.encode(version, forKey: .version)
+        try container.encode(build, forKey: .build)
+        try container.encode(architectures, forKey: .architectures)
+        try container.encodeIfPresent(contentTreeHash, forKey: .contentTreeHash)
+        try container.encode(image, forKey: .image)
+        try container.encode(app, forKey: .app)
+        try container.encode(mode, forKey: .mode)
+        try container.encode(createdAt, forKey: .createdAt)
+    }
 }
 
 public struct AnyCodable: Codable, Equatable {
@@ -98,9 +159,10 @@ public struct StateMachine {
     }
 }
 
-public struct CacheEntry: Codable, Equatable { public var id: String; public var size: UInt64; public var lastUsed: Date; public var pinned: Bool; public var mounted: Bool; public init(id: String, size: UInt64, lastUsed: Date, pinned: Bool = false, mounted: Bool = false) { self.id=id; self.size=size; self.lastUsed=lastUsed; self.pinned=pinned; self.mounted=mounted } }
+/// Input to the original quota planner. The state file uses `CacheEntry` (`state/2`).
+public struct PolicyCacheEntry: Codable, Equatable { public var id: String; public var size: UInt64; public var lastUsed: Date; public var pinned: Bool; public var mounted: Bool; public init(id: String, size: UInt64, lastUsed: Date, pinned: Bool = false, mounted: Bool = false) { self.id=id; self.size=size; self.lastUsed=lastUsed; self.pinned=pinned; self.mounted=mounted } }
 public enum CachePolicy {
-    public static func evictionPlan(_ entries: [CacheEntry], quota: UInt64) -> [String] {
+    public static func evictionPlan(_ entries: [PolicyCacheEntry], quota: UInt64) -> [String] {
         var total = entries.reduce(UInt64(0)) { $0 + $1.size }; guard total > quota else { return [] }
         var victims: [String] = []
         for entry in entries.filter({ !$0.pinned && !$0.mounted }).sorted(by: { $0.lastUsed < $1.lastUsed }) { victims.append(entry.id); total = total >= entry.size ? total - entry.size : 0; if total <= quota { break } }
@@ -245,6 +307,18 @@ public enum ParsedCommand {
     }
 }
 
+/// Marks backend writes as write-once. `WriteOnce` wraps its `put` calls in
+/// `run`, and `LocalFolderBackend.put` (used by the local, iCloud, and SMB
+/// backends) then refuses to replace an existing object. Code outside the scope
+/// keeps the ordinary replace semantics for mutable files.
+public enum WriteOnceScope {
+    @TaskLocal public static var exclusive = false
+
+    public static func run<T>(_ body: () throws -> T) rethrows -> T {
+        try $exclusive.withValue(true, operation: body)
+    }
+}
+
 public struct BackendStat: Equatable { public var size: UInt64; public var modified: Date; public init(size: UInt64, modified: Date) { self.size=size; self.modified=modified } }
 public struct LocalFolderBackend: StorageBackend {
     public let root: URL
@@ -255,13 +329,16 @@ public struct LocalFolderBackend: StorageBackend {
     /// Download evicted ubiquitous items before reading them.
     public var materializeReads: Bool
     public var materializeTimeout: TimeInterval
+    /// Device files and catalog JSON. Image downloads keep `materializeTimeout`.
+    public var metadataTimeout: TimeInterval
 
-    public init(root: URL, boundsListing: Bool = false, listTimeout: TimeInterval = 20, materializeReads: Bool = false, materializeTimeout: TimeInterval = 900) throws {
+    public init(root: URL, boundsListing: Bool = false, listTimeout: TimeInterval = 20, materializeReads: Bool = false, materializeTimeout: TimeInterval = 900, metadataTimeout: TimeInterval = 20) throws {
         self.root = root.standardizedFileURL
         self.boundsListing = boundsListing
         self.listTimeout = listTimeout
         self.materializeReads = materializeReads
         self.materializeTimeout = materializeTimeout
+        self.metadataTimeout = metadataTimeout
         try FileManager.default.createDirectory(at: self.root, withIntermediateDirectories: true)
     }
 
@@ -297,7 +374,7 @@ public struct LocalFolderBackend: StorageBackend {
 
     public func get(_ path: String, range: Range<UInt64>? = nil) throws -> Data {
         let file = try url(path)
-        try UbiquitousMaterializer.beforeRead(file, timeout: materializeTimeout, enabled: materializeReads)
+        try UbiquitousMaterializer.beforeRead(file, path: path, downloadTimeout: materializeTimeout, metadataTimeout: metadataTimeout, enabled: materializeReads)
         if let range {
             let length = range.upperBound > range.lowerBound ? range.upperBound - range.lowerBound : 0
             var data = Data()
@@ -307,19 +384,41 @@ public struct LocalFolderBackend: StorageBackend {
         return try ChunkedIO.readAll(file)
     }
 
+    /// Inside `WriteOnceScope.run` the object is published with
+    /// `ChunkedIO.publishExclusive` and an existing file is never replaced.
+    /// iCloud and SMB delegate here, so they get the same behavior.
     public func put(_ path: String, data: Data) throws {
         let destination = try url(path)
-        try ChunkedIO.writeAtomically(data, to: destination)
+        guard WriteOnceScope.exclusive else {
+            try ChunkedIO.writeAtomically(data, to: destination)
+            return
+        }
+        let fm = FileManager.default
+        try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let temporary = Self.temporarySibling(destination)
+        do {
+            try data.write(to: temporary)
+            Self.fsync(temporary)
+            try ChunkedIO.publishExclusive(temp: temporary, dest: destination)
+        } catch {
+            try? fm.removeItem(at: temporary)
+            throw error
+        }
     }
 
     public func put(_ path: String, file: URL) throws {
         let destination = try url(path)
         let fm = FileManager.default
         try fm.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let temporary = destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).tmp-\(UUID().uuidString)")
+        let temporary = Self.temporarySibling(destination)
         do {
             try ChunkedIO.copyFile(from: file, to: temporary)
-            try ChunkedIO.replaceFile(destination, with: temporary)
+            if WriteOnceScope.exclusive {
+                Self.fsync(temporary)
+                try ChunkedIO.publishExclusive(temp: temporary, dest: destination)
+            } else {
+                try ChunkedIO.replaceFile(destination, with: temporary)
+            }
         } catch {
             try? fm.removeItem(at: temporary)
             throw error
@@ -331,7 +430,7 @@ public struct LocalFolderBackend: StorageBackend {
         guard FileManager.default.fileExists(atPath: file.path) else {
             throw IsenoughError.backend("remote object is missing: \(path)")
         }
-        try UbiquitousMaterializer.beforeRead(file, timeout: materializeTimeout, enabled: materializeReads)
+        try UbiquitousMaterializer.beforeRead(file, path: path, downloadTimeout: materializeTimeout, metadataTimeout: metadataTimeout, enabled: materializeReads)
         let size = try ChunkedIO.byteCount(file)
         if offset > size { throw IsenoughError.integrity("cached partial is larger than the remote object") }
         if offset == size { return ResumableFile(restart: false, bytesWritten: 0) }
@@ -354,6 +453,21 @@ public struct LocalFolderBackend: StorageBackend {
     }
 
     public func localRoot() -> URL? { root }
+
+    private static func temporarySibling(_ destination: URL) -> URL {
+        destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).tmp-\(UUID().uuidString)")
+    }
+
+    private static func fsync(_ url: URL) {
+        let fd = open(url.path, O_RDONLY)
+        guard fd >= 0 else { return }
+        #if canImport(Glibc)
+        _ = Glibc.fsync(fd)
+        #else
+        _ = Darwin.fsync(fd)
+        #endif
+        _ = close(fd)
+    }
 
     public func ensureCollection(_ path: String) throws {
         try FileManager.default.createDirectory(at: url(path), withIntermediateDirectories: true)

@@ -1,0 +1,132 @@
+name: Release
+
+# Push a tag such as v0.1.0 to build, test, sign, notarize, and draft a GitHub
+# Release. The `release` environment should require a manual approval, so the
+# signing job waits for a maintainer even after tests pass.
+#
+# Secrets (in the `release` environment):
+#   MACOS_CERT_P12_BASE64   Developer ID Application certificate and key, base64 of the .p12
+#   MACOS_CERT_PASSWORD     password of that .p12
+#   MACOS_SIGN_IDENTITY     "Developer ID Application: Name (TEAMID)"
+#   NOTARY_APPLE_ID, NOTARY_TEAM_ID, NOTARY_PASSWORD   app-specific password for notarytool
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build (for example v0.1.0)"
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - name: Toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+      - name: Build
+        run: swift build
+      - name: Unit tests
+        run: swift test
+      - name: End-to-end harness
+        env:
+          E2E_LOG_FILE: ${{ runner.temp }}/isenough-e2e.log
+        run: bash scripts/e2e.sh
+      - name: Universal app build
+        run: bash scripts/build-app.sh
+      - name: Upload E2E log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-e2e-log
+          path: ${{ runner.temp }}/isenough-e2e.log
+          if-no-files-found: ignore
+
+  release:
+    needs: test
+    runs-on: macos-latest
+    timeout-minutes: 60
+    environment: release
+    permissions:
+      contents: write
+    env:
+      KEYCHAIN: ${{ runner.temp }}/isenough-release.keychain-db
+      NOTARY_PROFILE: isenough-release
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - name: Check the tag matches the version
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="$(bash scripts/gen-version.sh --print)"
+          [[ "v$VERSION" == "$TAG" ]] || { echo "tag $TAG does not match version $VERSION" >&2; exit 1; }
+          grep -q "## \[$VERSION\]" CHANGELOG.md || { echo "CHANGELOG.md has no entry for $VERSION" >&2; exit 1; }
+      - name: Build universal app
+        run: bash scripts/build-app.sh
+      - name: Import signing certificate into a temporary keychain
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 24)"
+          echo "::add-mask::$KEYCHAIN_PASSWORD"
+          CERT="$RUNNER_TEMP/cert.p12"
+          echo "$MACOS_CERT_P12_BASE64" | base64 --decode >"$CERT"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$CERT" -k "$KEYCHAIN" -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          rm -f "$CERT"
+      - name: Store notarytool credentials
+        env:
+          NOTARY_APPLE_ID: ${{ secrets.NOTARY_APPLE_ID }}
+          NOTARY_TEAM_ID: ${{ secrets.NOTARY_TEAM_ID }}
+          NOTARY_PASSWORD: ${{ secrets.NOTARY_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials "$NOTARY_PROFILE" \
+            --apple-id "$NOTARY_APPLE_ID" --team-id "$NOTARY_TEAM_ID" --password "$NOTARY_PASSWORD" \
+            --keychain "$KEYCHAIN"
+      - name: Sign, notarize, staple, and package
+        env:
+          ISENOUGH_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          ISENOUGH_KEYCHAIN: ${{ runner.temp }}/isenough-release.keychain-db
+        run: bash scripts/release-sign.sh
+      - name: Fill in Homebrew templates
+        run: |
+          VERSION="$(bash scripts/gen-version.sh --print)"
+          TAR_SHA="$(awk -v f="isenough-$VERSION-macos-universal.tar.gz" '$2==f {print $1}' dist/SHA256SUMS)"
+          DMG_SHA="$(awk -v f="256isenough-$VERSION.dmg" '$2==f {print $1}' dist/SHA256SUMS)"
+          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256_TARBALL@/$TAR_SHA/" packaging/homebrew/isenough.rb >dist/isenough.rb
+          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256_DMG@/$DMG_SHA/" packaging/homebrew/256isenough.rb >dist/256isenough.rb
+      - name: Draft GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          awk -v v="$VERSION" '$0 ~ "^## \\[" v "\\]" {on=1; next} on && /^## / {exit} on {print}' CHANGELOG.md >"$RUNNER_TEMP/notes.md"
+          gh release create "$TAG" --draft --verify-tag --title "256isenough $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
+            dist/isenough-*-macos-universal.tar.gz dist/256isenough-*.dmg dist/SHA256SUMS dist/isenough.rb dist/256isenough.rb
+      - name: Remove temporary keychain
+        if: always()
+        run: security delete-keychain "$KEYCHAIN" || true

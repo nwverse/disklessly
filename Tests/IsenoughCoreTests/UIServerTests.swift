@@ -80,19 +80,97 @@ final class UIServerTests: XCTestCase {
         let cacheInfo = try XCTUnwrap(object["cache"] as? [String: Any])
         XCTAssertGreaterThan((cacheInfo["usedBytes"] as? NSNumber)?.uint64Value ?? 0, 0)
         XCTAssertEqual((cacheInfo["quotaBytes"] as? NSNumber)?.uint64Value, 20 * 1024 * 1024 * 1024)
-        let pin = try request(port: server.port, path: "/api/pin", token: "page-token", method: "POST", body: Data("{\"app\":\"Test\"}".utf8))
-        XCTAssertEqual(pin.status, 200)
+        XCTAssertEqual((apps.first?["imageBytes"] as? NSNumber)?.uint64Value, UInt64(bytes.count))
+        XCTAssertEqual(apps.first?["state"] as? String, "")
+        XCTAssertEqual(apps.first?["needsResolution"] as? Bool, false)
+        XCTAssertNil(apps.first?["lastUsed"])
+        let pin = try runJob(port: server.port, path: "/api/pin", token: "page-token", app: "Test")
+        XCTAssertEqual(pin["state"] as? String, "done")
         let pinned = StateStore(config.stateDir).read()["apps"] as? [String: [String: Any]]
         XCTAssertEqual(pinned?["com.test.app"]?["pinned"] as? Bool, true)
-        let evict = try request(port: server.port, path: "/api/evict", token: "page-token", method: "POST", body: Data("{\"app\":\"Test\"}".utf8))
-        XCTAssertEqual(evict.status, 200)
+        // design §4: evict refuses a pinned app unless forced; the dashboard
+        // disables Evict while pinned, and the error names no CLI-only flag.
+        let refused = try runJob(port: server.port, path: "/api/evict", token: "page-token", app: "Test")
+        XCTAssertEqual(refused["state"] as? String, "failed")
+        XCTAssertEqual((refused["error"] as? [String: Any])?["code"] as? String, "pinned")
+        XCTAssertFalse(((refused["error"] as? [String: Any])?["message"] as? String ?? "--force").contains("--force"))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: cached.path))
+        let evict = try runJob(port: server.port, path: "/api/evict", token: "page-token", app: "Test", force: true)
+        XCTAssertEqual(evict["state"] as? String, "done")
         XCTAssertFalse(FileManager.default.fileExists(atPath: cached.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: repo.appendingPathComponent("manifests/\(manifest.imageId).json").path))
-        let restore = try request(port: server.port, path: "/api/restore", token: "page-token", method: "POST", body: Data("{\"app\":\"Test\"}".utf8))
-        let restoreBody = try XCTUnwrap(JSONSerialization.jsonObject(with: restore.body) as? [String: Any])
-        XCTAssertEqual(restoreBody["ok"] as? Bool, false)
-        XCTAssertFalse((restoreBody["error"] as? String ?? "").isEmpty)
+        let restore = try runJob(port: server.port, path: "/api/restore", token: "page-token", app: "Test")
+        XCTAssertEqual(restore["state"] as? String, "failed")
+        let restoreError = try XCTUnwrap(restore["error"] as? [String: Any])
+        XCTAssertFalse((restoreError["code"] as? String ?? "").isEmpty)
+        XCTAssertFalse((restoreError["message"] as? String ?? "").isEmpty)
         XCTAssertTrue(FileManager.default.fileExists(atPath: repo.appendingPathComponent("manifests/\(manifest.imageId).json").path))
+        let unknown = try runJob(port: server.port, path: "/api/prefetch", token: "page-token", app: "Nope")
+        XCTAssertEqual(unknown["state"] as? String, "failed")
+        XCTAssertEqual((unknown["error"] as? [String: Any])?["code"] as? String, "unknown_app")
+    }
+
+    func testSlowHandlerDoesNotBlockOtherRequests() throws {
+        let server = LoopbackUIServer(token: "slow-token") { request in
+            if request.path == "/slow" { Thread.sleep(forTimeInterval: 2) }
+            return UIResponse.json(["ok": true, "path": request.path])
+        }
+        try server.start()
+        defer { server.stop() }
+        let slowDone = expectation(description: "slow request")
+        DispatchQueue.global().async {
+            _ = try? self.request(port: server.port, path: "/slow", token: "slow-token")
+            slowDone.fulfill()
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        let started = Date()
+        let fast = try request(port: server.port, path: "/api/status", token: "slow-token")
+        XCTAssertEqual(fast.status, 200)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 1.0, "a slow handler held up /api/status")
+        wait(for: [slowDone], timeout: 5)
+    }
+
+    func testPreferredPortIsUsedAndFallsBackWhenTaken() throws {
+        let probe = LoopbackUIServer { _ in UIResponse.json(["ok": true]) }
+        try probe.start()
+        let free = probe.port
+        probe.stop()
+        let first = LoopbackUIServer(token: "a") { _ in UIResponse.json(["ok": true]) }
+        try first.start(preferredPort: free)
+        defer { first.stop() }
+        XCTAssertEqual(first.port, free)
+        let second = LoopbackUIServer(token: "b") { _ in UIResponse.json(["ok": true]) }
+        try second.start(preferredPort: free)
+        defer { second.stop() }
+        XCTAssertGreaterThan(second.port, 0)
+        XCTAssertNotEqual(second.port, free)
+        XCTAssertEqual(try request(port: second.port, path: "/x", token: "b").status, 200)
+        XCTAssertEqual(LoopbackUIServer.defaultPort, 47256)
+    }
+
+    func testUnauthorizedCarriesStableCode() throws {
+        let server = LoopbackUIServer(token: "right") { _ in UIResponse.json(["ok": true]) }
+        try server.start()
+        defer { server.stop() }
+        let denied = try request(port: server.port, path: "/api/status", token: "wrong")
+        XCTAssertEqual(denied.status, 401)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: denied.body) as? [String: Any])
+        XCTAssertEqual((object["error"] as? [String: Any])?["code"] as? String, "unauthorized")
+    }
+
+    func testExpiredLinkInBrowserGetsReadablePage() throws {
+        let server = LoopbackUIServer(token: "right") { _ in UIResponse.json(["ok": true]) }
+        try server.start()
+        defer { server.stop() }
+        let page = try request(port: server.port, path: "/?token=old", token: nil, accept: "text/html,application/xhtml+xml")
+        XCTAssertEqual(page.status, 401)
+        let html = String(decoding: page.body, as: UTF8.self)
+        XCTAssertTrue(html.contains("isenough ui"))
+        XCTAssertFalse(html.contains("\"unauthorized\""))
+        // API calls keep the JSON error even when the client accepts HTML.
+        let api = try request(port: server.port, path: "/api/status", token: "old", accept: "text/html")
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: api.body) as? [String: Any])
+        XCTAssertEqual((object["error"] as? [String: Any])?["code"] as? String, "unauthorized")
     }
 
     func testShippedPageKeepsTokenAndLocalAssets() throws {
@@ -135,6 +213,48 @@ final class UIServerTests: XCTestCase {
         XCTAssertFalse(remote.contains("http://"))
         XCTAssertFalse(remote.contains("https://"))
 
+        // All text lives in app.js's one string table; the shell carries no Chinese to flash before it runs.
+        XCTAssertFalse(html.contains("lang=\"zh"))
+        XCTAssertFalse(html.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }, "index.html hard-codes Chinese text")
+        // Bilingual inline labels replace the language toggle; ?lang=en only reorders them.
+        XCTAssertFalse(html.contains("id=\"lang\""))
+        XCTAssertTrue(html.contains("lang === \"en\""))
+        XCTAssertTrue(js.contains("function bi("))
+        // Theme follows the system.
+        XCTAssertTrue(css.contains("prefers-color-scheme: dark"))
+        XCTAssertTrue(css.contains("max-width: 720px"))
+        // Actions, confirmations, live results, accessibility hooks.
+        XCTAssertTrue(js.contains("/api/jobs/"))
+        XCTAssertFalse(js.contains("let busy"))
+        XCTAssertTrue(html.contains("<dialog id=\"confirm\""))
+        XCTAssertTrue(html.contains("aria-live=\"polite\""))
+        XCTAssertTrue(html.contains("id=\"onboarding\""))
+        XCTAssertTrue(html.contains("id=\"sessions-section\""))
+        XCTAssertTrue(html.contains("id=\"devices-section\""))
+        XCTAssertTrue(js.contains("Intl.NumberFormat"))
+        XCTAssertTrue(js.contains("Intl.RelativeTimeFormat"))
+        XCTAssertTrue(js.contains("REFRESH_MS = 20000"))
+        // Mockup states: loading, empty, error with retry, near quota, health.
+        for text in ["正在读取后端…", "暂无已卸载应用", "无法连接后端", "Backend unreachable", "低于空闲下限时自动清除未固定的缓存", "会话分层", "Session tiers", "空闲下限", "分离延迟", "缓慢", "Degraded", "离线"] {
+            XCTAssertTrue(js.contains(text), text)
+        }
+        // QA fixes: unpack names the app's own folder, raw server text is folded, pinned evict is never forced.
+        XCTAssertFalse(js.contains("永久还原到 /Applications"))
+        XCTAssertFalse(js.contains("Restore to /Applications"))
+        XCTAssertTrue(js.contains("installPath"))
+        XCTAssertTrue(js.contains("function detailsFold("))
+        XCTAssertFalse(js.contains("${base} (${message})"))
+        XCTAssertTrue(js.contains("force: false"))
+        XCTAssertTrue(js.contains("evictPinned"))
+
+        let keys = try copyKeys(js)
+        XCTAssertGreaterThan(keys.zh.count, 100)
+        XCTAssertEqual(keys.zh.subtracting(keys.en).sorted(), [], "keys only in zh")
+        XCTAssertEqual(keys.en.subtracting(keys.zh).sorted(), [], "keys only in en")
+        for code in ["unknown_app", "offline", "integrity", "no_space", "busy", "unauthorized", "pinned"] {
+            XCTAssertTrue(keys.en.contains("err" + code), code)
+        }
+
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let repo = root.appendingPathComponent("repo")
@@ -169,10 +289,48 @@ final class UIServerTests: XCTestCase {
         XCTAssertEqual(backend["health"] as? String, "ok")
     }
 
-    private func request(port: UInt16, path: String, token: String?, method: String = "GET", body: Data? = nil) throws -> (status: Int, body: Data) {
+    /// Top-level keys of `copy.zh` and `copy.en` in app.js (four-space indent inside the i18n markers).
+    private func copyKeys(_ js: String) throws -> (zh: Set<String>, en: Set<String>) {
+        let start = try XCTUnwrap(js.range(of: "// i18n:begin"))
+        let end = try XCTUnwrap(js.range(of: "// i18n:end"))
+        let block = String(js[start.upperBound..<end.lowerBound])
+        let split = try XCTUnwrap(block.range(of: "\n  en: {"))
+        func keys(_ text: Substring) -> Set<String> {
+            var found = Set<String>()
+            for line in text.split(separator: "\n") where line.hasPrefix("    ") && !line.hasPrefix("     ") {
+                let body = line.dropFirst(4)
+                guard let colon = body.firstIndex(of: ":") else { continue }
+                let name = body[..<colon]
+                if !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) { found.insert(String(name)) }
+            }
+            return found
+        }
+        return (keys(block[..<split.lowerBound]), keys(block[split.upperBound...]))
+    }
+
+    private func runJob(port: UInt16, path: String, token: String, app: String, force: Bool = false) throws -> [String: Any] {
+        let fields: [String: Any] = force ? ["app": app, "force": true] : ["app": app]
+        let body = try JSONSerialization.data(withJSONObject: fields)
+        let started = try request(port: port, path: path, token: token, method: "POST", body: body)
+        XCTAssertEqual(started.status, 202)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: started.body) as? [String: Any])
+        let id = try XCTUnwrap(object["jobId"] as? String)
+        let deadline = Date().addingTimeInterval(10)
+        while Date() < deadline {
+            let polled = try request(port: port, path: "/api/jobs/\(id)", token: token)
+            let job = try XCTUnwrap(JSONSerialization.jsonObject(with: polled.body) as? [String: Any])
+            if job["state"] as? String != "running" { return job }
+            Thread.sleep(forTimeInterval: 0.05)
+        }
+        XCTFail("job \(id) did not finish")
+        return [:]
+    }
+
+    private func request(port: UInt16, path: String, token: String?, method: String = "GET", body: Data? = nil, accept: String? = nil) throws -> (status: Int, body: Data) {
         let target = try XCTUnwrap(URL(string: "http://127.0.0.1:\(port)\(path)"))
         var request = URLRequest(url: target)
         request.httpMethod = method
+        if let accept { request.setValue(accept, forHTTPHeaderField: "Accept") }
         request.httpBody = body
         if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
         let box = ResponseBox()

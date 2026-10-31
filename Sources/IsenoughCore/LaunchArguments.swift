@@ -28,6 +28,24 @@ public struct LaunchArguments: Equatable {
     }
 }
 
+public enum OpenInvocation {
+    /// `open` argv for an app. Never includes `-n`. Arguments are dropped when the app is already running.
+    public static func arguments(app: String, documents: [String], urls: [String], arguments: [String], alreadyRunning: Bool) -> (argv: [String], warnings: [String]) {
+        var argv = ["/usr/bin/open", "-a", app]
+        argv += documents
+        argv += urls
+        var warnings: [String] = []
+        if !arguments.isEmpty {
+            if alreadyRunning {
+                warnings.append("\(app) is already running; launch arguments were not passed")
+            } else {
+                argv.append(contentsOf: ["--args"] + arguments)
+            }
+        }
+        return (argv, warnings)
+    }
+}
+
 public struct CachePaths {
     public let cache: URL; public let mountRoot: URL
     public init(cacheDir: String, mountRoot: String) { cache=URL(fileURLWithPath:cacheDir); self.mountRoot=URL(fileURLWithPath:mountRoot) }

@@ -17,6 +17,23 @@ public enum ICloudLimits {
         seconds(from: "ISENOUGH_ICLOUD_DOWNLOAD_TIMEOUT", fallback: fallback)
     }
 
+    /// Device files, catalog JSON, and other metadata. Listing must not wait out a full image download.
+    public static func metadataTimeout(fallback: TimeInterval = 20) -> TimeInterval {
+        seconds(from: "ISENOUGH_ICLOUD_METADATA_TIMEOUT", fallback: fallback)
+    }
+
+    /// `devices/`, `catalog/`, and any `.json` object use `metadata`. Disk images keep `download`.
+    public static func readTimeout(path: String, download: TimeInterval, metadata: TimeInterval) -> TimeInterval {
+        isMetadataPath(path) ? metadata : download
+    }
+
+    public static func isMetadataPath(_ path: String) -> Bool {
+        let trimmed = path.hasPrefix("/") ? String(path.dropFirst()) : path
+        if trimmed == "devices" || trimmed.hasPrefix("devices/") { return true }
+        if trimmed == "catalog" || trimmed.hasPrefix("catalog/") { return true }
+        return trimmed.hasSuffix(".json")
+    }
+
     public static func timeoutMessage(what: String, seconds: TimeInterval) -> String {
         "\(what) timed out after \(Int(seconds))s. \(permissionHint) If the folder is only slow, raise the wait with ISENOUGH_ICLOUD_LIST_TIMEOUT (seconds)."
     }
@@ -60,9 +77,45 @@ private final class ResultBox<T>: @unchecked Sendable {
     }
 }
 
-enum UbiquitousMaterializer {
+public struct UbiquitySnapshot: Equatable {
+    public var isUbiquitous: Bool
+    public var status: String?
+    public var downloading: Bool
+    public init(isUbiquitous: Bool, status: String?, downloading: Bool) {
+        self.isUbiquitous = isUbiquitous
+        self.status = status
+        self.downloading = downloading
+    }
+}
+
+public enum UbiquitousMaterializer {
+    private static let budgetKey = "io.github.s546126.256isenough.icloud-budget"
+
+    /// Caps every ubiquitous read inside `body` to `seconds`, and a nested call cannot extend that deadline.
+    /// Read-only commands use this so a listing cannot sit on iCloud longer than the metadata timeout.
+    public static func withBudget<T>(_ seconds: TimeInterval, _ body: () throws -> T) rethrows -> T {
+        let thread = Thread.current
+        let previous = thread.threadDictionary[budgetKey] as? Date
+        let proposed = Date().addingTimeInterval(max(0, seconds))
+        thread.threadDictionary[budgetKey] = min(previous ?? proposed, proposed)
+        defer {
+            if let previous {
+                thread.threadDictionary[budgetKey] = previous
+            } else {
+                thread.threadDictionary.removeObject(forKey: budgetKey)
+            }
+        }
+        return try body()
+    }
+
+    /// `requested`, or whatever remains of the current listing budget.
+    public static func cappedTimeout(_ requested: TimeInterval, now: Date = Date()) -> TimeInterval {
+        guard let deadline = Thread.current.threadDictionary[budgetKey] as? Date else { return requested }
+        return min(requested, max(0, deadline.timeIntervalSince(now)))
+    }
+
     /// `current` and `downloaded` are already local. Anything else on a ubiquitous item needs a download.
-    static func needsDownload(isUbiquitous: Bool, status: String?) -> Bool {
+    public static func needsDownload(isUbiquitous: Bool, status: String?) -> Bool {
         guard isUbiquitous else { return false }
         switch status {
         case "current", "downloaded": return false
@@ -70,55 +123,81 @@ enum UbiquitousMaterializer {
         }
     }
 
-    static func beforeRead(_ url: URL, timeout: TimeInterval, enabled: Bool) throws {
+    /// Polls `probe` on every iteration. `start` runs once, and only when the first snapshot still needs a download.
+    /// A stalled item returns a warning instead of waiting past `timeout`. Nil means the item is local or not in iCloud.
+    public static func wait(
+        name: String,
+        timeout: TimeInterval,
+        interval: TimeInterval = 0.25,
+        now: @escaping () -> Date = Date.init,
+        sleep: @escaping (TimeInterval) -> Void = { Thread.sleep(forTimeInterval: $0) },
+        start: () throws -> Void,
+        probe: () throws -> UbiquitySnapshot
+    ) throws -> String? {
+        let initial = try probe()
+        guard initial.isUbiquitous, needsDownload(isUbiquitous: true, status: initial.status) else { return nil }
+        try start()
+        let started = now()
+        var last = describe(initial)
+        while now().timeIntervalSince(started) < timeout {
+            let remaining = timeout - now().timeIntervalSince(started)
+            if remaining <= 0 { break }
+            sleep(min(interval, remaining))
+            let values = try probe()
+            last = describe(values)
+            if !needsDownload(isUbiquitous: values.isUbiquitous, status: values.status) { return nil }
+        }
+        return "iCloud item \(name) was not downloaded within \(Int(timeout))s (\(last)). \(ICloudLimits.permissionHint)"
+    }
+
+    static func beforeRead(_ url: URL, path: String, downloadTimeout: TimeInterval, metadataTimeout: TimeInterval, enabled: Bool) throws {
         guard enabled else { return }
         guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let timeout = cappedTimeout(ICloudLimits.readTimeout(path: path, download: downloadTimeout, metadata: metadataTimeout))
         #if os(macOS)
-        try waitUntilDownloaded(url, timeout: timeout)
+        let warning = try wait(name: url.lastPathComponent, timeout: timeout, start: {
+            try FileManager.default.startDownloadingUbiquitousItem(at: url)
+        }, probe: {
+            try snapshot(url)
+        })
+        if var warning {
+            if ICloudLimits.isMetadataPath(path) {
+                warning += " Metadata reads stop after the short timeout. Raise it with ISENOUGH_ICLOUD_METADATA_TIMEOUT (seconds)."
+            } else {
+                warning += " Raise the wait with ISENOUGH_ICLOUD_DOWNLOAD_TIMEOUT (seconds)."
+            }
+            FileHandle.standardError.write(Data("isenough: \(warning)\n".utf8))
+            throw IsenoughError.backend(warning)
+        }
         #else
-        _ = timeout
+        _ = (timeout, path)
         #endif
     }
 
+    private static func describe(_ snapshot: UbiquitySnapshot) -> String {
+        let status = snapshot.status ?? "unknown"
+        let downloading = snapshot.downloading ? "yes" : "no"
+        return "status=\(status), downloading=\(downloading)"
+    }
+
     #if os(macOS)
-    private static func waitUntilDownloaded(_ url: URL, timeout: TimeInterval) throws {
+    /// A new URL plus `removeAllCachedResourceValues()` so a cached `notDownloaded` cannot hide a later `current`.
+    private static func snapshot(_ url: URL) throws -> UbiquitySnapshot {
+        var fresh = URL(fileURLWithPath: url.path)
+        fresh.removeAllCachedResourceValues()
         let keys: Set<URLResourceKey> = [.isUbiquitousItemKey, .ubiquitousItemDownloadingStatusKey, .ubiquitousItemIsDownloadingKey]
-        let initial: URLResourceValues
+        let values: URLResourceValues
         do {
-            initial = try url.resourceValues(forKeys: keys)
+            values = try fresh.resourceValues(forKeys: keys)
         } catch {
             throw IsenoughError.backend("could not read iCloud metadata for \(url.lastPathComponent): \(error.localizedDescription). \(ICloudLimits.permissionHint)")
         }
-        guard initial.isUbiquitousItem == true else { return }
-        if isLocal(initial.ubiquitousItemDownloadingStatus) { return }
-        do {
-            try FileManager.default.startDownloadingUbiquitousItem(at: url)
-        } catch {
-            throw IsenoughError.backend("could not start downloading iCloud item \(url.lastPathComponent): \(error.localizedDescription). \(ICloudLimits.permissionHint)")
-        }
-        let started = Date()
-        var last = describe(initial)
-        while Date().timeIntervalSince(started) < timeout {
-            Thread.sleep(forTimeInterval: 0.25)
-            let values = try url.resourceValues(forKeys: keys)
-            last = describe(values)
-            if isLocal(values.ubiquitousItemDownloadingStatus) { return }
-        }
-        throw IsenoughError.backend("iCloud item \(url.lastPathComponent) was not downloaded within \(Int(timeout))s (\(last)). \(ICloudLimits.permissionHint) Raise the wait with ISENOUGH_ICLOUD_DOWNLOAD_TIMEOUT (seconds).")
-    }
-
-    private static func isLocal(_ status: URLUbiquitousItemDownloadingStatus?) -> Bool {
-        status == .current || status == .downloaded
-    }
-
-    private static func describe(_ values: URLResourceValues) -> String {
-        let status: String
+        let status: String?
         if values.ubiquitousItemDownloadingStatus == .current { status = "current" }
         else if values.ubiquitousItemDownloadingStatus == .downloaded { status = "downloaded" }
         else if values.ubiquitousItemDownloadingStatus == .notDownloaded { status = "notDownloaded" }
-        else { status = "unknown" }
-        let downloading = values.ubiquitousItemIsDownloading == true ? "yes" : "no"
-        return "status=\(status), downloading=\(downloading)"
+        else { status = nil }
+        return UbiquitySnapshot(isUbiquitous: values.isUbiquitousItem == true, status: status, downloading: values.ubiquitousItemIsDownloading == true)
     }
     #endif
 }
@@ -138,6 +217,7 @@ public struct ICloudFolderBackend: StorageBackend {
         configured.materializeReads = true
         configured.listTimeout = ICloudLimits.listTimeout()
         configured.materializeTimeout = ICloudLimits.downloadTimeout()
+        configured.metadataTimeout = ICloudLimits.metadataTimeout()
         self.folder = configured
     }
 

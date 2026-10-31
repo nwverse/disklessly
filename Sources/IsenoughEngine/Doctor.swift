@@ -45,12 +45,12 @@ enum Doctor {
         var checks: [[String: Any]] = []
         var issues: [String] = []
         var repoPresent = false
+        var unpackNeedsAttention = false
 
-        func record(_ name: String, _ status: String, _ detail: String) -> String {
+        func record(_ name: String, _ status: String, _ detail: String) {
             let check: [String: Any] = ["name": name, "status": status, "detail": detail]
             checks.append(check)
             onCheck?(check)
-            return status
         }
 
         func timedOut(_ what: String, path: String) -> String {
@@ -73,7 +73,7 @@ enum Doctor {
         }
 
         if fix {
-            switch bound(seconds: seconds, { try engine.gc() }) {
+            switch bound(seconds: seconds, { try engine.recoverLocalJournals() }) {
             case .value(let notes):
                 record("fix", "ok", notes.isEmpty ? "no open journals" : notes.joined(separator: " | "))
             case .failure(let message):
@@ -81,15 +81,29 @@ enum Doctor {
             case .timedOut:
                 record("fix", "timed out", timedOut("recovery", path: config.stateDir))
             }
+            // Images a crashed watcher left attached under the mount root.
+            switch bound(seconds: max(seconds, 30), { engine.reapOrphanMounts() }) {
+            case .value(let reaped):
+                record("reap", reaped.failed.isEmpty ? "ok" : "warn", reaped.actionLines.isEmpty ? "no orphan mounts" : reaped.actionLines.joined(separator: " | "))
+            case .failure(let message):
+                record("reap", "warn", message)
+            case .timedOut:
+                record("reap", "timed out", timedOut("reaping orphan mounts", path: config.mountRoot))
+            }
         }
 
-        switch bound(seconds: seconds, { engine.restore.diagnose() }) {
+        switch bound(seconds: seconds, { () -> (lines: [String], attention: Bool) in
+            let found = engine.restore.diagnose()
+            let attention = engine.unpackAttentionLines()
+            return (found + attention, !attention.isEmpty)
+        }) {
         case .value(let found):
-            issues = found
-            if found.isEmpty {
+            issues = found.lines
+            unpackNeedsAttention = found.attention
+            if found.lines.isEmpty {
                 record("journals", "ok", "")
             } else {
-                record("journals", "fail", found.joined(separator: " | "))
+                record("journals", "fail", found.lines.joined(separator: " | "))
             }
         case .failure(let message):
             record("journals", "fail", message)
@@ -103,8 +117,28 @@ enum Doctor {
         if repoStatus != "ok" {
             let why = repoStatus == "timed out" ? "the repository check timed out" : "the repository path was not confirmed"
             record("backend", "warn", "skipped because \(why)")
+            record("conflicts", "warn", "skipped because \(why)")
+            record("materialized", "warn", "skipped because \(why)")
         } else {
             backendCheck(engine: engine, seconds: seconds, record: record, timedOut: timedOut)
+            switch bound(seconds: seconds, {
+                engine.syncReport()
+            }) {
+            case .value(let report):
+                record("conflicts", report.status, report.detail)
+            case .failure(let message):
+                record("conflicts", "fail", message)
+            case .timedOut:
+                record("conflicts", "timed out", timedOut("checking iCloud conflict copies", path: config.repoPath))
+            }
+            switch bound(seconds: seconds, { engine.materialSummary() }) {
+            case .value(let summary):
+                record("materialized", summary.status, summary.detail)
+            case .failure(let message):
+                record("materialized", "fail", message)
+            case .timedOut:
+                record("materialized", "timed out", timedOut("reading which repo files are stored locally", path: config.repoPath))
+            }
         }
 
         freeSpaceCheck(config: config, seconds: seconds, record: record, timedOut: timedOut)
@@ -116,19 +150,25 @@ enum Doctor {
             let status = check["status"] as? String
             return status == "fail" || status == "timed out"
         }
-        return [
+        var report: [String: Any] = [
             "ok": !failed,
+            "needsAttention": unpackNeedsAttention,
             "platform": ProcessInfo.processInfo.operatingSystemVersionString,
             "repo": repoPresent,
             "issues": issues,
             "checks": checks,
         ]
+        if repoPresent, let hint = IconBackfill.doctorHint(missing: engine.missingIconCount()) {
+            report["iconHint"] = hint
+        }
+        return report
     }
 
-    private static func repositoryCheck(engine: IsenoughEngine, seconds: TimeInterval, record: (String, String, String) -> String, timedOut: (String, String) -> String) -> String {
+    private static func repositoryCheck(engine: IsenoughEngine, seconds: TimeInterval, record: (String, String, String) -> Void, timedOut: (String, String) -> String) -> String {
         let path = engine.config.repoPath
         if path.isEmpty {
-            return record("repo", "fail", "repository path is empty")
+            record("repo", "fail", "repository path is empty")
+            return "fail"
         }
         let probe = engine.doctorRepositoryProbe
         switch bound(seconds: seconds, { () -> String in
@@ -140,19 +180,24 @@ enum Doctor {
             return isDir.boolValue ? "directory" : "file"
         }) {
         case .value("directory"):
-            return record("repo", "ok", path)
+            record("repo", "ok", path)
+            return "ok"
         case .value("missing"):
-            return record("repo", "warn", "repository path is missing: \(path)")
+            record("repo", "warn", "repository path is missing: \(path)")
+            return "warn"
         case .value(_):
-            return record("repo", "fail", "repository path is not a directory: \(path)")
+            record("repo", "fail", "repository path is not a directory: \(path)")
+            return "fail"
         case .failure(let message):
-            return record("repo", "fail", message)
+            record("repo", "fail", message)
+            return "fail"
         case .timedOut:
-            return record("repo", "timed out", timedOut("checking repository \(path)", path))
+            record("repo", "timed out", timedOut("checking repository \(path)", path))
+            return "timed out"
         }
     }
 
-    private static func backendCheck(engine: IsenoughEngine, seconds: TimeInterval, record: (String, String, String) -> String, timedOut: (String, String) -> String) {
+    private static func backendCheck(engine: IsenoughEngine, seconds: TimeInterval, record: (String, String, String) -> Void, timedOut: (String, String) -> String) {
         let path = engine.config.repoPath
         if let id = engine.config.activeBackendId,
            let endpoint = engine.config.backends.first(where: { $0.id == id }),
@@ -188,7 +233,7 @@ enum Doctor {
         }
     }
 
-    private static func freeSpaceCheck(config: RuntimeConfig, seconds: TimeInterval, record: (String, String, String) -> String, timedOut: (String, String) -> String) {
+    private static func freeSpaceCheck(config: RuntimeConfig, seconds: TimeInterval, record: (String, String, String) -> Void, timedOut: (String, String) -> String) {
         let cacheDir = config.cacheDir
         if cacheDir.isEmpty {
             record("free-space", "fail", "cache directory is not set")
@@ -212,7 +257,7 @@ enum Doctor {
         }
     }
 
-    private static func mountCheck(config: RuntimeConfig, seconds: TimeInterval, record: (String, String, String) -> String, timedOut: (String, String) -> String) {
+    private static func mountCheck(config: RuntimeConfig, seconds: TimeInterval, record: (String, String, String) -> Void, timedOut: (String, String) -> String) {
         let mountRoot = config.mountRoot
         if mountRoot.isEmpty {
             record("mounts", "fail", "mount root is not set")
@@ -233,7 +278,7 @@ enum Doctor {
     }
 
     /// Missing or older than this CLI is a warning. `doctor` still exits 0.
-    private static func engineCheck(engine: IsenoughEngine, seconds: TimeInterval, record: (String, String, String) -> String, timedOut: (String, String) -> String) {
+    private static func engineCheck(engine: IsenoughEngine, seconds: TimeInterval, record: (String, String, String) -> Void, timedOut: (String, String) -> String) {
         switch bound(seconds: seconds, { engine.engineWarnings() }) {
         case .value(let lines):
             if lines.isEmpty {
@@ -248,7 +293,7 @@ enum Doctor {
         }
     }
 
-    private static func diskImageCheck(seconds: TimeInterval, record: (String, String, String) -> String) {
+    private static func diskImageCheck(seconds: TimeInterval, record: (String, String, String) -> Void) {
         #if os(macOS)
         let diskutil = DiskImageTool.diskutil
         let hdiutil = DiskImageTool.hdiutil

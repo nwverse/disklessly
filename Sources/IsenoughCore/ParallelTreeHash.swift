@@ -24,6 +24,9 @@ extension BundleHasher {
                 throw IsenoughError.failure("cannot relativize \(url.path) under \(start.path)")
             }
             guard !relative.isEmpty, !relative.split(separator: "/").contains(".."), !relative.hasPrefix("/") else { continue }
+            // The Mac App Store receipt is per Apple ID and per Mac. Leaving it out of the
+            // digest keeps the digest format and lets two machines share one image.
+            if MASReceiptPaths.excluded(relative) { continue }
             entries.append(classify(url, relative: relative))
         }
         entries.sort { $0.relative < $1.relative }

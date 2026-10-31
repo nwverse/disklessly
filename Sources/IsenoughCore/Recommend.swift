@@ -48,17 +48,23 @@ public struct RecommendOptions: Equatable {
     public var minSizeBytes: UInt64
     public var limit: Int?
     public var minIdleDays: Int?
+    /// When set, idle-day and zero-score filters are not applied. `.apk` packages are still excluded.
+    public var includeAll: Bool
     public var now: Date
     public var neverUsedIdleDays: Int
     public var neverUsedBonusDays: Int
+    /// Images already stored in the shared repo, with the other devices that reference them.
+    public var repoImages: [RepoImagePresence]
 
-    public init(minSizeBytes: UInt64 = RecommendLimits.defaultMinSizeBytes, limit: Int? = nil, minIdleDays: Int? = nil, now: Date = Date(), neverUsedIdleDays: Int = RecommendScore.neverUsedIdleDays, neverUsedBonusDays: Int = RecommendScore.neverUsedBonusDays) {
+    public init(minSizeBytes: UInt64 = RecommendLimits.defaultMinSizeBytes, limit: Int? = nil, minIdleDays: Int? = nil, includeAll: Bool = false, now: Date = Date(), neverUsedIdleDays: Int = RecommendScore.neverUsedIdleDays, neverUsedBonusDays: Int = RecommendScore.neverUsedBonusDays, repoImages: [RepoImagePresence] = []) {
         self.minSizeBytes = minSizeBytes
         self.limit = limit
         self.minIdleDays = minIdleDays
+        self.includeAll = includeAll
         self.now = now
         self.neverUsedIdleDays = neverUsedIdleDays
         self.neverUsedBonusDays = neverUsedBonusDays
+        self.repoImages = repoImages
     }
 }
 
@@ -85,8 +91,11 @@ public struct RecommendApp: Equatable {
     public var systemExtension: Bool
     public var kernelExtension: Bool
     public var toolchain: Bool
+    public var version: String
+    public var build: String
+    public var architectures: [String]
 
-    public init(path: String, name: String, bundleId: String, sizeBytes: UInt64, sizeIncomplete: Bool = false, lastUsed: Date? = nil, macAppStore: Bool = false, pinned: Bool = false, packed: Bool = false, running: Bool = false, stub: Bool = false, isenoughProduct: Bool = false, systemLocation: Bool = false, appleSystemSigned: Bool = false, loginItem: Bool = false, menuBarAgent: Bool = false, backgroundHelperRunning: Bool = false, systemExtension: Bool = false, kernelExtension: Bool = false, toolchain: Bool = false) {
+    public init(path: String, name: String, bundleId: String, sizeBytes: UInt64, sizeIncomplete: Bool = false, lastUsed: Date? = nil, macAppStore: Bool = false, pinned: Bool = false, packed: Bool = false, running: Bool = false, stub: Bool = false, isenoughProduct: Bool = false, systemLocation: Bool = false, appleSystemSigned: Bool = false, loginItem: Bool = false, menuBarAgent: Bool = false, backgroundHelperRunning: Bool = false, systemExtension: Bool = false, kernelExtension: Bool = false, toolchain: Bool = false, version: String = "", build: String = "", architectures: [String] = []) {
         self.path = path
         self.name = name
         self.bundleId = bundleId
@@ -107,6 +116,9 @@ public struct RecommendApp: Equatable {
         self.systemExtension = systemExtension
         self.kernelExtension = kernelExtension
         self.toolchain = toolchain
+        self.version = version
+        self.build = build
+        self.architectures = architectures
     }
 }
 
@@ -127,6 +139,9 @@ public struct RecommendItem: Equatable {
     public var reason: String
     public var warnings: [String]
     public var estimatedFreedBytes: UInt64
+    /// Same bundle id, version, and architecture are already in the shared repo.
+    public var alreadyInRepo: Bool
+    public var otherDevices: [String]
 
     public func jsonObject() -> [String: Any] {
         let formatter = ISO8601DateFormatter()
@@ -148,6 +163,8 @@ public struct RecommendItem: Equatable {
             "reason": reason,
             "warnings": warnings,
             "estimatedFreedBytes": NSNumber(value: estimatedFreedBytes),
+            "alreadyInRepo": alreadyInRepo,
+            "otherDevices": otherDevices,
         ]
     }
 }
@@ -285,6 +302,16 @@ public enum RecommendFormatting {
         if sizeIncomplete { text += "; size is a lower bound because the scan timed out" }
         return text
     }
+
+    public static let alreadyInRepoNote = "already in repo, packing is instant, no upload"
+
+    public static func withRepoNote(_ reason: String, devices: [String]) -> String {
+        var text = reason
+        if !reason.isEmpty { text += "; " }
+        text += alreadyInRepoNote
+        if !devices.isEmpty { text += " (" + devices.joined(separator: ", ") + ")" }
+        return text
+    }
 }
 
 public enum RecommendRanking {
@@ -296,24 +323,29 @@ public enum RecommendRanking {
         var warnings: [RecommendItem] = []
         for app in apps {
             if app.stub || app.isenoughProduct || app.running { continue }
+            if RecommendPaths.isNonMacPackage(path: app.path, name: app.name) { continue }
             if (app.systemLocation || app.appleSystemSigned) && !app.toolchain { continue }
             let codes = warningCodes(app)
             let neverUsed = app.lastUsed == nil
             let days = RecommendScore.daysIdle(lastUsed: app.lastUsed, now: options.now)
             let score = RecommendScore.value(sizeBytes: app.sizeBytes, daysIdle: days, neverUsed: neverUsed, neverUsedIdleDays: options.neverUsedIdleDays, neverUsedBonusDays: options.neverUsedBonusDays)
+            let presence = RepoPresence.match(bundleId: app.bundleId, version: app.version, build: app.build, architectures: app.architectures, images: options.repoImages)
             let poor = !codes.isEmpty
             if poor {
                 let largeEnough = app.sizeIncomplete || app.sizeBytes >= options.minSizeBytes
                 if !largeEnough { continue }
-                warnings.append(item(app, days: days, neverUsed: neverUsed, score: score, warnings: codes, freed: 0))
+                warnings.append(item(app, days: days, neverUsed: neverUsed, score: score, warnings: codes, freed: 0, presence: presence))
                 continue
             }
             guard app.sizeBytes >= options.minSizeBytes else { continue }
-            if let minimum = options.minIdleDays {
-                let idleEnough = neverUsed || (days ?? 0) >= minimum
-                if !idleEnough { continue }
+            if !options.includeAll {
+                if score <= 0 { continue }
+                if let minimum = options.minIdleDays {
+                    let idleEnough = neverUsed || (days ?? 0) >= minimum
+                    if !idleEnough { continue }
+                }
             }
-            recommendations.append(item(app, days: days, neverUsed: neverUsed, score: score, warnings: [], freed: app.sizeBytes))
+            recommendations.append(item(app, days: days, neverUsed: neverUsed, score: score, warnings: [], freed: app.sizeBytes, presence: presence))
         }
         recommendations = sort(recommendations)
         warnings = sort(warnings)
@@ -349,8 +381,13 @@ public enum RecommendRanking {
         return app.macAppStore ? "restore" : "mount"
     }
 
-    private static func item(_ app: RecommendApp, days: Int?, neverUsed: Bool, score: Double, warnings: [String], freed: UInt64) -> RecommendItem {
-        RecommendItem(
+    private static func item(_ app: RecommendApp, days: Int?, neverUsed: Bool, score: Double, warnings: [String], freed: UInt64, presence: RepoImagePresence?) -> RecommendItem {
+        var reason = RecommendFormatting.reason(sizeBytes: app.sizeBytes, daysIdle: days, neverUsed: neverUsed, macAppStore: app.macAppStore, sizeIncomplete: app.sizeIncomplete, warnings: warnings)
+        let devices = presence?.devices ?? []
+        if presence != nil && !app.packed {
+            reason = RecommendFormatting.withRepoNote(reason, devices: devices)
+        }
+        return RecommendItem(
             path: app.path,
             name: app.name,
             bundleId: app.bundleId,
@@ -364,9 +401,11 @@ public enum RecommendRanking {
             pinned: app.pinned,
             packed: app.packed,
             score: score,
-            reason: RecommendFormatting.reason(sizeBytes: app.sizeBytes, daysIdle: days, neverUsed: neverUsed, macAppStore: app.macAppStore, sizeIncomplete: app.sizeIncomplete, warnings: warnings),
+            reason: reason,
             warnings: warnings,
-            estimatedFreedBytes: freed
+            estimatedFreedBytes: freed,
+            alreadyInRepo: presence != nil,
+            otherDevices: devices
         )
     }
 
@@ -384,18 +423,21 @@ public struct RecommendArguments: Equatable {
     public var minSizeBytes: UInt64
     public var limit: Int?
     public var minIdleDays: Int?
+    /// Skip the idle-day and zero-score filters. `.apk` packages stay excluded.
+    public var includeAll: Bool
     /// Accepted here as well as before the command, matching `isenough --json recommend`.
     public var json: Bool
 
-    public init(minSizeBytes: UInt64 = RecommendLimits.defaultMinSizeBytes, limit: Int? = nil, minIdleDays: Int? = nil, json: Bool = false) {
+    public init(minSizeBytes: UInt64 = RecommendLimits.defaultMinSizeBytes, limit: Int? = nil, minIdleDays: Int? = 30, includeAll: Bool = false, json: Bool = false) {
         self.minSizeBytes = minSizeBytes
         self.limit = limit
         self.minIdleDays = minIdleDays
+        self.includeAll = includeAll
         self.json = json
     }
 
     public func options(now: Date = Date()) -> RecommendOptions {
-        RecommendOptions(minSizeBytes: minSizeBytes, limit: limit, minIdleDays: minIdleDays, now: now)
+        RecommendOptions(minSizeBytes: minSizeBytes, limit: limit, minIdleDays: minIdleDays, includeAll: includeAll, now: now)
     }
 
     public static func parse(_ args: [String]) throws -> RecommendArguments {
@@ -406,6 +448,8 @@ public struct RecommendArguments: Equatable {
             switch flag {
             case "--json":
                 result.json = true
+            case "--all":
+                result.includeAll = true
             case "--min-size":
                 guard let raw = rest.first else { throw IsenoughError.usage("Unknown option or missing value: --min-size") }
                 rest.removeFirst()
@@ -435,6 +479,9 @@ public struct RecommendArguments: Equatable {
         }
         if let raw = query["minIdleDays"] ?? query["min-idle-days"] {
             result.minIdleDays = try parseCount(raw, name: "minIdleDays")
+        }
+        if let raw = query["all"] ?? query["includeAll"] {
+            result.includeAll = raw == "1" || raw.lowercased() == "true" || raw.lowercased() == "yes"
         }
         return result
     }
@@ -542,6 +589,17 @@ public enum RecommendPaths {
     /// Hidden entries are not apps to offload. Kept originals (`Foo.256orig.app`)
     /// and `.isenough-original-` backups are not apps either, even when the name
     /// has no leading dot.
+    /// Android packages and other non-macOS bundles are not pack candidates.
+    public static func isNonMacPackage(path: String, name: String) -> Bool {
+        func marked(_ value: String) -> Bool {
+            let lower = value.lowercased()
+            if lower.contains(".apk") { return true }
+            let ext = (lower as NSString).pathExtension
+            return ext == "apk" || ext == "aab" || ext == "exe" || ext == "msi"
+        }
+        return marked(path) || marked(name)
+    }
+
     public static func isIgnoredAppName(_ name: String) -> Bool {
         if name.hasPrefix(".") { return true }
         return isLeftoverBackupName(name)
@@ -729,7 +787,10 @@ public enum RecommendDiscovery {
             backgroundHelperRunning: helperRunning,
             systemExtension: hasChildExtension(url.appendingPathComponent("Contents/Library/SystemExtensions"), suffixes: ["systemextension", "dext"], fileManager: fileManager),
             kernelExtension: hasChildExtension(url.appendingPathComponent("Contents/Library/Extensions"), suffixes: ["kext"], fileManager: fileManager),
-            toolchain: RecommendToolchain.matches(bundleId: bundleId, bundlePath: path, developerDirectories: environment.developerDirectories)
+            toolchain: RecommendToolchain.matches(bundleId: bundleId, bundlePath: path, developerDirectories: environment.developerDirectories),
+            version: info["CFBundleShortVersionString"] as? String ?? "",
+            build: info["CFBundleVersion"] as? String ?? "",
+            architectures: MachArchitectures.slices(at: url.appendingPathComponent("Contents/MacOS/\(executable)"))
         )
     }
 

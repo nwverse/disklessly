@@ -9,10 +9,11 @@ final class CoreTests: XCTestCase {
         let app=ImageManifest.App(originalPath:"/Applications/A.app",executable:"A",documentTypes:[],urlTypes:[])
         let m=ImageManifest(bundleId:"com.test.a",name:"A",version:"1.0",image:image,app:app,createdAt:Date(timeIntervalSince1970:1_700_000_000))
         XCTAssertEqual(try ImageManifest.decode(m.encode()),m)
-        var bad=m; bad.image.format="ULFO"; XCTAssertThrowsError(try bad.validate())
+        var bad=m; bad.image.format="UDZO"; XCTAssertThrowsError(try bad.validate())
+        var ulfo=m; ulfo.image.format="ULFO"; XCTAssertNoThrow(try ulfo.validate())
     }
     func testLRUAndPins() {
-        let now=Date(); let xs=[CacheEntry(id:"new",size:8,lastUsed:now),CacheEntry(id:"old",size:8,lastUsed:now.addingTimeInterval(-5)),CacheEntry(id:"pin",size:40,lastUsed:now.addingTimeInterval(-10),pinned:true)]
+        let now=Date(); let xs=[PolicyCacheEntry(id:"new",size:8,lastUsed:now),PolicyCacheEntry(id:"old",size:8,lastUsed:now.addingTimeInterval(-5)),PolicyCacheEntry(id:"pin",size:40,lastUsed:now.addingTimeInterval(-10),pinned:true)]
         XCTAssertEqual(CachePolicy.evictionPlan(xs,quota:10),["old","new"])
     }
     func testStateMachineRejectsIllegalTransitions() throws {
@@ -278,7 +279,7 @@ final class CoreTests: XCTestCase {
         }
     }
 
-    func testCLITopLevelUnknownOptionIsUsageError() {
+    func testCLITopLevelUnknownOptionIsUsageError() throws {
         XCTAssertThrowsError(try GlobalArguments.parse(["--doc", "x"])) { error in
             XCTAssertEqual((error as? IsenoughError)?.errorDescription, "Unknown option: --doc")
             XCTAssertEqual((error as? IsenoughError)?.exitCode, 2)
@@ -286,6 +287,13 @@ final class CoreTests: XCTestCase {
         XCTAssertThrowsError(try GlobalArguments.parse(["--config"])) { error in
             XCTAssertEqual((error as? IsenoughError)?.exitCode, 2)
         }
+        let help = try GlobalArguments.parse(["--help"])
+        XCTAssertEqual(help.rest, ["help"])
+        let short = try GlobalArguments.parse(["-h"])
+        XCTAssertEqual(short.rest, ["-h"])
+        let jsonHelp = try GlobalArguments.parse(["--json", "--help"])
+        XCTAssertEqual(jsonHelp.json, true)
+        XCTAssertEqual(jsonHelp.rest, ["help"])
         let parsed = try? GlobalArguments.parse(["--json", "--state-dir", "/tmp/state", "launch", "com.a"])
         XCTAssertEqual(parsed?.json, true)
         XCTAssertEqual(parsed?.stateDir, "/tmp/state")
@@ -361,7 +369,7 @@ final class CoreTests: XCTestCase {
         #endif
         let stubInfo: [String: Any] = ["schema": "stub/1", "appId": "com.example.foo", "isenoughPath": "/old/dev/isenough", "stubVersion": 1]
         try JSONSerialization.data(withJSONObject: stubInfo).write(to: bundle.appendingPathComponent("Contents/Resources/stub.json"))
-        let updated = try engine.refreshStubs(appId: "com.example.foo")
+        let updated = try engine.refreshStubs(appId: "com.example.foo").updated
         XCTAssertEqual(updated, [bundle.path])
         let rewritten = try JSONSerialization.jsonObject(with: Data(contentsOf: bundle.appendingPathComponent("Contents/Resources/stub.json"))) as? [String: Any]
         XCTAssertEqual(rewritten?["isenoughPath"] as? String, installed.path)
