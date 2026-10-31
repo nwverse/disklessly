@@ -305,6 +305,23 @@ public enum ManagementUI {
             } catch {
                 return failure(error, status: 400)
             }
+        case ("GET", "/api/license"):
+            return .json(licenseObject(engine))
+        case ("POST", "/api/license/activate"):
+            let code = ((try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any])?["code"] as? String ?? ""
+            do {
+                try License.activate(code, stateDir: engine.config.stateDir)
+                return .json(licenseObject(engine))
+            } catch {
+                return failure(error, status: 400)
+            }
+        case ("POST", "/api/license/deactivate"):
+            do {
+                try License.deactivate(stateDir: engine.config.stateDir)
+                return .json(licenseObject(engine))
+            } catch {
+                return failure(error, status: 500)
+            }
         case ("POST", "/api/icons/backfill"):
             do {
                 let report = try engine.backfillIcons(appId: request.query["app"])
@@ -315,6 +332,22 @@ public enum ManagementUI {
         default:
             return .text(404, "not found")
         }
+    }
+
+    /// License state for the page. `offloaded` is how many apps count against the free limit.
+    static func licenseObject(_ engine: DisklesslyEngine) -> [String: Any] {
+        var object: [String: Any] = ["ok": true, "freeLimit": License.freeAppLimit]
+        object["offloaded"] = (try? engine.offloadedBundleIdCount()) ?? 0
+        switch License.load(stateDir: engine.config.stateDir) {
+        case .free: object["state"] = "free"
+        case .licensed(let p):
+            object["state"] = "licensed"; object["edition"] = p.edition
+            if let e = p.expires { object["expires"] = e }
+            if let u = p.updatesUntil { object["updatesUntil"] = u }
+        case .expired(let p): object["state"] = "expired"; object["expires"] = p.expires ?? ""
+        case .invalid(let reason): object["state"] = "invalid"; object["reason"] = reason
+        }
+        return object
     }
 
     /// Stable error code and readable message. The page maps the code to localized text.
@@ -335,6 +368,7 @@ public enum ManagementUI {
             case .usage: return ("bad_request", message)
             case .unsupported: return ("unsupported", message)
             case .resolution: return ("needs_resolution", message)
+            case .licenseRequired: return ("license_required", message)
             case .diskImage, .failure, .hook: return ("failed", message)
             }
         }

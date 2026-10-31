@@ -205,7 +205,12 @@ export DISKLESSLY_DETACH_DELAY=1
 FIXTURE_BUNDLE_ID=io.github.s546126.disklessly.e2efixture
 mkdir -p "$TMP/Applications/Fixture.app/Contents/MacOS" "$TMP/Applications/Fixture.app/Contents/Resources" "$TMP/docs"
 printf 'icns' > "$TMP/Applications/Fixture.app/Contents/Resources/AppIcon.icns"
+# Debug builds trust a throwaway key, so the harness can pack more apps than the free limit allows.
+LIC_DIR="$TMP/license"
+export DISKLESSLY_LICENSE_PUBLIC_KEY="$("$ROOT/.build/debug/disklessly-license" keygen --dir "$LIC_DIR" | sed -n 's/^public key: *//p')"
+LIC_CODE="$("$ROOT/.build/debug/disklessly-license" issue --dir "$LIC_DIR" --edition pro)"
 run_cli init --backend local
+run_cli license activate "$LIC_CODE" || fail 'activate the throwaway license'
 pass 'isolated local-folder repository initialized'
 
 cat > "$TMP/Applications/Fixture.app/Contents/Info.plist" <<PLIST

@@ -6,7 +6,7 @@ import Darwin
 #endif
 
 public enum DisklesslyError: Error, LocalizedError, Equatable {
-    case usage(String), unsupported(String), backend(String), integrity(String), busy(String), diskImage(String), noSpace(String), failure(String), hook(String), resolution(String)
+    case usage(String), unsupported(String), backend(String), integrity(String), busy(String), diskImage(String), noSpace(String), failure(String), hook(String), resolution(String), licenseRequired(String)
     public var exitCode: Int {
         switch self {
         case .usage: 2
@@ -18,12 +18,13 @@ public enum DisklesslyError: Error, LocalizedError, Equatable {
         case .hook: 10
         case .busy: 9
         case .resolution: 14
+        case .licenseRequired: 15
         case .failure: 1
         }
     }
     public var errorDescription: String? {
         switch self {
-        case .usage(let s), .unsupported(let s), .backend(let s), .integrity(let s), .busy(let s), .diskImage(let s), .noSpace(let s), .failure(let s), .hook(let s), .resolution(let s): s
+        case .usage(let s), .unsupported(let s), .backend(let s), .integrity(let s), .busy(let s), .diskImage(let s), .noSpace(let s), .failure(let s), .hook(let s), .resolution(let s), .licenseRequired(let s): s
         }
     }
 }

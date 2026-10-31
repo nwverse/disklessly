@@ -6,6 +6,14 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Free version limit and license codes. The free version offloads up to 2 apps at once; `disklessly license
+  [status|activate CODE|deactivate]` and a License card in the dashboard manage an Ed25519-signed code that is
+  verified offline. Only `pack` checks the limit (exit code 15, `license_required` in the dashboard API).
+  Buyout and time-limited promo codes. `disklessly-license` is a maintainer tool that makes the key pair and
+  issues codes; it is not part of any release artifact.
+
 ### Changed
 
 - The project is now **Disklessly** ("256G is enough"). CLI `disklessly` (short alias `dkl`), stub launcher

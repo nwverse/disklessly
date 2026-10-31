@@ -64,6 +64,41 @@ enum CLIText {
             : "Unpinned \(manifest.name). The cache may evict its image when space runs low."
     }
 
+    static func licenseStatus(_ state: LicenseState, offloaded: Int) -> String {
+        let limit = License.freeAppLimit
+        switch state {
+        case .licensed(let p):
+            var line = p.edition == "promo" ? "Promo license, valid until \(p.expires ?? "?"). Unlimited offloaded apps." : "Licensed. Unlimited offloaded apps."
+            if let updates = p.updatesUntil { line += " Updates included until \(updates)." }
+            if let email = p.email { line += "\nLicensed to \(email)." }
+            return line + "\nOffloaded now: \(offloaded)."
+        case .expired(let p):
+            return "Your license code expired on \(p.expires ?? "an earlier date"). The free limit applies: \(offloaded) of \(limit) apps offloaded. Starting, restoring and unpacking keep working."
+        case .invalid(let reason):
+            return "The saved license code is not usable: \(reason). The free limit applies: \(offloaded) of \(limit) apps offloaded.\nRun `disklessly license deactivate`, then `disklessly license activate CODE`."
+        case .free:
+            return "Free version: \(offloaded) of \(limit) apps offloaded. Starting, restoring and unpacking offloaded apps is always free.\nTo offload more, run `disklessly license activate CODE`."
+        }
+    }
+
+    static func licenseActivated(_ p: LicensePayload) -> String {
+        p.edition == "promo" ? "License activated (promo, valid until \(p.expires ?? "?")). You can offload as many apps as you like." : "License activated. You can offload as many apps as you like."
+    }
+
+    static func licenseDictionary(_ state: LicenseState, offloaded: Int) -> [String: Any] {
+        var d: [String: Any] = ["ok": true, "freeLimit": License.freeAppLimit, "offloaded": offloaded]
+        switch state {
+        case .free: d["state"] = "free"
+        case .licensed(let p):
+            d["state"] = "licensed"; d["edition"] = p.edition; d["licenseId"] = p.id
+            if let e = p.expires { d["expires"] = e }
+            if let u = p.updatesUntil { d["updatesUntil"] = u }
+        case .expired(let p): d["state"] = "expired"; d["expires"] = p.expires ?? ""
+        case .invalid(let reason): d["state"] = "invalid"; d["reason"] = reason
+        }
+        return d
+    }
+
     static func evicted(_ manifest: ImageManifest) -> String {
         "Removed the cached image of \(manifest.name). The copy in the repo is untouched; the next launch downloads it again."
     }

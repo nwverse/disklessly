@@ -79,6 +79,19 @@ final class PackSwapTests: XCTestCase {
         }
     }
 
+    func testFreeLimitRefusesAThirdAppBeforeTouchingIt() throws {
+        let world = try PackWorld()
+        defer { world.cleanup() }
+        world.engine.offloadedOverride = { ["com.example.one", "com.example.two"] }
+        XCTAssertThrowsError(try world.engine.pack(world.source.path)) { error in
+            guard case DisklesslyError.licenseRequired(let message) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(message.contains("license activate"), message)
+        }
+        XCTAssertEqual(world.kind(world.source), .original, "a refused pack leaves the app alone")
+        XCTAssertEqual(world.leftovers(), [])
+        XCTAssertEqual(try world.journals().count, 0)
+    }
+
     func testKeepOriginalRetainsTheApp() throws {
         for swap in [true, false] {
             let world = try PackWorld(swap: swap)

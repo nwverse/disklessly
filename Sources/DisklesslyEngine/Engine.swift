@@ -220,6 +220,8 @@ public struct DisklesslyEngine {
     public var imageEvidenceOverride: ((String) -> ImageEvidence)?
     /// Replaces the process probe during pack. Nil asks `ps`.
     public var packUsageOverride: ((String) -> UsageClass)?
+    /// Tests: bundle ids counted against the free limit instead of scanning this Mac's stubs.
+    public var offloadedOverride: (() throws -> Set<String>)?
     /// Replaces `SHA256Digest.hexFile` for prefetch. Nil hashes the file.
     public var hasherOverride: ((URL) throws -> String)?
     /// Replaces the disk-image tool and process probe for `detach` and the
@@ -473,6 +475,7 @@ public struct DisklesslyEngine {
             throw DisklesslyError.usage("invalid --image-format \(requested); expected ULMO or ULFO")
         }
         try PackGuard.refuseStub(app, bundleId: bid)
+        try License.checkPack(state: License.load(stateDir: config.stateDir), offloaded: try offloadedOverride?() ?? offloadedBundleIds(), packing: bid)
         let usage = packUsageOverride?(app.path) ?? ProcessProbe.usage(roots: [app.path])
         if let blocked = PackPreflight.running(usage, name: name) { throw blocked }
         let allocated = AllocatedSize.tree(app)
