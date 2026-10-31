@@ -135,5 +135,5 @@ schema listed for it. A newer schema is never written by an older release.
 After upgrading, run `disklessly install-engine`, then `disklessly stub refresh --app ID`
 for each packed app so existing stubs exec the new engine.
 
-[Unreleased]: https://github.com/s546126/256isenough/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/s546126/256isenough/releases/tag/v0.1.0
+[Unreleased]: https://github.com/s546126/disklessly/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/s546126/disklessly/releases/tag/v0.1.0

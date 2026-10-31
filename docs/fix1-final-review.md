@@ -42,7 +42,7 @@ not cover these findings. This is not an F-B1 issue.
 
 ## Verification
 
-- GitHub Actions [39449847781](https://github.com/s546126/256isenough/actions/runs/39449847781):
+- GitHub Actions [39449847781](https://github.com/s546126/disklessly/actions/runs/39449847781):
   confirmed success at reviewed HEAD; all macOS E2E assertions completed.
 - Official `swift:6.1`, Linux aarch64: `swift test` with read-only source mount
   and container-local scratch path: **14 tests, 0 failures**. Container removed.

@@ -5,10 +5,10 @@ cask "disklessly" do
   version "@VERSION@"
   sha256 "@SHA256_DMG@"
 
-  url "https://github.com/s546126/256isenough/releases/download/v#{version}/Disklessly-#{version}.dmg"
+  url "https://github.com/s546126/disklessly/releases/download/v#{version}/Disklessly-#{version}.dmg"
   name "Disklessly"
   desc "Offload rarely used Mac apps to a repo and launch them on demand"
-  homepage "https://github.com/s546126/256isenough"
+  homepage "https://github.com/s546126/disklessly"
 
   depends_on macos: ">= :ventura"
   conflicts_with formula: "disklessly-cli"

@@ -22,7 +22,7 @@ troubleshooting, and uninstalling, in Chinese and English.
 ## Install
 
 **App (recommended).** Download `Disklessly-<version>.dmg` from
-[Releases](https://github.com/s546126/256isenough/releases), drag Disklessly to
+[Releases](https://github.com/s546126/disklessly/releases), drag Disklessly to
 Applications, and open it. A drive icon appears in the menu bar; choose
 **Open Dashboard**. The app is signed with a Developer ID and notarized. The CLI
 is inside it at `/Applications/Disklessly.app/Contents/MacOS/disklessly`:
