@@ -1,11 +1,11 @@
 // Headless checks and screenshots of the loopback page against static fixtures.
-// Serves Sources/isenough/web and fixture /api/* from a node server on 127.0.0.1.
+// Serves Sources/disklessly/web and fixture /api/* from a node server on 127.0.0.1.
 // The page token picks the fixture (main, near, critical, empty, degraded, offline,
 // error, slow, expired), so the same server works for any browser.
 //
-//   npm install --prefix /tmp/isenough-ui-shot playwright
-//   npx --prefix /tmp/isenough-ui-shot playwright install chromium
-//   NODE_PATH=/tmp/isenough-ui-shot/node_modules node scripts/ui-screenshots.mjs
+//   npm install --prefix /tmp/disklessly-ui-shot playwright
+//   npx --prefix /tmp/disklessly-ui-shot playwright install chromium
+//   NODE_PATH=/tmp/disklessly-ui-shot/node_modules node scripts/ui-screenshots.mjs
 //
 //   node scripts/ui-screenshots.mjs --serve [port]   # keep the fixture server running
 //
@@ -21,7 +21,7 @@ import { createRequire } from "node:module";
 
 const require = createRequire(import.meta.url);
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const webRoot = path.join(repoRoot, "Sources/isenough/web");
+const webRoot = path.join(repoRoot, "Sources/disklessly/web");
 const outDir = process.env.UI_SHOT_DIR || path.join(repoRoot, ".build/ui-screenshots");
 const GiB = 1024 ** 3;
 const MiB = 1024 ** 2;
@@ -61,7 +61,7 @@ function backend(health) {
     location: "remote",
     activeId: "nas-studio",
     activePlace: "nas.local/apps",
-    repoPath: "/Volumes/apps/256isenough",
+    repoPath: "/Volumes/apps/Disklessly",
     health,
     healthDetail: offline ? "timeout" : health === "missing" ? "repo.json is not in the backend" : "",
     timedOut: offline,
@@ -71,7 +71,7 @@ function backend(health) {
     endpoints: [
       { id: "webdav-office", type: "webdav", place: "dav.example.lan/apps", state: "standby" },
       { id: "nas-studio", type: "smb", place: "nas.local/apps", state: "active" },
-      { id: "usb-archive", type: "local", place: "/Volumes/Archive/256isenough", state: "local" },
+      { id: "usb-archive", type: "local", place: "/Volumes/Archive/Disklessly", state: "local" },
     ],
   };
 }

@@ -1,6 +1,6 @@
 # Third-party notices
 
-256isenough is MIT licensed (see `LICENSE`). Release builds statically link the
+Disklessly is MIT licensed (see `LICENSE`). Release builds statically link the
 packages below. Versions are pinned in `Package.resolved`.
 
 The app is a native AppKit and WebKit program. It does not bundle Pake, Tauri,
@@ -24,7 +24,7 @@ and BoringSSL licenses listed in that repository's `LICENSE.txt`.
 ## Zstandard (zstd)
 
 - Source: https://github.com/facebook/zstd
-- License: BSD 3-Clause (zstd is dual licensed BSD or GPLv2; 256isenough uses it under BSD)
+- License: BSD 3-Clause (zstd is dual licensed BSD or GPLv2; Disklessly uses it under BSD)
 - Copyright (c) Meta Platforms, Inc. and affiliates. All rights reserved.
 
 ```

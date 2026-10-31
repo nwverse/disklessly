@@ -1,10 +1,20 @@
 # Changelog
 
-All notable changes to 256isenough (`isenough`) are recorded here.
+All notable changes to Disklessly (`disklessly`) are recorded here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+### Changed
+
+- The project is now **Disklessly** ("256G is enough"). CLI `disklessly` (short alias `dkl`), stub launcher
+  `disklessly-stub`, env vars `DISKLESSLY_*`, bundle id prefix `io.github.s546126.disklessly`, Homebrew cask
+  `disklessly` and formula `disklessly-cli`. The menu-bar executable is `DisklesslyApp` so it cannot collide with
+  the `disklessly` CLI on case-insensitive volumes.
+- Installs made under the old `isenough` / `256isenough` names keep working: existing `256isenough` data folders are
+  used in place, old `.isenough-original-` backups are still recognized by `cleanup-backups`, and Keychain items
+  saved under the old service name are still read.
 
 ## [0.1.0] - Unreleased
 
@@ -12,24 +22,24 @@ First public release.
 
 ### Added
 
-- `isenough pack` moves an app into a DMG image in your repo (a local folder,
+- `disklessly pack` moves an app into a DMG image in your repo (a local folder,
   iCloud Drive, SMB/NFS share, WebDAV, or OpenList) and leaves a signed stub in its place.
   Opening the stub downloads, verifies, mounts, and starts the app.
 - Two launch modes: `mount` runs the app from a read-only image; `restore` copies
   it back for the session under a journal and returns it to the repo after quit.
-- `isenough unpack` puts the real app back after checking its tree hash and cdhash.
+- `disklessly unpack` puts the real app back after checking its tree hash and cdhash.
   `unpack --to DIR` copies it out and keeps the stub.
-- `isenough recommend` ranks installed apps worth offloading by size and time idle.
+- `disklessly recommend` ranks installed apps worth offloading by size and time idle.
 - Several Macs can share one repo. Images are write-once and shared, and each Mac
   owns one device file. `gc` keeps every image that any device names.
 - Cache quota with LRU eviction, `pin`/`unpin`, `prefetch`, `evict`, and
   `evict-local` for iCloud copies that finished uploading.
-- `isenough doctor [--fix]` with a time limit per check, and journal replay.
-- `isenough sessions` archives cold coding-agent transcripts into write-once zstd
+- `disklessly doctor [--fix]` with a time limit per check, and journal replay.
+- `disklessly sessions` archives cold coding-agent transcripts into write-once zstd
   segments, with optional AES-GCM encryption and a SQLite search index.
-- 256isenough.app: a native menu-bar app (AppKit and WebKit) that serves the
+- Disklessly.app: a native menu-bar app (AppKit and WebKit) that serves the
   dashboard on 127.0.0.1 and shows it in a window. It replaces the Pake wrapper.
-- `isenough ui --open` opens the dashboard in the browser; `ui --json` prints
+- `disklessly ui --open` opens the dashboard in the browser; `ui --json` prints
   `{url, port, token}`.
 - Readable output for `init`, `pack`, `launch`, `prefetch`, `pin`, `evict`,
   `status`, and `unpack`. `--json` keeps the machine format.
@@ -65,25 +75,25 @@ First public release.
   watcher, so the image is detached after the app quits.
 - `scripts/e2e.sh` runs end to end on macOS against fixture apps in temp folders.
 
-- **Pinned evict:** `isenough evict APP` refuses a pinned app unless `--force`;
+- **Pinned evict:** `disklessly evict APP` refuses a pinned app unless `--force`;
   mounted, in-use, or mid-restore images are refused even with `--force`. The
   dashboard disables Evict while an app is pinned.
-- **`isenough detach APP [--force]`** detaches a mounted image now, refusing while
+- **`disklessly detach APP [--force]`** detaches a mounted image now, refusing while
   the app runs.
-- **Orphan mount reaper:** `isenough reap [--dry-run]`, also run by `launch`
+- **Orphan mount reaper:** `disklessly reap [--dry-run]`, also run by `launch`
   (after the app opens), `gc`, and `doctor --fix`.
 - **Repo-scoped stubs:** `stub.json` carries `repoId`; device claims count only
-  this repo's stubs. `isenough stub refresh --all [--adopt]` migrates old stubs.
+  this repo's stubs. `disklessly stub refresh --all [--adopt]` migrates old stubs.
 
 ### Changed
 
-- `isenough gc` now replays journals, applies repo garbage rules, and enforces
+- `disklessly gc` now replays journals, applies repo garbage rules, and enforces
   the cache quota in one pass. `gc --dry-run` still changes nothing.
-- `isenough` with no command prints a short hint and exits 64 (EX_USAGE) instead
+- `disklessly` with no command prints a short hint and exits 64 (EX_USAGE) instead
   of the full help. `help` groups commands by task and lists `resolve`.
 - On macOS, SQLite links against the system library, so release binaries do not
   depend on Homebrew.
-- Errors no longer print Foundation `userInfo`. Set `ISENOUGH_DEBUG=1` to see it.
+- Errors no longer print Foundation `userInfo`. Set `DISKLESSLY_DEBUG=1` to see it.
 
 ### Removed
 
@@ -94,9 +104,9 @@ First public release.
 
 ### Fixed
 
-- `isenough ui` from a copied or installed binary no longer traps in
-  `Bundle.module`. The page is found through `ISENOUGH_WEB_ROOT`,
-  `<exe>/../Resources/web`, `<exe>/../share/isenough/web`, then the SwiftPM
+- `disklessly ui` from a copied or installed binary no longer traps in
+  `Bundle.module`. The page is found through `DISKLESSLY_WEB_ROOT`,
+  `<exe>/../Resources/web`, `<exe>/../share/disklessly/web`, then the SwiftPM
   resource bundle, and a clear error is printed when none exists.
 - An empty mount folder left by `diskutil` detach no longer counts as mounted,
   so a launched image can be evicted or unpacked afterwards.
@@ -119,10 +129,10 @@ schema listed for it. A newer schema is never written by an older release.
 | Schema    | Where                                         | 0.1.0 |
 |-----------|-----------------------------------------------|-------|
 | `stub/1`  | `Contents/Resources/stub.json` in each stub   | reads and writes |
-| `state/2` | `~/Library/Application Support/256isenough/state.json` | reads and writes; migrates `state/1` on first load |
+| `state/2` | `~/Library/Application Support/Disklessly/state.json` | reads and writes; migrates `state/1` on first load |
 | `image/1` | `manifests/<imageId>.json` in the repo        | reads and writes |
 
-After upgrading, run `isenough install-engine`, then `isenough stub refresh --app ID`
+After upgrading, run `disklessly install-engine`, then `disklessly stub refresh --app ID`
 for each packed app so existing stubs exec the new engine.
 
 [Unreleased]: https://github.com/s546126/256isenough/compare/v0.1.0...HEAD

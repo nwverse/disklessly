@@ -19,7 +19,7 @@ F-B1 remains deferred and is not assessed here.
 ## Interface findings
 
 - **P2 — `--` does not fully end option/noise parsing.**
-  `Sources/IsenoughStubSupport/StubArgv.swift:13–14` drops LS-noise-shaped
+  `Sources/DisklesslyStubSupport/StubArgv.swift:13–14` drops LS-noise-shaped
   filenames even after the separator. Linux reproduction:
   `build(appId:"com.a", rawArguments:["--","-NSnotes.txt","keep.txt"], cwd:/w)`
   returns only `["launch","com.a"]`, instead of two document pairs.
@@ -30,8 +30,8 @@ F-B1 remains deferred and is not assessed here.
   `/w/a%20b.txt`. Forward `URL.path` without decoding again and test literal
   percent escapes (§3.3; wrong-file delivery).
 - **P2 — invalid explicit launcher override silently falls back.**
-  `Sources/IsenoughEngine/Engine.swift:62–63` searches both candidates for an
-  executable. With an invalid `ISENOUGH_STUB_BINARY` and a valid sibling it
+  `Sources/DisklesslyEngine/Engine.swift:62–63` searches both candidates for an
+  executable. With an invalid `DISKLESSLY_STUB_BINARY` and a valid sibling it
   succeeds; §3.1 requires a usage error for the invalid explicit override.
   Validate the override separately and test fallback/self-identity explicitly.
 

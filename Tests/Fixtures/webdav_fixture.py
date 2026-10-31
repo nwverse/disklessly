@@ -60,7 +60,7 @@ class Handler(BaseHTTPRequestHandler):
         body = b"unauthorized"
         self.send_response(401)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("WWW-Authenticate", 'Basic realm="isenough"')
+        self.send_header("WWW-Authenticate", 'Basic realm="disklessly"')
         self.end_headers()
         self.wfile.write(body)
 

@@ -5,15 +5,15 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>en</string>
 	<key>CFBundleDisplayName</key>
-	<string>256isenough</string>
+	<string>Disklessly</string>
 	<key>CFBundleExecutable</key>
-	<string>256isenough</string>
+	<string>DisklesslyApp</string>
 	<key>CFBundleIdentifier</key>
-	<string>io.github.s546126.256isenough</string>
+	<string>io.github.s546126.disklessly</string>
 	<key>CFBundleInfoDictionaryVersion</key>
 	<string>6.0</string>
 	<key>CFBundleName</key>
-	<string>256isenough</string>
+	<string>Disklessly</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -29,7 +29,7 @@
 	<key>NSHighResolutionCapable</key>
 	<true/>
 	<key>NSHumanReadableCopyright</key>
-	<string>Copyright © 2026 256isenough contributors. MIT License.</string>
+	<string>Copyright © 2026 Disklessly contributors. MIT License.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>

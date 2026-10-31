@@ -1,0 +1,855 @@
+import Foundation
+import DisklesslyCore
+
+/// Local management page and JSON API. The loopback server checks the token
+/// before this runs, so every page and `/api` call already presented it.
+public enum ManagementUI {
+    /// Process-wide jobs and scan cache used by `disklessly ui`.
+    public static let shared = ManagementUIContext()
+
+    public static func respond(engine: DisklesslyEngine, webRoot: URL?, request: UIRequest) -> UIResponse {
+        respond(engine: engine, webRoot: webRoot, request: request, context: shared)
+    }
+
+    public static func respond(engine: DisklesslyEngine, webRoot: URL?, request: UIRequest, context: ManagementUIContext) -> UIResponse {
+        if request.path.hasPrefix("/api/") { return api(engine: engine, request: request, context: context) }
+        return staticFile(webRoot: webRoot, request: request)
+    }
+
+    public static func dashboard(_ engine: DisklesslyEngine) -> [String: Any] {
+        dashboard(engine, context: shared)
+    }
+
+    public static func dashboard(_ engine: DisklesslyEngine, context: ManagementUIContext) -> [String: Any] {
+        var apps: [[String: Any]] = []
+        var appsError = ""
+        var appsErrorCode = ""
+        let isoFormatter = ISO8601DateFormatter()
+        let loaded = StateStore(engine.config.stateDir).load()
+        let state = loaded.dictionary()
+        let stored = state["apps"] as? [String: [String: Any]] ?? [:]
+        // Probe first (bounded by its timeout). An offline backend would make the
+        // listing below block for the transport's own timeout, so skip it and show
+        // the Error state at once instead of a page stuck on Loading.
+        let health = context.health.current(engine)
+        let loadedApps = health.status == "offline"
+            ? (nil, [], (code: "offline", message: health.detail.isEmpty ? "The backend is unreachable." : health.detail))
+            : UbiquitousMaterializer.withBudget(ICloudLimits.metadataTimeout()) { () -> (DeviceListing?, [ImageManifest], (code: String, message: String)) in
+            let listing = try? engine.deviceListing(createLocal: false)
+            do {
+                return (listing, try engine.list(), ("", ""))
+            } catch {
+                // Same codes as API failures: only `offline` means the backend is unreachable.
+                return (listing, [], errorInfo(error))
+            }
+        }
+        let listing = loadedApps.0
+        let deviceRows = listing?.devices ?? []
+        let manifests = loadedApps.1
+        appsError = loadedApps.2.message
+        appsErrorCode = loadedApps.2.code
+        for manifest in manifests {
+                let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
+                let exists = FileManager.default.fileExists(atPath: cached.path)
+                let size = exists ? ((try? cached.resourceValues(forKeys: [.fileSizeKey]).fileSize).map(UInt64.init) ?? 0) : 0
+                let restoredMap = state["restored"] as? [String: Any] ?? [:]
+                let record = loaded.apps[manifest.bundleId]
+                var appState = record?.state ?? ""
+                if let pending = record?.needsResolution, !pending.isEmpty { appState = "needsResolution" }
+                let restored = restoredMap[manifest.bundleId] != nil || appState == "restored" || appState == "needsResolution"
+                // Other Macs that hold this image ("Also on …"); this Mac is not listed.
+                let holders = deviceRows.filter { device in
+                    device.deviceId != listing?.localDeviceId && device.images.contains { $0.imageId == manifest.imageId }
+                }.map(\.displayName)
+                var row: [String: Any] = [
+                    "imageId": manifest.imageId,
+                    "bundleId": manifest.bundleId,
+                    "name": manifest.name,
+                    "version": manifest.version,
+                    "build": manifest.build,
+                    "architectures": manifest.architectures,
+                    "mode": manifest.mode.rawValue,
+                    "pinned": stored[manifest.bundleId]?["pinned"] as? Bool ?? false,
+                    "cached": exists,
+                    "remote": !exists,
+                    "restored": restored,
+                    "state": appState,
+                    "needsResolution": appState == "needsResolution",
+                    "mounted": appState == "running",
+                    "cachedBytes": NSNumber(value: size),
+                    "imageBytes": NSNumber(value: manifest.image.size),
+                    "devices": holders,
+                    "iconPath": AppIcon.existingPath(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: manifest.imageId) ?? "",
+                    // Where the stub lives and where a permanent restore puts the app.
+                    "installPath": manifest.app.originalPath,
+                ]
+                if let used = record?.lastUsed { row["lastUsed"] = isoFormatter.string(from: used) }
+                apps.append(row)
+        }
+        let archived = ((try? SessionArchive.archivedEntries(config: engine.config)) ?? []).sorted { $0.modified > $1.modified }
+        let formatter = ISO8601DateFormatter()
+        let now = Date()
+        let sessions: [[String: Any]] = archived.map { entry in
+            // Only cold files are ever archived, so every indexed entry is cold.
+            return [
+                "id": entry.id,
+                "tool": entry.tool,
+                "path": entry.path,
+                "displayPath": homeRelative(entry.path),
+                "preview": entry.preview,
+                "archive": entry.archive,
+                "tier": "cold",
+                "ageDays": NSNumber(value: sessionAgeDays(modified: entry.modified, now: now)),
+                "modified": formatter.string(from: entry.modified),
+            ]
+        }
+        let used = directoryBytes(engine.config.cacheDir)
+        let quota = engine.config.quotaBytes
+        var cache: [String: Any] = [
+            "usedBytes": NSNumber(value: used),
+            "quotaBytes": NSNumber(value: quota),
+            "minFreeBytes": NSNumber(value: engine.config.minFreeBytes),
+            "detachDelaySeconds": NSNumber(value: engine.config.detachDelaySeconds),
+            "quotaLeftBytes": NSNumber(value: quota > used ? quota - used : 0),
+            "level": cacheLevel(used: used, quota: quota),
+        ]
+        if let diskFree = diskFreeBytes(engine.config.cacheDir) {
+            cache["diskFreeBytes"] = NSNumber(value: diskFree)
+            // The floor is free disk space, not a cache size. On the 0...quota axis it sits
+            // where cache growth would push free disk space below the floor.
+            if let marker = floorMarker(used: used, diskFree: diskFree, floor: engine.config.minFreeBytes, quota: quota) {
+                cache["floorMarkerBytes"] = NSNumber(value: marker)
+            }
+        }
+        return [
+            "ok": true,
+            "backend": backendInfo(engine, health: health),
+            "cache": cache,
+            "apps": apps,
+            "appsError": appsError,
+            "appsErrorCode": appsErrorCode,
+            "devices": deviceRows.map { device in
+                [
+                    "deviceId": device.deviceId,
+                    "displayName": device.displayName,
+                    "hostname": device.hostname,
+                    "arch": device.arch,
+                    "osVersion": device.osVersion,
+                    "lastSeen": formatter.string(from: device.lastSeen),
+                    "self": device.deviceId == listing?.localDeviceId,
+                    "images": device.images.map { ["imageId": $0.imageId, "bundleId": $0.bundleId, "version": $0.version, "architectures": $0.architectures, "mode": $0.mode] },
+                ] as [String: Any]
+            },
+            "jobs": context.jobs.active().map { $0.jsonObject() },
+            "devicePlaceholders": listing?.placeholders ?? [],
+            "deviceConflicts": listing?.conflicts ?? [],
+            "sessions": [
+                "coldDays": NSNumber(value: engine.config.sessionColdDays),
+                "offloaded": sessions,
+            ] as [String: Any],
+            "generatedAt": formatter.string(from: now),
+        ]
+    }
+
+    /// Backend card data: kind, where it lives, health with latency, and every endpoint with its state.
+    static func backendInfo(_ engine: DisklesslyEngine, health: BackendHealthProbe.Result) -> [String: Any] {
+        let config = engine.config
+        let activeId = config.activeBackendId ?? ""
+        let active = config.backends.first { $0.id == activeId }
+        let kind = active?.type ?? config.backend
+        var endpoints: [[String: Any]] = config.backends.map { endpoint in
+            let state: String
+            if endpoint.id == activeId { state = "active" }
+            else if endpoint.type == "local" { state = "local" }
+            else { state = "standby" }
+            return [
+                "id": endpoint.id,
+                "type": endpoint.type,
+                "host": endpoint.host ?? "",
+                "mountPoint": endpoint.mountPoint ?? "",
+                "url": endpoint.url ?? "",
+                "place": endpointPlace(endpoint),
+                "state": state,
+            ]
+        }
+        if active == nil {
+            // A plain folder repo has no saved endpoint; it is the active one.
+            endpoints.insert([
+                "id": "local",
+                "type": config.backend,
+                "host": "",
+                "mountPoint": "",
+                "url": "",
+                "place": config.repoPath,
+                "state": "active",
+            ], at: 0)
+        }
+        var object: [String: Any] = [
+            "kind": kind,
+            "location": kind == "local" ? "local" : "remote",
+            "activeId": activeId,
+            "activePlace": active.map(endpointPlace) ?? config.repoPath,
+            "repoPath": config.repoPath,
+            "health": health.status,
+            "healthDetail": health.detail,
+            "timedOut": health.timedOut,
+            "timeoutMs": NSNumber(value: Int(health.timeout * 1000)),
+            "checkedAt": ISO8601DateFormatter().string(from: health.checkedAt),
+            "endpoints": endpoints,
+        ]
+        if let latency = health.latencyMs { object["latencyMs"] = NSNumber(value: latency) }
+        return object
+    }
+
+    private static func endpointPlace(_ endpoint: BackendEndpoint) -> String {
+        if let url = endpoint.url, !url.isEmpty { return url }
+        if let host = endpoint.host, !host.isEmpty {
+            let share = endpoint.share ?? endpoint.exportPath ?? ""
+            if share.isEmpty { return host }
+            return host + "/" + (share.hasPrefix("/") ? String(share.dropFirst()) : share)
+        }
+        if let mount = endpoint.mountPoint, !mount.isEmpty { return mount }
+        return endpoint.root
+    }
+
+    /// `ok` below 80 % of the quota, `near` from 80 %, `critical` from 95 %.
+    public static func cacheLevel(used: UInt64, quota: UInt64) -> String {
+        guard quota > 0 else { return "ok" }
+        let ratio = Double(used) / Double(quota)
+        if ratio >= 0.95 { return "critical" }
+        if ratio >= 0.8 { return "near" }
+        return "ok"
+    }
+
+    /// Cache size at which free disk space would fall to `floor` (`used + diskFree - floor`,
+    /// clamped at 0), or nil when that point lies at or past the quota and the floor never binds.
+    public static func floorMarker(used: UInt64, diskFree: UInt64, floor: UInt64, quota: UInt64) -> UInt64? {
+        guard quota > 0, floor > 0 else { return nil }
+        let reach = Double(used) + Double(diskFree) - Double(floor)
+        if reach >= Double(quota) { return nil }
+        return UInt64(max(0, reach))
+    }
+
+    /// Whole days since the archived file was last modified.
+    /// `~/…` for paths under the home folder (either `/private` spelling).
+    public static func homeRelative(_ path: String, home: String = ProcessInfo.processInfo.environment["HOME"] ?? NSHomeDirectory()) -> String {
+        let trimmed = home.hasSuffix("/") ? String(home.dropLast()) : home
+        guard !trimmed.isEmpty else { return path }
+        var homes = [trimmed]
+        if trimmed.hasPrefix("/private/") { homes.append(String(trimmed.dropFirst("/private".count))) }
+        else if trimmed.hasPrefix("/tmp/") || trimmed.hasPrefix("/var/") { homes.append("/private" + trimmed) }
+        for candidate in homes where path == candidate || path.hasPrefix(candidate + "/") {
+            return "~" + path.dropFirst(candidate.count)
+        }
+        return path
+    }
+
+    public static func sessionAgeDays(modified: Date, now: Date) -> Int {
+        max(0, Int(now.timeIntervalSince(modified) / 86_400))
+    }
+
+    private static func api(engine: DisklesslyEngine, request: UIRequest, context: ManagementUIContext) -> UIResponse {
+        if request.method == "GET", request.path.hasPrefix("/api/icon/") {
+            guard let imageId = AppIcon.imageId(apiPath: request.path) else { return .text(404, "not found") }
+            let body = AppIcon.png(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: imageId)
+            return UIResponse(status: 200, contentType: "image/png", body: body)
+        }
+        if request.method == "GET", request.path.hasPrefix("/api/jobs/") {
+            let id = String(request.path.dropFirst("/api/jobs/".count))
+            guard let job = context.jobs.job(id) else {
+                return failure(code: "unknown_job", message: "No job with id \(id)", status: 404)
+            }
+            var object = job.jsonObject()
+            object["ok"] = true
+            return .json(object)
+        }
+        if request.method == "POST", let kind = UIJobKind(path: request.path) {
+            guard let name = appName(request) else { return failure(code: "bad_request", message: "app is required", status: 400) }
+            let actions = context.actions ?? .live(engine)
+            // Evicting a pinned app needs an explicit force; the page sends force=false.
+            let options = UIJobOptions(force: flag(request, "force"))
+            switch context.jobs.start(kind: kind, app: name, work: { progress in try actions.perform(kind, name, options, progress) }) {
+            case .started(let job):
+                var object = job.jsonObject()
+                object["ok"] = true
+                object["jobId"] = job.id
+                return .json(object, status: 202)
+            case .busy(let job):
+                var object = failureObject(code: "busy", message: "\(job.app) already has a \(job.kind.rawValue) job running")
+                object["jobId"] = job.id
+                return .json(object, status: 409)
+            }
+        }
+        switch (request.method, request.path) {
+        case ("GET", "/api/status"):
+            return .json(dashboard(engine, context: context))
+        case ("GET", "/api/health"):
+            let fresh = ["1", "true", "yes"].contains((request.query["fresh"] ?? "").lowercased())
+            var object = backendInfo(engine, health: context.health.current(engine, fresh: fresh))
+            object["ok"] = true
+            return .json(object)
+        case ("GET", "/api/jobs"):
+            return .json(["ok": true, "jobs": context.jobs.all().map { $0.jsonObject() }])
+        case ("GET", "/api/recommend"):
+            do {
+                let arguments = try RecommendArguments.parse(query: request.query)
+                let rescan = ["1", "true", "yes"].contains((request.query["rescan"] ?? "").lowercased())
+                let cached = context.recommendations(key: recommendKey(engine, request.query), rescan: rescan) {
+                    let reachable = context.health.current(engine).status != "offline"
+                    return engine.recommend(options: arguments.options(), repoReachable: reachable).jsonObject()
+                }
+                var object = cached.report
+                object["scannedAt"] = ISO8601DateFormatter().string(from: cached.scannedAt)
+                object["cached"] = cached.fromCache
+                return .json(object)
+            } catch {
+                return failure(error, status: 400)
+            }
+        case ("POST", "/api/icons/backfill"):
+            do {
+                let report = try engine.backfillIcons(appId: request.query["app"])
+                return .json(["ok": true, "updated": report.updated, "skipped": report.skipped, "warnings": report.warnings])
+            } catch {
+                return failure(error, status: error is DisklesslyError ? 400 : 500)
+            }
+        default:
+            return .text(404, "not found")
+        }
+    }
+
+    /// Stable error code and readable message. The page maps the code to localized text.
+    public static func errorInfo(_ error: Error) -> (code: String, message: String) {
+        if let error = error as? UIJobError {
+            switch error {
+            case .unknownApp(let name): return ("unknown_app", "Unknown app: \(name)")
+            case .pinned(let name): return ("pinned", "\(name) is pinned; unpin it first")
+            }
+        }
+        if let error = error as? DisklesslyError {
+            let message = error.errorDescription ?? String(describing: error)
+            switch error {
+            case .backend: return ("offline", message)
+            case .integrity: return ("integrity", message)
+            case .noSpace: return ("no_space", message)
+            case .busy: return ("busy", message)
+            case .usage: return ("bad_request", message)
+            case .unsupported: return ("unsupported", message)
+            case .resolution: return ("needs_resolution", message)
+            case .diskImage, .failure, .hook: return ("failed", message)
+            }
+        }
+        let nsError = error as NSError
+        if (nsError.domain == NSPOSIXErrorDomain && nsError.code == Int(ENOSPC)) || (nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileWriteOutOfSpaceError) {
+            return ("no_space", nsError.localizedDescription)
+        }
+        if nsError.domain == NSURLErrorDomain { return ("offline", nsError.localizedDescription) }
+        return ("failed", (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+    }
+
+    private static func failure(_ error: Error, status: Int) -> UIResponse {
+        let info = errorInfo(error)
+        return failure(code: info.code, message: info.message, status: status)
+    }
+
+    private static func failure(code: String, message: String, status: Int) -> UIResponse {
+        .json(failureObject(code: code, message: message), status: status)
+    }
+
+    private static func failureObject(code: String, message: String) -> [String: Any] {
+        ["ok": false, "error": ["code": code, "message": message]]
+    }
+
+    private static func recommendKey(_ engine: DisklesslyEngine, _ query: [String: String]) -> String {
+        let relevant = query.filter { !["token", "rescan", "_"].contains($0.key) }
+        let options = relevant.keys.sorted().map { "\($0)=\(relevant[$0] ?? "")" }.joined(separator: "&")
+        return engine.config.stateDir + "?" + options
+    }
+
+    private static func flag(_ request: UIRequest, _ key: String) -> Bool {
+        if let query = request.query[key] { return ["1", "true", "yes"].contains(query.lowercased()) }
+        if let object = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any] {
+            return object[key] as? Bool ?? false
+        }
+        return false
+    }
+
+    private static func appName(_ request: UIRequest) -> String? {
+        if let query = request.query["app"], !query.isEmpty { return query }
+        if let object = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any],
+           let app = object["app"] as? String, !app.isEmpty {
+            return app
+        }
+        return nil
+    }
+
+    private static func staticFile(webRoot: URL?, request: UIRequest) -> UIResponse {
+        guard let webRoot else { return .text(404, "web assets are not installed") }
+        let name: String
+        switch request.path {
+        case "/", "/index.html", "/ui", "/ui/": name = "index.html"
+        case "/app.js", "/ui/app.js": name = "app.js"
+        case "/style.css", "/ui/style.css": name = "style.css"
+        default: return .text(404, "not found")
+        }
+        let file = webRoot.appendingPathComponent(name)
+        guard file.path.hasPrefix(webRoot.path), let data = try? Data(contentsOf: file) else { return .text(404, "not found") }
+        let type: String
+        switch name {
+        case "index.html": type = "text/html; charset=utf-8"
+        case "app.js": type = "text/javascript; charset=utf-8"
+        default: type = "text/css; charset=utf-8"
+        }
+        if name == "index.html", let token = request.token, var html = String(data: data, encoding: .utf8) {
+            let encoded = token.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed.subtracting(CharacterSet(charactersIn: "&=?#+"))) ?? token
+            html = html.replacingOccurrences(of: "href=\"style.css\"", with: "href=\"style.css?token=\(encoded)\"")
+            html = html.replacingOccurrences(of: "src=\"app.js\"", with: "src=\"app.js?token=\(encoded)\"")
+            return UIResponse(status: 200, contentType: type, body: Data(html.utf8))
+        }
+        return UIResponse(status: 200, contentType: type, body: data)
+    }
+
+    /// Free space on the cache volume (the nearest existing folder up the path).
+    private static func diskFreeBytes(_ path: String) -> UInt64? {
+        var url = URL(fileURLWithPath: path)
+        while !FileManager.default.fileExists(atPath: url.path), url.path != "/" {
+            url.deleteLastPathComponent()
+        }
+        return try? VolumeSpace.availableBytes(at: url.path)
+    }
+
+    private static func directoryBytes(_ path: String) -> UInt64 {
+        let root = URL(fileURLWithPath: path)
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey], options: [.skipsHiddenFiles]) else { return 0 }
+        var total: UInt64 = 0
+        for case let url as URL in enumerator {
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+            if values?.isRegularFile == true { total += UInt64(values?.fileSize ?? 0) }
+        }
+        return total
+    }
+}
+
+// MARK: - Background jobs
+
+/// Actions the page starts with `POST /api/<kind>`. Each runs as a job so the
+/// request returns at once and the page polls `GET /api/jobs/:id`.
+public enum UIJobKind: String, CaseIterable {
+    case launch, prefetch, evict, restore, unpack, pin, unpin
+
+    public init?(path: String) {
+        guard path.hasPrefix("/api/") else { return nil }
+        self.init(rawValue: String(path.dropFirst("/api/".count)))
+    }
+}
+
+public enum UIJobError: Error, Equatable {
+    case unknownApp(String)
+    /// Evict on a pinned app without `force`.
+    case pinned(String)
+}
+
+/// Request options for a job. `force` lets evict drop a pinned app's cache.
+public struct UIJobOptions: Equatable {
+    public var force: Bool
+    public init(force: Bool = false) { self.force = force }
+}
+
+public enum UIJobState: String {
+    case running, done, failed
+}
+
+public struct UIJobSnapshot {
+    public var id: String
+    public var kind: UIJobKind
+    public var app: String
+    public var state: UIJobState
+    public var phase: String
+    public var errorCode: String?
+    public var errorMessage: String?
+    public var startedAt: Date
+    public var finishedAt: Date?
+
+    public func jsonObject() -> [String: Any] {
+        let formatter = ISO8601DateFormatter()
+        var object: [String: Any] = [
+            "id": id,
+            "kind": kind.rawValue,
+            "app": app,
+            "state": state.rawValue,
+            "phase": phase,
+            "startedAt": formatter.string(from: startedAt),
+        ]
+        if let finishedAt { object["finishedAt"] = formatter.string(from: finishedAt) }
+        if let errorCode { object["error"] = ["code": errorCode, "message": errorMessage ?? ""] }
+        return object
+    }
+}
+
+/// Lets a running action report its phase (`resolve`, `download`, `open`, ...).
+public final class UIJobProgress {
+    private let update: (String) -> Void
+    init(_ update: @escaping (String) -> Void) { self.update = update }
+    public func phase(_ name: String) { update(name) }
+}
+
+public final class UIJobStore {
+    public enum StartResult {
+        case started(UIJobSnapshot)
+        /// The app already has a running job; it is returned instead of starting a second one.
+        case busy(UIJobSnapshot)
+    }
+
+    private let lock = NSLock()
+    private var jobs: [String: UIJobSnapshot] = [:]
+    private var order: [String] = []
+    private let retained: Int
+    private let queue: DispatchQueue
+
+    public init(retained: Int = 200, queue: DispatchQueue = .global(qos: .userInitiated)) {
+        self.retained = retained
+        self.queue = queue
+    }
+
+    public func start(kind: UIJobKind, app: String, work: @escaping (UIJobProgress) throws -> Void) -> StartResult {
+        lock.lock()
+        let key = app.lowercased()
+        if let running = order.compactMap({ jobs[$0] }).first(where: { $0.state == .running && $0.app.lowercased() == key }) {
+            lock.unlock()
+            return .busy(running)
+        }
+        let job = UIJobSnapshot(id: UUID().uuidString.lowercased(), kind: kind, app: app, state: .running, phase: "queued", startedAt: Date())
+        jobs[job.id] = job
+        order.append(job.id)
+        prune()
+        lock.unlock()
+        let id = job.id
+        queue.async { [self] in
+            let progress = UIJobProgress { [weak self] phase in self?.mutate(id) { $0.phase = phase } }
+            do {
+                try work(progress)
+                mutate(id) {
+                    $0.state = .done
+                    $0.finishedAt = Date()
+                }
+            } catch {
+                let info = ManagementUI.errorInfo(error)
+                mutate(id) {
+                    $0.state = .failed
+                    $0.errorCode = info.code
+                    $0.errorMessage = info.message
+                    $0.finishedAt = Date()
+                }
+            }
+        }
+        return .started(job)
+    }
+
+    public func job(_ id: String) -> UIJobSnapshot? {
+        lock.lock()
+        defer { lock.unlock() }
+        return jobs[id]
+    }
+
+    public func active() -> [UIJobSnapshot] {
+        all().filter { $0.state == .running }
+    }
+
+    public func all() -> [UIJobSnapshot] {
+        lock.lock()
+        defer { lock.unlock() }
+        return order.compactMap { jobs[$0] }
+    }
+
+    /// Polls until the job leaves `running` or the timeout passes.
+    public func wait(_ id: String, timeout: TimeInterval) -> UIJobSnapshot? {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            let current = job(id)
+            if current == nil || current?.state != .running || Date() >= deadline { return current }
+            Thread.sleep(forTimeInterval: 0.02)
+        }
+    }
+
+    private func mutate(_ id: String, _ change: (inout UIJobSnapshot) -> Void) {
+        lock.lock()
+        if var job = jobs[id] {
+            change(&job)
+            jobs[id] = job
+        }
+        lock.unlock()
+    }
+
+    /// Caller holds the lock. Finished jobs past the limit are dropped, oldest first.
+    private func prune() {
+        guard order.count > retained else { return }
+        var excess = order.count - retained
+        order.removeAll { id in
+            guard excess > 0, let job = jobs[id], job.state != .running else { return false }
+            excess -= 1
+            jobs.removeValue(forKey: id)
+            return true
+        }
+    }
+}
+
+/// What each job does. Tests pass their own `run`; `disklessly ui` uses `live`.
+public struct ManagementActions {
+    public var perform: (UIJobKind, String, UIJobOptions, UIJobProgress) throws -> Void
+
+    public init(run: @escaping (UIJobKind, String, UIJobProgress) throws -> Void) {
+        self.perform = { kind, name, _, progress in try run(kind, name, progress) }
+    }
+
+    public init(perform: @escaping (UIJobKind, String, UIJobOptions, UIJobProgress) throws -> Void) {
+        self.perform = perform
+    }
+
+    public static func live(_ engine: DisklesslyEngine) -> ManagementActions {
+        ManagementActions(perform: { kind, name, options, progress in
+            progress.phase("resolve")
+            guard var manifest = engine.manifest(named: name, in: try engine.list()) else { throw UIJobError.unknownApp(name) }
+            switch kind {
+            case .prefetch:
+                progress.phase("download")
+                _ = try engine.prefetch(manifest)
+            case .launch, .restore:
+                if kind == .restore { manifest.mode = .restore }
+                progress.phase("download")
+                _ = try engine.prefetch(manifest)
+                progress.phase("open")
+                try launchSupervised(engine, manifest)
+                progress.phase("running")
+            case .evict:
+                // design §4: a pinned app is refused unless forced; the page
+                // always sends force=false and disables Evict while pinned.
+                if engine.evictRefusal(manifest, force: options.force)?.reason == "pinned" {
+                    throw UIJobError.pinned(manifest.name)
+                }
+                progress.phase("evict")
+                try engine.evict(manifest, force: options.force)
+            case .unpack:
+                progress.phase("unpack")
+                try engine.unpack(manifest, to: nil)
+            case .pin:
+                progress.phase("download")
+                try engine.setPinned(manifest, pinned: true)
+            case .unpin:
+                progress.phase("pin")
+                try engine.setPinned(manifest, pinned: false)
+            }
+        })
+    }
+
+    /// `launch` keeps supervising the session until the app quits, then
+    /// detaches. That supervision stays on its own thread; the job finishes
+    /// once the app is open (state `running`, or a restore mirror in restore
+    /// mode), or when `launch` returns or throws first.
+    static func launchSupervised(_ engine: DisklesslyEngine, _ manifest: ImageManifest) throws {
+        let store = StateStore(engine.config.stateDir)
+        let opened: () -> Bool = {
+            let state = store.load()
+            if manifest.mode == .restore { return state.restored[manifest.bundleId] != nil }
+            return state.apps[manifest.bundleId]?.state == "running"
+        }
+        let alreadyOpen = opened()
+        let finished = DispatchSemaphore(value: 0)
+        let outcome = LaunchOutcome()
+        let worker = Thread {
+            do { try engine.launch(manifest) } catch {
+                outcome.set(error)
+                if outcome.detached { FileHandle.standardError.write(Data("disklessly ui: \(manifest.name): \(error)\n".utf8)) }
+            }
+            finished.signal()
+        }
+        worker.name = "disklessly.ui.launch"
+        worker.start()
+        while true {
+            if finished.wait(timeout: .now() + 0.25) == .success {
+                if let error = outcome.error { throw error }
+                return
+            }
+            if !alreadyOpen, opened() {
+                outcome.detach()
+                return
+            }
+        }
+    }
+}
+
+private final class LaunchOutcome: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedError: Error?
+    private var isDetached = false
+    var error: Error? { lock.lock(); defer { lock.unlock() }; return storedError }
+    var detached: Bool { lock.lock(); defer { lock.unlock() }; return isDetached }
+    func set(_ error: Error) { lock.lock(); storedError = error; lock.unlock() }
+    func detach() { lock.lock(); isDetached = true; lock.unlock() }
+}
+
+/// Shared state for one management server: running jobs and the last scan.
+public final class ManagementUIContext {
+    public let jobs: UIJobStore
+    /// Backend reachability with latency; bounded by its timeout and shared across requests.
+    public let health: BackendHealthProbe
+    /// Replaces the engine-backed actions, for tests.
+    public let actions: ManagementActions?
+    private let now: () -> Date
+    private let lock = NSLock()
+    private let scanLock = NSLock()
+    private var recommendCache: [String: (report: [String: Any], scannedAt: Date)] = [:]
+
+    public init(jobs: UIJobStore = UIJobStore(), actions: ManagementActions? = nil, health: BackendHealthProbe = BackendHealthProbe(), now: @escaping () -> Date = Date.init) {
+        self.jobs = jobs
+        self.health = health
+        self.actions = actions
+        self.now = now
+    }
+
+    /// Returns the cached scan for `key` unless `rescan` is set. One scan runs at a time.
+    public func recommendations(key: String, rescan: Bool, compute: () -> [String: Any]) -> (report: [String: Any], scannedAt: Date, fromCache: Bool) {
+        if !rescan, let hit = cached(key) { return (hit.report, hit.scannedAt, true) }
+        scanLock.lock()
+        defer { scanLock.unlock() }
+        // Another request may have finished the same scan while this one waited.
+        if !rescan, let hit = cached(key) { return (hit.report, hit.scannedAt, true) }
+        let report = compute()
+        let stamp = now()
+        lock.lock()
+        recommendCache[key] = (report, stamp)
+        lock.unlock()
+        return (report, stamp, false)
+    }
+
+    private func cached(_ key: String) -> (report: [String: Any], scannedAt: Date)? {
+        lock.lock()
+        defer { lock.unlock() }
+        return recommendCache[key]
+    }
+}
+
+// MARK: - Backend health
+
+/// Probes the backend off the request thread. A probe that runs past `timeout`
+/// reports `offline` (timed out); it keeps running, and its real answer replaces
+/// the timeout when it lands. Callers share one probe per backend, and a result
+/// stays fresh for `maxAge` seconds. A caller waits on a probe only when it
+/// started one itself; while a probe is still running, everyone else gets the
+/// last result at once (stale-while-revalidate), so a hung backend costs one
+/// `timeout`, not one per refresh.
+public final class BackendHealthProbe: @unchecked Sendable {
+    public struct Result: Equatable {
+        /// `ok`, `degraded` (answers slowly), `missing` (no repo.json), or `offline`.
+        public var status: String
+        public var detail: String
+        public var latencyMs: Int?
+        public var timedOut: Bool
+        public var timeout: TimeInterval
+        public var checkedAt: Date
+    }
+
+    /// Returns nil when the repo answers, or a reason when it answers but is incomplete. Throws when unreachable.
+    public typealias Check = (DisklesslyEngine) throws -> String?
+
+    private struct Inflight {
+        let group: DispatchGroup
+        let generation: Int
+        let started: Date
+    }
+
+    public let timeout: TimeInterval
+    public let maxAge: TimeInterval
+    public let slowMs: Int
+    private let check: Check
+    private let lock = NSLock()
+    private var results: [String: Result] = [:]
+    private var inflight: [String: Inflight] = [:]
+    private var generation = 0
+
+    public init(timeout: TimeInterval = 5, maxAge: TimeInterval = 10, slowMs: Int = 500, check: Check? = nil) {
+        self.timeout = timeout
+        self.maxAge = maxAge
+        self.slowMs = slowMs
+        self.check = check ?? BackendHealthProbe.repoCheck
+    }
+
+    public static func repoCheck(_ engine: DisklesslyEngine) throws -> String? {
+        let backend = try engine.openBackend()
+        return try backend.stat("repo.json") != nil ? nil : "repo.json is not in the backend"
+    }
+
+    /// `fresh` skips the cache. With a probe already hung past `timeout`, it
+    /// starts a new probe instead of joining the stuck one, so Retry can see a
+    /// backend that has recovered.
+    public func current(_ engine: DisklesslyEngine, fresh: Bool = false) -> Result {
+        let key = [engine.config.backend, engine.config.activeBackendId ?? "", engine.config.repoPath].joined(separator: "|")
+        lock.lock()
+        let last = results[key]
+        if !fresh, let last, Date().timeIntervalSince(last.checkedAt) < maxAge {
+            lock.unlock()
+            return last
+        }
+        let probe: Inflight
+        if let running = inflight[key] {
+            let hung = Date().timeIntervalSince(running.started) >= timeout
+            if fresh {
+                // Retry: join a probe that is still within its timeout, replace a hung one.
+                probe = hung ? start(engine, key: key) : running
+            } else if let last {
+                // A probe is already on it: answer from the last result, do not wait.
+                lock.unlock()
+                return last
+            } else {
+                probe = running
+            }
+        } else {
+            probe = start(engine, key: key)
+        }
+        lock.unlock()
+        if probe.group.wait(timeout: .now() + timeout) == .timedOut {
+            let timedOut = Result(status: "offline", detail: "timeout", latencyMs: nil, timedOut: true, timeout: timeout, checkedAt: Date())
+            lock.lock()
+            defer { lock.unlock() }
+            // Still running: remember the timeout so the next refresh does not wait again.
+            if inflight[key]?.generation == probe.generation {
+                results[key] = timedOut
+                return timedOut
+            }
+            return results[key] ?? timedOut
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        return results[key] ?? Result(status: "offline", detail: "", latencyMs: nil, timedOut: false, timeout: timeout, checkedAt: Date())
+    }
+
+    /// Call with `lock` held. A probe superseded by a newer generation drops its answer.
+    private func start(_ engine: DisklesslyEngine, key: String) -> Inflight {
+        generation += 1
+        let probe = Inflight(group: DispatchGroup(), generation: generation, started: Date())
+        probe.group.enter()
+        inflight[key] = probe
+        let check = self.check
+        let timeout = self.timeout
+        let slowMs = self.slowMs
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            let started = Date()
+            var result: Result
+            do {
+                let problem = try check(engine)
+                let latency = Int((Date().timeIntervalSince(started) * 1000).rounded())
+                let status = problem != nil ? "missing" : (latency >= slowMs ? "degraded" : "ok")
+                result = Result(status: status, detail: problem ?? "", latencyMs: latency, timedOut: false, timeout: timeout, checkedAt: Date())
+            } catch {
+                let detail = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                result = Result(status: "offline", detail: detail, latencyMs: nil, timedOut: false, timeout: timeout, checkedAt: Date())
+            }
+            lock.lock()
+            if inflight[key]?.generation == probe.generation {
+                results[key] = result
+                inflight[key] = nil
+            }
+            lock.unlock()
+            probe.group.leave()
+        }
+        return probe
+    }
+}
