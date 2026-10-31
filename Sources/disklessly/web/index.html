@@ -135,6 +135,21 @@
         <p class="table-foot"><span class="foot-icon" aria-hidden="true">i</span><span data-t="evictNote"></span></p>
       </div>
     </section>
+    <section class="card" id="license-section" aria-labelledby="license-title">
+      <div class="card-head">
+        <h2 id="license-title" data-t="license"></h2>
+        <p id="license-summary" class="section-summary"></p>
+      </div>
+      <p id="license-detail" class="muted"></p>
+      <form id="license-form" class="license-form" autocomplete="off">
+        <label class="field grow">
+          <span data-t="licenseCode"></span>
+          <input id="license-code" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="DSL1.…">
+        </label>
+        <button id="license-activate" type="submit" class="btn primary"><span data-t="licenseActivate"></span></button>
+        <button id="license-remove" type="button" class="btn quiet" hidden><span data-t="licenseRemove"></span></button>
+      </form>
+    </section>
     <section class="card" id="sessions-section" aria-labelledby="sessions-title">
       <div class="card-head">
         <h2 id="sessions-title" data-t="sessionTiers"></h2>

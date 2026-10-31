@@ -45,6 +45,22 @@ final class UIDashboardTests: XCTestCase {
         }
     }
 
+    func testLicenseEndpointsReportFreeAndRefuseBadCodes() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let free = try fixture.get("/api/license", context: context)
+        XCTAssertEqual(free["state"] as? String, "free")
+        XCTAssertEqual(free["freeLimit"] as? Int, License.freeAppLimit)
+        let bad = try fixture.post("/api/license/activate", body: ["code": "not a code"], context: context)
+        XCTAssertEqual(bad.status, 400)
+        XCTAssertEqual(try fixture.get("/api/license", context: context)["state"] as? String, "free", "a refused code changes nothing")
+        let none = try fixture.post("/api/license/activate", body: [:], context: context)
+        XCTAssertEqual(none.status, 400)
+        let removed = try fixture.post("/api/license/deactivate", body: [:], context: context)
+        XCTAssertEqual(removed.object["state"] as? String, "free")
+    }
+
     func testStatusCarriesHealthEndpointsCacheAndInstallPath() throws {
         let fixture = try Fixture(backends: [
             BackendEndpoint(id: "office", type: "webdav", url: "https://dav.example.lan/apps"),

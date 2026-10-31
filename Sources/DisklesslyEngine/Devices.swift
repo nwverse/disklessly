@@ -748,6 +748,13 @@ extension DisklesslyEngine {
         return ids
     }
 
+    /// Bundle ids of this repo's apps that are offloaded on this Mac right now. The free-tier limit counts these.
+    public func offloadedBundleIdCount() throws -> Int { try offloadedBundleIds().count }
+
+    func offloadedBundleIds() throws -> Set<String> {
+        Set(try stubClaims(backend: try repo, now: Date()).map(\.bundleId))
+    }
+
     /// Stubs in the Applications folders, plus journals whose destination is a stub on this Mac.
     /// Only stubs of this repo count (see `StubIdentity.belongs`).
     private func stubClaims(backend: any StorageBackend, now: Date) throws -> [DeviceImageRef] {

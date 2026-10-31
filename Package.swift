@@ -25,7 +25,7 @@ let package = Package(
         .package(url: "https://github.com/facebook/zstd.git", exact: "1.5.6"),
     ],
     targets: [
-        .target(name: "DisklesslyCore"),
+        .target(name: "DisklesslyCore", dependencies: [.product(name: "Crypto", package: "swift-crypto")]),
         .target(name: "DisklesslyStubSupport"),
         .systemLibrary(name: "CSQLite", path: "Sources/CSQLite", pkgConfig: sqlitePkgConfig, providers: [.apt(["libsqlite3-dev"]), .brew(["sqlite"])]),
         .target(name: "DisklesslySessions", dependencies: [
@@ -37,7 +37,9 @@ let package = Package(
         .target(name: "DisklesslyEngine", dependencies: ["DisklesslyCore", "DisklesslyStubSupport", "DisklesslySessions"]),
         .executableTarget(name: "disklessly", dependencies: ["DisklesslyCore", "DisklesslyEngine"], resources: [.copy("web")]),
         .executableTarget(name: "disklessly-stub", dependencies: ["DisklesslyStubSupport"]),
+        // Maintainer tool: makes the license key pair and issues codes. Not part of any release artifact.
+        .executableTarget(name: "disklessly-license", dependencies: ["DisklesslyCore", .product(name: "Crypto", package: "swift-crypto")]),
         .executableTarget(name: "DisklesslyMac", dependencies: ["DisklesslyCore", "DisklesslyEngine"]),
-        .testTarget(name: "DisklesslyCoreTests", dependencies: ["DisklesslyCore", "DisklesslyEngine", "DisklesslyStubSupport", "DisklesslySessions"]),
+        .testTarget(name: "DisklesslyCoreTests", dependencies: ["DisklesslyCore", "DisklesslyEngine", "DisklesslyStubSupport", "DisklesslySessions", .product(name: "Crypto", package: "swift-crypto")]),
     ]
 )

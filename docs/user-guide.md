@@ -261,6 +261,18 @@ disklessly doctor --fix    # 回放本机未完成的 unpack / restore 日志
 
 注意：第 4 步会删除替身依赖的引擎副本，之后没有放回的替身将无法打开。
 
+## 免费版与授权
+
+免费版**最多同时卸载 2 个应用**。已卸载应用的启动、还原（`unpack`）、清除缓存、卸载镜像永远不需要授权，只有新增 `pack` 时检查数量；重新打包一个已卸载的应用不算新增。输入授权码后不再限制数量：
+
+```sh
+disklessly license                    # 查看当前是免费版还是已授权
+disklessly license activate DSL1.…    # 激活
+disklessly license deactivate         # 移除
+```
+
+授权码在本机离线验证，不会联网。买断码不过期；限时码有最后有效日期，过期后免费版限额重新生效，已卸载的应用照常使用。仪表盘里的"授权"卡片也能激活和移除。
+
 ## 隐私
 
 没有遥测、统计、崩溃上报，也不检查更新。Disklessly 只和你配置的仓库通信，项目本身不运行任何服务器。
@@ -379,6 +391,14 @@ adds Foundation error details. After an upgrade run `disklessly install-engine` 
    index) and `~/Library/Caches/Disklessly/`. Stubs you did not unpack stop
    working once the engine copy is gone.
 5. Delete the repo folder only after steps 1 and 2, and only if no other Mac uses it.
+
+### Free version and license
+
+The free version offloads up to 2 apps at once. Starting, restoring (`unpack`), evicting and detaching apps
+you already offloaded never needs a license; only `pack` checks the limit, and re-packing an offloaded app
+is not a new app. A license code lifts the limit: `disklessly license activate CODE` (also `license`,
+`license deactivate`, and the License card in the dashboard). Codes are verified offline. A buyout code does
+not expire; a promo code has a last day, after which the free limit applies again.
 
 ### Privacy
 

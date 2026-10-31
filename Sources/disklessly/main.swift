@@ -24,6 +24,8 @@ Use offloaded apps
   resolve APP --keep-updated|--trust|--export DIR|--discard
   prefetch APP | pin APP | unpin APP | evict APP [--force]
   detach APP [--force]            eject a mount-mode app's image now (refused while it runs)
+  license [status]                show the free limit and your license
+  license activate CODE | deactivate   enter or remove a license code (offload more than 2 apps)
 
 Bring an app back
   unpack APP [--to DIR]           put the real app back in place of its stub (or copy it to DIR)
@@ -292,6 +294,23 @@ do {
         if let refusal = engine.evictRefusal(manifest, force: force) { try refuse(refusal) }
         try engine.evict(manifest, force: force)
         say(["ok":true], CLIText.evicted(manifest))
+    case "license":
+        let sub = args.first ?? "status"
+        switch sub {
+        case "status":
+            let state = License.load(stateDir: config.stateDir)
+            let offloaded = (try? engine.offloadedBundleIdCount()) ?? 0
+            say(CLIText.licenseDictionary(state, offloaded: offloaded), CLIText.licenseStatus(state, offloaded: offloaded))
+        case "activate":
+            guard args.count == 2 else { throw DisklesslyError.usage("usage: disklessly license activate CODE") }
+            let payload = try License.activate(args[1], stateDir: config.stateDir)
+            say(CLIText.licenseDictionary(.licensed(payload), offloaded: 0), CLIText.licenseActivated(payload))
+        case "deactivate":
+            try License.deactivate(stateDir: config.stateDir)
+            say(["ok": true], "License removed. The free limit of \(License.freeAppLimit) offloaded apps applies again; apps already offloaded keep working.")
+        default:
+            throw DisklesslyError.usage("usage: disklessly license [status | activate CODE | deactivate]")
+        }
     case "detach":
         let (n, force) = try appAndForce("detach", args)
         let manifest=try find(n)

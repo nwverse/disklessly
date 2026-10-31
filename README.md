@@ -138,6 +138,22 @@ Repos on a share or WebDAV server: `disklessly backend add smb|nfs|webdav|openli
 then `backend use ID`. Passwords are read from `--password-stdin` and kept in the
 Keychain. See [`docs/backends.md`](docs/backends.md).
 
+## Free version and license
+
+The free version offloads up to **2 apps at once**. Starting, restoring (`unpack`), evicting and detaching
+apps you already offloaded never needs a license; only `pack` checks the limit, and packing an app that is
+already offloaded again does not count as a new one. A license code removes the limit:
+
+```sh
+disklessly license              # shows "Free version: 1 of 2 apps offloaded" or your license
+disklessly license activate DSL1.…
+disklessly license deactivate
+```
+
+Codes are checked offline against a public key built into the app, so nothing is sent anywhere. A buyout
+code does not expire; a promo code has a last day and the free limit applies again after it. The dashboard
+has a License card with the same actions.
+
 ## Permissions
 
 - **App Management** (System Settings > Privacy & Security > App Management): needed

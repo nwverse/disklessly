@@ -172,6 +172,20 @@ const copy = {
     heroStep3: "3. 卸载到仓库",
     heroStep3Body: "复制建议里的命令到终端运行：",
     heroRepo: (path) => `当前仓库：${path}`,
+    license: "授权",
+    licenseCode: "授权码",
+    licenseActivate: "激活",
+    licenseRemove: "移除授权",
+    licenseFree: (used, limit) => `免费版：已卸载 ${used} / ${limit} 个应用`,
+    licenseFreeBody: "启动、还原和取消卸载已卸载的应用永远免费。要卸载更多应用，请输入授权码。",
+    licenseFull: "已授权：卸载应用数量不限",
+    licenseUntil: (date) => `有效期至 ${date}`,
+    licenseUpdates: (date) => `${date} 前的更新已包含`,
+    licenseExpired: (date) => `授权码已于 ${date} 过期，免费版限额重新生效`,
+    licenseInvalid: "已保存的授权码无法使用，免费版限额生效",
+    licenseOk: "授权已激活",
+    licenseRemoved: "授权已移除",
+    errlicense_required: "免费版的卸载数量已用完。输入授权码可继续卸载更多应用。",
     sessionTiers: "会话分层",
     coldAfter: (n) => `${n} 天未用转冷`,
     offloadedCount: (n) => `已卸载 ${n} 个`,
@@ -377,6 +391,20 @@ const copy = {
     heroStep3: "3. Offload",
     heroStep3Body: "Copy a command from the recommendations and run it in Terminal:",
     heroRepo: (path) => `Current repo: ${path}`,
+    license: "License",
+    licenseCode: "License code",
+    licenseActivate: "Activate",
+    licenseRemove: "Remove license",
+    licenseFree: (used, limit) => `Free version: ${used} of ${limit} apps offloaded`,
+    licenseFreeBody: "Starting, restoring and unpacking offloaded apps is always free. Enter a license code to offload more.",
+    licenseFull: "Licensed: unlimited offloaded apps",
+    licenseUntil: (date) => `Valid until ${date}`,
+    licenseUpdates: (date) => `Updates included until ${date}`,
+    licenseExpired: (date) => `Your code expired on ${date}; the free limit applies again`,
+    licenseInvalid: "The saved license code is not usable; the free limit applies",
+    licenseOk: "License activated",
+    licenseRemoved: "License removed",
+    errlicense_required: "The free limit is used up. Enter a license code to offload more apps.",
     sessionTiers: "Session tiers",
     coldAfter: (n) => `Cold after ${n} days`,
     offloadedCount: (n) => `${n} offloaded`,
@@ -1725,6 +1753,65 @@ function renderFailure() {
   renderSessions(null);
 }
 
+// ---- license --------------------------------------------------------------
+
+let licenseState = null;
+
+function renderLicense(info) {
+  licenseState = info;
+  const summary = document.querySelector("#license-summary");
+  const detail = document.querySelector("#license-detail");
+  const remove = document.querySelector("#license-remove");
+  const input = document.querySelector("#license-code");
+  input.setAttribute("aria-label", both("licenseCode"));
+  if (!info) { summary.replaceChildren(); detail.replaceChildren(); remove.hidden = true; return; }
+  const lines = [];
+  if (info.state === "licensed") {
+    summary.replaceChildren(bi("licenseFull"));
+    if (info.expires) lines.push(one("licenseUntil", info.expires));
+    if (info.updatesUntil) lines.push(one("licenseUpdates", info.updatesUntil));
+  } else if (info.state === "expired") {
+    summary.replaceChildren(bi("licenseFree", info.offloaded, info.freeLimit));
+    lines.push(one("licenseExpired", info.expires || "?"));
+  } else if (info.state === "invalid") {
+    summary.replaceChildren(bi("licenseFree", info.offloaded, info.freeLimit));
+    lines.push(one("licenseInvalid"));
+  } else {
+    summary.replaceChildren(bi("licenseFree", info.offloaded, info.freeLimit));
+    lines.push(bi("licenseFreeBody"));
+  }
+  detail.replaceChildren(...lines.flatMap((node, i) => (i ? [document.createElement("br"), node] : [node])));
+  remove.hidden = info.state === "free";
+}
+
+async function loadLicense() {
+  try { renderLicense(await api("/api/license")); } catch (error) { if (error.code !== "unauthorized") renderLicense(null); }
+}
+
+async function submitLicense(event) {
+  event.preventDefault();
+  const input = document.querySelector("#license-code");
+  const code = input.value.trim();
+  if (!code) return;
+  try {
+    renderLicense(await api("/api/license/activate", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) }));
+    input.value = "";
+    toast({ title: bi("licenseOk"), tone: "ok" });
+  } catch (error) {
+    toast({ title: bi("licenseActivate"), error: { code: error.code, message: error.message }, tone: "error" });
+  }
+}
+
+async function removeLicense() {
+  try {
+    renderLicense(await api("/api/license/deactivate", { method: "POST" }));
+    toast({ title: bi("licenseRemoved"), tone: "ok" });
+  } catch (error) {
+    toast({ title: bi("licenseRemove"), error: { code: error.code, message: error.message }, tone: "error" });
+  }
+}
+
+
 async function loadRecommendations(rescan) {
   if (recommendLoading) return;
   recommendLoading = true;
@@ -1760,6 +1847,7 @@ async function load() {
   if (!status.appsError) hideBanner();
   adoptServerJobs(status);
   render(status);
+  loadLicense();
 }
 
 function refresh() {
@@ -1786,6 +1874,8 @@ async function retryNow() {
 document.querySelector("#refresh").addEventListener("click", refresh);
 document.querySelector("#retry").addEventListener("click", retryNow);
 document.querySelector("#rescan").addEventListener("click", () => loadRecommendations(true));
+document.querySelector("#license-form").addEventListener("submit", submitLicense);
+document.querySelector("#license-remove").addEventListener("click", removeLicense);
 document.querySelector("#icon-backfill").addEventListener("click", async (event) => {
   const button = event.currentTarget;
   if (button.getAttribute("aria-busy") === "true") return;
