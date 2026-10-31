@@ -156,11 +156,11 @@ All seven blocking issues are accepted; `docs/design.md` is revised (rev. r1). S
   justified in §3.6 and §5.2.3e. Negative tests are listed in §11.1 (Classifier row) and checked by e2e A30.
 - **B2 — accepted.** New §5.8 adds a write-ahead journal for every bundle move: pack install, restore-in,
   restore-out, unpack, `restore --permanent` and stub rebuild. The journal is written and fsynced before each
-  effect. Staging is on the same volume (`<dest-parent>/.256isenough-staging/<txid>`), so the in-home `parked/`
+  effect. Staging is on the same volume (`<dest-parent>/.disklessly-staging/<txid>`), so the in-home `parked/`
   directory is gone. Phases are idempotent, and each phase has a table entry for forward or rollback recovery.
   Restore-out checks cdhash and a new tree hash (`app.treeHash`) **before** any removal. A bundle is deleted
   only if it matches a cached or uploaded image. Otherwise it goes to `retained/` and gets `needsResolution`.
-  Supervisors never prompt; the user decides with `isenough resolve`. A hook failure or an identity failure now
+  Supervisors never prompt; the user decides with `disklessly resolve`. A hook failure or an identity failure now
   fully rolls back, journaled (§5.2.5/6). Permission preflight refuses non-writable destinations before changing
   anything (N5). Fault-injection tests cover every journal and mutation point plus hook failure and self-update
   (§5.8.6, §11.2, e2e A33/A34).
@@ -195,7 +195,7 @@ All seven blocking issues are accepted; `docs/design.md` is revised (rev. r1). S
   a signal; a joiner's cancel never affects the session. Tests: §11.1 StubProtocol and e2e A11b, A22, A24.
 - **B6 — accepted.** New §10.1 defines two credentials:
   - The CLI uses a Bearer token from a 0600 file.
-  - The Pake UI pairs once with a one-time code (`isenough serve pair`) and then gets an HttpOnly session cookie
+  - The Pake UI pairs once with a one-time code (`disklessly serve pair`) and then gets an HttpOnly session cookie
     plus a CSRF token, which it can re-fetch with `GET /api/session`. SSE is authenticated by the cookie.
   
   Allowed Host values and serialized Origins are listed separately. The doc also specifies the
@@ -207,7 +207,7 @@ All seven blocking issues are accepted; `docs/design.md` is revised (rev. r1). S
   - LS document and URL delivery (A11/A12, with the fixture logging `via:"appleEvent"`) and restore
     swap/recovery (A30–A33) are required gates. An unavailable environment exits `2` (inconclusive), which CI
     treats as a failure; the skip fallback is removed.
-  - A16 now expects `ISENOUGH_EXIT_STATUS=unknown|crash`, with no numeric status.
+  - A16 now expects `DISKLESSLY_EXIT_STATUS=unknown|crash`, with no numeric status.
   - The LRU and pin fixtures compute the quota from measured allocated sizes. A20 asserts one deterministic
     outcome (pinned app1 kept, app2 evicted, `launch app2` → `EX_NOSPACE`).
   - A10 also checks that LS resolved the mounted path (preserved originals are in `retained/`).
@@ -228,7 +228,7 @@ All seven blocking issues are accepted; `docs/design.md` is revised (rev. r1). S
 - **N6 adopted:** `trust` and `resolve` are in the MVP command list. Schemas now include `trusted`,
   `reservations`, journals, `treeHash` and leases. The doc defines plist Date/Data → JSON, the migration
   policy, the manifest cache and icon regeneration. Hook documents and URLs are passed as a JSON file
-  (`ISENOUGH_ARGS_FILE`).
+  (`DISKLESSLY_ARGS_FILE`).
 - **N7 adopted:** `lsregister` is treated as best-effort, a manual compatibility checklist is added, and GPL
   notice and corresponding-source obligations are covered for Pake distribution.
 
@@ -444,9 +444,9 @@ fallback estimate for old manifests (R2-B3).
      before every attempt, so it cannot detach a revived session.
    - **Hooks:** post-quit hooks run exactly once per epoch, so retries do not rerun them. Pre-launch hooks rerun
      only when a stub revives a session into a new epoch.
-   - **Retries after `stuck`:** daemon/gc/`isenough detach [--force|--forget]`, or the next launch.
+   - **Retries after `stuck`:** daemon/gc/`disklessly detach [--force|--forget]`, or the next launch.
    - **Tests:** pure `DetachMachine` tests and e2e A27c (busy ×2 → detach; revive during backoff; exhaustion → exit 6
-     with the record kept and evict refused; later `isenough detach` succeeds).
+     with the record kept and evict refused; later `disklessly detach` succeeds).
 
 ### Non-blocking suggestions
 - **N1:** adopted. Within G-a the pure state machines (stub close, detach, capacity, lock checker) come first. The
@@ -646,7 +646,7 @@ All six blocking issues are accepted and resolved in `docs/design.md` rev. r3. A
      at `installed`/`active`; restore-out only after two clean probes under the current owner; forward
      continuation for partially swapped restore-out phases.
    - Single-adopter election rewrites the journal owner first (WAL rule), then the state mirror. Short-lived
-     adopters such as `gc` hand ownership to a detached `isenough hook watch` process (new internal command).
+     adopters such as `gc` hand ownership to a detached `disklessly hook watch` process (new internal command).
    - §9 restore recovery no longer uses the attachment check.
    - The table is a pure function, `RestoreRecovery.decide`. It is enumerated exhaustively with the invariant
      "no rename of dest unless the probe was clean twice under the current owner".
@@ -686,7 +686,7 @@ All six blocking issues are accepted and resolved in `docs/design.md` rev. r3. A
   in `details.uninspectable`. The `infra` baseline may be empty (§5.9 pass 6, §11.2).
 - **N4:** adopted. Test hold points and faults no longer come from environment variables. They come from a
   `test-hooks.json` resource in the *test* stub bundle and from `testHooks`/`faults` keys in the isolated
-  `$E2E_DIR` config. They are compiled only with `-D ISENOUGH_TEST_HOOKS`, and CI checks that release binaries
+  `$E2E_DIR` config. They are compiled only with `-D DISKLESSLY_TEST_HOOKS`, and CI checks that release binaries
   do not contain them.
 - **N5:** adopted. New §14.1 risk 13 treats TCC, default handlers and Dock pins as compatibility observations.
   Real iCloud API behaviour is tested manually (G-c) after the fake-backend CI.

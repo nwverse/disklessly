@@ -4,16 +4,16 @@
 #   scripts/gen-version.sh            rewrite the GENERATED VERSION block
 #   scripts/gen-version.sh --print    print the version that would be written, change nothing
 #
-# The version comes from ISENOUGH_VERSION, else the newest v* tag reachable from
+# The version comes from DISKLESSLY_VERSION, else the newest v* tag reachable from
 # HEAD (`git describe`), else the value already in the file. Commits after the tag
 # keep the tag's version; `commit` says which build it is. SOURCE_DATE_EPOCH, when
 # set, fixes the build date for reproducible builds.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-FILE="$ROOT/Sources/IsenoughEngine/EngineInstall.swift"
+FILE="$ROOT/Sources/DisklesslyEngine/EngineInstall.swift"
 
 current="$(sed -n 's/^    public static let version = "\(.*\)"$/\1/p' "$FILE" | head -n 1)"
-version="${ISENOUGH_VERSION:-}"
+version="${DISKLESSLY_VERSION:-}"
 if [[ -z "$version" ]]; then
   tag="$(git -C "$ROOT" describe --tags --abbrev=0 --match 'v[0-9]*' 2>/dev/null || true)"
   version="${tag#v}"
@@ -30,7 +30,7 @@ if [[ "${1:-}" == "--print" ]]; then
 fi
 
 commit="$(git -C "$ROOT" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
-if [[ "$commit" != unknown ]] && [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no -- . ':!Sources/IsenoughEngine/EngineInstall.swift' 2>/dev/null)" ]]; then
+if [[ "$commit" != unknown ]] && [[ -n "$(git -C "$ROOT" status --porcelain --untracked-files=no -- . ':!Sources/DisklesslyEngine/EngineInstall.swift' 2>/dev/null)" ]]; then
   commit="$commit-dirty"
 fi
 if [[ -n "${SOURCE_DATE_EPOCH:-}" ]]; then

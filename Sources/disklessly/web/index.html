@@ -1,0 +1,181 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Disklessly</title>
+<script>
+// Runs before the first paint so theme and language order never flash.
+// Theme follows prefers-color-scheme; ?theme=light|dark pins it (screenshots, debugging).
+// Labels are bilingual; Chinese leads unless ?lang=en puts English first.
+(function () {
+  var root = document.documentElement;
+  var params = new URLSearchParams(location.search);
+  var theme = params.get("theme");
+  var lang = params.get("lang");
+  if (theme === "light" || theme === "dark") root.setAttribute("data-theme", theme);
+  lang = lang === "en" ? "en" : "zh";
+  root.setAttribute("data-lang", lang);
+  root.lang = lang === "zh" ? "zh-Hans" : "en";
+})();
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" id="skip" href="#apps" data-t="skip"></a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <div class="mark" aria-hidden="true">256</div>
+      <div>
+        <h1>Disklessly</h1>
+        <p class="sub" data-t="subtitle"></p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span id="updated" class="updated"></span>
+      <button id="refresh" type="button" class="btn outline"><span data-t="refresh"></span></button>
+    </div>
+  </div>
+</header>
+<div class="page">
+  <div id="banner" class="banner" role="alert" hidden>
+    <div id="banner-text" class="banner-text"></div>
+    <button id="retry" type="button" class="btn outline"><span data-t="retry"></span></button>
+  </div>
+  <section id="expired" class="card expired" hidden aria-labelledby="expired-title">
+    <h2 id="expired-title" data-t="expiredTitle"></h2>
+    <p data-t="expiredBody"></p>
+    <pre class="command"><code>disklessly ui</code></pre>
+  </section>
+  <main id="content">
+    <section id="onboarding" class="card hero" hidden aria-labelledby="onboarding-title">
+      <h2 id="onboarding-title" data-t="heroTitle"></h2>
+      <p class="muted" data-t="heroBody"></p>
+      <ol class="steps">
+        <li>
+          <strong data-t="heroStep1"></strong>
+          <span id="hero-repo" class="muted"></span>
+          <pre class="command"><code>disklessly init --root /Volumes/apps/Disklessly</code></pre>
+        </li>
+        <li>
+          <strong data-t="heroStep2"></strong>
+          <span class="muted" data-t="heroStep2Body"></span>
+          <a href="#recommend-section" class="link" data-t="heroStep2Link"></a>
+        </li>
+        <li>
+          <strong data-t="heroStep3"></strong>
+          <span class="muted" data-t="heroStep3Body"></span>
+          <pre class="command"><code>disklessly pack "/Applications/Example.app"</code></pre>
+        </li>
+      </ol>
+    </section>
+    <div class="grid">
+      <article class="card backend-card" id="backend-card" data-level="unknown" aria-labelledby="backend-title">
+        <div class="card-head">
+          <h2 id="backend-title" data-t="backend"></h2>
+          <span id="backend-pill" class="pill-slot"></span>
+        </div>
+        <div id="backend-body" aria-busy="true">
+          <div class="sk-line wide"></div>
+          <div class="sk-line"></div>
+          <div class="sk-line short"></div>
+        </div>
+      </article>
+      <article class="card cache-card" id="cache-card" data-level="ok" aria-labelledby="cache-title">
+        <div class="card-head">
+          <h2 id="cache-title" data-t="cache"></h2>
+          <span id="cache-pill" class="pill-slot"></span>
+        </div>
+        <div id="cache-body" aria-busy="true">
+          <div class="sk-line wide tall"></div>
+          <div class="sk-line"></div>
+          <div class="sk-line short"></div>
+        </div>
+      </article>
+    </div>
+    <section id="apps" class="section" aria-labelledby="apps-title">
+      <div class="section-head">
+        <h2 id="apps-title" data-t="apps"></h2>
+        <p id="apps-summary" class="section-summary"></p>
+      </div>
+      <div class="card table-card">
+        <div class="list-tools" id="list-tools" hidden>
+          <label class="field grow">
+            <span data-t="search"></span>
+            <input id="search" type="search" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field">
+            <span data-t="sortBy"></span>
+            <select id="sort">
+              <option value="name" data-tp="sortName"></option>
+              <option value="size" data-tp="sortSize"></option>
+              <option value="lastUsed" data-tp="sortLastUsed"></option>
+            </select>
+          </label>
+          <label class="field">
+            <span data-t="filterBy"></span>
+            <select id="filter">
+              <option value="all" data-tp="filterAll"></option>
+              <option value="cached" data-tp="filterCached"></option>
+              <option value="remote" data-tp="filterRemote"></option>
+              <option value="pinned" data-tp="filterPinned"></option>
+            </select>
+          </label>
+          <button id="icon-backfill" type="button" class="btn quiet"><span data-t="backfillIcons"></span></button>
+        </div>
+        <div class="table-head" id="table-head" hidden aria-hidden="true">
+          <span data-t="colApp"></span>
+          <span data-t="colStatus"></span>
+          <span data-t="colCache"></span>
+          <span class="right" data-t="colActions"></span>
+        </div>
+        <div id="app-list" class="app-list" aria-busy="true"></div>
+        <p class="table-foot"><span class="foot-icon" aria-hidden="true">i</span><span data-t="evictNote"></span></p>
+      </div>
+    </section>
+    <section class="card" id="sessions-section" aria-labelledby="sessions-title">
+      <div class="card-head">
+        <h2 id="sessions-title" data-t="sessionTiers"></h2>
+        <p id="sessions-summary" class="section-summary"></p>
+      </div>
+      <ul id="sessions" class="session-list"></ul>
+    </section>
+    <section class="card" id="recommend-section" aria-labelledby="recommend-title">
+      <div class="card-head">
+        <h2 id="recommend-title" data-t="recommend"></h2>
+        <p class="scan-line">
+          <span id="recommend-scanned" class="muted"></span>
+          <button id="rescan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
+        </p>
+      </div>
+      <p id="recommend-total" class="total" hidden></p>
+      <p id="recommend-summary" class="muted"></p>
+      <div id="recommend-list" class="rec-list" aria-busy="true"></div>
+      <h3 id="recommend-warn-title" class="warn-title" hidden data-t="recommendWarn"></h3>
+      <ul id="recommend-warnings" class="plain-list"></ul>
+      <p id="recommend-leftovers" class="muted" hidden></p>
+      <ul id="recommend-leftover-paths" class="plain-list" hidden></ul>
+    </section>
+    <details class="card fold" id="devices-section">
+      <summary><h2 id="devices-title" data-t="devices"></h2><span id="devices-count" class="count"></span></summary>
+      <p id="devices-summary" class="muted"></p>
+      <ul id="devices" class="plain-list"></ul>
+    </details>
+  </main>
+</div>
+<div id="toasts" class="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
+<dialog id="confirm" class="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-body"></p>
+    <div class="dialog-actions">
+      <button id="confirm-cancel" type="submit" value="cancel" class="btn outline"><span data-t="cancel"></span></button>
+      <button id="confirm-ok" type="submit" value="ok" class="btn danger"></button>
+    </div>
+  </form>
+</dialog>
+<script type="module" src="app.js"></script>
+</body>
+</html>

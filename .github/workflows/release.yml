@@ -46,7 +46,7 @@ jobs:
         run: swift test
       - name: End-to-end harness
         env:
-          E2E_LOG_FILE: ${{ runner.temp }}/isenough-e2e.log
+          E2E_LOG_FILE: ${{ runner.temp }}/disklessly-e2e.log
         run: bash scripts/e2e.sh
       - name: Universal app build
         run: bash scripts/build-app.sh
@@ -55,7 +55,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: release-e2e-log
-          path: ${{ runner.temp }}/isenough-e2e.log
+          path: ${{ runner.temp }}/disklessly-e2e.log
           if-no-files-found: ignore
 
   release:
@@ -66,8 +66,8 @@ jobs:
     permissions:
       contents: write
     env:
-      KEYCHAIN: ${{ runner.temp }}/isenough-release.keychain-db
-      NOTARY_PROFILE: isenough-release
+      KEYCHAIN: ${{ runner.temp }}/disklessly-release.keychain-db
+      NOTARY_PROFILE: disklessly-release
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,16 +108,16 @@ jobs:
             --keychain "$KEYCHAIN"
       - name: Sign, notarize, staple, and package
         env:
-          ISENOUGH_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
-          ISENOUGH_KEYCHAIN: ${{ runner.temp }}/isenough-release.keychain-db
+          DISKLESSLY_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          DISKLESSLY_KEYCHAIN: ${{ runner.temp }}/disklessly-release.keychain-db
         run: bash scripts/release-sign.sh
       - name: Fill in Homebrew templates
         run: |
           VERSION="$(bash scripts/gen-version.sh --print)"
-          TAR_SHA="$(awk -v f="isenough-$VERSION-macos-universal.tar.gz" '$2==f {print $1}' dist/SHA256SUMS)"
-          DMG_SHA="$(awk -v f="256isenough-$VERSION.dmg" '$2==f {print $1}' dist/SHA256SUMS)"
-          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256_TARBALL@/$TAR_SHA/" packaging/homebrew/isenough.rb >dist/isenough.rb
-          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256_DMG@/$DMG_SHA/" packaging/homebrew/256isenough.rb >dist/256isenough.rb
+          TAR_SHA="$(awk -v f="disklessly-$VERSION-macos-universal.tar.gz" '$2==f {print $1}' dist/SHA256SUMS)"
+          DMG_SHA="$(awk -v f="Disklessly-$VERSION.dmg" '$2==f {print $1}' dist/SHA256SUMS)"
+          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256_TARBALL@/$TAR_SHA/" packaging/homebrew/disklessly-cli.rb >dist/disklessly-cli.rb
+          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256_DMG@/$DMG_SHA/" packaging/homebrew/disklessly.rb >dist/disklessly.rb
       - name: Draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -125,8 +125,8 @@ jobs:
           TAG="${{ inputs.tag || github.ref_name }}"
           VERSION="${TAG#v}"
           awk -v v="$VERSION" '$0 ~ "^## \\[" v "\\]" {on=1; next} on && /^## / {exit} on {print}' CHANGELOG.md >"$RUNNER_TEMP/notes.md"
-          gh release create "$TAG" --draft --verify-tag --title "256isenough $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
-            dist/isenough-*-macos-universal.tar.gz dist/256isenough-*.dmg dist/SHA256SUMS dist/isenough.rb dist/256isenough.rb
+          gh release create "$TAG" --draft --verify-tag --title "Disklessly $VERSION" --notes-file "$RUNNER_TEMP/notes.md" \
+            dist/disklessly-*-macos-universal.tar.gz dist/Disklessly-*.dmg dist/SHA256SUMS dist/disklessly-cli.rb dist/disklessly.rb
       - name: Remove temporary keychain
         if: always()
         run: security delete-keychain "$KEYCHAIN" || true

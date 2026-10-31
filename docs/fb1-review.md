@@ -15,19 +15,19 @@ argument forwarding or the cache miss cannot establish F-B1 closure.
 
 ### Implementation evidence (line numbers at reviewed HEAD)
 
-- `Sources/IsenoughCore/Core.swift:14–42`: manifest supports `mode: restore`, but its app metadata
+- `Sources/DisklesslyCore/Core.swift:14–42`: manifest supports `mode: restore`, but its app metadata
   has neither bundle cdhash nor tree hash. Image SHA-256 is not a bundle custody/deletion check.
-- `Sources/IsenoughEngine/Engine.swift:68–87`: `pack` chooses/persists mode; this does not implement
+- `Sources/DisklesslyEngine/Engine.swift:68–87`: `pack` chooses/persists mode; this does not implement
   restore execution. `launch` at **155–166 never dispatches on mode**: it prefetches, attaches an image,
   opens the mounted app, polls `pgrep`, then attempts detach. No temporary bundle swap or recovery runs.
-- `Sources/isenough/main.swift:48–51`: `restore` is an alias for that same `engine.launch`.
+- `Sources/disklessly/main.swift:48–51`: `restore` is an alias for that same `engine.launch`.
   `gc` at **54** just emits success; `doctor` at **55** has no layout diagnosis/repair;
   `resolve` at **60** is unsupported. No CLI recovery entry point exists.
-- `Sources/IsenoughEngine/Engine.swift:35–40`: `StateStore` is generic JSON atomic writing, not a
+- `Sources/DisklesslyEngine/Engine.swift:35–40`: `StateStore` is generic JSON atomic writing, not a
   journal or L3-locked, fsynced terminal transaction. `initialize` at **61–67** does not replay journals.
-- `Sources/IsenoughEngine/Engine.swift:90–134`: `installStub` moves original/temp/backup bundles
+- `Sources/DisklesslyEngine/Engine.swift:90–134`: `installStub` moves original/temp/backup bundles
   during **pack**, with in-process error rollback, not restore WAL or process-death recovery.
-- `Sources/IsenoughCore/Core.swift:53–72,91–107`: generic mount-like lifecycle and a lock primitive
+- `Sources/DisklesslyCore/Core.swift:53–72,91–107`: generic mount-like lifecycle and a lock primitive
   do not supply restore phases, owner election, or recovery. The engine does not use that lock.
 
 ## Per-phase layout, validation, action and coverage
@@ -40,7 +40,7 @@ validated before any operation; bundle id alone cannot authorize deleting a real
 Each WAL phase permits **both the pre-effect and post-effect layout** because journaling precedes
 mutation. A copy can also be incomplete. The expected layouts below are requirements, **not observed
 behavior**. “Missing [E]” in the code-check column refers to the actual launch path at
-`Sources/IsenoughEngine/Engine.swift:155–166`, which has no phase/layout check at all.
+`Sources/DisklesslyEngine/Engine.swift:155–166`, which has no phase/layout check at all.
 “All absent [T]” refers to the full current test suite and E2E evidence detailed below.
 
 | Phase | Expected accepted layout (pre-effect → post-effect) | Code check (file:line) | Required rollback / forward action (actual: none) | Test |
@@ -65,7 +65,7 @@ check before dispatch would reject valid crashes in those phases even once a run
 
 ## Test evidence and gaps
 
-**[T] No per-phase coverage exists.** `Tests/IsenoughCoreTests/CoreTests.swift:5–56` contains eight
+**[T] No per-phase coverage exists.** `Tests/DisklesslyCoreTests/CoreTests.swift:5–56` contains eight
 unit tests: manifest round-trip/format, LRU/pins, two generic lifecycle assertions, local backend,
 prefetch bytes, stub plist/argument passthrough, path comparison and single-lock acquire/release.
 None constructs a restore-mode session, journal, partial layout, replacement bundle or owner death.
@@ -81,7 +81,7 @@ Linux verification performed with the available official Swift 6.1 image:
 
 ```sh
 docker run --rm --network none -v "$PWD":/src:ro -w /src swift:6.1 \
-  swift test --scratch-path /tmp/isenough-fb1-build
+  swift test --scratch-path /tmp/disklessly-fb1-build
 ```
 
 Result: **8 XCTest tests passed, 0 failures** (Swift Testing separately reports 0 tests).

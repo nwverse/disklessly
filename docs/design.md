@@ -1,4 +1,4 @@
-# 256isenough — Design (v1 draft rev. r3, 2026-10-23)
+# Disklessly — Design (v1 draft rev. r3, 2026-10-23)
 
 > Revision r1 addressed design-review round 1 (B1–B7, N1–N7): hard classifier/format constraints (§1.5, §3.6),
 > write-ahead swap journal (§5.8), lock/reservation table (§5.6, §6), mode-specific process ownership (§5.9),
@@ -21,7 +21,7 @@
 > 中文摘要：每个冷门 App 打成只读压缩 DMG（远端 ULMO），放在可插拔后端（MVP = iCloud Drive / 本地目录）；
 > `/Applications` 里放一个独立 bundle id、可签名的轻量 Stub。点击 Stub → **pre-launch hook**（拉取到本地缓存、
 > sha256 校验、`hdiutil attach -readonly -nobrowse`、带文档/URL 打开真 App）→ App 退出 → **post-quit hook**
-> （等所有进程离开挂载点、延迟卸载、更新 LRU、按配额淘汰）。引擎/CLI/Stub 用 Swift，GUI 是 `isenough serve`
+> （等所有进程离开挂载点、延迟卸载、更新 LRU、按配额淘汰）。引擎/CLI/Stub 用 Swift，GUI 是 `disklessly serve`
 > 提供的本地网页，用 Pake 打包。MAS/带特权 helper 的 App 走"临时还原"模式。
 
 This document is the implementation spec. Sources: [research.md](research.md), [research-luna.md](research-luna.md),
@@ -29,8 +29,8 @@ This document is the implementation spec. Sources: [research.md](research.md), [
 dataless DMG, no `cp -c` zero-copy cache, ULMO remote, stub must forward documents and URLs, Pake = tray window +
 HTTP to a daemon, sessions tiering starts with pi JSONL only).
 
-Naming: product **256isenough**; CLI **`isenough`** (the earlier working name was rejected by the user — never use it; see AGENTS.md); stub launcher **`isenough-stub`**; Swift modules `Isenough*`.
-Reverse-DNS prefix `io.github.s546126.256isenough`.
+Naming: product **Disklessly**; CLI **`disklessly`** (the earlier working name was rejected by the user — never use it; see AGENTS.md); stub launcher **`disklessly-stub`**; Swift modules `Disklessly*`.
+Reverse-DNS prefix `io.github.s546126.disklessly`.
 
 ---
 
@@ -65,10 +65,10 @@ Reverse-DNS prefix `io.github.s546126.256isenough`.
 | **Image** | Immutable read-only compressed DMG of exactly one `.app`, named `<bundleId>-<version>-<sha8>.dmg`. |
 | **Image manifest** | Immutable JSON describing one image (hash, size, signing identity, mode, doc/URL types...). |
 | **Catalog index** | Derived, rebuildable `catalog/manifest.json` listing all image manifests. |
-| **Cache** | Local directory of verified image copies (`~/Library/Caches/256isenough/images`). |
+| **Cache** | Local directory of verified image copies (`~/Library/Caches/Disklessly/images`). |
 | **Stub (portal)** | Small generated `.app` at the original location with its own bundle id `<orig>.256stub`. |
-| **Engine** | `IsenoughEngine` library implementing pack/fetch/launch/gc; used by CLI and daemon. |
-| **Supervisor** | The `isenough hook launch` process that owns one app session from pre-launch to detach. |
+| **Engine** | `DisklesslyEngine` library implementing pack/fetch/launch/gc; used by CLI and daemon. |
+| **Supervisor** | The `disklessly hook launch` process that owns one app session from pre-launch to detach. |
 | **Session** | One mount lifetime of an image: attach → (one or more app runs) → detach. |
 | **Lease** | Record "pid P needs mount M"; the mount is detached only when no live lease and no process uses it. |
 | **Mount mode** | Real app runs from the read-only mounted image. |
@@ -132,30 +132,30 @@ the first `unsupported` hit wins, otherwise any `restore` hit wins, otherwise `m
             │  (Apple Events: oapp / odoc / GURL)
             ▼
  /Applications/Foo.app  ── stub, bundle id com.foo.Foo.256stub, LSUIElement
-   Contents/MacOS/isenough-stub  (Swift/AppKit, ~400 LOC)
+   Contents/MacOS/disklessly-stub  (Swift/AppKit, ~400 LOC)
             │ spawns; sends every doc/URL batch over a socketpair; exits after all batches are acked
             ▼
- isenough hook launch --app <appId> --control-fd 3      ← "supervisor" (owner of a session, or short-lived joiner)
+ disklessly hook launch --app <appId> --control-fd 3      ← "supervisor" (owner of a session, or short-lived joiner)
    ├── pre-launch:  lock → resolve image → fetch(backend→cache) → verify sha256 → attach → user hooks → open
    ├── watch:       NSWorkspace termination + process scan of mountpoint
    └── post-quit:   grace delay → user hooks → lsregister -u → detach → LRU update → quota evict
             │ uses
             ▼
- IsenoughEngine (Swift library)  ── IsenoughCore (pure) + IsenoughMac (macOS adapters)
+ DisklesslyEngine (Swift library)  ── DisklesslyCore (pure) + DisklesslyMac (macOS adapters)
    Backends: LocalFolderBackend, ICloudBackend (MVP) | SMB/NFS path, WebDAV, OpenList (phase 2)
-   State:    ~/Library/Application Support/256isenough/state.json (+ flock)
+   State:    ~/Library/Application Support/Disklessly/state.json (+ flock)
 
- isenough serve  (optional LaunchAgent io.github.s546126.256isenough.daemon)
+ disklessly serve  (optional LaunchAgent io.github.s546126.disklessly.daemon)
    127.0.0.1:47256 HTTP/JSON + SSE; session cookie for the UI, Bearer for CLI (§10.1)
             ▲
- Pake app "256isenough.app" (tray + window) loading http://127.0.0.1:47256/ui/ (pairs once with a code)
+ Pake app "Disklessly.app" (tray + window) loading http://127.0.0.1:47256/ui/ (pairs once with a code)
 ```
 
 ### 2.2 Language decisions
 | Component | Language | Why |
 |---|---|---|
 | Engine, CLI, stub launcher | **Swift 5.10+ (Swift 6 toolchain, language mode 5)** | First-class `FileManager` ubiquity APIs, `NSWorkspace`, `NSRunningApplication`, `libproc`, `Security`/`codesign` APIs; single static-ish binary; same language for stub and engine; SwiftPM builds on Linux for pure logic tests. |
-| Web UI | Plain HTML + vanilla JS (ES modules), no build step | Served by `isenough serve` from `Resources/web`; zero toolchain; easy to wrap with Pake. |
+| Web UI | Plain HTML + vanilla JS (ES modules), no build step | Served by `disklessly serve` from `Resources/web`; zero toolchain; easy to wrap with Pake. |
 | GUI shell | **Pake** (Tauri) build recipe `scripts/build-gui.sh` | User decision. Pake only loads `http://127.0.0.1:47256/ui/`; no fork, no custom IPC. |
 | Test glue / e2e | Bash (`scripts/e2e.sh`) + Swift test helpers | Portable to any Mac, runs on GH Actions. |
 
@@ -176,17 +176,17 @@ but its scrubbing and ownership behavior differ, so pack does not use it. `LC_AL
 hdiutil's language.
 
 ### 2.3 Process model
-- **No mandatory daemon.** The stub spawns a **supervisor** (`isenough hook launch`) that lives for the whole session
+- **No mandatory daemon.** The stub spawns a **supervisor** (`disklessly hook launch`) that lives for the whole session
   (pre-launch → app run → post-quit → detach) and then exits. This keeps the MVP robust: no IPC needed for launch,
   works even if the daemon is not installed. Concurrency is solved with file locks (§5.6).
-- **Optional daemon** (`isenough serve`, installed by `isenough daemon install` as LaunchAgent with `KeepAlive`): serves
+- **Optional daemon** (`disklessly serve`, installed by `disklessly daemon install` as LaunchAgent with `KeepAlive`): serves
   the API/UI, runs periodic `gc`, recovers stale mounts at start, handles sleep/wake revalidation, and runs
   prefetch for pinned apps. When the daemon is running, the stub still uses the supervisor path (identical code);
   the daemon only observes state and receives progress via the shared event log (§3.5). Launch-via-daemon is a v1
   optimization, not MVP.
 - **Why supervisor per session instead of the stub itself?** The stub must stay a tiny, rarely-regenerated signed
-  binary; all logic lives in the versioned `isenough` binary which the stub locates via `Resources/stub.json`
-  (`isenoughPath`) with fallbacks `~/.local/bin/isenough`, `/usr/local/bin/isenough`, `/opt/homebrew/bin/isenough`.
+  binary; all logic lives in the versioned `disklessly` binary which the stub locates via `Resources/stub.json`
+  (`disklesslyPath`) with fallbacks `~/.local/bin/disklessly`, `/usr/local/bin/disklessly`, `/opt/homebrew/bin/disklessly`.
   The stub stays alive (Dock-less, `LSUIElement`) during pre-launch to show progress and until every forwarded
   document/URL batch is acknowledged (§8.3), then exits; the supervisor is spawned detached (`posix_spawn` +
   `setsid`) so it outlives the stub.
@@ -195,7 +195,7 @@ hdiutil's language.
 ```
 Package.swift                (swift-tools-version 5.9; platforms: .macOS(.v13))
 Sources/
-  IsenoughCore/        pure Swift, Foundation only, builds on Linux
+  DisklesslyCore/        pure Swift, Foundation only, builds on Linux
     Model/          AppManifest, CatalogIndex, DeviceRecord, Config, LocalState, AppFacts, Classification
     Classifier/     classify(AppFacts, Policy)
     Cache/          CachePolicy, LRU planner (planEviction), quota math
@@ -205,7 +205,7 @@ Sources/
     Util/           SHA256 (swift-crypto on Linux / CryptoKit on macOS via #if canImport), AtomicFile,
                     FileLock (flock), JSONCoding (sorted keys, ISO-8601), Semver/version compare, Logging
     API/            APIRoutes model types (request/response Codables) shared by server + tests
-  IsenoughMac/         macOS-only adapters, each file wrapped in #if os(macOS); protocols declared in IsenoughCore
+  DisklesslyMac/         macOS-only adapters, each file wrapped in #if os(macOS); protocols declared in DisklesslyCore
     HdiutilDiskImageTool.swift   (DiskImageTool)
     MacAppInspector.swift        (AppInspector: Info.plist, codesign info via SecStaticCode, xattrs)
     WorkspaceAppLauncher.swift   (AppLauncher: NSWorkspace.openApplication / open(urls:withApplicationAt:))
@@ -214,20 +214,20 @@ Sources/
     LaunchServices.swift         (lsregister -f/-u wrapper)
     CodeSigner.swift             (codesign stub)
     SystemEvents.swift           (sleep/wake, termination notifications)
-  IsenoughEngine/      orchestration: PackService, FetchService, LaunchSupervisor, GCService, RestoreService,
+  DisklesslyEngine/      orchestration: PackService, FetchService, LaunchSupervisor, GCService, RestoreService,
                     DoctorService, StubBuilder (plist transform is pure; file ops via protocols). Depends on
-                    IsenoughCore; uses IsenoughMac only through injected protocol implementations (`Platform` struct).
-  IsenoughServer/      tiny HTTP/1.1 server on NIO-free BSD sockets (or Network.framework on macOS), routes → Engine
-  isenough/            CLI executable (swift-argument-parser), composition root: builds `Platform.mac` or fails on Linux
-  isenough-stub/       AppKit stub launcher executable (macOS only; on Linux compiles to a no-op main)
+                    DisklesslyCore; uses DisklesslyMac only through injected protocol implementations (`Platform` struct).
+  DisklesslyServer/      tiny HTTP/1.1 server on NIO-free BSD sockets (or Network.framework on macOS), routes → Engine
+  disklessly/            CLI executable (swift-argument-parser), composition root: builds `Platform.mac` or fails on Linux
+  disklessly-stub/       AppKit stub launcher executable (macOS only; on Linux compiles to a no-op main)
 Resources/web/      index.html, app.js, style.css (copied into the CLI bundle dir / installed share dir)
 Tests/
-  IsenoughCoreTests/   Linux + macOS: manifest coding/versioning, classifier fixtures, LRU/quota planner, session state
+  DisklesslyCoreTests/   Linux + macOS: manifest coding/versioning, classifier fixtures, LRU/quota planner, session state
                     machine, lease table, RepoLayout naming, LocalFolderBackend (temp dirs), Fetcher (resume, sha
                     mismatch), hook runner (env, timeout), plist transform for stubs, API codables, config merge
-  IsenoughEngineTests/ Linux + macOS with fake Platform (FakeDiskImageTool, FakeLauncher, FakeProbe, FakeUbiquity):
+  DisklesslyEngineTests/ Linux + macOS with fake Platform (FakeDiskImageTool, FakeLauncher, FakeProbe, FakeUbiquity):
                     pack → launch → quit → detach flow, concurrency (two launches), crash recovery, offline
-  IsenoughMacTests/    macOS only (CI): hdiutil create/attach/detach real, inspector on a fixture app, codesign stub
+  DisklesslyMacTests/    macOS only (CI): hdiutil create/attach/detach real, inspector on a fixture app, codesign stub
 scripts/  e2e.sh, build-gui.sh, make-fixture-app.sh, linux-test.sh (docker run swift:6.0 swift test)
 ```
 Dependencies: `swift-argument-parser`, `swift-crypto` (Linux only via condition). No others in MVP.
@@ -256,7 +256,7 @@ the same major and ignore unknown keys; a higher major is refused with exit code
 
 ### 3.1 Repository layout (on any backend)
 ```
-<repoRoot>/                              iCloud default: ~/Library/Mobile Documents/com~apple~CloudDocs/256isenough/
+<repoRoot>/                              iCloud default: ~/Library/Mobile Documents/com~apple~CloudDocs/Disklessly/
   repo.json                              {"schema":"repo/1","repoId":"<uuid>","createdAt":...,"layoutVersion":1}
   images/<bundleId>-<version>-<sha8>.dmg         immutable, ULMO; never overwritten
   manifests/<bundleId>-<version>-<sha8>.json     immutable image manifest (source of truth)
@@ -268,7 +268,7 @@ the same major and ignore unknown keys; a higher major is refused with exit code
 - `<version>` = `CFBundleShortVersionString` sanitized to `[A-Za-z0-9._-]` (else `0`), plus `+<CFBundleVersion>` folded
   in as `_b<build>` when present: `com.blender.blender-4.2.1_b4.2.1-1a2b3c4d.dmg`.
 - `<sha8>` = first 8 hex of the image sha256. Names are unique by content → no write conflicts between Macs.
-- `catalog/manifest.json` is only an optimization: `isenough` always merges it with `list manifests/` and treats
+- `catalog/manifest.json` is only an optimization: `disklessly` always merges it with `list manifests/` and treats
   `manifests/*.json` as truth. iCloud conflict copies (`manifest 2.json`) are ignored for the catalog and reported by
   `doctor`.
 
@@ -307,7 +307,7 @@ the same major and ignore unknown keys; a higher major is refused with exit code
   "mode": "mount",
   "classification": { "reasons": [], "warnings": ["sparkle"], "override": null },
   "createdAt": "2026-10-20T08:00:00Z",
-  "createdBy": { "deviceId": "6F1C…", "host": "mini", "tool": "isenough 0.1.0", "os": "15.6" }
+  "createdBy": { "deviceId": "6F1C…", "host": "mini", "tool": "disklessly 0.1.0", "os": "15.6" }
 }
 ```
 `documentTypes`/`urlTypes` are stored verbatim (plist → JSON) so stubs can be regenerated on another Mac without the
@@ -317,7 +317,7 @@ Plist→JSON (N6): `String/Bool/Int/Double/Array/Dict` map directly; `Date` → 
 `{"$data":"base64"}`, so `StubPlist` can round-trip to a binary-identical-semantics plist. Manifests also record
 `"iconFiles": [...]` and the image stores the icons, so `stub rebuild` on a new Mac extracts icons by attaching the
 cached image read-only (never needs the original app). Schema migrations: readers support the current and previous
-minor layout of each major; `isenough` rewrites local files (`state`, `config`) to the newest minor on first write;
+minor layout of each major; `disklessly` rewrites local files (`state`, `config`) to the newest minor on first write;
 immutable repo files are never migrated in place. Manifests used by a successful fetch are copied to
 `cache/manifests/<imageId>.json` (offline launch).
 `image.localSizes` (r2, R2-B3) is the **allocated** size of the image after local conversion, *measured* by `pack`
@@ -364,7 +364,7 @@ An image is deletable only when no `devices/*.json` references it. A device whos
 produces a warning and is still a reference. `gc` moves unreferenced images to `trash/` and purges them only after
 a 7 day grace period. A device file that is not downloaded, including an evicted `.icloud` placeholder, is treated
 as present, and nothing is deleted while one exists. Conflict copies (`file 2.json`, names containing
-`conflicted copy`) are reported by `doctor` and are never merged. `isenough devices` lists devices, renames this
+`conflicted copy`) are reported by `doctor` and are never merged. `disklessly devices` lists devices, renames this
 Mac, and forgets a device only with `--yes`. `recommend` marks a candidate that already matches bundle id, version,
 and architecture as already in the repo.
 
@@ -389,19 +389,19 @@ unchanged. `help`, `--help`, and `-h` print the usage text. `evict-local` says `
 when iCloud does not report `NSURLUbiquitousItemIsUploadedKey` or `IsUploadingKey`, and it appends the upload
 percent when `NSURLUbiquitousItemPercentUploadedKey` is present, so a slow upload is distinct from a missing status.
 
-After a successful `pack`, and again from `gc` and `isenough evict-local`, local bytes of uploaded
+After a successful `pack`, and again from `gc` and `disklessly evict-local`, local bytes of uploaded
 iCloud images are dropped with `FileManager.evictUbiquitousItem`. `brctl` is not used. An unfinished
 upload is never evicted. A mounted image, an open restore, or a detach deadline that has not elapsed
 is skipped. "Cannot evict yet" is reported and is not an error. `doctor`'s `materialized` check states
 how much of the repo is still stored on this Mac.
 
-If removing `.isenough-original-<id>.app` fails after the stub is installed, `pack` exits 0 and names
-`isenough cleanup-backups`. That command verifies the stub manifest against the repo image, and when
+If removing `.disklessly-original-<id>.app` fails after the stub is installed, `pack` exits 0 and names
+`disklessly cleanup-backups`. That command verifies the stub manifest against the repo image, and when
 the local image bytes are readable it checks their sha256 too. Every verified backup is removed by one
 `osascript` administrator prompt. The tool never handles a password. `--keep-original` copies
 (`.256orig.app`) are not part of that cleanup.
 
-### 3.5 Local state (`~/Library/Application Support/256isenough/`)
+### 3.5 Local state (`~/Library/Application Support/Disklessly/`)
 ```
 config.json         user config (§3.6)
 state.json          local state DB (below), guarded by state.lock (flock), atomic writes
@@ -409,7 +409,7 @@ locks/global.lock, locks/app/<appId>.lock, locks/image/<imageId>.lock   flock lo
 sessions/<sessionId>.json   live session record (also mirrored in state.json)
 events.jsonl        append-only event log (progress + audit); rotated at 5 MB, 3 generations
 hooks/<bundleId>/pre-launch[.d/*], post-quit[.d/*]        local user hooks
-logs/isenough.log
+logs/disklessly.log
 ```
 JSON file (not SQLite) is chosen: small (≤ few hundred apps), human-debuggable, Linux-testable, no dependency.
 The implemented file uses schema `state/2`. A missing schema or `state/1` migrates on the first update: the previous bytes are copied to `state.json.v1.bak` when that backup is absent, then the file is rewritten. Corrupt JSON is not overwritten. `load` returns an empty state, and `update` throws integrity (exit 5) after renaming the file to `state.json.corrupt-<timestamp>`.
@@ -434,7 +434,7 @@ The implemented file uses schema `state/2`. A missing schema or `state/1` migrat
   },
   "mounts": {
     "com.blender.blender-4.2.1_b4.2.1-1a2b3c4d": {
-      "sessionId": "S-20261020-080000-ab12", "devEntry": "/dev/disk5", "mountPoint": "/Users/me/Library/Caches/256isenough/mnt/com.blender.blender-4.2.1_b4.2.1-1a2b3c4d",
+      "sessionId": "S-20261020-080000-ab12", "devEntry": "/dev/disk5", "mountPoint": "/Users/me/Library/Caches/Disklessly/mnt/com.blender.blender-4.2.1_b4.2.1-1a2b3c4d",
       "imagePath": "…ulfo.dmg", "attachedAt": "…", "owner": { "pid": 4242, "start": 1729411200 },
       "leases": [ { "pid": 5151, "start": 1729411260, "bundleURL": "…/Blender.app", "executablePath": "…" } ],
       "detachAfter": null, "phase": "running", "epoch": 1, "postQuitRanForEpoch": 0,
@@ -456,7 +456,7 @@ exactly once per epoch. `trackedDependents` lists exceptional dependents (§5.9)
 `restored` holds restore-mode sessions (r3, R3-B4/B5): `{ appId: { "journal": "journals/<txid>.json", "txid",
 "sessionId", "since", "owner": {pid,start}, "phase": "running"|"idle"|"waiting"|"restoringOut", "waitReason":
 null|"busy"|"unknown"|"held", "epoch", "postQuitRanForEpoch", "detachAfter", "leases": [ … ], "dest": "/Applications/Foo.app",
-"destId": {"dev","ino"}, "staging": "/Applications/.256isenough-staging/<txid>", "stubId": {"dev","ino"} } }` — a
+"destId": {"dev","ino"}, "staging": "/Applications/.disklessly-staging/<txid>", "stubId": {"dev","ino"} } }` — a
 mirror of the session part of the open restore journal; the authoritative swap state **and owner** live in the
 write-ahead journal (§5.8; the journal is written first, the mirror second, and recovery repairs the mirror from the
 journal). `destId`/`stubId` are the inode identities of the installed real bundle and the parked stub recorded at
@@ -473,8 +473,8 @@ is set, `launch` **refuses** with `EX_RESOLUTION` (14) and `evict/unpack/gc` ref
 ```json
 {
   "schema": "config/1",
-  "backend": { "type": "icloud", "root": "~/Library/Mobile Documents/com~apple~CloudDocs/256isenough" },
-  "cache": { "dir": "~/Library/Caches/256isenough", "quotaBytes": 21474836480, "minFreeBytes": 16106127360,
+  "backend": { "type": "icloud", "root": "~/Library/Mobile Documents/com~apple~CloudDocs/Disklessly" },
+  "cache": { "dir": "~/Library/Caches/Disklessly", "quotaBytes": 21474836480, "minFreeBytes": 16106127360,
              "localFormat": "ULFO", "keepRemoteDownloaded": false },
   "lifecycle": { "detachDelaySeconds": 120, "detachRetryMaxSeconds": 600, "forceDetachAfterSeconds": 0,
                  "stuckRetrySeconds": 300, "probeIntervalSeconds": 5,
@@ -490,16 +490,16 @@ token in keychain, `basePath`, `connections`). `forceDetachAfterSeconds: 0` = ne
 
 **Image format flag.** `pack --image-format ULMO|ULFO` (case insensitive) selects the disk image `hdiutil create` writes.
 Mount mode publishes ULMO unless the flag says otherwise. Restore mode uses the flag when it is present, otherwise
-config `restoreImageFormat` (default `ULMO`, env `ISENOUGH_RESTORE_IMAGE_FORMAT`). The format is not part of the image id.
+config `restoreImageFormat` (default `ULMO`, env `DISKLESSLY_RESTORE_IMAGE_FORMAT`). The format is not part of the image id.
 `UDZO` and any other value are `EX_USAGE`. `pack --format` is still an unknown option. A manifest is accepted when
 `image.format` is `ULMO` or `ULFO`. The older design note that remote images are always ULMO, and that a local cache is
 converted to ULFO on fetch, is not what this build does: the cached file is the published image.
 
 ---
 
-## 4. CLI (`isenough`)
+## 4. CLI (`disklessly`)
 
-Global flags: `--config <path>` (env `ISENOUGH_CONFIG`), `--state-dir <path>` (env `ISENOUGH_STATE_DIR`; tests), `--json` (machine output on stdout, logs on stderr),
+Global flags: `--config <path>` (env `DISKLESSLY_CONFIG`), `--state-dir <path>` (env `DISKLESSLY_STATE_DIR`; tests), `--json` (machine output on stdout, logs on stderr),
 `-v/--verbose`, `--quiet`. `<app>` accepts bundle id, app name (case-insensitive), stub path, or image id.
 
 | Command | Purpose / key flags |
@@ -522,14 +522,14 @@ Global flags: `--config <path>` (env `ISENOUGH_CONFIG`), `--state-dir <path>` (e
 | `unpack <app> [--to <dir>]` (alias `rehydrate`) | Permanently put the real app back (stub removed), keep image in repo unless `--delete-remote`. Used for "refresh": `unpack` → update app → `pack`. |
 | `stub rebuild <app>\|--all [--sign-identity <id>]` | Regenerate stub(s) from the manifest (e.g. new Mac, new launcher version). |
 | `hooks list\|edit\|enable\|disable <app>` | Manage user hooks (§5.5). |
-| `doctor [--fix]` | Checks: config, backend reachable, iCloud signed in + Optimize Storage, free space, `hdiutil` present, stale mounts, lock files, LS registration of stubs, conflict copies, stub ↔ manifest consistency, isenough path in stubs. `--fix` performs safe repairs. |
+| `doctor [--fix]` | Checks: config, backend reachable, iCloud signed in + Optimize Storage, free space, `hdiutil` present, stale mounts, lock files, LS registration of stubs, conflict copies, stub ↔ manifest consistency, disklessly path in stubs. `--fix` performs safe repairs. |
 | `recommend [--min-size SIZE] [--limit N] [--min-idle-days N]` | Rank top-level apps in `/Applications` and `~/Applications` worth offloading. See §4.1. |
 | `serve [--port 47256] [--print-token]` | HTTP/JSON API + web UI on 127.0.0.1 (§2.3, §10). |
-| `daemon install\|uninstall\|status` | Manage the LaunchAgent plist `~/Library/LaunchAgents/io.github.s546126.256isenough.daemon.plist`. |
+| `daemon install\|uninstall\|status` | Manage the LaunchAgent plist `~/Library/LaunchAgents/io.github.s546126.disklessly.daemon.plist`. |
 | `trust <app> [--team-id <id>\|--cdhash <h>]` | Approve a new signing identity for an app (TOFU, §10). |
 | `version` | Prints version + schema versions. |
 
-Exit codes (stable, documented in `isenough --help`):
+Exit codes (stable, documented in `disklessly --help`):
 | Code | Name | Meaning |
 |---|---|---|
 | 0 | OK | success |
@@ -546,21 +546,21 @@ Exit codes (stable, documented in `isenough --help`):
 | 11 | EX_TIMEOUT | download stall / attach timeout |
 | 12 | EX_SCHEMA | state/manifest schema too new or corrupt |
 | 13 | EX_CANCELLED | user cancelled (progress window Cancel / SIGINT) |
-| 14 | EX_RESOLUTION | an updated bundle is retained and must be resolved first (`isenough resolve`, §5.8.7) |
+| 14 | EX_RESOLUTION | an updated bundle is retained and must be resolved first (`disklessly resolve`, §5.8.7) |
 
 `--json` output shape: `{"ok":true,"data":{…}}` or `{"ok":false,"error":{"code":5,"name":"EX_INTEGRITY","message":"…","details":{…}}}`.
 
 ### 4.1 `recommend`
 
-`isenough recommend` lists installed apps worth offloading. It does not pack or delete anything. It reads `/Applications` and `~/Applications`, and only the top-level `.app` bundle in each directory (nested bundles under `Contents` are ignored).
+`disklessly recommend` lists installed apps worth offloading. It does not pack or delete anything. It reads `/Applications` and `~/Applications`, and only the top-level `.app` bundle in each directory (nested bundles under `Contents` are ignored).
 
 Skipped before scoring:
 
-- stubs (bundle id suffix `.256stub`, executable `isenough-stub`, or `Contents/Resources/stub.json`) and the 256isenough app
+- stubs (bundle id suffix `.256stub`, executable `disklessly-stub`, or `Contents/Resources/stub.json`) and the Disklessly app
 - apps whose path resolves under `/System`, and apps signed by Apple as macOS system code (`anchor apple`, not `anchor apple generic`)
 - apps whose main executable is currently running
-- every dot-prefixed entry, including `.isenough-original-<id>.app` and `.256isenough-staging`
-- bundles whose name starts with `.isenough-original-` or ends with `.256orig.app`
+- every dot-prefixed entry, including `.disklessly-original-<id>.app` and `.disklessly-staging`
+- bundles whose name starts with `.disklessly-original-` or ends with `.256orig.app`
 
 For each remaining app the command records:
 
@@ -576,16 +576,16 @@ These are warnings, not recommendations, when they are at least `--min-size` (a 
 
 A login item is a non-empty `Contents/Library/LoginItems`, `Contents/Library/LaunchAgents`, or `Contents/Library/LaunchDaemons`, or a plist in `~/Library/LaunchAgents`, `/Library/LaunchAgents`, or `/Library/LaunchDaemons` whose `Program` or `ProgramArguments` path is the app or inside it. `SMAppService` is not used.
 
-Those skipped backups are not recommendations and not warnings. When any are present, the text output and `isenough ui` add one line, `N leftover backups (X) can be removed`, and list their paths. The command does not delete them; copies under `/Applications` need an administrator. `--json` includes `leftoverBackups` (path, sizeBytes, sizeIncomplete) and `leftoverBackupBytes`.
+Those skipped backups are not recommendations and not warnings. When any are present, the text output and `disklessly ui` add one line, `N leftover backups (X) can be removed`, and list their paths. The command does not delete them; copies under `/Applications` need an administrator. `--json` includes `leftoverBackups` (path, sizeBytes, sizeIncomplete) and `leftoverBackupBytes`.
 
-`--json` prints one object with `ok`, `scan`, `recommendations`, `warnings`, `estimatedFreedBytes`, `leftoverBackups`, and `leftoverBackupBytes`. `isenough ui` shows the same lists from `GET /api/recommend`.
+`--json` prints one object with `ok`, `scan`, `recommendations`, `warnings`, `estimatedFreedBytes`, `leftoverBackups`, and `leftoverBackupBytes`. `disklessly ui` shows the same lists from `GET /api/recommend`.
 
 ---
 
 ## 5. Hook lifecycle
 
 ### 5.1 State machine (per app on this device)
-Pure `enum AppState` in `IsenoughCore/Lifecycle` with an explicit transition table (illegal transitions throw → bug):
+Pure `enum AppState` in `DisklesslyCore/Lifecycle` with an explicit transition table (illegal transitions throw → bug):
 
 ```
 remote ──fetch──▶ downloading ──complete──▶ verifying ──ok──▶ cached ──attach──▶ mounted ──open──▶ running
@@ -691,7 +691,7 @@ sleeping. `epoch`/`postQuitRanForEpoch` (§3.5) make post-quit hooks run once pe
    exists → release L1, back to watch (§5.3). Re-probe usage; busy/unknown → release L1, back to watch.
 3. **Post-quit hooks** (still under L1; bounded by `hookTimeoutSeconds`; a joiner waits on L1 and the stub shows
    "finishing previous session"): set `phase = detaching`; if `postQuitRanForEpoch < epoch` run user post-quit hooks
-   (§5.5) with `ISENOUGH_EXIT_STATUS` = `crash` if a crash report for the leased pid appears in
+   (§5.5) with `DISKLESSLY_EXIT_STATUS` = `crash` if a crash report for the leased pid appears in
    `~/Library/Logs/DiagnosticReports` within 5 s, else `unknown` (numeric exit codes of non-child apps are not
    observable), then set `postQuitRanForEpoch = epoch`. Hook failures are logged. Detach retries of the same epoch
    never rerun hooks; a revived session (§5.4.1) gets a new epoch and its next quit runs them again.
@@ -699,7 +699,7 @@ sleeping. `epoch`/`postQuitRanForEpoch` (§3.5) make post-quit hooks run once pe
    `devEntry` maps to our cache image realpath *and* mountpoint `mnt/<imageId>`, N4). If the image is no longer
    attached at all → outcome **detached** (external detach; logged). If attached but not ours (e.g. same image
    re-attached elsewhere) → outcome **stuck** (`lastError: ownership mismatch`, never detached by us; the cache
-   file stays protected by the `hdiutil info` check of §6.2 even if the user later runs `isenough detach --forget`,
+   file stays protected by the `hdiutil info` check of §6.2 even if the user later runs `disklessly detach --forget`,
    which drops only our record). Otherwise `lsregister -u <mnt>/<app>` (best effort), then
    `hdiutil detach <devEntry>` (timeout 60 s), then re-query `hdiutil info`: success only if `devEntry` is gone.
    Outcomes, each written under L3 before L1 is released:
@@ -712,11 +712,11 @@ sleeping. `epoch`/`postQuitRanForEpoch` (§3.5) make post-quit hooks run once pe
      check and step 3's hooks).
    - **exhausted** → if `forceDetachAfterSeconds > 0` and the usage probe is clean, one `hdiutil detach -force`
      attempt, judged like above. Otherwise (or if that fails) `phase = stuck`, `detach.state = "stuck"`; event
-     `detach.stuck` + user notification ("Foo's disk image could not be ejected: <lastError>; `isenough detach Foo`").
+     `detach.stuck` + user notification ("Foo's disk image could not be ejected: <lastError>; `disklessly detach Foo`").
      The mount record and ownership stay; cache protection stays (§6.2 never evicts an image with a mount record
      *or* an `hdiutil info` attachment). The supervisor then **exits with `EX_DISKIMAGE` (6)** — it does not fall
      through to step 5. The record now has a dead owner and is retried by recovery (§5.6.4): daemon every
-     `stuckRetrySeconds`, `gc`, `isenough detach <app>`, or the next launch (which revives it instead, §5.4.1).
+     `stuckRetrySeconds`, `gc`, `disklessly detach <app>`, or the next launch (which revives it instead, §5.4.1).
      Recovery of a stuck session performs only step 2's probe and step 4 (no hooks: same epoch).
    **Restore mode** (R3-B5): run the journaled **restore-out** transaction (§5.8.3) under L1, which inspects for
    changes before any removal and retains changed bundles. Outcomes, each written under L3 before L1 is released:
@@ -753,19 +753,19 @@ a normal launch follows. A `detaching` phase is never observable by others (it o
 
 ### 5.5 User-defined hooks
 - Locations (local wins over shared, both run if both exist — local first):
-  - local: `~/Library/Application Support/256isenough/hooks/<bundleId>/{pre-launch,post-quit}` and
+  - local: `~/Library/Application Support/Disklessly/hooks/<bundleId>/{pre-launch,post-quit}` and
     `…/{pre-launch.d,post-quit.d}/*` (lexical order); global `hooks/_all/…` applies to every app.
   - shared (repo, **v2**; designed now, not in MVP): `<repoRoot>/hooks/<bundleId>/…` — **disabled by default**; enabled per-app with
-    `isenough hooks enable <app> --shared --sha256 <hash>` which pins the exact content hash (a modified shared
+    `disklessly hooks enable <app> --shared --sha256 <hash>` which pins the exact content hash (a modified shared
     script is refused until re-approved). Rationale: the repo is synced from other devices (§10).
 - Must be regular files, owned by the user, not group/world-writable, executable. Run with `Process`, no shell,
   `cwd` = hook dir, stdin `/dev/null`, timeout `hookTimeoutSeconds` (SIGTERM then SIGKILL after 5 s).
 - Environment contract (also documented in README):
-  `ISENOUGH_PHASE` (`pre-launch`|`post-quit`), `ISENOUGH_APP_ID`, `ISENOUGH_BUNDLE_ID`, `ISENOUGH_IMAGE_ID`, `ISENOUGH_VERSION`,
-  `ISENOUGH_MODE`, `ISENOUGH_APP_PATH` (real app path, mounted or restored), `ISENOUGH_MOUNT_POINT`, `ISENOUGH_SESSION_ID`,
-  `ISENOUGH_EXIT_STATUS` (post-quit: `crash`|`unknown`), `ISENOUGH_STATE_DIR`, `ISENOUGH_ARGS_FILE` = path of a 0600
+  `DISKLESSLY_PHASE` (`pre-launch`|`post-quit`), `DISKLESSLY_APP_ID`, `DISKLESSLY_BUNDLE_ID`, `DISKLESSLY_IMAGE_ID`, `DISKLESSLY_VERSION`,
+  `DISKLESSLY_MODE`, `DISKLESSLY_APP_PATH` (real app path, mounted or restored), `DISKLESSLY_MOUNT_POINT`, `DISKLESSLY_SESSION_ID`,
+  `DISKLESSLY_EXIT_STATUS` (post-quit: `crash`|`unknown`), `DISKLESSLY_STATE_DIR`, `DISKLESSLY_ARGS_FILE` = path of a 0600
   JSON file `{"documents":[...],"urls":[...],"arguments":[...]}` (arrays, since file names may contain newlines;
-  N6). `ISENOUGH_DOCS`/`ISENOUGH_URLS` are not provided.
+  N6). `DISKLESSLY_DOCS`/`DISKLESSLY_URLS` are not provided.
 - Pre-launch non-zero → abort launch (`EX_HOOK`), stdout/stderr tail shown in stub alert. Post-quit failure → log.
 - Typical uses: restore an app-data archive (v2), set `defaults` keys, start/stop a companion service, mount a
   data volume, notify.
@@ -808,7 +808,7 @@ old version of the same app) is covered since we already hold its L1; its L2 is 
 |---|---|---|
 | launch / `hook launch` (owner) | L1(app) → admission + reclamation (try-locks only) → L2(img) blocking: fetch/verify/convert/attach → release L2 → user pre-launch hooks + open under L1 → release L1 while running | claim persisted before the first byte (§6.1); cache-file check and attach under the same L2 hold |
 | join / revive (second supervisor) | L1(app) | §5.6.3, §5.4.1 |
-| post-quit / detach / `isenough detach` | L1(app) per attempt (L3 inside for state writes); quota pass after releasing L1 (try-locks only) | §5.4 |
+| post-quit / detach / `disklessly detach` | L1(app) per attempt (L3 inside for state writes); quota pass after releasing L1 (try-locks only) | §5.4 |
 | `prefetch`, `pin` | L1(app) → admission + claim (L3) → **L2(img) blocking while still holding L1** → release L1 → fetch/verify/convert under L2 → completion (claim → cache entry, L3) → release L2 | R3-B3 handoff: claim publication and writer ownership happen in one L1 hold, so whoever later takes L1 and sees a live claim knows its owner already holds L2 and is the writer; a launch never writes under another process's claim (§5.2.3b–c) |
 | `evict <app>` | L1(app) → L2(img) (blocking, in order) | refuse if session/mount/claim/restored/`needsResolution` (`EX_BUSY`) |
 | `gc` / quota pass / reclamation | plan under L3 snapshot → per victim: try-lock L1(victim) → try-lock L2(img) → re-check predicate under L3 → delete → state under L3 | holds at most its own app's L1 (admission) or nothing (gc); skips busy victims |
@@ -848,7 +848,7 @@ open restore journal's `owner`, mirrored in `state.restored[appId]`). Owner (pid
 stop. Otherwise the caller becomes the **single adopter**: it rewrites the owner (restore: journal first, WAL rule,
 then mirror; mount: under L3) and only then acts. Any later caller sees a live owner. A short-lived adopter
 (`gc`, CLI command, stub-less recovery) that must keep watching does not watch itself: still under L1 it spawns a
-detached `isenough hook watch --app <id>` (setsid), records **the child's** (pid, start) as owner, and releases
+detached `disklessly hook watch --app <id>` (setsid), records **the child's** (pid, start) as owner, and releases
 L1; if the child dies, it is just another dead owner. The daemon adopts in-process.
 
 **(a) Mount sessions.** Image ownership is verified before adoption: the attached `devEntry` must map to our cache
@@ -893,8 +893,8 @@ target; revive of a `waiting` session follows §5.4.1 (new epoch if hooks of the
 ```mermaid
 sequenceDiagram
     actor U as User
-    participant S as Stub (isenough-stub)
-    participant V as Supervisor (isenough hook launch)
+    participant S as Stub (disklessly-stub)
+    participant V as Supervisor (disklessly hook launch)
     participant B as Backend (iCloud/local)
     participant C as Cache
     participant H as hdiutil
@@ -953,7 +953,7 @@ Every operation that moves an `.app` bundle (pack's final install, restore-in, r
   paths involved (atomic temp + `fsync(file)` + `rename` + `fsync(journals/)`). After the mutation, the affected
   parent directories are `fsync`ed. Recovery therefore always knows where every bundle is or may be.
 - **Same-volume staging.** All staging lives in a hidden directory next to the destination:
-  `<dest-parent>/.256isenough-staging/<txid>/` (e.g. `/Applications/.256isenough-staging/…`). Moves into/out of the
+  `<dest-parent>/.disklessly-staging/<txid>/` (e.g. `/Applications/.disklessly-staging/…`). Moves into/out of the
   destination are `rename(2)`/`renamex_np` within one volume and therefore atomic. Copies across volumes (image →
   staging via `ditto`) happen only into staging and are followed by verification before any rename. The
   `parked/` directory in Application Support is no longer used.
@@ -973,8 +973,8 @@ Every operation that moves an `.app` bundle (pack's final install, restore-in, r
   else kept in staging) and recorded as `needsResolution`.
 - **Supervisors never prompt and never block on a user decision.** A decision is recorded (`needsResolution` with
   the retained bundle's identity snapshot, event, GUI/daemon notification, and `status`/`doctor` output); the user
-  resolves with `isenough resolve` (§5.8.7). **Until resolved, launching the app is refused** with `EX_RESOLUTION`
-  and an alert "Foo was updated while restored; choose Keep update / Discard in 256isenough" (R2-B5, r1's
+  resolves with `disklessly resolve` (§5.8.7). **Until resolved, launching the app is refused** with `EX_RESOLUTION`
+  and an alert "Foo was updated while restored; choose Keep update / Discard in Disklessly" (R2-B5, r1's
   "launch the retained bundle" is withdrawn).
 
 #### 5.8.2 restore-in (pre-launch, restore mode)
@@ -1063,7 +1063,7 @@ second restore source; the retained bundle is evidence the user must decide on, 
   — an invalid signature (e.g. an in-place file write that broke the resource seal) → `EX_INTEGRITY`, nothing
   changes, and `--trust` cannot override it; only `--export`/`--discard` remain (R3-B6). The engine never re-signs
   an app bundle; if its Team ID differs from `trusted.teamId`, or for ad-hoc apps whenever cdhash
-  changed, require `--trust`, i.e. explicit trust approval as in `isenough trust`) → `packed` (normal pack
+  changed, require `--trust`, i.e. explicit trust approval as in `disklessly trust`) → `packed` (normal pack
   pipeline from the retained bundle into a **new** image + manifest + catalog; upload confirmed per §7.2) →
   `switched` (`apps[id].imageId` = new image, `trusted` updated, stub rebuilt if its Info.plist changed) →
   `disposed` (retained bundle moved to the Trash — only now, after the new image is verified in cache or uploaded;
@@ -1080,7 +1080,7 @@ second restore source; the retained bundle is evidence the user must decide on, 
 | Mode | Usage root(s) watched | Detach/cleanup gate |
 |---|---|---|
 | mount | `<mnt>` (realpath) | mount clean → detach |
-| restore | `<dest>` (the restored bundle realpath) **and** its `.256isenough-staging/<txid>` dir | root clean → restore-out (§5.8.3) |
+| restore | `<dest>` (the restored bundle realpath) **and** its `.disklessly-staging/<txid>` dir | root clean → restore-out (§5.8.3) |
 | translocated | not supported in MVP: quarantined bundles are refused at pack (§1.5). If at runtime a leased process's `proc_pidpath` lies under `/private/var/folders/*/AppTranslocation/` or any path outside the usage root, the launch is treated as a wrong-path instance (no lease, `EX_LAUNCH`, alert explaining `xattr` recovery) | the pid is added to `trackedDependents` (probe pass 5): the image stays mounted until it exits |
 
 **What counts as a user (R2-B1).** A *dependent user* is a process that executes from, maps, holds open, or has its
@@ -1175,7 +1175,7 @@ returned instance's path (§5.2.6); LS's preferred URL for the bundle id is only
 
 **Implementation status.** Local cache LRU is implemented. `CachePlanner.planEviction` orders leftovers first, then the oldest `lastUsed`, and evicts until `quotaBytes`. Pinned, mounted, in-use, and `protectedUntil` images are skipped. The image passed as just-used is considered last and is not evicted when it alone exceeds the quota. A pass that is still over quota warns `cache still exceeds quota by N bytes` and does not fail the command. The admission claims in §6.1 (final-size quota admission plus transient free-space claims, persisted before the first byte) are **not** implemented. Pack and prefetch still refuse with `EX_NOSPACE` when free space is below the preflight floor.
 
-- **Location**: `~/Library/Caches/256isenough/` (configurable): `images/` (verified, ready), `partial/` (`.part` +
+- **Location**: `~/Library/Caches/Disklessly/` (configurable): `images/` (verified, ready), `partial/` (`.part` +
   `.part.json` resume metadata: imageId, expected size/sha, bytes, partial hash state is *not* persisted → on resume
   we re-hash the existing prefix), `bad/` (quarantined mismatches, deleted by gc after 7 days), `mnt/` (mountpoints).
   `~/Library/Caches` is excluded from Time Machine by convention; we also set `NSURLIsExcludedFromBackupKey`.
@@ -1263,7 +1263,7 @@ multiprocess variants are in §11.2.
   (e.g. new version packed on another Mac). Independent of Finder "Keep Downloaded" (which is an xattr on the
   *repo* file, single-device, undocumented): we only set it when `keepRemoteDownloaded` is true.
 - **Versions**: when a newer image becomes `latest`, the old cached one becomes an orphan candidate after the app
-  next uses the new one. `apps[*].imageId` pins a version explicitly (`isenough launch --image <id>` / `pin --version`).
+  next uses the new one. `apps[*].imageId` pins a version explicitly (`disklessly launch --image <id>` / `pin --version`).
 - **APFS clone usage**: we do **not** use `cp -c` from iCloud Drive into the cache as a "zero-copy" trick: clone
   sharing does not survive File Provider eviction/re-download (research-cursor §2.3) and cloning a dataless
   placeholder clones nothing. The cache is a real streamed copy (needed anyway for on-the-fly hashing). APFS clones
@@ -1280,7 +1280,7 @@ multiprocess variants are in §11.2.
 
 ## 7. Backend abstraction
 
-### 7.1 Protocol (`IsenoughCore/Backend`)
+### 7.1 Protocol (`DisklesslyCore/Backend`)
 ```swift
 public struct RemoteItem: Codable, Equatable { var path: String; var size: Int64; var modified: Date?;
   var isDirectory: Bool; var etag: String?; var localState: LocalState? }   // localState: iCloud only
@@ -1324,7 +1324,7 @@ a `200` reply to a `Range` request means "full body" → restart the `.part` fro
 collision of `<sha8>` with different content → extend to 16 hex, then full hash; never overwrite.
 
 ### 7.2 iCloud backend (`ICloudBackend`, macOS; built on top of `LocalFolderBackend`)
-- Root `~/Library/Mobile Documents/com~apple~CloudDocs/256isenough/` (the user-visible iCloud Drive folder; no
+- Root `~/Library/Mobile Documents/com~apple~CloudDocs/Disklessly/` (the user-visible iCloud Drive folder; no
   ubiquity container entitlement needed for a non-sandboxed CLI). Availability: `FileManager.ubiquityIdentityToken`
   non-nil (signed in, Drive enabled) + root dir exists → else `.notSignedIn` / `.unavailable`.
 - `ensureLocal`: read `URLResourceValues` (`ubiquitousItemDownloadingStatus`, `ubiquitousItemIsDownloading`,
@@ -1362,7 +1362,7 @@ collision of `<sha8>` with different content → extend to 16 hex, then full has
 ### 7.4 Phase 2 backends
 Implemented on the synchronous `StorageBackend` (`docs/backends.md`): SMB/NFS via `mount_smbfs -N` / `mount_nfs` or an already-mounted path, WebDAV via PROPFIND/GET Range/PUT/MOVE. Credentials stay in the Keychain. `hdiutil create`/`convert` still builds ULMO/ULFO images. The notes below are the original design; where they disagree with `docs/backends.md`, the note file is what the code does.
 
-- **NAS via mounted path (SMB/NFS)**: `LocalFolderBackend` + `mountURL` (`smb://nas/share/256isenough`); `ensureMounted`
+- **NAS via mounted path (SMB/NFS)**: `LocalFolderBackend` + `mountURL` (`smb://nas/share/Disklessly`); `ensureMounted`
   uses `NetFSMountURLAsync` / `open smb://…` once, keychain credentials; availability = path is a mountpoint reachable
   within 3 s (avoid hanging `stat` on dead SMB: probe in a child task with timeout). Never run apps from the share.
 - **WebDAV** (`WebDAVBackend`, URLSession): `PROPFIND Depth:1` → list/stat; `GET` + `Range: bytes=a-b` → get;
@@ -1387,16 +1387,16 @@ Implemented on the synchronous `StorageBackend` (`docs/backends.md`): SMB/NFS vi
   Contents/
     Info.plist                             transformed (below)
     PkgInfo                                "APPL????"
-    MacOS/isenough-stub                       universal (arm64+x86_64) launcher, identical bytes for every stub
+    MacOS/disklessly-stub                       universal (arm64+x86_64) launcher, identical bytes for every stub
     Resources/
       AppIcon.icns                         copied from CFBundleIconFile, or rendered from the asset catalog
       <iconFile>.icns / Assets.car         copied from the real app (and doc-type icons)
       stub.json                            {"schema":"stub/1","appId":"com.blender.blender","imageId":"…",
-                                            "repoId":"<repo.json repoId>","isenoughPath":"/Users/me/.local/bin/isenough","stubVersion":1,"createdAt":"…"}
+                                            "repoId":"<repo.json repoId>","disklesslyPath":"/Users/me/.local/bin/disklessly","stubVersion":1,"createdAt":"…"}
       <lang>.lproj/InfoPlist.strings       only CFBundleName/CFBundleDisplayName/CFBundleSpokenName
     _CodeSignature/
 ```
-Built in the same-volume staging dir (`<dest-parent>/.256isenough-staging/<txid>/`), signed, verified, then
+Built in the same-volume staging dir (`<dest-parent>/.disklessly-staging/<txid>/`), signed, verified, then
 installed by the journaled pack/rebuild transaction (§5.8.5): `renamex_np(RENAME_EXCL)` when the destination is free,
 `RENAME_SWAP` when replacing an existing stub. The real app is moved to the Trash via `FileManager.trashItem`
 (undoable), or with `--keep-original` moved to `retained/` (not left next to the stub, so LS cannot pick it, §5.9).
@@ -1407,9 +1407,9 @@ Start from the original Info.plist, then:
   `CFBundleVersion` (so Finder shows the real version), `CFBundleIconFile`/`CFBundleIconName`, `LSMinimumSystemVersion`
   = `"13.0"` (= SwiftPM deployment target, N5), `CFBundleDocumentTypes`, `CFBundleURLTypes`, `UTExportedTypeDeclarations`,
   `UTImportedTypeDeclarations`, `NSHumanReadableCopyright`, `LSApplicationCategoryType`.
-- Set `CFBundleExecutable = "isenough-stub"`, `CFBundlePackageType = "APPL"`, `LSUIElement = true` (no Dock tile for
+- Set `CFBundleExecutable = "disklessly-stub"`, `CFBundlePackageType = "APPL"`, `LSUIElement = true` (no Dock tile for
   the stub itself; the real app gets its own), `NSHighResolutionCapable = true`,
-  `IsenoughTargetBundleIdentifier = <orig>`, `IsenoughImageId`, `IsenoughStubVersion`.
+  `DisklesslyTargetBundleIdentifier = <orig>`, `DisklesslyImageId`, `DisklesslyStubVersion`.
 - In each document type set `LSHandlerRank = "Alternate"` unless it was `Owner` for a type the real app owns
   exclusively (keep `Owner`), so the stub doesn't steal defaults from other installed apps; `CFBundleTypeRole` kept.
 - Remove: `NSPrincipalClass`, `NSMainNibFile`, `NSMainStoryboardFile`, `LSEnvironment`, `LSBackgroundOnly`,
@@ -1419,13 +1419,13 @@ Start from the original Info.plist, then:
   `CFBundleHelpBookName/Folder`, `NSUserActivityTypes`, `NSDockTilePlugIn`.
 - Rationale for unique bundle id: real app keeps its own LS/TCC identity; Playpen's same-id approach mixes TCC/LS.
 
-### 8.3 Launcher binary (`isenough-stub`, AppKit, no storyboard)
+### 8.3 Launcher binary (`disklessly-stub`, AppKit, no storyboard)
 - `NSApplication` with delegate; `setActivationPolicy(.accessory)` (needed to show the progress window). SIGPIPE is
   ignored (`signal(SIGPIPE, SIG_IGN)`) in both the stub and the supervisor; writes check `EPIPE`.
 - Receives events: `application(_:open urls:)` (files = `odoc`, other URLs = `GURL`; split by `isFileURL`) and
   `applicationDidFinishLaunching` (`oapp`; extra `CommandLine.arguments` forwarded as `arguments`).
 - **Request protocol (B5, R2-B2) — identical for owner and joiner supervisors.** The stub spawns **one**
-  supervisor: `isenough hook launch --app <appId> --stub <path> --control-fd 3` via `posix_spawn` +
+  supervisor: `disklessly hook launch --app <appId> --stub <path> --control-fd 3` via `posix_spawn` +
   `POSIX_SPAWN_SETSID`; fd 3 is a socketpair (bidirectional, ordered, NDJSON). No documents are passed on argv.
   Whether that supervisor becomes owner or joiner (§5.6.3) is invisible to the stub. Messages:
   - stub → supervisor: `{"type":"open","req":n,"documents":[…],"urls":[…],"arguments":[…]}` (`req` strictly
@@ -1460,7 +1460,7 @@ Start from the original Info.plist, then:
   (Launch Services) gets `connectionInvalid`/`procNotFound`. This is the same window every app has at termination;
   it is minimized by the drain and the 500 ms quiet period and is the only remaining case. The e2e race tests
   (A11c/A22) record any such miss as a failure so we would learn if it is observable in practice.
-- **Timeouts and errors.** No `ready`/heartbeat/progress for 30 s → panel shows "256isenough is not responding" with
+- **Timeouts and errors.** No `ready`/heartbeat/progress for 30 s → panel shows "Disklessly is not responding" with
   Wait / Cancel (fetch stalls are handled by the supervisor's own stall timer, §9). After `bye`, no matching `done`
   within 10 s while `outstanding == 0` → resend `bye` once, then exit (nothing is outstanding, so nothing can be
   lost). **EOF/EPIPE with outstanding batches** (supervisor crashed or a joiner was killed): the stub spawns **one**
@@ -1485,7 +1485,7 @@ Start from the original Info.plist, then:
   aborts and rolls back (journaled, §5.2.5); once the app is running, cancel is ignored. A joiner's cancel only
   aborts its own pending forwarding (§5.6.3). The stub never sends signals to the supervisor.
 - UI: no window if `ready` arrives < 700 ms; otherwise a small floating panel "Fetching Blender from iCloud…
-  (412 MB)" with progress and **Cancel**. If `isenough` not found: alert "256isenough is not installed (isenough missing)".
+  (412 MB)" with progress and **Cancel**. If `disklessly` not found: alert "Disklessly is not installed (disklessly missing)".
 - Size target: < 300 KB universal. Built by SwiftPM, `lipo`'d universal in release CI.
 
 ### 8.4 Signing
@@ -1495,10 +1495,10 @@ Start from the original Info.plist, then:
   forks on stub files only (stub files are ours).
 - Identity: `pack.signIdentity` — default `-` (ad-hoc; fine for one user on one Mac). Recommended for the user:
   `Developer ID Application: … (TEAMID)` — stable designated requirement, survives stub rebuilds. The stub needs no
-  TCC permissions (it only spawns `isenough`); the real app gets its own TCC prompts under its own identity.
+  TCC permissions (it only spawns `disklessly`); the real app gets its own TCC prompts under its own identity.
   Notarization is not needed for locally generated stubs (no quarantine); it is needed for the distributed
-  `isenough` release / GUI (v1).
-- The `isenough-stub` binary inside the release is pre-signed; `StubBuilder` re-signs the whole stub bundle anyway
+  `disklessly` release / GUI (v1).
+- The `disklessly-stub` binary inside the release is pre-signed; `StubBuilder` re-signs the whole stub bundle anyway
   because Info.plist differs per app.
 
 ### 8.5 Launch Services registration
@@ -1523,12 +1523,12 @@ Start from the original Info.plist, then:
 |---|---|---|
 | Interrupted download (Ctrl-C, crash, network loss, sleep) | `.part` + `.part.json` exist | Next fetch resumes: range-capable backends continue from verified prefix length (prefix re-hashed); iCloud: `ensureLocal` again (iCloud resumes internally) then re-copy (local copy is fast). `gc` deletes partials older than 7 days. |
 | Download stall | no progress/status change for `downloadStallSeconds` | Retry once (re-request download), then `EX_TIMEOUT`; stub alert offers Retry. |
-| sha256/size mismatch | after copy | Move to `cache/bad/`, refetch once; second mismatch → `EX_INTEGRITY`, event + alert "image corrupt in repository; run `isenough doctor`". Never attach unverified bytes. |
+| sha256/size mismatch | after copy | Move to `cache/bad/`, refetch once; second mismatch → `EX_INTEGRITY`, event + alert "image corrupt in repository; run `disklessly doctor`". Never attach unverified bytes. |
 | Mounted app identity mismatch (bundle id / team / cdhash) | after attach | Detach, `EX_INTEGRITY`. |
 | Attach failure (`hdiutil` non-zero, timeout `attachTimeoutSeconds`) | exit status / plist error | If "image already attached" → resolve existing devEntry and reuse; if corrupt → delete cache entry, refetch once; else `EX_DISKIMAGE` with hdiutil stderr. |
 | Real app fails to launch | `openApplication` error, or identity mismatch (§5.2.6) | Roll back as for a hook failure (§5.2.5: detach / journaled restore-out), `EX_LAUNCH`, alert with error. |
-| Real app crashes | pid exits; crash report check | Treated as quit (`ISENOUGH_EXIT_STATUS=crash`), normal delayed detach. Event logged. |
-| Detach busy | hdiutil exit 16 / "Resource busy" / devEntry still present | `backoff` (mount record + ownership kept, joinable) → `stuck` after `detachRetryMaxSeconds`: supervisor exits 6, notification, retried by daemon/gc/`isenough detach`/next launch (revive); never `-force` unless configured (§5.4). |
+| Real app crashes | pid exits; crash report check | Treated as quit (`DISKLESSLY_EXIT_STATUS=crash`), normal delayed detach. Event logged. |
+| Detach busy | hdiutil exit 16 / "Resource busy" / devEntry still present | `backoff` (mount record + ownership kept, joinable) → `stuck` after `detachRetryMaxSeconds`: supervisor exits 6, notification, retried by daemon/gc/`disklessly detach`/next launch (revive); never `-force` unless configured (§5.4). |
 | Supervisor / engine crash | dead owner (pid+start) with session record | **Recovery** at every supervisor start, `gc`, daemon start, per app under L1 (§5.6.4): first replay non-session journals (§5.8), then dispatch by mode (§5.6.4). Mount: reconcile `state.mounts` with `hdiutil info -plist`: (a) attached with our image path *and* our mountpoint but not in state → adopt; (b) in state but not attached → drop record; (c) dead owner → single adopter elected under L1+L3: watch if busy/unknown else post-quit. Same image attached elsewhere → report only. **Restore** (R3-B4): never uses the attachment check — driven by the open restore journal, `destId`/`stubId`, owner and the restore-mode probe (§5.6.4b table): busy → adopt and wait; clean → restore-out → `retired`. `status` is read-only and never recovers. |
 | Corrupt `state.json` | JSON decode error | Move to `state.json.corrupt-<ts>`, rebuild from cache dir listing + `hdiutil info` + stubs found via `mdfind kMDItemCFBundleIdentifier == '*.256stub'` and `/Applications` scan. |
 | Offline, image cached | backend `.unavailable` | Launch works (no backend access needed on cache hit: manifest is cached in `cache/manifests/`). Device-file update deferred. |
@@ -1538,12 +1538,12 @@ Start from the original Info.plist, then:
 | Sleep/wake | daemon: `NSWorkspace.willSleep/didWake`; supervisor: same notifications | Downloads: re-check status on wake (stall timer paused during sleep). Mounted images are local files → survive sleep. On wake the supervisor re-probes leases. |
 | Logout / shutdown | SIGTERM to supervisor | Supervisor marks state `interrupted` and exits quickly (journals stay open). Images may or may not be detached by the system (N4); the next run reconciles either outcome. |
 | Stub moved/renamed by user | stub.json path mismatch | Works (stub passes its own path). `doctor` updates `stubPath`. |
-| `isenough` binary moved | stub can't find it | Alert with fix (`isenough stub rebuild --all`); fallbacks in §2.3. |
+| `disklessly` binary moved | stub can't find it | Alert with fix (`disklessly stub rebuild --all`); fallbacks in §2.3. |
 | Crash during any bundle swap (restore-in/out, pack install, unpack) | open `journals/<txid>.json` | Recovery replays the journaled phase table (§5.8.2–5.8.5) forward or back; never deletes a bundle unless it matches cdhash+tree hash of a cached/uploaded image; otherwise `retained/` + `needsResolution`. |
 | Restored app still busy (helper, open data file) after quit | usage probe busy/unknown (§5.9) | Stay `active`, retry with backoff indefinitely; never force; `status`/GUI show which pids hold it. |
 | Pack interrupted | pack journal (§5.8.5) | Steps are idempotent; `pack --resume` continues; original app untouched until `swapped`. |
 
-All errors go to `events.jsonl` (`{"ts","level","app","session","phase","code","message"}`) and `logs/isenough.log`.
+All errors go to `events.jsonl` (`{"ts","level","app","session","phase","code","message"}`) and `logs/disklessly.log`.
 
 ---
 
@@ -1556,7 +1556,7 @@ All errors go to `events.jsonl` (`{"ts","level","app","session","phase","code","
   tampered repo (other device or attacker with iCloud access) can at worst supply a different image + matching
   manifest: **trust anchor** = the `signing.teamId` recorded at pack time is also stored locally in
   `state.apps[*].trusted` (schema §3.5) on the device that packed or first approved it; an image whose Team ID differs from the
-  locally trusted one requires explicit `isenough trust <app>` (TOFU). Ad-hoc/unsigned apps: cdhash is the identity;
+  locally trusted one requires explicit `disklessly trust <app>` (TOFU). Ad-hoc/unsigned apps: cdhash is the identity;
   a new cdhash for such apps requires approval.
 - **Shared hooks are code execution**: disabled by default, content-hash pinned when enabled (§5.5). Local hooks must
   be owned by the user and not writable by others.
@@ -1571,12 +1571,12 @@ All errors go to `events.jsonl` (`{"ts","level","app","session","phase","code","
 #### 10.1 API authentication protocol (B6)
 Two credentials, one per client type; neither is ever placed in a URL.
 - **CLI / scripts: Bearer.** `server-token` (256-bit random, base64url) in Application Support, mode 0600, created by
-  `serve` on first start. `isenough` reads it and sends `Authorization: Bearer …`. Bearer requests need no Origin.
+  `serve` on first start. `disklessly` reads it and sends `Authorization: Bearer …`. Bearer requests need no Origin.
 - **Web UI (Pake WKWebView): pairing → session cookie.** The page shell (`/ui/*` static HTML/JS/CSS, no data) is
-  public. On load, `app.js` calls `GET /api/session`; `401` shows a pairing form. The user runs `isenough serve pair`
-  (or clicks "Pair GUI" in `isenough daemon status`), which asks the running daemon (Bearer) for a one-time code:
+  public. On load, `app.js` calls `GET /api/session`; `401` shows a pairing form. The user runs `disklessly serve pair`
+  (or clicks "Pair GUI" in `disklessly daemon status`), which asks the running daemon (Bearer) for a one-time code:
   8 chars Crockford base32, valid 10 min, single use, invalidated after 5 wrong attempts, attempts rate-limited to
-  1/s. `POST /api/pair {"code":…}` (Origin-checked) returns `Set-Cookie: isenough_session=<256-bit>; HttpOnly;
+  1/s. `POST /api/pair {"code":…}` (Origin-checked) returns `Set-Cookie: disklessly_session=<256-bit>; HttpOnly;
   SameSite=Strict; Path=/; Max-Age=34560000` plus a JSON body containing the per-session `csrf` token. The server
   stores only `sha256(sessionId)`, created/last-used time and a label in `server-sessions.json` (0600), so sessions
   survive daemon restarts. `GET /api/session` (cookie) returns `{csrf, expiresAt}` so a reloaded page regains its
@@ -1584,18 +1584,18 @@ Two credentials, one per client type; neither is ever placed in a URL.
 - **Request checks** (pure functions, unit-tested): valid `Host` values = `127.0.0.1:<port>` and `localhost:<port>`
   (literal match, otherwise `421`); valid serialized Origins = `http://127.0.0.1:<port>`, `http://localhost:<port>`.
   Cookie-authenticated mutating requests must be `POST`, `Content-Type: application/json`, carry an allowed `Origin`
-  (absent Origin → reject) and `X-Isenough-CSRF` equal to the session's csrf token (constant-time compare).
+  (absent Origin → reject) and `X-Disklessly-CSRF` equal to the session's csrf token (constant-time compare).
   Cookie-authenticated `GET` (incl. SSE) requires valid Host and, if present, an allowed Origin.
   The response to unauthenticated API calls is `401 {"ok":false,"error":{"name":"EX_UNAUTHENTICATED"}}` without
   `WWW-Authenticate` (no browser auth dialog); wrong CSRF/Origin → `403`.
 - **SSE**: `GET /api/events` is authenticated by the cookie (native `EventSource` sends same-origin cookies; it
   cannot send headers). Streams are closed when the session is revoked.
-- **Rotation/revocation**: `isenough serve rotate-token` (new Bearer token; CLI rereads the file), `isenough serve sessions
+- **Rotation/revocation**: `disklessly serve rotate-token` (new Bearer token; CLI rereads the file), `disklessly serve sessions
   list|revoke <id>|revoke --all`, idle expiry 90 days. Revocation is immediate (checked per request).
 - **Assumption to verify** in the Pake startup test (§11.3): WKWebView in the Pake build persists cookies across app
   restarts. If not, the GUI degrades to re-pairing at each launch (still secure); no secrets are baked into the
   Pake bundle and the shell never reads the daemon's token file.
-- Daemon not running: Pake shows a WebView load error; README and `isenough daemon install` (KeepAlive LaunchAgent)
+- Daemon not running: Pake shows a WebView load error; README and `disklessly daemon install` (KeepAlive LaunchAgent)
   cover it; the GUI never starts the daemon itself.
 - **Secrets** (phase 2 WebDAV/OpenList credentials): Keychain (`kSecClassInternetPassword`), never in config.
 - **Repo privacy**: app images are not secret, but device files reveal hostnames/usage; session tiering (roadmap)
@@ -1632,7 +1632,7 @@ Two credentials, one per client type; neither is ever placed in a URL.
 | `UsageProbe` | pure classifier over fake `libproc` snapshots: infra holders of image/devEntry ignored; file/cwd/mmap on the mount → busy; same-uid EPERM → unknown; other-uid EPERM ignored in mount mode, unknown in restore mode; registered-not-running launchd job → held; tracked dependent alive → busy. |
 | `Engine` (fake `Platform`) | pack → stub build (fake signer) → launch (fake attach/launcher) → quit → detach after delay (fake clock) → LRU updated; two concurrent launches = one attach + one forward; join at detach deadline; supervisor crash → single adoption; offline cached vs uncached; restore-mode swap & rollback; wrong-path instance rejected; probe `unknown` blocks cleanup; post-quit with detach busy → backoff → revive by a joiner → second quit → detach; `needsResolution` → launch refused before any change. |
 
-### 11.2 macOS integration tests (`IsenoughMacTests`, CI only, `#if os(macOS)`)
+### 11.2 macOS integration tests (`DisklesslyMacTests`, CI only, `#if os(macOS)`)
 - `HdiutilDiskImageTool`: create ULMO from fixture folder, convert ULFO, attach with `-plist` (parse devEntry/mount),
   re-attach detection, detach, busy detach (hold an open file handle → exit 16 → retry succeeds after close).
 - `MacAppInspector` on the fixture app (bundle id, doc/URL types, codesign info, ad-hoc kind).
@@ -1655,7 +1655,7 @@ Two credentials, one per client type; neither is ever placed in a URL.
   (5) Error split: a pid that exits between listing and inspection is reported `exited`, not `unknown`.
   (6) Classifier: fixture with a `KeepAlive` embedded LaunchDaemon plist → `unsupported`, reason
   `persistentRelatedHelper`.
-- **Multiprocess lock tests** (real processes via `isenough` built binary): launch vs `evict` vs `prefetch` vs `gc`
+- **Multiprocess lock tests** (real processes via `disklessly` built binary): launch vs `evict` vs `prefetch` vs `gc`
   started together (random order, 50 iterations) → no attach of a missing file, no deleted mounted image, no
   corrupt `.part`; two `gc` processes recovering one dead owner → exactly one adopter; two different-app fetches
   sized so only one fits → one succeeds, other `EX_NOSPACE` (claim admission), never both.
@@ -1671,7 +1671,7 @@ Two credentials, one per client type; neither is ever placed in a URL.
   (2) prefetch held at `l2Acquired`, launch started (blocks on L2), then `kill -9` prefetch → launch takes L2,
   reaps the dead claim, re-admits under its own pid, resumes from the `.part`, completes; at every sampled moment
   `state.claims` has exactly one claim for app1 whose owner is the process holding L2 (checked via a test-only
-  `isenough debug locks` that reports flock holders). (3) During (2) a third-app `prefetch app3` sized so it fits
+  `disklessly debug locks` that reports flock holders). (3) During (2) a third-app `prefetch app3` sized so it fits
   only if app1's reservation were freed early → it is refused `EX_NOSPACE` (or waits for app1's completion,
   then succeeds), never admitted while app1's writer runs without a claim. 20 iterations each.
 - **Journal fault tests on real APFS**: child process `kill -9` at each fault point, then recovery (§5.8.6).
@@ -1680,10 +1680,10 @@ Two credentials, one per client type; neither is ever placed in a URL.
 Single portable bash script (macOS 13+, bash 3.2 compatible, no Homebrew deps). Runs on GitHub Actions `macos-latest`
 (`.github/workflows/macos.yml` job `e2e`) and on any Mac by `./scripts/e2e.sh` (needs Xcode CLT for `swift build`).
 Everything lives in `E2E_DIR=$(mktemp -d)`; nothing touches `/Applications`, real iCloud, or user config:
-`HOME` is not changed, but `ISENOUGH_CONFIG`, `--state-dir`, cache dir, repo root and stub install dir all point into
-`$E2E_DIR`. A `trap` cleanup **first** copies diagnostics to `$E2E_DIR/artifacts/` (`events.jsonl`, `isenough.log`,
+`HOME` is not changed, but `DISKLESSLY_CONFIG`, `--state-dir`, cache dir, repo root and stub install dir all point into
+`$E2E_DIR`. A `trap` cleanup **first** copies diagnostics to `$E2E_DIR/artifacts/` (`events.jsonl`, `disklessly.log`,
 `state.json`, journals, `hdiutil info -plist`, `lsregister -dump | grep $E2E_DIR`, `ps`, `log show --last 5m
---predicate 'process == "isenough" OR process == "isenough-stub"'`) and copies them to `$E2E_ARTIFACTS` if set (CI upload),
+--predicate 'process == "disklessly" OR process == "disklessly-stub"'`) and copies them to `$E2E_ARTIFACTS` if set (CI upload),
 then `lsregister -u`s the stub, fixture and mounted-app paths **before** detaching (N5), detaches only images whose
 backing path is under `$E2E_DIR`, and deletes the dir (unless `KEEP=1`). Every relaunch step first removes
 `$E2E_DIR/quit-now` (N5). Every step logs the exact command it runs (`set -x` style prefix) so a run is
@@ -1691,39 +1691,39 @@ inspectable. Exit codes: `0` all required assertions passed; `1` an assertion fa
 (environment cannot run a required gate, e.g. no GUI session / LS unavailable) — CI treats `2` as failure.
 
 Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non-zero on first failure and dumps
-`events.jsonl`, `isenough.log`, `hdiutil info`):
-1. **Build**: `swift build -c release` (isenough, isenough-stub). `scripts/make-fixture-app.sh` compiles
+`events.jsonl`, `disklessly.log`, `hdiutil info`):
+1. **Build**: `swift build -c release` (disklessly, disklessly-stub). `scripts/make-fixture-app.sh` compiles
    `Tests/Fixtures/E2EApp` (≈60-line AppKit app `io.github.s546126.e2eapp`, declares doc type `public.plain-text`
-   and URL scheme `isenough-e2e`) into `$E2E_DIR/src/E2EApp.app`, ad-hoc signed. On launch it appends one JSON line to
+   and URL scheme `disklessly-e2e`) into `$E2E_DIR/src/E2EApp.app`, ad-hoc signed. On launch it appends one JSON line to
    `$E2E_DIR/app-events.jsonl` (env var not available via LS, so path is baked into the fixture's Info.plist key
    `E2ELogPath` at build time) with `{event:"launch", bundlePath, pid}`, then one line per `open urls` event
    `{event:"open", url, via:"appleEvent"}` from `application(_:open:)` (argv is logged separately as
    `{event:"argv", args}` and never satisfies an `open` assertion); quits itself when file `$E2E_DIR/quit-now` exists (polls 200 ms) or after 60 s.
    - A1 `fixture_valid`: `codesign --verify --strict` passes.
-2. **Init** fake iCloud: `isenough init --backend local --root $E2E_DIR/fake-icloud --cache-dir $E2E_DIR/cache --quota 200M`.
+2. **Init** fake iCloud: `disklessly init --backend local --root $E2E_DIR/fake-icloud --cache-dir $E2E_DIR/cache --quota 200M`.
    (Variant job `E2E_FAKE_DATALESS=1` uses `FakeUbiquity` mode via `backend.type: "local-fake-icloud"` to exercise
    ensureLocal.)
-3. **Pack**: `isenough pack $E2E_DIR/src/E2EApp.app --stub-dir $E2E_DIR/Applications --keep-original --json`.
+3. **Pack**: `disklessly pack $E2E_DIR/src/E2EApp.app --stub-dir $E2E_DIR/Applications --keep-original --json`.
    - A2 `pack_mode`: JSON `data.mode == "mount"`.
    - A3 `image_in_repo`: exactly one `images/io.github.s546126.e2eapp-1.0_b1-<sha8>.dmg`; `shasum -a 256` equals
      manifest `image.sha256`; `<sha8>` equals its prefix; `hdiutil imageinfo` format is `ULMO`.
    - A4 `manifest_valid`: `manifests/<id>.json` has schema `image/1`, bundleId, version, size == file size, teamId/
-     cdhash fields present, documentTypes contains `public.plain-text`, urlTypes contains `isenough-e2e`.
+     cdhash fields present, documentTypes contains `public.plain-text`, urlTypes contains `disklessly-e2e`.
    - A5 `catalog_updated`: `catalog/manifest.json` `apps["io.github.s546126.e2eapp"].latest == <id>`.
    - A6 `stub_valid`: `$E2E_DIR/Applications/E2EApp.app` exists; `codesign --verify --strict` ok;
-     `CFBundleIdentifier == io.github.s546126.e2eapp.256stub`; `CFBundleExecutable == isenough-stub`; `LSUIElement` true;
+     `CFBundleIdentifier == io.github.s546126.e2eapp.256stub`; `CFBundleExecutable == disklessly-stub`; `LSUIElement` true;
      `Resources/stub.json` appId matches; stub size < 2 MB.
-   - A7 `not_cached_yet`: `isenough status <app> --json` → state `remote`, no cache file.
+   - A7 `not_cached_yet`: `disklessly status <app> --json` → state `remote`, no cache file.
 4. **Launch via the hook path, through the stub**: `open -a $E2E_DIR/Applications/E2EApp.app $E2E_DIR/doc1.txt`
-   then `open "isenough-e2e://hello?x=1"` is **not** used (would hit global LS default) — URL forwarding is tested via
-   `open -a <stub> "isenough-e2e://hello?x=1"` after start (stub forwards to live session).
+   then `open "disklessly-e2e://hello?x=1"` is **not** used (would hit global LS default) — URL forwarding is tested via
+   `open -a <stub> "disklessly-e2e://hello?x=1"` after start (stub forwards to live session).
    Wait (≤ 60 s) for `app-events.jsonl` launch line.
    - A8 `fetched_verified`: cache dir has `images/<id>.ulfo.dmg`; state cache entry `complete:true`, `remoteSha256`
      == manifest; `events.jsonl` contains phases `fetch.start, fetch.done, verify.ok, convert.done, attach.ok`
      in that order.
    - A9 `mounted_readonly`: `hdiutil info -plist` lists the cache image with mountpoint `$E2E_DIR/cache/mnt/<id>`;
      `mount` shows it `read-only` + `nobrowse`.
-   - A10 `running_from_mount`: launch line `bundlePath` starts with the mountpoint; pid alive; `isenough status` →
+   - A10 `running_from_mount`: launch line `bundlePath` starts with the mountpoint; pid alive; `disklessly status` →
      `running` with one lease; real app's process path (`ps -o comm= -p pid`) under mountpoint.
    - A11 `doc_forwarded` (**required**): `app-events.jsonl` contains `open` with `file://…/doc1.txt`, `via:"appleEvent"`;
      the stub's ack log shows the batch `delivered`; the stub process has exited.
@@ -1733,27 +1733,27 @@ Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non
    - A11c `doc_during_close` (R2-B2, R3-B1, N4): the hold switch reaches LS-launched processes explicitly, not via
      the script's environment (LS does not inherit it): test builds of the stub read `Resources/test-hooks.json`
      inside the *test* stub bundle (written by the e2e stub builder before signing) and the supervisor reads
-     `testHooks` from the isolated `$E2E_DIR` config; both readers are compiled only with `-D ISENOUGH_TEST_HOOKS`
+     `testHooks` from the isolated `$E2E_DIR` config; both readers are compiled only with `-D DISKLESSLY_TEST_HOOKS`
      and absent from release builds (a CI step greps the release binaries for the symbol). Value `hold: bye|done`
      pauses 1 s right after sending `bye` / before sending `done`; during the pause the script runs
      `open -a <stub> docN.txt`; repeated for both hold points and for an owner and a joiner stub → every `open`
      event is present exactly once and every stub exits 0; for the joiner case the supervisor log shows the late
      batch acked by the **same** joiner pid (no respawn) and that joiner's exit only after EOF.
-   - A12 `second_launch_no_remount` (**required**): `open -a <stub> "isenough-e2e://hello?x=1"` → `open` event with that URL appears
+   - A12 `second_launch_no_remount` (**required**): `open -a <stub> "disklessly-e2e://hello?x=1"` → `open` event with that URL appears
      within 10 s; still exactly one attachment of the image in `hdiutil info`; same app pid.
    - A13 `prelaunch_hook_ran`: a local hook `hooks/io.github.s546126.e2eapp/pre-launch` (installed before step 4)
-     wrote `$E2E_DIR/hook-pre.env` containing `ISENOUGH_PHASE=pre-launch` and `ISENOUGH_MOUNT_POINT=<mnt>`.
+     wrote `$E2E_DIR/hook-pre.env` containing `DISKLESSLY_PHASE=pre-launch` and `DISKLESSLY_MOUNT_POINT=<mnt>`.
 5. **Quit**: `touch $E2E_DIR/quit-now`; config for e2e sets `detachDelaySeconds: 3`.
    - A14 `app_exited`: pid gone within 10 s.
-   - A15 `idle_then_detached` (R2-B1, N5): `isenough status` polled every 0.5 s shows `idle` within 15 s of the pid
+   - A15 `idle_then_detached` (R2-B1, N5): `disklessly status` polled every 0.5 s shows `idle` within 15 s of the pid
      exit (two clean probes ≥5 s apart), then within `3 + 20` s of `idle` the image is absent from `hdiutil info`
      and the mountpoint dir is removed. (The attached image's own infrastructure holding the backing DMG does not
      block this, §5.9.)
-   - A16 `postquit_hook_ran`: `hook-post.env` contains `ISENOUGH_PHASE=post-quit` and `ISENOUGH_EXIT_STATUS` ∈
+   - A16 `postquit_hook_ran`: `hook-post.env` contains `DISKLESSLY_PHASE=post-quit` and `DISKLESSLY_EXIT_STATUS` ∈
      {`unknown`, `crash`} with value `unknown` for this clean quit (no numeric status is promised, §5.4).
    - A17 `lru_updated`: state `apps[..].lastUsedAt` > launch time, `launchCount == 1` (the URL forward doesn't count),
      cache entry `lastUsedAt` updated; state `cached`; `supervisor` process gone; device file written in repo.
-6. **Cache hit relaunch**: `isenough launch <app> --no-wait`, then quit.
+6. **Cache hit relaunch**: `disklessly launch <app> --no-wait`, then quit.
    - A18 `cache_hit`: `events.jsonl` for this session has no `fetch.start`; launch < 10 s; detaches again.
 7. **LRU eviction (deterministic sizes, R2-B3)**: the quota counts final local image sizes only (§6.1), so the
    script derives everything from measured final sizes. After step 6, `A1` = allocated bytes of app1's cache file
@@ -1771,17 +1771,17 @@ Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non
    leftover `.part`/`.tmp`; state passes `doctor`. A22 `relaunch_at_deadline`: with `detachDelaySeconds: 3`, quit the
    app and open the stub with a document at 2.9–3.1 s (loop of offsets) → either the session was revived (same
    mount, new epoch) or a fresh mount happened; the app event log shows the `open` event exactly once every time.
-9. **Crash recovery**: launch app1, `kill -9` the supervisor, then quit the app; run `isenough gc` twice concurrently.
+9. **Crash recovery**: launch app1, `kill -9` the supervisor, then quit the app; run `disklessly gc` twice concurrently.
    - A23 `stale_mount_recovered`: image detached; exactly one `adopt` event; state has no mounts.
    - A24 `stub_killed_app_survives`: launch, `kill -9` the stub process right after `ready`; app keeps running,
      session completes and detaches normally after quit.
 10. **Integrity**: flip one byte in a *copy* of app2's repo image published under a test-only repo, evict its cache,
-   `isenough launch app2`.
+   `disklessly launch app2`.
    - A25 `sha_mismatch_refused`: exit code 5; nothing attached; file moved to `cache/bad/`.
 11. **Lifetime protection (mount)**: fixture app spawns a helper (`E2EHelper`, from inside the bundle) that survives
    the main app 10 s; and a `cat`-style process from `/bin` holding a file on the mount open.
    - A26 `helper_blocks_detach`, A27 `datafile_blocks_detach`: no detach while they live; detach after they exit.
-   - A27b `infra_not_a_user` (R2-B1): `prefetch` + an attach without opening the app (test-only `isenough debug
+   - A27b `infra_not_a_user` (R2-B1): `prefetch` + an attach without opening the app (test-only `disklessly debug
      attach <app>`): the probe reports `clean` while `lsof <imagePath>` shows the infrastructure holder; an mmap of a
      file on the mount by a `/usr/bin/python3` one-liner → busy; after it exits → clean.
    - A27c `busy_detach_backoff` (R2-B6): with `detachRetryMaxSeconds: 30`, a test-only fault
@@ -1790,7 +1790,7 @@ Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non
      exactly one run. During the 2nd backoff interval, open the stub with a document → session revived (same
      devEntry, epoch 2, document delivered once), no second attach; quitting again runs post-quit hooks once more.
      n=∞ → after 30 s the supervisor exits `6`, `status` shows `stuck` with the mount record kept, `evict app1`
-     → `9`, quota pass does not touch the image; clearing the fault and running `isenough detach app1` → detached,
+     → `9`, quota pass does not touch the image; clearing the fault and running `disklessly detach app1` → detached,
      record removed, `lastUsedAt` updated.
    - A28 `wrong_path_instance`: copy the fixture to `$E2E_DIR/other/E2EApp.app`, run it, then open the stub → stub
      alert/`EX_BUSY` (no lease on the foreign pid, no forward to it); quit the foreign copy and retry → normal launch.
@@ -1799,18 +1799,18 @@ Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non
    classifier only checks presence) installed into `$E2E_DIR/Applications`.
    - A30 `mas_forces_restore`: `pack --mode mount` exits 3; `pack` (auto) → mode `restore`.
    - A31 `restore_swap`: launch via the stub with a document → the real bundle is at the stub path while running
-     (cdhash = manifest), the stub is in `.256isenough-staging/<txid>/`, document event logged; after quit the stub is
+     (cdhash = manifest), the stub is in `.disklessly-staging/<txid>/`, document event logged; after quit the stub is
      back, staging/journal gone, and (R3-B5) `state.restored` has no entry, `lastOutcome == restoredOut`,
      `lastUsedAt` updated, `status` → `cached`; a second launch works normally (new txid); `evict app` then succeeds.
      This runs with the runner's normal root/system process population (R3-B2: the probe must become clean).
    - A32 `restore_helper_waits`: helper outliving the app keeps the restored bundle in place until it exits.
    - A33 `restore_fault_recovery`: for each fault point (test-only `faults` key in the isolated `$E2E_DIR` config,
-     not an environment variable, N4), run a launch that `kill -9`s itself there, then `isenough gc`; assert the
+     not an environment variable, N4), run a launch that `kill -9`s itself there, then `disklessly gc`; assert the
      §5.8.6 invariant. The set includes restore-out `disposed:after`, `retired:before`, `retired:after` and
      `closed:before` (R3-B5): after each, `gc` twice, then assert a second launch, `status`, `evict` and a third
      `gc` all see the same terminal state (`restored` empty, journal closed, `lastOutcome` set, stub at dest).
    - A33b `restore_supervisor_killed` (R3-B4, required): launch the restored fixture with its helper; `kill -9` the
-     supervisor while app and helper are alive; run two `isenough gc` concurrently → exactly one `adopt` event
+     supervisor while app and helper are alive; run two `disklessly gc` concurrently → exactly one `adopt` event
      (`mode: restore`), the journal owner is the spawned `hook watch` process, no swap while app/helper live
      (real bundle still at dest, stub still parked). Opening the stub with a document now joins (document delivered
      once). Quit the app, then end the helper → within the probe interval + `detachDelaySeconds` the stub is
@@ -1839,9 +1839,9 @@ Steps and assertions (each assertion prints `PASS/FAIL <name>`; script exits non
    - A34c `prelaunch_hook_mutation`: a pre-launch hook writes into the restored bundle and exits 1 → `EX_HOOK`,
      bundle retained (tree hash differs, cdhash equal: tree-hash-only change, rollback coverage), stub back at
      the destination, `lastOutcome == rolledBack`, `needsResolution` set.
-13. **Unpack**: `isenough unpack app1 --to $E2E_DIR/restored`.
+13. **Unpack**: `disklessly unpack app1 --to $E2E_DIR/restored`.
    - A35 `unpack_ok`: restored app `codesign --verify --strict` ok and cdhash + tree hash equal manifest; stub removed.
-14. **GUI auth smoke (daemon, no Pake)**: `isenough serve --port <free>`; with `curl`: unauthenticated `/api/apps` → 401;
+14. **GUI auth smoke (daemon, no Pake)**: `disklessly serve --port <free>`; with `curl`: unauthenticated `/api/apps` → 401;
    pairing code → cookie + csrf; cookie POST without CSRF/with foreign Origin → 403; `Host: evil.com` → 421; SSE
    stream receives an event for a `prefetch`. (Actual Pake startup is tested in the manual `gui.yml` job: build
    Pake app, start it with the daemon running, pair via a test hook, assert the page fetched `/api/apps` with 200.)
@@ -1855,11 +1855,11 @@ Apple-Event delivery (`application(_:open:)`), not argv. If LS/`open` is unavail
 pid (authoritative, N4), that the instance runs from the mounted path; LS's preferred URL is logged only.
 
 CI notes: GitHub macOS runners have a logged-in GUI session, so `open`/NSWorkspace are expected to work; there is
-no fallback that marks LS assertions skipped (see Required gates). Running directly (`isenough launch --doc`) is an
+no fallback that marks LS assertions skipped (see Required gates). Running directly (`disklessly launch --doc`) is an
 extra diagnostic, not a substitute.
 
 ### 11.4 CI workflows
-- `linux.yml`: `ubuntu-24.04-arm`/`ubuntu-latest` + `swift:6.0` container → `swift build --target IsenoughCore` + `swift test`
+- `linux.yml`: `ubuntu-24.04-arm`/`ubuntu-latest` + `swift:6.0` container → `swift build --target DisklesslyCore` + `swift test`
   (macOS-only tests compiled out).
 - `macos.yml` (`macos-latest`): `swift build`, `swift test`, `scripts/e2e.sh` with `E2E_ARTIFACTS` set; uploads the
   artifacts dir always (`if: always()`); exit `2` (inconclusive) fails the job. GUI build (`scripts/build-gui.sh`, needs Node + Rust) is a separate manual `workflow_dispatch` job.
@@ -1869,7 +1869,7 @@ extra diagnostic, not a substitute.
 ## 12. Scope: MVP vs v1 / v2 / v3
 
 ### 12.1 MVP (this branch `feat/mvp`)
-- Swift package: `IsenoughCore`, `IsenoughMac`, `IsenoughEngine`, `IsenoughServer`, `isenough`, `isenough-stub` as in §2.4.
+- Swift package: `DisklesslyCore`, `DisklesslyMac`, `DisklesslyEngine`, `DisklesslyServer`, `disklessly`, `disklessly-stub` as in §2.4.
 - Backends: `local`, `icloud` (FileManager APIs; upload wait; ensureLocal; evict of repo local copy),
   `local-fake-icloud` (tests).
 - Commands: `init, pack, list, status, launch, hook launch, prefetch, pin, unpin, evict, gc, restore, unpack, resolve,
@@ -1889,12 +1889,12 @@ extra diagnostic, not a substitute.
   user hooks (local only in MVP; shared repo hooks behind hash approval move to v2).
 - Cache: ULMO remote → ULFO (or UDRO) local conversion, final-size quota + per-volume transient claims, LRU, pins.
 - Stub: AppKit launcher with doc/URL forwarding + progress window; ad-hoc or configured identity signing; LS register.
-- GUI (minimal): `isenough serve` serves `web/` — one page: app list (name, version, mode, state, cached size, pinned,
+- GUI (minimal): `disklessly serve` serves `web/` — one page: app list (name, version, mode, state, cached size, pinned,
   last used), actions Launch / Prefetch / Pin / Unpin / Evict, cache usage bar (used/quota/free), live progress via
   `GET /api/events` (SSE), `doctor` results. API: `GET /api/apps`, `GET /api/apps/{id}`, `POST /api/apps/{id}/launch|
   prefetch|pin|unpin|evict`, `GET /api/cache`, `POST /api/gc`, `GET /api/doctor`, `GET /api/events`, `GET /api/version`.
   Pack stays CLI-only in MVP (drag & drop pack is v1).
-  `scripts/build-gui.sh`: `npx pake-cli http://127.0.0.1:47256/ui/ --name 256isenough --show-system-tray
+  `scripts/build-gui.sh`: `npx pake-cli http://127.0.0.1:47256/ui/ --name Disklessly --show-system-tray
   --hide-on-close --width 900 --height 640 --icon assets/icon.icns` (no token in the URL; the page pairs once,
   §10.1), then patch generated `Info.plist`
   (`LSUIElement=true` optional flag `--no-dock`) and re-sign. CI does not build it.
@@ -1903,7 +1903,7 @@ extra diagnostic, not a substitute.
 ### 12.2 v1
 - Native-feeling UX: progress in the GUI for stub launches, drag-and-drop pack, "refresh app version" flow,
   daemon-driven launch over a Unix socket (faster cold starts, single owner of mounts), low-disk notifications,
-  `NSMetadataQuery`-based push progress, Developer ID signed + notarized `isenough` release and Homebrew tap.
+  `NSMetadataQuery`-based push progress, Developer ID signed + notarized `disklessly` release and Homebrew tap.
 - Compatibility database (`compat.json`: bundleId → mode, notes, tested OS) shipped and user-contributed.
 - `diskutil image create` for ULMO pack images, after scrubbing and ownership match `hdiutil create`. Attach and detach already prefer `diskutil image` when that subcommand exists.
 - Optional SwiftUI `MenuBarExtra` companion if Pake tray UX is insufficient.
@@ -1922,7 +1922,7 @@ extra diagnostic, not a substitute.
 
 ## 13. Agent session file offloading with hot/cold tiering
 
-The command is `isenough sessions` (`docs/sessions.md`). A run without `--apply` is a dry run. Cold files are write-once per-device zstd segments (`sessions/<deviceId>/<tool>/…tar.zst`), indexed in `stateDir/sessions/index.sqlite`. v1 monthly `sessions/<tool>/<yyyy-MM>.tar.gz` archives are kept and are never overwritten. The notes below are the original roadmap, not the v2 layout.
+The command is `disklessly sessions` (`docs/sessions.md`). A run without `--apply` is a dry run. Cold files are write-once per-device zstd segments (`sessions/<deviceId>/<tool>/…tar.zst`), indexed in `stateDir/sessions/index.sqlite`. v1 monthly `sessions/<tool>/<yyyy-MM>.tar.gz` archives are kept and are never overwritten. The notes below are the original roadmap, not the v2 layout.
 
 ## 13.1 Original roadmap notes
 
@@ -1941,9 +1941,9 @@ cache, manifest, hooks), different object type.
   than threshold, last line is complete JSON (newline-terminated), not referenced as current session.
 - **Move protocol**: copy → hash → put `sessions/<tool>/<relpath>.jsonl.zst.enc` + manifest
   `{schema:"session/1", tool, originalPath, sha256, size, mtime, sessionId, parentSession, cwd}` → verify upload →
-  replace local file with nothing (pi) or a tiny tombstone index entry in `~/.256isenough/sessions-index.json`
+  replace local file with nothing (pi) or a tiny tombstone index entry in `~/.Disklessly/sessions-index.json`
   (we do not leave stub files the agent might parse as corrupt sessions).
-- **Recall**: (a) explicit `isenough sessions restore <id|cwd|--recent>`; (b) launcher wrapper hook: `isenough exec pi …`
+- **Recall**: (a) explicit `disklessly sessions restore <id|cwd|--recent>`; (b) launcher wrapper hook: `disklessly exec pi …`
   (or a shell alias) runs a pre-launch hook that restores cold sessions for the current cwd before `pi`/`claude`
   starts (pi `--continue`/`--resume` need the files back at the original absolute path, `parentSession` paths kept);
   restore resets mtime to the original value for listing order, except Claude where mtime is set to now to avoid the
@@ -1990,7 +1990,7 @@ cache, manifest, hooks), different object type.
 
 ### 14.2 Open questions
 
-Resolved for the current tree unless a config value is already set: project license MIT (`LICENSE`); ad-hoc signing (`signIdentity` `-`, override `ISENOUGH_SIGN_IDENTITY`); cache quota 20 GiB; free-space floor 15 GiB; detach delay 120 s. The management page is `isenough ui` (loopback, random token). `scripts/build-ui.sh` copies the web assets and runs Pake into `256isenough.app` when `pake` is installed; CI sets `ISENOUGH_SKIP_PAKE=1`.
+Resolved for the current tree unless a config value is already set: project license MIT (`LICENSE`); ad-hoc signing (`signIdentity` `-`, override `DISKLESSLY_SIGN_IDENTITY`); cache quota 20 GiB; free-space floor 15 GiB; detach delay 120 s. The management page is `disklessly ui` (loopback, random token). `scripts/build-ui.sh` copies the web assets and runs Pake into `Disklessly.app` when `pake` is installed; CI sets `DISKLESSLY_SKIP_PAKE=1`.
 
 1. Project license for our own code (MIT/Apache-2.0 suggested; compatible with distributing a separate GPL Pake shell)?
 2. Signing identity: use your Developer ID for stubs (stable DR) or ad-hoc for MVP? Team ID to configure in CI secrets?
@@ -1998,7 +1998,7 @@ Resolved for the current tree unless a config value is already set: project lice
 4. Default cache quota (20 GiB) and free-space floor (15 GiB) OK?
 5. Default detach delay 120 s OK? Should pinned apps stay mounted (never detach)?
 6. Move originals to Trash after pack (default) or keep them in `retained/` until first successful launch?
-7. Install location of `isenough` (`~/.local/bin` vs `/usr/local/bin` vs Homebrew)?
+7. Install location of `disklessly` (`~/.local/bin` vs `/usr/local/bin` vs Homebrew)?
 8. Is a Pake tray window acceptable as the GUI, or do you want a native SwiftUI menu bar extra in v1?
 9. Which apps (list + sizes) should be the first compatibility test set?
 10. Multi-Mac sharing of one repo in scope for v2?

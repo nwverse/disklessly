@@ -3,7 +3,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TMP="$(mktemp -d "${TMPDIR:-/tmp}/isenough-e2e.XXXXXX")"
+TMP="$(mktemp -d "${TMPDIR:-/tmp}/disklessly-e2e.XXXXXX")"
 TMP="$(cd "$TMP" && pwd -P)"
 LOG="${E2E_LOG_FILE:-$TMP/e2e.log}"
 mkdir -p "$(dirname "$LOG")"
@@ -14,26 +14,26 @@ UI_PID=""
 
 cleanup() {
   local status=$?
-  if [[ -f "${ISENOUGH_E2E_PID:-}" ]]; then kill "$(cat "$ISENOUGH_E2E_PID")" 2>/dev/null || true; fi
+  if [[ -f "${DISKLESSLY_E2E_PID:-}" ]]; then kill "$(cat "$DISKLESSLY_E2E_PID")" 2>/dev/null || true; fi
   if [[ -n "${APP_PID:-}" ]]; then kill "$APP_PID" 2>/dev/null || true; wait "$APP_PID" 2>/dev/null || true; fi
   if [[ -n "${UI_PID:-}" ]]; then kill "$UI_PID" 2>/dev/null || true; wait "$UI_PID" 2>/dev/null || true; fi
   if [[ -n "${HELPER:-}" ]]; then kill "$HELPER" 2>/dev/null || true; wait "$HELPER" 2>/dev/null || true; fi
   if [[ -f "${BUSY_PID:-}" ]]; then kill -9 "$(cat "$BUSY_PID")" 2>/dev/null || true; fi
   if [[ "$status" -ne 0 && -f "${LOG:-}" ]]; then
-    local kept="/tmp/isenough-e2e.log"
+    local kept="/tmp/disklessly-e2e.log"
     if [[ "$LOG" != "$kept" ]]; then cp "$LOG" "$kept" 2>/dev/null || true; fi
     printf 'e2e failed (exit %s). Full log: %s\n' "$status" "$kept" >&2
     tail -80 "$LOG" >&2 || true
   fi
-  force_detach_isenough_mounts
+  force_detach_disklessly_mounts
   rm -rf "$TMP"
 }
 trap cleanup EXIT INT TERM
 
 fail() {
-  if isenough_mounts_present; then
+  if disklessly_mounts_present; then
     list_image_mounts >>"$LOG" 2>&1 || true
-    printf 'FAIL: %s (isenough mount still attached under %s)\n' "$1" "${MOUNT_ROOT:-$TMP}" | tee -a "$LOG" >&2
+    printf 'FAIL: %s (disklessly mount still attached under %s)\n' "$1" "${MOUNT_ROOT:-$TMP}" | tee -a "$LOG" >&2
   else
     printf 'FAIL: %s\n' "$1" | tee -a "$LOG" >&2
   fi
@@ -104,7 +104,7 @@ mount_point_is_attached() {
   alt="$(alt_mount_path "$mp")"
   [[ -n "$alt" ]] && printf '%s\n' "$points" | grep -Fx "$alt" >/dev/null
 }
-force_detach_isenough_mounts() {
+force_detach_disklessly_mounts() {
   local token mp point
   token="$(basename "${TMP:-}")"
   [[ -n "$token" ]] || return 0
@@ -119,7 +119,7 @@ force_detach_isenough_mounts() {
     detach_one_mount "$point"
   done < <(hdiutil_mount_points)
 }
-isenough_mounts_present() {
+disklessly_mounts_present() {
   local token mp point
   token="$(basename "${TMP:-}")"
   [[ -n "$token" ]] || return 1
@@ -140,12 +140,12 @@ list_image_mounts() {
   fi
   /usr/bin/hdiutil info -plist || true
 }
-assert_no_isenough_mounts() {
-  if isenough_mounts_present; then
+assert_no_disklessly_mounts() {
+  if disklessly_mounts_present; then
     list_image_mounts >>"$LOG" 2>&1 || true
-    fail "no isenough mount should remain ($1)"
+    fail "no disklessly mount should remain ($1)"
   fi
-  pass "no isenough mount left behind ($1)"
+  pass "no disklessly mount left behind ($1)"
 }
 pass() { printf 'PASS: %s\n' "$1" | tee -a "$LOG"; }
 assert_file() { [[ -f "$1" ]] || fail "$2 (missing: $1)"; pass "$2"; }
@@ -171,14 +171,14 @@ is_detached() { ! /sbin/mount | grep -Fq "$MOUNT"; }
 stub_code_diagnostics() {
   {
     echo 'Stub code-section diagnostics:'
-    /usr/bin/otool -t "$STUB/Contents/MacOS/isenough-stub" 2>&1 | head -5 || true
-    /usr/bin/otool -t "$ROOT/.build/debug/isenough-stub" 2>&1 | head -5 || true
-    /usr/bin/otool -t "$ROOT/.build/debug/isenough" 2>&1 | head -5 || true
+    /usr/bin/otool -t "$STUB/Contents/MacOS/disklessly-stub" 2>&1 | head -5 || true
+    /usr/bin/otool -t "$ROOT/.build/debug/disklessly-stub" 2>&1 | head -5 || true
+    /usr/bin/otool -t "$ROOT/.build/debug/disklessly" 2>&1 | head -5 || true
     /usr/bin/codesign -dvvv "$STUB" 2>&1 || true
   } >> "$LOG"
   tail -20 "$LOG" >&2
 }
-run_cli() { "$ROOT/.build/debug/isenough" "$@" >>"$LOG" 2>&1; }
+run_cli() { "$ROOT/.build/debug/disklessly" "$@" >>"$LOG" 2>&1; }
 app_state() {
   /usr/bin/osascript -l JavaScript -e 'function run(a){var s=$.NSString.stringWithContentsOfFileEncodingError(a[0],4,null);if(!s)return "";var o=JSON.parse(s.js);return ((o.apps||{})[a[1]]||{}).state||""}' "$STATE" "$FIXTURE_BUNDLE_ID" 2>>"$LOG"
 }
@@ -196,13 +196,13 @@ cd "$ROOT"
 swift build -c debug >>"$LOG" 2>&1 || fail 'swift build -c debug'
 pass 'Swift package builds on macOS'
 
-export ISENOUGH_REPO_PATH="$TMP/fake-icloud"
-export ISENOUGH_CACHE_DIR="$TMP/cache"
-export ISENOUGH_STATE_DIR="$TMP/state"
-export ISENOUGH_MOUNT_ROOT="$MOUNT_ROOT"
-export ISENOUGH_STUB_DIR="$TMP/Applications"
-export ISENOUGH_DETACH_DELAY=1
-FIXTURE_BUNDLE_ID=io.github.s546126.256isenough.e2efixture
+export DISKLESSLY_REPO_PATH="$TMP/fake-icloud"
+export DISKLESSLY_CACHE_DIR="$TMP/cache"
+export DISKLESSLY_STATE_DIR="$TMP/state"
+export DISKLESSLY_MOUNT_ROOT="$MOUNT_ROOT"
+export DISKLESSLY_STUB_DIR="$TMP/Applications"
+export DISKLESSLY_DETACH_DELAY=1
+FIXTURE_BUNDLE_ID=io.github.s546126.disklessly.e2efixture
 mkdir -p "$TMP/Applications/Fixture.app/Contents/MacOS" "$TMP/Applications/Fixture.app/Contents/Resources" "$TMP/docs"
 printf 'icns' > "$TMP/Applications/Fixture.app/Contents/Resources/AppIcon.icns"
 run_cli init --backend local
@@ -219,8 +219,8 @@ cat > "$TMP/Applications/Fixture.app/Contents/Info.plist" <<PLIST
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>CFBundleIconFile</key><string>AppIcon</string>
-<key>IsenoughE2EOutput</key><string>$TMP/received-argv</string>
-<key>IsenoughE2EPidFile</key><string>$TMP/fixture.pid</string>
+<key>DisklesslyE2EOutput</key><string>$TMP/received-argv</string>
+<key>DisklesslyE2EPidFile</key><string>$TMP/fixture.pid</string>
 <key>CFBundleDocumentTypes</key><array><dict><key>CFBundleTypeExtensions</key><array><string>txt</string></array><key>CFBundleTypeRole</key><string>Viewer</string></dict></array>
 </dict></plist>
 PLIST
@@ -229,8 +229,8 @@ import AppKit
 
 @MainActor @main
 final class Fixture: NSObject, NSApplicationDelegate {
-    private let output = Bundle.main.object(forInfoDictionaryKey: "IsenoughE2EOutput") as! String
-    private let pidFile = Bundle.main.object(forInfoDictionaryKey: "IsenoughE2EPidFile") as! String
+    private let output = Bundle.main.object(forInfoDictionaryKey: "DisklesslyE2EOutput") as! String
+    private let pidFile = Bundle.main.object(forInfoDictionaryKey: "DisklesslyE2EPidFile") as! String
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         record(CommandLine.arguments.dropFirst().map { "ARG: \($0)" })
@@ -255,16 +255,16 @@ final class Fixture: NSObject, NSApplicationDelegate {
 APP
 swiftc -parse-as-library "$TMP/Fixture.swift" -framework AppKit -o "$TMP/Applications/Fixture.app/Contents/MacOS/Fixture" >>"$LOG" 2>&1 || { tail -30 "$LOG" >&2; fail 'compile Swift fixture app'; }
 printf 'fixture document\n' > "$TMP/docs/open-me.txt"
-export ISENOUGH_E2E_ARGV="$TMP/received-argv"
-export ISENOUGH_E2E_PID="$TMP/fixture.pid"
+export DISKLESSLY_E2E_ARGV="$TMP/received-argv"
+export DISKLESSLY_E2E_PID="$TMP/fixture.pid"
 
 run_cli pack "$TMP/Applications/Fixture.app" --keep-original --stub-dir "$TMP/Applications" >>"$LOG" 2>&1 || fail 'CLI pack into fake repository and Applications'
 pass 'fixture packed and stub generated'
 STUB="$TMP/Applications/Fixture.app"
-assert_file "$STUB/Contents/MacOS/isenough-stub" 'stub executable exists'
-if ! cmp -s <(code_text "$STUB/Contents/MacOS/isenough-stub") <(code_text "$ROOT/.build/debug/isenough-stub"); then stub_code_diagnostics; fail 'stub contains launcher binary'; fi
+assert_file "$STUB/Contents/MacOS/disklessly-stub" 'stub executable exists'
+if ! cmp -s <(code_text "$STUB/Contents/MacOS/disklessly-stub") <(code_text "$ROOT/.build/debug/disklessly-stub"); then stub_code_diagnostics; fail 'stub contains launcher binary'; fi
 pass 'stub contains launcher binary'
-if cmp -s <(code_text "$STUB/Contents/MacOS/isenough-stub") <(code_text "$ROOT/.build/debug/isenough"); then stub_code_diagnostics; fail 'stub is not CLI binary'; fi
+if cmp -s <(code_text "$STUB/Contents/MacOS/disklessly-stub") <(code_text "$ROOT/.build/debug/disklessly"); then stub_code_diagnostics; fail 'stub is not CLI binary'; fi
 pass 'stub is not CLI binary'
 assert_file "$STUB/Contents/Resources/stub.json" 'stub CLI metadata exists'
 assert_file "$STUB/Contents/Resources/AppIcon.icns" 'stub icon copied from the original app'
@@ -273,7 +273,7 @@ ICON_KEY="$(/usr/bin/plutil -extract CFBundleIconFile raw -o - "$STUB/Contents/I
 pass 'stub Info.plist names the copied icon' 
 /usr/bin/codesign --verify --strict "$STUB" >>"$LOG" 2>&1 || fail 'codesign --verify --strict generated stub'
 pass 'generated stub passes codesign verification'
-MANIFEST="$(find "$ISENOUGH_REPO_PATH/manifests" -name '*.json' -print -quit)"
+MANIFEST="$(find "$DISKLESSLY_REPO_PATH/manifests" -name '*.json' -print -quit)"
 assert_file "$MANIFEST" 'manifest published'
 # Extract the repository image filename from its JSON manifest.
 IMAGE_FILE="$(/usr/bin/plutil -extract image.file raw -o - "$MANIFEST" 2>/dev/null || true)"
@@ -282,12 +282,12 @@ IMAGE_ID="$(/usr/bin/plutil -extract imageId raw -o - "$MANIFEST" 2>/dev/null ||
 [[ -n "$IMAGE_ID" ]] || fail 'extract imageId from manifest'
 [[ "$IMAGE_FILE" == "images/$IMAGE_ID.dmg" ]] || fail 'image path is based on imageId'
 [[ "$(basename "$MANIFEST")" == "$IMAGE_ID.json" ]] || fail 'manifest path is based on imageId'
-REMOTE_IMAGE="$ISENOUGH_REPO_PATH/$IMAGE_FILE"
+REMOTE_IMAGE="$DISKLESSLY_REPO_PATH/$IMAGE_FILE"
 assert_file "$REMOTE_IMAGE" 'remote disk image exists'
-CACHE_IMAGE="$ISENOUGH_CACHE_DIR/images/$IMAGE_ID.dmg"
+CACHE_IMAGE="$DISKLESSLY_CACHE_DIR/images/$IMAGE_ID.dmg"
 
 # Launch using the installed stub, not a direct engine call: its pre-launch path is under test.
-PATH="$ROOT/.build/debug:$PATH" "$STUB/Contents/MacOS/isenough-stub" --doc "$TMP/docs/open-me.txt" >>"$LOG" 2>&1 &
+PATH="$ROOT/.build/debug:$PATH" "$STUB/Contents/MacOS/disklessly-stub" --doc "$TMP/docs/open-me.txt" >>"$LOG" 2>&1 &
 APP_PID=$!
 wait_for 60 'pre-launch fetched image to isolated cache' test -f "$CACHE_IMAGE"
 assert_file "$CACHE_IMAGE" 'pre-launch fetched image to isolated cache'
@@ -300,18 +300,18 @@ wait_for 60 'image attached at expected mount point' is_attached
 mount_line="$(/sbin/mount | grep -F "$MOUNT" || true)"
 [[ -n "$mount_line" ]] || fail 'expected mount point is mounted'
 case "$mount_line" in *read-only*|*rdonly*) pass 'image is attached read-only' ;; *) fail 'image mount is read-only' ;; esac
-wait_for 60 'fixture process launched and recorded arguments' grep -Fq -- "$TMP/docs/open-me.txt" "$ISENOUGH_E2E_ARGV"
-assert_file "$ISENOUGH_E2E_ARGV" 'fixture process launched and recorded arguments'
-assert_contains "$ISENOUGH_E2E_ARGV" "$TMP/docs/open-me.txt" 'document argument forwarded to real app'
+wait_for 60 'fixture process launched and recorded arguments' grep -Fq -- "$TMP/docs/open-me.txt" "$DISKLESSLY_E2E_ARGV"
+assert_file "$DISKLESSLY_E2E_ARGV" 'fixture process launched and recorded arguments'
+assert_contains "$DISKLESSLY_E2E_ARGV" "$TMP/docs/open-me.txt" 'document argument forwarded to real app'
 
 # The first process must remain alive until asked to quit; kill it, then require hook cleanup/state.
-if [[ -f "$ISENOUGH_E2E_PID" ]]; then kill "$(cat "$ISENOUGH_E2E_PID")" 2>/dev/null || true; fi
+if [[ -f "$DISKLESSLY_E2E_PID" ]]; then kill "$(cat "$DISKLESSLY_E2E_PID")" 2>/dev/null || true; fi
 kill "$APP_PID" 2>/dev/null || true
 wait "$APP_PID" 2>/dev/null || true
 APP_PID=""
 wait_for 30 'post-quit hook detached mount after configured delay' is_detached
 pass 'post-quit hook detached image after delay'
-STATE="$ISENOUGH_STATE_DIR/state.json"
+STATE="$DISKLESSLY_STATE_DIR/state.json"
 assert_file "$STATE" 'lifecycle state persisted after quit'
 assert_contains "$STATE" 'lastUsed' 'LRU timestamp updated'
 WAIT_TIMEOUT_HANDLER=log_state wait_for 10 'lifecycle state returned to cached/idle' state_is_cached
@@ -354,7 +354,7 @@ case "$SESSION_HOME" in
   *) SESSION_HOME_ALIAS="$SESSION_HOME" ;;
 esac
 SESSION_ALIAS="$SESSION_HOME_ALIAS/.pi/agent/sessions/old.jsonl"
-HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions >"$TMP/sessions-dry.json" 2>>"$LOG" || fail 'sessions dry run'
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/disklessly" --json sessions >"$TMP/sessions-dry.json" 2>>"$LOG" || fail 'sessions dry run'
 # Refuse --apply unless every dry-run path stays inside the temp home. An empty
 # cold list is not enough: a scan of the real home shows up in skipped.
 if ! /usr/bin/python3 - "$TMP/sessions-dry.json" "$SESSION_HOME" "$SESSION_CANON" >>"$LOG" 2>&1 <<'PY'
@@ -383,8 +383,8 @@ then
 fi
 [[ -f "$SESSION_CANON" ]] || fail 'sessions dry run deleted a file'
 pass 'sessions dry run keeps the cold file and reports its canonical path'
-HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions --apply >"$TMP/sessions-apply.json" 2>>"$LOG" || fail 'sessions apply'
-/usr/bin/python3 - "$TMP/sessions-apply.json" "$SESSION_CANON" "$ISENOUGH_STATE_DIR/sessions/index.sqlite" <<'PY' || fail 'sessions apply canonical index'
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/disklessly" --json sessions --apply >"$TMP/sessions-apply.json" 2>>"$LOG" || fail 'sessions apply'
+/usr/bin/python3 - "$TMP/sessions-apply.json" "$SESSION_CANON" "$DISKLESSLY_STATE_DIR/sessions/index.sqlite" <<'PY' || fail 'sessions apply canonical index'
 import json, sqlite3, sys
 report, canon, db_path = json.load(open(sys.argv[1])), sys.argv[2], sys.argv[3]
 paths = [row[0] for row in sqlite3.connect(db_path).execute("SELECT path FROM entries")]
@@ -397,7 +397,7 @@ PY
 [[ ! -f "$SESSION_CANON" ]] || fail 'sessions apply left the cold file in place'
 [[ -f "$SESSION_FRESH" ]] || fail 'sessions apply removed a hot file'
 pass 'sessions apply packs the cold file and keeps the hot file'
-HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions search blender >"$TMP/sessions-search.json" 2>>"$LOG" || fail 'sessions search'
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/disklessly" --json sessions search blender >"$TMP/sessions-search.json" 2>>"$LOG" || fail 'sessions search'
 /usr/bin/python3 - "$TMP/sessions-search.json" "$SESSION_CANON" <<'PY' || fail 'sessions search missed the packed preview'
 import json, sys
 hits, canon = json.load(open(sys.argv[1])), sys.argv[2]
@@ -405,7 +405,7 @@ if len(hits) != 1 or hits[0].get("path") != canon or "blender" not in hits[0].ge
     raise SystemExit(f"search {hits}")
 PY
 pass 'sessions search finds the packed preview'
-HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/isenough" --json sessions restore "$SESSION_ALIAS" >"$TMP/sessions-restore.json" 2>>"$LOG" || fail 'sessions restore'
+HOME="$SESSION_HOME_ALIAS" "$ROOT/.build/debug/disklessly" --json sessions restore "$SESSION_ALIAS" >"$TMP/sessions-restore.json" 2>>"$LOG" || fail 'sessions restore'
 /usr/bin/python3 - "$TMP/sessions-restore.json" "$SESSION_CANON" <<'PY' || fail 'sessions restore path'
 import json, sys
 report, canon = json.load(open(sys.argv[1])), sys.argv[2]
@@ -416,33 +416,33 @@ grep -Fq 'pack the blender notes' "$SESSION_CANON" || fail 'sessions restore byt
 pass 'sessions restore round-trip writes the canonical path'
 
 # Loopback UI: 127.0.0.1 only, token required, clean SIGTERM exit.
-"$ROOT/.build/debug/isenough" ui >"$TMP/ui-server.log" 2>&1 &
+"$ROOT/.build/debug/disklessly" ui >"$TMP/ui-server.log" 2>&1 &
 UI_PID=$!
 UI_URL=""
 for _ in $(seq 1 50); do
-  if ! kill -0 "$UI_PID" 2>/dev/null; then fail 'isenough ui exited before printing a URL'; fi
+  if ! kill -0 "$UI_PID" 2>/dev/null; then fail 'disklessly ui exited before printing a URL'; fi
   UI_URL="$(grep -Eo 'http://127\.0\.0\.1:[0-9]+/\?token=[^[:space:]]+' "$TMP/ui-server.log" | head -n 1 || true)"
   [[ -n "$UI_URL" ]] && break
   sleep 0.1
 done
-[[ -n "$UI_URL" ]] || fail 'isenough ui did not print a loopback URL'
+[[ -n "$UI_URL" ]] || fail 'disklessly ui did not print a loopback URL'
 /usr/sbin/lsof -nP -a -p "$UI_PID" -iTCP -sTCP:LISTEN >"$TMP/ui-listen.txt" 2>>"$LOG" || fail 'lsof UI listen socket'
-grep -F '127.0.0.1:' "$TMP/ui-listen.txt" >/dev/null || fail 'isenough ui is not bound to 127.0.0.1'
-if grep -E '(\*:|0\.0\.0\.0:)' "$TMP/ui-listen.txt" >/dev/null; then fail 'isenough ui listened outside loopback'; fi
+grep -F '127.0.0.1:' "$TMP/ui-listen.txt" >/dev/null || fail 'disklessly ui is not bound to 127.0.0.1'
+if grep -E '(\*:|0\.0\.0\.0:)' "$TMP/ui-listen.txt" >/dev/null; then fail 'disklessly ui listened outside loopback'; fi
 UI_PORT="$(printf '%s' "$UI_URL" | sed -E 's#http://127\.0\.0\.1:([0-9]+)/.*#\1#')"
 UI_DENIED="$(/usr/bin/curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:${UI_PORT}/api/status")"
-[[ "$UI_DENIED" == "401" ]] || fail "isenough ui without a token returned $UI_DENIED"
+[[ "$UI_DENIED" == "401" ]] || fail "disklessly ui without a token returned $UI_DENIED"
 UI_PAGE="$(/usr/bin/curl -s -o "$TMP/ui-page.html" -w '%{http_code}' "$UI_URL")"
-[[ "$UI_PAGE" == "200" ]] || fail "isenough ui with a token returned $UI_PAGE"
-grep -Fq 'app.js?token=' "$TMP/ui-page.html" || fail 'isenough ui page omitted the token'
+[[ "$UI_PAGE" == "200" ]] || fail "disklessly ui with a token returned $UI_PAGE"
+grep -Fq 'app.js?token=' "$TMP/ui-page.html" || fail 'disklessly ui page omitted the token'
 kill -TERM "$UI_PID"
 set +e
 wait "$UI_PID"
 UI_STATUS=$?
 set -e
 UI_PID=""
-[[ "$UI_STATUS" -eq 0 ]] || fail "isenough ui exit status $UI_STATUS"
-pass 'isenough ui serves loopback with a token and exits cleanly'
+[[ "$UI_STATUS" -eq 0 ]] || fail "disklessly ui exit status $UI_STATUS"
+pass 'disklessly ui serves loopback with a token and exits cleanly'
 
 # P0-1: a second state directory must not replace the app when the shared image is gone.
 P0_SRC="$TMP/Applications/Fixture.256orig.app"
@@ -451,8 +451,8 @@ mkdir -p "$TMP/p0"
 cp -R "$P0_SRC" "$TMP/p0/Fixture.app"
 rm -f "$REMOTE_IMAGE"
 set +e
-ISENOUGH_STATE_DIR="$TMP/state-b" ISENOUGH_CACHE_DIR="$TMP/cache-b" ISENOUGH_STUB_DIR="$TMP/stubs-b" \
-  "$ROOT/.build/debug/isenough" pack "$TMP/p0/Fixture.app" --mode mount >>"$LOG" 2>&1
+DISKLESSLY_STATE_DIR="$TMP/state-b" DISKLESSLY_CACHE_DIR="$TMP/cache-b" DISKLESSLY_STUB_DIR="$TMP/stubs-b" \
+  "$ROOT/.build/debug/disklessly" pack "$TMP/p0/Fixture.app" --mode mount >>"$LOG" 2>&1
 P0_CODE=$?
 set -e
 [[ "$P0_CODE" -eq 5 ]] || fail "second Mac pack exited $P0_CODE, expected 5"
@@ -471,11 +471,11 @@ plant_cold_session() {
 }
 SESS_A="$(plant_cold_session "$TMP/home-a" 'machine-a-session')"
 SESS_B="$(plant_cold_session "$TMP/home-b" 'machine-b-session')"
-HOME="$TMP/home-a" ISENOUGH_STATE_DIR="$TMP/state-sess-a" "$ROOT/.build/debug/isenough" --json sessions --apply >"$TMP/sess-a.json" 2>>"$LOG" || fail 'machine A sessions apply'
-HOME="$TMP/home-b" ISENOUGH_STATE_DIR="$TMP/state-sess-b" "$ROOT/.build/debug/isenough" --json sessions --apply >"$TMP/sess-b.json" 2>>"$LOG" || fail 'machine B sessions apply'
+HOME="$TMP/home-a" DISKLESSLY_STATE_DIR="$TMP/state-sess-a" "$ROOT/.build/debug/disklessly" --json sessions --apply >"$TMP/sess-a.json" 2>>"$LOG" || fail 'machine A sessions apply'
+HOME="$TMP/home-b" DISKLESSLY_STATE_DIR="$TMP/state-sess-b" "$ROOT/.build/debug/disklessly" --json sessions --apply >"$TMP/sess-b.json" 2>>"$LOG" || fail 'machine B sessions apply'
 rm -f "$SESS_A" "$SESS_B"
-HOME="$TMP/home-a" ISENOUGH_STATE_DIR="$TMP/state-sess-a" "$ROOT/.build/debug/isenough" --json sessions restore "$SESS_A" >"$TMP/sess-a-restore.json" 2>>"$LOG" || fail 'machine A sessions restore'
-HOME="$TMP/home-b" ISENOUGH_STATE_DIR="$TMP/state-sess-b" "$ROOT/.build/debug/isenough" --json sessions restore "$SESS_B" >"$TMP/sess-b-restore.json" 2>>"$LOG" || fail 'machine B sessions restore'
+HOME="$TMP/home-a" DISKLESSLY_STATE_DIR="$TMP/state-sess-a" "$ROOT/.build/debug/disklessly" --json sessions restore "$SESS_A" >"$TMP/sess-a-restore.json" 2>>"$LOG" || fail 'machine A sessions restore'
+HOME="$TMP/home-b" DISKLESSLY_STATE_DIR="$TMP/state-sess-b" "$ROOT/.build/debug/disklessly" --json sessions restore "$SESS_B" >"$TMP/sess-b-restore.json" 2>>"$LOG" || fail 'machine B sessions restore'
 grep -Fq 'machine-a-session' "$SESS_A" || fail 'machine A restore bytes'
 grep -Fq 'machine-b-session' "$SESS_B" || fail 'machine B restore bytes'
 pass 'two homes archive and restore in the same month'
@@ -486,7 +486,7 @@ run_cli cleanup-backups >>"$LOG" 2>&1 || fail 'cleanup-backups on the local repo
 pass 'cleanup-backups completes on the local repo'
 
 # Mount-mode fixture: one attach across two launches, then unpack back to a signed app.
-UNPACK_ID="io.github.s546126.256isenough.e2eunpack"
+UNPACK_ID="io.github.s546126.disklessly.e2eunpack"
 mkdir -p "$TMP/unpack-apps/Unpack.app/Contents/MacOS" "$TMP/unpack-docs"
 cat > "$TMP/UnpackInfo.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -498,40 +498,40 @@ cat > "$TMP/UnpackInfo.plist" <<PLIST
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
-<key>IsenoughE2EOutput</key><string>$TMP/unpack-argv</string>
-<key>IsenoughE2EPidFile</key><string>$TMP/unpack.pid</string>
+<key>DisklesslyE2EOutput</key><string>$TMP/unpack-argv</string>
+<key>DisklesslyE2EPidFile</key><string>$TMP/unpack.pid</string>
 </dict></plist>
 PLIST
 cp "$TMP/UnpackInfo.plist" "$TMP/unpack-apps/Unpack.app/Contents/Info.plist"
 swiftc -parse-as-library "$TMP/Fixture.swift" -framework AppKit -o "$TMP/unpack-apps/Unpack.app/Contents/MacOS/Unpack" >>"$LOG" 2>&1 || fail 'compile unpack fixture'
 /usr/bin/codesign --force --sign - "$TMP/unpack-apps/Unpack.app" >>"$LOG" 2>&1 || fail 'sign unpack fixture'
-ISENOUGH_STATE_DIR="$TMP/state" ISENOUGH_STUB_DIR="$TMP/unpack-apps" \
-  "$ROOT/.build/debug/isenough" pack "$TMP/unpack-apps/Unpack.app" --mode mount --stub-dir "$TMP/unpack-apps" >>"$LOG" 2>&1 || fail 'pack unpack fixture'
+DISKLESSLY_STATE_DIR="$TMP/state" DISKLESSLY_STUB_DIR="$TMP/unpack-apps" \
+  "$ROOT/.build/debug/disklessly" pack "$TMP/unpack-apps/Unpack.app" --mode mount --stub-dir "$TMP/unpack-apps" >>"$LOG" 2>&1 || fail 'pack unpack fixture'
 UNPACK_STUB="$TMP/unpack-apps/Unpack.app"
 UNPACK_IMAGE="$(/usr/bin/python3 - "$UNPACK_STUB/Contents/Resources/stub.json" <<'PY'
 import json, sys
 print(json.load(open(sys.argv[1]))["imageId"])
 PY
 )"
-ISENOUGH_STATE_DIR="$TMP/state" "$ROOT/.build/debug/isenough" launch "$UNPACK_ID" --no-wait >>"$LOG" 2>&1 || fail 'first unpack-fixture launch'
+DISKLESSLY_STATE_DIR="$TMP/state" "$ROOT/.build/debug/disklessly" launch "$UNPACK_ID" --no-wait >>"$LOG" 2>&1 || fail 'first unpack-fixture launch'
 UNPACK_MOUNT="$MOUNT_ROOT/$UNPACK_IMAGE"
 wait_for 60 'unpack fixture attached' mount_point_is_attached "$UNPACK_MOUNT"
 printf 'second document\n' > "$TMP/unpack-docs/note.txt"
-ISENOUGH_STATE_DIR="$TMP/state" "$ROOT/.build/debug/isenough" launch "$UNPACK_ID" --doc "$TMP/unpack-docs/note.txt" --no-wait >>"$LOG" 2>&1 || fail 'second launch while the first is still up'
+DISKLESSLY_STATE_DIR="$TMP/state" "$ROOT/.build/debug/disklessly" launch "$UNPACK_ID" --doc "$TMP/unpack-docs/note.txt" --no-wait >>"$LOG" 2>&1 || fail 'second launch while the first is still up'
 MOUNT_COUNT="$(hdiutil_mount_points | sed 's#^/private##' | grep -F "$UNPACK_IMAGE" | sort -u | wc -l | tr -d ' ')"
 [[ "$MOUNT_COUNT" == "1" ]] || fail "expected one hdiutil mount for the unpack fixture, saw $MOUNT_COUNT"
 pass 'second launch reuses the existing disk image mount'
 if [[ -f "$TMP/unpack.pid" ]]; then kill "$(cat "$TMP/unpack.pid")" 2>/dev/null || true; fi
 unpack_detached() { ! mount_point_is_attached "$UNPACK_MOUNT"; }
 wait_for 30 'unpack fixture detached' unpack_detached
-ISENOUGH_STATE_DIR="$TMP/state" "$ROOT/.build/debug/isenough" unpack "$UNPACK_STUB" >>"$LOG" 2>&1 || fail 'unpack mount fixture'
+DISKLESSLY_STATE_DIR="$TMP/state" "$ROOT/.build/debug/disklessly" unpack "$UNPACK_STUB" >>"$LOG" 2>&1 || fail 'unpack mount fixture'
 UNPACK_DEST_ID="$(/usr/bin/plutil -extract CFBundleIdentifier raw -o - "$UNPACK_STUB/Contents/Info.plist" 2>/dev/null || true)"
 [[ "$UNPACK_DEST_ID" == "$UNPACK_ID" ]] || fail "unpack left bundle id $UNPACK_DEST_ID"
 /usr/bin/codesign --verify "$UNPACK_STUB" >>"$LOG" 2>&1 || fail 'codesign --verify unpacked app'
 pass 'unpack restores a signed app'
 
 # A running fixture must refuse pack.
-RUN_ID="io.github.s546126.256isenough.e2erunning"
+RUN_ID="io.github.s546126.disklessly.e2erunning"
 mkdir -p "$TMP/running/Running.app/Contents/MacOS"
 cat > "$TMP/running/Running.app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -543,8 +543,8 @@ cat > "$TMP/running/Running.app/Contents/Info.plist" <<PLIST
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
-<key>IsenoughE2EOutput</key><string>$TMP/running-argv</string>
-<key>IsenoughE2EPidFile</key><string>$TMP/running.pid</string>
+<key>DisklesslyE2EOutput</key><string>$TMP/running-argv</string>
+<key>DisklesslyE2EPidFile</key><string>$TMP/running.pid</string>
 </dict></plist>
 PLIST
 swiftc -parse-as-library "$TMP/Fixture.swift" -framework AppKit -o "$TMP/running/Running.app/Contents/MacOS/Running" >>"$LOG" 2>&1 || fail 'compile running fixture'
@@ -552,7 +552,7 @@ swiftc -parse-as-library "$TMP/Fixture.swift" -framework AppKit -o "$TMP/running
 RUN_PID=$!
 sleep 0.5
 set +e
-ISENOUGH_STATE_DIR="$TMP/state" "$ROOT/.build/debug/isenough" pack "$TMP/running/Running.app" --mode mount --stub-dir "$TMP/running-stubs" >>"$LOG" 2>&1
+DISKLESSLY_STATE_DIR="$TMP/state" "$ROOT/.build/debug/disklessly" pack "$TMP/running/Running.app" --mode mount --stub-dir "$TMP/running-stubs" >>"$LOG" 2>&1
 RUN_CODE=$?
 set -e
 kill "$RUN_PID" 2>/dev/null || true

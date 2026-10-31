@@ -10,34 +10,34 @@ let sqlitePkgConfig: String? = "sqlite3"
 #endif
 
 let package = Package(
-    name: "256isenough",
+    name: "Disklessly",
     platforms: [.macOS(.v13)],
     products: [
-        .library(name: "IsenoughCore", targets: ["IsenoughCore"]),
-        .library(name: "IsenoughEngine", targets: ["IsenoughEngine"]),
-        .executable(name: "isenough", targets: ["isenough"]),
-        .executable(name: "isenough-stub", targets: ["isenough-stub"]),
+        .library(name: "DisklesslyCore", targets: ["DisklesslyCore"]),
+        .library(name: "DisklesslyEngine", targets: ["DisklesslyEngine"]),
+        .executable(name: "disklessly", targets: ["disklessly"]),
+        .executable(name: "disklessly-stub", targets: ["disklessly-stub"]),
         // Menu-bar app. Its sources compile to a stub on platforms without AppKit.
-        .executable(name: "IsenoughMac", targets: ["IsenoughMac"]),
+        .executable(name: "DisklesslyMac", targets: ["DisklesslyMac"]),
     ],
     dependencies: [
         .package(url: "https://github.com/apple/swift-crypto.git", "3.0.0"..<"4.0.0"),
         .package(url: "https://github.com/facebook/zstd.git", exact: "1.5.6"),
     ],
     targets: [
-        .target(name: "IsenoughCore"),
-        .target(name: "IsenoughStubSupport"),
+        .target(name: "DisklesslyCore"),
+        .target(name: "DisklesslyStubSupport"),
         .systemLibrary(name: "CSQLite", path: "Sources/CSQLite", pkgConfig: sqlitePkgConfig, providers: [.apt(["libsqlite3-dev"]), .brew(["sqlite"])]),
-        .target(name: "IsenoughSessions", dependencies: [
-            "IsenoughCore",
+        .target(name: "DisklesslySessions", dependencies: [
+            "DisklesslyCore",
             "CSQLite",
             .product(name: "libzstd", package: "zstd"),
             .product(name: "Crypto", package: "swift-crypto"),
         ]),
-        .target(name: "IsenoughEngine", dependencies: ["IsenoughCore", "IsenoughStubSupport", "IsenoughSessions"]),
-        .executableTarget(name: "isenough", dependencies: ["IsenoughCore", "IsenoughEngine"], resources: [.copy("web")]),
-        .executableTarget(name: "isenough-stub", dependencies: ["IsenoughStubSupport"]),
-        .executableTarget(name: "IsenoughMac", dependencies: ["IsenoughCore", "IsenoughEngine"]),
-        .testTarget(name: "IsenoughCoreTests", dependencies: ["IsenoughCore", "IsenoughEngine", "IsenoughStubSupport", "IsenoughSessions"]),
+        .target(name: "DisklesslyEngine", dependencies: ["DisklesslyCore", "DisklesslyStubSupport", "DisklesslySessions"]),
+        .executableTarget(name: "disklessly", dependencies: ["DisklesslyCore", "DisklesslyEngine"], resources: [.copy("web")]),
+        .executableTarget(name: "disklessly-stub", dependencies: ["DisklesslyStubSupport"]),
+        .executableTarget(name: "DisklesslyMac", dependencies: ["DisklesslyCore", "DisklesslyEngine"]),
+        .testTarget(name: "DisklesslyCoreTests", dependencies: ["DisklesslyCore", "DisklesslyEngine", "DisklesslyStubSupport", "DisklesslySessions"]),
     ]
 )

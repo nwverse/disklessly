@@ -1,16 +1,16 @@
 # Agent session tiering (v2)
 
-`isenough sessions` plans a hot/cold split for agent JSONL transcripts. A run without `--apply` is a dry run: it prints the plan and does not upload or delete anything.
+`disklessly sessions` plans a hot/cold split for agent JSONL transcripts. A run without `--apply` is a dry run: it prints the plan and does not upload or delete anything.
 
 ```sh
-isenough sessions [--apply] [--days N] [--home DIR] [--encrypt]
-isenough sessions search QUERY [--limit N]
-isenough sessions restore ID|PATH [--to PATH]
-isenough sessions reindex
-isenough sessions migrate
-isenough sessions verify --legacy
-isenough sessions key init
-isenough sessions key status
+disklessly sessions [--apply] [--days N] [--home DIR] [--encrypt]
+disklessly sessions search QUERY [--limit N]
+disklessly sessions restore ID|PATH [--to PATH]
+disklessly sessions reindex
+disklessly sessions migrate
+disklessly sessions verify --legacy
+disklessly sessions key init
+disklessly sessions key status
 ```
 
 `--encrypt` applies only to that run. It requires a key from `sessions key init`. `key status` prints the key id and never the key. A second `key init` is rejected. Unknown subcommands and options exit 2.
@@ -64,7 +64,7 @@ For each segment:
 3. Commit the segment and its entries in SQLite with state `pendingDelete`.
 4. Only then consider deleting the local file.
 5. Re-stat and hash. A size, inode, mtime, or sha256 change, or an open file, sets state `keptLocal` and leaves the file (`modified after archiving` or `open`).
-6. Otherwise rename to `<path>.isenough-deleting-<txid>`, re-stat, and unlink. State becomes `archived`.
+6. Otherwise rename to `<path>.disklessly-deleting-<txid>`, re-stat, and unlink. State becomes `archived`.
 
 A crash after the index commit is finished by the next `sessions --apply`: pending rows are settled before new files are packed. The local file is not removed if the upload or the index commit fails.
 
@@ -78,7 +78,7 @@ A crash after the index commit is finished by the next `sessions --apply`: pendi
 
 ## Encryption
 
-`sessionEncryption` in config is `off` (default) or `aes-gcm`. `--encrypt` forces AES-256-GCM for one run. The key lives in the secret store (Keychain on macOS) under service `io.github.s546126.256isenough.sessions`. Accounts are `segment-key-<keyId>` and `segment-key-current`. The key id is 8 hex characters of `sha256(key)`.
+`sessionEncryption` in config is `off` (default) or `aes-gcm`. `--encrypt` forces AES-256-GCM for one run. The key lives in the secret store (Keychain on macOS) under service `io.github.s546126.disklessly.sessions`. Accounts are `segment-key-<keyId>` and `segment-key-current`. The key id is 8 hex characters of `sha256(key)`.
 
 The envelope is magic `ISEGENC1`, key id, nonce, ciphertext, and tag. The segment's associated data is the relative path with the `-sha8` token removed (`…/<stamp>.tar.zst.enc`), because the hash cannot be inside the ciphertext it names. The sidecar's associated data is its full relative path. `sessions/<deviceId>/…` objects then contain no plaintext of the transcript or of the original path.
 

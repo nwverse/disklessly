@@ -1,4 +1,4 @@
-# Dashboard UI target (mockup "256isenough 仪表盘 Dashboard")
+# Dashboard UI target (mockup "Disklessly 仪表盘 Dashboard")
 
 Source: the user's claude.ai design canvas (4 artboards: Light 1194, Dark 1194, Light 375, Dark 375; same
 content). Screenshots: [`ui/mockup-light-top.png`](ui/mockup-light-top.png),
@@ -9,7 +9,7 @@ show real values from the engine.
 
 - Bilingual inline labels: Chinese primary, English secondary in a smaller grey run
   (`后端 Backend`, `清除缓存 Evict`). Light and dark themes follow `prefers-color-scheme`.
-- Header: blue rounded "256" tile, title `256isenough`, subtitle `卸载应用，按需缓存 · Diskless apps`;
+- Header: blue rounded "256" tile, title `Disklessly`, subtitle `256G 就够了 · 256G is enough`;
   right side `刚刚更新 · Updated just now` (relative time of the last refresh) and a `刷新 Refresh` button.
 - Content column max ~1070 px centered; white cards, 12-16 px radius, soft shadow; grey page background.
 - 375 px: cards stack in one column; table rows become stacked cards.
@@ -58,8 +58,8 @@ only cold files are archived, so there is no warm tier), app, document path (mon
 
 ## Actual (release/v0.1 QA)
 
-Real `isenough ui` on isolated `ISENOUGH_*` dirs (three packed fixture apps: one pinned and cached, one cached,
-one remote-only; three archived sessions; `ISENOUGH_SCAN_ROOTS` pointing at a fixture folder):
+Real `disklessly ui` on isolated `DISKLESSLY_*` dirs (three packed fixture apps: one pinned and cached, one cached,
+one remote-only; three archived sessions; `DISKLESSLY_SCAN_ROOTS` pointing at a fixture folder):
 [`ui/actual-light-1194.png`](ui/actual-light-1194.png), [`ui/actual-dark-1194.png`](ui/actual-dark-1194.png),
 [`ui/actual-light-375.png`](ui/actual-light-375.png), [`ui/actual-dark-375.png`](ui/actual-dark-375.png).
 The Error state was checked against an unreachable WebDAV endpoint, and Empty against an empty repo.

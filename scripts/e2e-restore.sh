@@ -6,10 +6,10 @@
 #   bash scripts/e2e.sh
 
 command -v python3 >/dev/null || fail 'python3 is required for restore e2e JSON edits'
-export ISENOUGH_PROBE_INTERVAL=0
-export ISENOUGH_DETACH_DELAY=0
+export DISKLESSLY_PROBE_INTERVAL=0
+export DISKLESSLY_DETACH_DELAY=0
 
-config_path() { printf '%s/config.json' "$ISENOUGH_STATE_DIR"; }
+config_path() { printf '%s/config.json' "$DISKLESSLY_STATE_DIR"; }
 
 set_faults() {
   local point="$1"
@@ -35,7 +35,7 @@ bundle_id_of() {
 
 journal_field() {
   local app="$1" field="$2"
-  python3 - "$ISENOUGH_STATE_DIR" "$app" "$field" <<'PY'
+  python3 - "$DISKLESSLY_STATE_DIR" "$app" "$field" <<'PY'
 import json, os, sys
 state, app, field = sys.argv[1:]
 directory = os.path.join(state, "journals")
@@ -58,7 +58,7 @@ PY
 
 adopt_count() {
   local app="$1"
-  python3 - "$ISENOUGH_STATE_DIR/events.jsonl" "$app" <<'PY'
+  python3 - "$DISKLESSLY_STATE_DIR/events.jsonl" "$app" <<'PY'
 import json, os, sys
 path, app = sys.argv[1:]
 count = 0
@@ -90,11 +90,11 @@ assert_stub_terminal() {
   local id journals
   id="$(bundle_id_of "$app")"
   [[ "$id" == "$bid.256stub" ]] || fail "$label: destination bundle id is '$id', expected stub"
-  journals="$(find "$ISENOUGH_STATE_DIR/journals" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
+  journals="$(find "$DISKLESSLY_STATE_DIR/journals" -name '*.json' 2>/dev/null | wc -l | tr -d ' ')"
   [[ "$journals" == "0" ]] || fail "$label: $journals journal(s) still open"
-  if [[ -d "$TMP/Applications/.256isenough-staging" ]]; then
+  if [[ -d "$TMP/Applications/.disklessly-staging" ]]; then
     local left
-    left="$(find "$TMP/Applications/.256isenough-staging" -mindepth 1 -print)"
+    left="$(find "$TMP/Applications/.disklessly-staging" -mindepth 1 -print)"
     [[ -z "$left" ]] || fail "$label: staging leftovers: $left"
   fi
 }
@@ -139,9 +139,9 @@ import AppKit
 @MainActor @main
 final class RestoreApp: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
-        if "ISENOUGH_FIXTURE_BUILD".isEmpty { NSApp.terminate(nil) }
-        let hold = Bundle.main.object(forInfoDictionaryKey: "IsenoughHoldFile") as? String ?? ""
-        let pidFile = Bundle.main.object(forInfoDictionaryKey: "IsenoughE2EPidFile") as? String ?? ""
+        if "DISKLESSLY_FIXTURE_BUILD".isEmpty { NSApp.terminate(nil) }
+        let hold = Bundle.main.object(forInfoDictionaryKey: "DisklesslyHoldFile") as? String ?? ""
+        let pidFile = Bundle.main.object(forInfoDictionaryKey: "DisklesslyE2EPidFile") as? String ?? ""
         if !pidFile.isEmpty {
             try? "\(ProcessInfo.processInfo.processIdentifier)".write(toFile: pidFile, atomically: true, encoding: .utf8)
         }
@@ -171,7 +171,7 @@ APP
 
 compile_restore_bin() {
   local tag="$1" out="$2"
-  sed "s/ISENOUGH_FIXTURE_BUILD/isenough-fixture-${tag}/" "$TMP/RestoreApp.swift" > "$TMP/RestoreApp.${tag}.swift"
+  sed "s/DISKLESSLY_FIXTURE_BUILD/disklessly-fixture-${tag}/" "$TMP/RestoreApp.swift" > "$TMP/RestoreApp.${tag}.swift"
   swiftc -parse-as-library "$TMP/RestoreApp.${tag}.swift" -framework AppKit -o "$out" >>"$LOG" 2>&1 || fail "compile restore fixture ${tag}"
 }
 
@@ -196,15 +196,15 @@ make_app() {
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleShortVersionString</key><string>1.0</string>
 <key>LSUIElement</key><true/>
-<key>IsenoughHoldFile</key><string>$hold</string>
-<key>IsenoughE2EPidFile</key><string>$pidfile</string>
+<key>DisklesslyHoldFile</key><string>$hold</string>
+<key>DisklesslyE2EPidFile</key><string>$pidfile</string>
 </dict></plist>
 PLIST
   /usr/bin/codesign --force --sign - "$dest" >>"$LOG" 2>&1 || fail "codesign $dest"
 }
 
 image_id_for() {
-  python3 - "$ISENOUGH_REPO_PATH" "$1" <<'PY'
+  python3 - "$DISKLESSLY_REPO_PATH" "$1" <<'PY'
 import json, glob, os, sys
 repo, bundle = sys.argv[1:]
 for path in glob.glob(os.path.join(repo, "manifests", "*.json")):
@@ -217,7 +217,7 @@ PY
 }
 
 # --- A30: a Mac App Store receipt selects restore mode ---
-MAS_BUNDLE=io.github.s546126.256isenough.e2emas
+MAS_BUNDLE=io.github.s546126.disklessly.e2emas
 MAS_APP="$TMP/Applications/Mas.app"
 write_restore_source
 make_app "$MAS_APP" "$MAS_BUNDLE" "Mas" "" "" "mas"
@@ -225,7 +225,7 @@ mkdir -p "$MAS_APP/Contents/_MASReceipt"
 printf 'receipt\n' > "$MAS_APP/Contents/_MASReceipt/receipt"
 /usr/bin/codesign --force --sign - "$MAS_APP" >>"$LOG" 2>&1 || fail 're-sign MAS fixture after receipt'
 run_cli pack "$MAS_APP" --keep-original --stub-dir "$TMP/Applications" || fail 'pack MAS receipt app without --mode'
-MAS_MODE="$(python3 - "$ISENOUGH_REPO_PATH" "$MAS_BUNDLE" <<'PY'
+MAS_MODE="$(python3 - "$DISKLESSLY_REPO_PATH" "$MAS_BUNDLE" <<'PY'
 import json, glob, os, sys
 repo, bundle = sys.argv[1:]
 for path in glob.glob(os.path.join(repo, "manifests", "*.json")):
@@ -240,7 +240,7 @@ PY
 pass 'MAS receipt selects restore mode'
 
 # --- fast restore app: happy path, per-phase kill, stub regeneration ---
-RESTORE_BUNDLE=io.github.s546126.256isenough.e2erestore
+RESTORE_BUNDLE=io.github.s546126.disklessly.e2erestore
 RESTORE_APP="$TMP/Applications/Restore.app"
 make_app "$RESTORE_APP" "$RESTORE_BUNDLE" "Restore" "" "" "v1"
 run_cli pack "$RESTORE_APP" --mode restore --keep-original --stub-dir "$TMP/Applications" || fail 'pack restore fixture'
@@ -248,7 +248,7 @@ RESTORE_ID="$(image_id_for "$RESTORE_BUNDLE")"
 [[ -n "$RESTORE_ID" ]] || fail 'restore image id missing'
 pass 'restore fixture packed'
 
-PATH="$ROOT/.build/debug:$PATH" "$RESTORE_APP/Contents/MacOS/isenough-stub" >>"$LOG" 2>&1 || fail 'A31 stub launch of restore app'
+PATH="$ROOT/.build/debug:$PATH" "$RESTORE_APP/Contents/MacOS/disklessly-stub" >>"$LOG" 2>&1 || fail 'A31 stub launch of restore app'
 assert_stub_terminal 'A31' "$RESTORE_APP" "$RESTORE_BUNDLE"
 RESTORE_OUTCOME="$(python3 - "$STATE" "$RESTORE_BUNDLE" <<'PY'
 import json, sys
@@ -259,7 +259,7 @@ PY
 )"
 [[ "$RESTORE_OUTCOME" == "restoredOut" ]] || fail "A31 lastOutcome is '$RESTORE_OUTCOME'"
 pass 'A31 restore launch returns the stub and records restoredOut'
-assert_no_isenough_mounts 'after A31'
+assert_no_disklessly_mounts 'after A31'
 
 PHASES=(prepared extracted stubParked installed active quiesced inspected appMoved stubBack disposed retired closed)
 EDGES=(beforeJournal afterJournal afterMutation)
@@ -295,7 +295,7 @@ assert_stub_terminal 'stub regeneration' "$RESTORE_APP" "$RESTORE_BUNDLE"
 pass 'missing parked stub was regenerated and signed'
 
 # --- A33b / A34d: busy adoption, then a signed in-place update is retained ---
-BUSY_BUNDLE=io.github.s546126.256isenough.e2ebusy
+BUSY_BUNDLE=io.github.s546126.disklessly.e2ebusy
 BUSY_APP="$TMP/Applications/RestoreBusy.app"
 BUSY_HOLD="$TMP/restore-busy.hold"
 BUSY_PID="$TMP/restore-busy.pid"
@@ -400,9 +400,9 @@ pass 'A34d signed update was retained, blocked launch, and can be discarded'
 
 # Release binary is a clean build. Faults are config, not a separate product.
 swift build -c release >>"$LOG" 2>&1 || fail 'swift build -c release'
-"$ROOT/.build/release/isenough" version >>"$LOG" 2>&1 || fail 'release isenough version'
+"$ROOT/.build/release/disklessly" version >>"$LOG" 2>&1 || fail 'release disklessly version'
 pass 'release build answers version without a fault-enabled product'
 
 # The mount-mode fixture image was corrupted above; leave the restore apps'
 # journals closed so the final PASS line is the last assertion of e2e.sh.
-assert_no_isenough_mounts 'after restore e2e'
+assert_no_disklessly_mounts 'after restore e2e'

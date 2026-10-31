@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Draw the 256isenough app icon and build Resources/AppIcon.icns.
+# Draw the Disklessly app icon and build Resources/AppIcon.icns.
 #
 # The icon is the blue rounded "256" tile from the dashboard header. A small
 # Swift script draws the 1024 px master with CoreGraphics and CoreText (no

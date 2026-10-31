@@ -27,27 +27,27 @@ jobs:
         run: swift test
       - name: End-to-end harness
         env:
-          E2E_LOG_FILE: ${{ runner.temp }}/isenough-e2e.log
+          E2E_LOG_FILE: ${{ runner.temp }}/disklessly-e2e.log
         run: bash scripts/e2e.sh
       - name: Build the app bundle and dry-run release signing
         run: |
           bash scripts/build-app.sh
-          env -u ISENOUGH_SIGN_IDENTITY -u NOTARY_PROFILE bash scripts/release-sign.sh --dry-run
+          env -u DISKLESSLY_SIGN_IDENTITY -u NOTARY_PROFILE bash scripts/release-sign.sh --dry-run
       - name: Print bounded E2E log on failure
         if: failure()
-        run: tail -200 "${{ runner.temp }}/isenough-e2e.log" || true
+        run: tail -200 "${{ runner.temp }}/disklessly-e2e.log" || true
       - name: Upload E2E log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: macos-e2e-log
-          path: ${{ runner.temp }}/isenough-e2e.log
+          path: ${{ runner.temp }}/disklessly-e2e.log
           if-no-files-found: warn
 
   # Optional Mac mini runner. Register the machine by hand; this job stays idle until the variable is set.
   self-hosted-e2e:
     runs-on: [self-hosted, macOS]
-    if: vars.ISENOUGH_SELF_HOSTED == 'true'
+    if: vars.DISKLESSLY_SELF_HOSTED == 'true'
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -62,15 +62,15 @@ jobs:
         run: swift test
       - name: End-to-end harness
         env:
-          E2E_LOG_FILE: ${{ runner.temp }}/isenough-e2e.log
+          E2E_LOG_FILE: ${{ runner.temp }}/disklessly-e2e.log
         run: bash scripts/e2e.sh
       - name: Print bounded E2E log on failure
         if: failure()
-        run: tail -200 "${{ runner.temp }}/isenough-e2e.log" || true
+        run: tail -200 "${{ runner.temp }}/disklessly-e2e.log" || true
       - name: Upload E2E log on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: macos-e2e-log
-          path: ${{ runner.temp }}/isenough-e2e.log
+          path: ${{ runner.temp }}/disklessly-e2e.log
           if-no-files-found: warn

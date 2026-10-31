@@ -16,8 +16,8 @@ Key lines from the e2e log artifact (`macos-e2e-log`) of https://github.com/s546
 
 ```
 PASS: remote disk image exists
-isenough: Optional("Unknown command: --doc")
-FAIL: pre-launch fetched image to isolated cache (missing: /var/folders/n6/.../isenough-e2e.cYNcpt/cache/images/io.github.s546126.256isenough.e2efixture-1.0-e50999b0.dmg)
+disklessly: Optional("Unknown command: --doc")
+FAIL: pre-launch fetched image to isolated cache (missing: /var/folders/n6/.../disklessly-e2e.cYNcpt/cache/images/io.github.s546126.disklessly.e2efixture-1.0-e50999b0.dmg)
 ```
 
 The same pair occurs in runs 39412524894, 39412179689 and 39411687126 (see
@@ -28,29 +28,29 @@ The step-level log only shows the `FAIL:` line (stderr of the stub goes to the l
 alternated between "fix the stub argv" (`800965f`) and "fix the cache file" (`0a21c4c`). Neither touched the
 real defect, so the output did not change at all between `6d075ba`, `800965f` and `0a21c4c`.
 
-Note also `Optional("…")` in the message: `IsenoughError.errorDescription` is `String?` and is interpolated
-unwrapped in `Sources/isenough/main.swift` (cosmetic, but misleading in logs).
+Note also `Optional("…")` in the message: `DisklesslyError.errorDescription` is `String?` and is interpolated
+unwrapped in `Sources/disklessly/main.swift` (cosmetic, but misleading in logs).
 
 ## 2. Root cause(s)
 
 ### RC1 (primary, blocks everything): the "stub" executable is a copy of the CLI
-`Engine.installStub` (Sources/IsenoughEngine/Engine.swift:101-103):
+`Engine.installStub` (Sources/DisklesslyEngine/Engine.swift:101-103):
 ```swift
 let executable=Bundle.main.executableURL ?? URL(fileURLWithPath:CommandLine.arguments[0])
-let stubExecutable=temp.appendingPathComponent("Contents/MacOS/isenough-stub")
+let stubExecutable=temp.appendingPathComponent("Contents/MacOS/disklessly-stub")
 try FileManager.default.copyItem(at:executable,to:stubExecutable)
 ```
-`installStub` runs inside the `isenough` CLI process, so `Bundle.main.executableURL` is
-`.build/debug/isenough`. The generated `Fixture.app/Contents/MacOS/isenough-stub` **is the CLI binary**. The
-e2e runs `"$STUB/Contents/MacOS/isenough-stub" --doc "$TMP/docs/open-me.txt"`, i.e. the CLI with argv
+`installStub` runs inside the `disklessly` CLI process, so `Bundle.main.executableURL` is
+`.build/debug/disklessly`. The generated `Fixture.app/Contents/MacOS/disklessly-stub` **is the CLI binary**. The
+e2e runs `"$STUB/Contents/MacOS/disklessly-stub" --doc "$TMP/docs/open-me.txt"`, i.e. the CLI with argv
 `["--doc", path]`. The CLI's global-flag loop (`main.swift:73-78`) breaks on the unknown `--doc`, then takes it
-as the command → `default: throw .usage("Unknown command: --doc")`, exit 2. `Sources/isenough-stub/main.swift`
+as the command → `default: throw .usage("Unknown command: --doc")`, exit 2. `Sources/disklessly-stub/main.swift`
 is never executed; commit `800965f` changed dead code. All e2e checks pass up to here because `codesign` and
-`assert_file` only check that *some* executable named `isenough-stub` exists.
+`assert_file` only check that *some* executable named `disklessly-stub` exists.
 
 ### RC2 (secondary): cache-miss assertion is a consequence, not a cause
 `prefetch` writes `<cacheDir>/images/<manifest.imageId>.dmg`, exactly the path e2e asserts
-(`$ISENOUGH_CACHE_DIR/images/$IMAGE_ID.dmg`). The path contract already matches; it was simply never reached.
+(`$DISKLESSLY_CACHE_DIR/images/$IMAGE_ID.dmg`). The path contract already matches; it was simply never reached.
 `0a21c4c` (drop ULFO conversion) did not change the observable result.
 
 ### RC3 (latent, naming): remote image name ≠ imageId
@@ -64,7 +64,7 @@ file name (evict, gc, manifest lookup) disagrees with names derived from `imageI
 ### Next blockers once RC1 is fixed (will turn the run red again later in the same script)
 - **B1 doc delivery**: `launch` runs `open -a <app> <docs…>`. Launch Services delivers documents as an `odoc`
   Apple event, not argv, and LS-launched apps do not inherit the caller's environment. The bash fixture
-  (`printf '%s\n' "$@" > "${ISENOUGH_E2E_ARGV:?}"`) gets neither the env var nor the document → it exits, and
+  (`printf '%s\n' "$@" > "${DISKLESSLY_E2E_ARGV:?}"`) gets neither the env var nor the document → it exits, and
   `fixture process launched and recorded arguments` fails.
 - **B2 no lifecycle state**: `launch` never writes `state.json`; `lastUsed` / `cached` assertions must fail.
 - **B3 timing**: post-quit detach takes ≥ 2 s poll + 1 s delay + `hdiutil detach`; e2e checks after a fixed
@@ -73,9 +73,9 @@ file name (evict, gc, manifest lookup) disagrees with names derived from `imageI
   the error string uses `\\(…)` so it prints literally `\(cache.path)`.
 - **B5 parser leniency**: `launch` silently ignores unknown options and a trailing `--doc` without value;
   this hid RC1-type mistakes. It must reject them with `EX_USAGE`.
-- **B6 path canonicalisation**: `mktemp -d "${TMPDIR}/…"` yields `/var/folders/…/T//isenough-e2e.X` (double
+- **B6 path canonicalisation**: `mktemp -d "${TMPDIR}/…"` yields `/var/folders/…/T//disklessly-e2e.X` (double
   slash, `/var` → `/private/var` symlink). `hdiutil info` and `/sbin/mount` report the realpath
-  `/private/var/folders/…/T/isenough-e2e.X/mounts/<imageId>`, so `grep -F "$MOUNT"` with the raw path can never
+  `/private/var/folders/…/T/disklessly-e2e.X/mounts/<imageId>`, so `grep -F "$MOUNT"` with the raw path can never
   match, even when attach works.
 - **B7 volume layout**: `hdiutil create -srcfolder <X.app>` — whether the volume root holds `X.app` or its
   `Contents/` is not something we should depend on. `appPathInVolume` must be guaranteed by packing from a staging
@@ -86,25 +86,25 @@ file name (evict, gc, manifest lookup) disagrees with names derived from `imageI
 ### 3.1 Binaries
 | Binary | SwiftPM product | Installed where | Who writes it |
 |---|---|---|---|
-| CLI | `isenough` | `.build/<cfg>/isenough` (CI), `~/.local/bin/isenough` (user) | build |
-| Launcher | `isenough-stub` | `.build/<cfg>/isenough-stub`; copied into `<Stub>.app/Contents/MacOS/isenough-stub` | `pack` / `installStub` |
+| CLI | `disklessly` | `.build/<cfg>/disklessly` (CI), `~/.local/bin/disklessly` (user) | build |
+| Launcher | `disklessly-stub` | `.build/<cfg>/disklessly-stub`; copied into `<Stub>.app/Contents/MacOS/disklessly-stub` | `pack` / `installStub` |
 
 `installStub` copies the **launcher** binary, never the running CLI. Launcher lookup order
 (pure function `StubGenerator.locateLauncher(cliExecutable:environment:isExecutable:)`):
-1. `$ISENOUGH_STUB_BINARY` if set (must exist, else `EX_USAGE`);
-2. `<dirname(realpath(cli executable))>/isenough-stub` (SwiftPM side-by-side, Homebrew/`~/.local/bin` installs);
-3. otherwise `EX_FAILURE "isenough-stub launcher binary not found next to <cli>"`.
+1. `$DISKLESSLY_STUB_BINARY` if set (must exist, else `EX_USAGE`);
+2. `<dirname(realpath(cli executable))>/disklessly-stub` (SwiftPM side-by-side, Homebrew/`~/.local/bin` installs);
+3. otherwise `EX_FAILURE "disklessly-stub launcher binary not found next to <cli>"`.
 Sanity: refuse (`EX_FAILURE`) if the resolved launcher realpath equals the CLI realpath.
 
 ### 3.2 Stub bundle resources
 - `Contents/Resources/manifest.json` — the image manifest (existing; `bundleId`, `imageId`).
 - `Contents/Resources/stub.json` (new, design §8.1):
-  `{"schema":"stub/1","appId":"<bundleId>","imageId":"<imageId>","isenoughPath":"<realpath of CLI>","stubVersion":1}`.
+  `{"schema":"stub/1","appId":"<bundleId>","imageId":"<imageId>","disklesslyPath":"<realpath of CLI>","stubVersion":1}`.
 
 CLI lookup in the stub (`StubArgv.resolveCLI`), first executable hit wins:
-`$ISENOUGH_CLI` → `stub.json.isenoughPath` → each `$PATH` entry + `/isenough` → `~/.local/bin/isenough`,
-`/usr/local/bin/isenough`, `/opt/homebrew/bin/isenough`. (LS-launched stubs get a minimal PATH, so `PATH` alone
-is not sufficient in production; in CI both stub.json and PATH point to `.build/debug/isenough`.)
+`$DISKLESSLY_CLI` → `stub.json.disklesslyPath` → each `$PATH` entry + `/disklessly` → `~/.local/bin/disklessly`,
+`/usr/local/bin/disklessly`, `/opt/homebrew/bin/disklessly`. (LS-launched stubs get a minimal PATH, so `PATH` alone
+is not sufficient in production; in CI both stub.json and PATH point to `.build/debug/disklessly`.)
 
 ### 3.3 Stub → CLI argv (MVP, argv-based; the §8.3 control-fd protocol is a later milestone)
 The stub execs the CLI directly via `Process`/`posix_spawn` with an argv **array** (no shell → no quoting or
@@ -112,14 +112,14 @@ escaping layer; spaces, quotes, `$`, unicode pass through byte-for-byte):
 ```
 argv[0] = <cli path>
 argv[1] = "launch"
-argv[2] = <appId>                    # manifest bundleId, e.g. io.github.s546126.256isenough.e2efixture
+argv[2] = <appId>                    # manifest bundleId, e.g. io.github.s546126.disklessly.e2efixture
 then, in original order, one pair per item:
   "--doc" <absolute file path>
   "--url" <url string>
   "--arg" <opaque argument>          # forwarded to the real app via `open --args`
 ```
-Example (e2e): stub invoked as `isenough-stub --doc "/private/var/…/docs/open me.txt"` execs
-`["/…/.build/debug/isenough","launch","io.github.s546126.256isenough.e2efixture","--doc","/private/var/…/docs/open me.txt"]`.
+Example (e2e): stub invoked as `disklessly-stub --doc "/private/var/…/docs/open me.txt"` execs
+`["/…/.build/debug/disklessly","launch","io.github.s546126.disklessly.e2efixture","--doc","/private/var/…/docs/open me.txt"]`.
 
 Stub raw-argv classification (pure `StubArgv.build(appId:rawArguments:cwd:) throws -> [String]`):
 - explicit `--doc X` / `--url X` / `--arg X` pairs pass through (missing value → stub exits 2 with message);
@@ -134,7 +134,7 @@ The stub waits for the CLI and exits with the CLI's exit status (0 on success).
 
 ### 3.4 CLI grammar that must accept it (`launch` / `restore`)
 ```
-isenough [--json] [--config PATH] [--state-dir PATH] launch <app> [--doc PATH]... [--url URL]... [--arg ARG]... [--no-wait]
+disklessly [--json] [--config PATH] [--state-dir PATH] launch <app> [--doc PATH]... [--url URL]... [--arg ARG]... [--no-wait]
 ```
 - `<app>` must be the first token after `launch`; a token starting with `--` there → `EX_USAGE "launch requires app"`.
 - options may repeat and interleave; order of docs/urls is preserved.
@@ -142,7 +142,7 @@ isenough [--json] [--config PATH] [--state-dir PATH] launch <app> [--doc PATH]..
 - top level: unknown global flag (e.g. `--doc` as first token) → `EX_USAGE "Unknown option: --doc"`, not
   "Unknown command". Error text printed unwrapped (`e.errorDescription ?? "\(e)"`), no `Optional(…)`.
 Implemented as a pure function `LaunchArguments.parse(_ args:[String]) throws -> LaunchArguments`
-(`app`, `documents`, `urls`, `arguments`, `wait`) in IsenoughEngine so it is Linux-testable; the inverse
+(`app`, `documents`, `urls`, `arguments`, `wait`) in DisklesslyEngine so it is Linux-testable; the inverse
 `LaunchArguments.argv` is used by the stub builder tests for round-trip.
 
 Delivery to the real app (engine `launch`, macOS):
@@ -152,11 +152,11 @@ Launch Services (`odoc`/`GURL`), not the app's argv. LS does **not** propagate t
 ### 3.5 Environment variables
 | Var | Read by | Meaning |
 |---|---|---|
-| `ISENOUGH_REPO_PATH`, `ISENOUGH_CACHE_DIR`, `ISENOUGH_STATE_DIR`, `ISENOUGH_MOUNT_ROOT`, `ISENOUGH_STUB_DIR`, `ISENOUGH_CONFIG` | CLI (`RuntimeConfig.environment()`) | existing overrides (unchanged) |
-| `ISENOUGH_DETACH_DELAY` | CLI | seconds between app quit and detach (e2e: 1) |
-| `ISENOUGH_STUB_BINARY` (new) | CLI `pack` / `installStub` | explicit launcher binary to copy into stubs |
-| `ISENOUGH_CLI` (new) | stub | explicit CLI path (highest priority) |
-The stub passes its environment through unchanged (`Process` inherits it), so e2e's `ISENOUGH_*` reach the CLI.
+| `DISKLESSLY_REPO_PATH`, `DISKLESSLY_CACHE_DIR`, `DISKLESSLY_STATE_DIR`, `DISKLESSLY_MOUNT_ROOT`, `DISKLESSLY_STUB_DIR`, `DISKLESSLY_CONFIG` | CLI (`RuntimeConfig.environment()`) | existing overrides (unchanged) |
+| `DISKLESSLY_DETACH_DELAY` | CLI | seconds between app quit and detach (e2e: 1) |
+| `DISKLESSLY_STUB_BINARY` (new) | CLI `pack` / `installStub` | explicit launcher binary to copy into stubs |
+| `DISKLESSLY_CLI` (new) | stub | explicit CLI path (highest priority) |
+The stub passes its environment through unchanged (`Process` inherits it), so e2e's `DISKLESSLY_*` reach the CLI.
 The *real app* does not see them (LS launch) — see §4 e2e fixture.
 
 ### 3.6 Cache / repo layout and names (`<id>` = `ImageManifest.imageId` = `<bundleId>-<version>-<sha8>`)
@@ -178,13 +178,13 @@ is what the e2e sha assertion requires.
 
 ## 4. Files & precise changes
 
-**Sources/IsenoughEngine/Engine.swift**
+**Sources/DisklesslyEngine/Engine.swift**
 - `StubGenerator`: add `locateLauncher(cliExecutable:environment:isExecutable:) throws -> URL` (§3.1) and
   `stubInfo(manifest:cliPath:) -> [String:Any]` (stub.json). Replace `forwardArguments` identity with real logic
   or delete it (tests updated).
 - New pure `LaunchArguments` (struct + `parse` + `argv`) per §3.4.
 - `installStub`: copy `locateLauncher(...)` result (not `Bundle.main.executableURL`); write `stub.json`
-  with `isenoughPath` = CLI realpath; after copy assert the copied file is not byte-identical to the CLI.
+  with `disklesslyPath` = CLI realpath; after copy assert the copied file is not byte-identical to the CLI.
 - `pack`: stage `<App>.app` into `pack-<uuid>/src/` (`ditto`), `hdiutil create -srcfolder src -format ULMO`
   to `pack-<uuid>/image.dmg`; compute sha; build manifest; name remote/manifest from `manifest.imageId`
   (removes UUID-based `id`, RC3).
@@ -196,30 +196,30 @@ is what the e2e sha assertion requires.
   (B2). Wait loop: `pgrep -f` with the canonical executable path. Detach failure → `state:"backoff"` + stderr
   message (no `try?` swallow).
 
-**Sources/isenough/main.swift**
+**Sources/disklessly/main.swift**
 - Global-flag loop: unknown `--x` before the command → `EX_USAGE "Unknown option: --x"`.
 - `launch`/`restore`: use `LaunchArguments.parse`; pass `arguments` through.
 - Error printing: `e.errorDescription ?? String(describing:e)` (no `Optional(...)`).
 - usage text: add `--arg`.
 
-**Sources/isenough-stub/main.swift**
+**Sources/disklessly-stub/main.swift**
 - Move argv building/CLI resolution into a small pure helper compiled into the stub (keep the stub
-  dependency-free: put `StubArgv` in a new tiny target `IsenoughStubSupport` with no deps, used by both
-  `isenough-stub` and the tests; Package.swift adds it). Stub: read manifest + stub.json, `StubArgv.build`,
+  dependency-free: put `StubArgv` in a new tiny target `DisklesslyStubSupport` with no deps, used by both
+  `disklessly-stub` and the tests; Package.swift adds it). Stub: read manifest + stub.json, `StubArgv.build`,
   `StubArgv.resolveCLI`, exec, propagate exit status, log the exact argv to stderr on failure.
 
-**Package.swift**: add target `IsenoughStubSupport`; `isenough-stub` depends on it; test target depends on it.
+**Package.swift**: add target `DisklesslyStubSupport`; `disklessly-stub` depends on it; test target depends on it.
 
 **scripts/e2e.sh** (assertions only tightened or made deterministic; none removed)
 - Fixture app: replace the bash executable with a ~40-line AppKit Swift fixture compiled by `swiftc` in the
   script (`Tests/Fixtures/E2EApp/main.swift`). It implements `application(_:open:)` and
   `applicationDidFinishLaunching`, and appends argv + every opened URL path to the file named by Info.plist key
-  `IsenoughE2EOutput` and writes its pid to `IsenoughE2EPidFile` (baked at fixture-creation time, because LS
+  `DisklesslyE2EOutput` and writes its pid to `DisklesslyE2EPidFile` (baked at fixture-creation time, because LS
   does not pass env, design §11 E2E). Wait for it with a bounded poll after receiving the first `odoc`.
 - Canonicalize `TMP` right after `mktemp`: `TMP="$(cd "$TMP" && pwd -P)"` (removes `//` and `/var` symlink, B6).
 - New assertion after pack: stub executable is the launcher, not the CLI:
-  `cmp -s "$STUB/Contents/MacOS/isenough-stub" "$ROOT/.build/debug/isenough-stub"` and
-  `! cmp -s … "$ROOT/.build/debug/isenough"`; `stub.json` exists with `isenoughPath`.
+  `cmp -s "$STUB/Contents/MacOS/disklessly-stub" "$ROOT/.build/debug/disklessly-stub"` and
+  `! cmp -s … "$ROOT/.build/debug/disklessly"`; `stub.json` exists with `disklesslyPath`.
 - New assertion: image naming — `IMAGE_FILE == "images/$IMAGE_ID.dmg"` and manifest file is `manifests/$IMAGE_ID.json`.
 - Replace fixed `sleep 4` / `sleep 3` with `wait_for <timeout> <predicate>` (poll 0.2 s, timeout 60 s for
   fetch/attach/launch, 30 s for detach); on timeout fail with the same message plus `tail -20` of the log.
@@ -232,9 +232,9 @@ is what the e2e sha assertion requires.
 **.github/workflows/macos-e2e.yml**
 - On failure also `cat` the e2e log (bounded, `tail -200`) into the step output so the cause is visible
   without downloading the artifact; keep the artifact upload.
-- `swift build` builds both products (already); e2e builds `-c debug` → `.build/debug/isenough-stub` exists.
+- `swift build` builds both products (already); e2e builds `-c debug` → `.build/debug/disklessly-stub` exists.
 
-## 5. Unit tests to add (Tests/IsenoughCoreTests, Linux-runnable via `docker run --rm -v "$PWD":/src -w /src swift:6.1 swift test`)
+## 5. Unit tests to add (Tests/DisklesslyCoreTests, Linux-runnable via `docker run --rm -v "$PWD":/src -w /src swift:6.1 swift test`)
 1. `testStubArgvBuildsLaunchCommand`: `StubArgv.build(appId:"com.a", raw:["--doc","/a b/c.txt"])` ==
    `["launch","com.a","--doc","/a b/c.txt"]` (first two tokens fixed, order preserved).
 2. `testStubArgvClassifiesBareTokens`: `["/x.txt","https://h/p?q=1","file:///y%20z.txt","rel.txt","-psn_0_123",
@@ -245,7 +245,7 @@ is what the e2e sha assertion requires.
    path after `--doc`) `LaunchArguments.parse(Array(StubArgv.build(...).dropFirst()))` reproduces documents,
    urls, arguments exactly.
 5. `testLaunchArgumentsRejectsUnknownAndMissing`: `["app","--bogus"]`, `["app","--doc"]`, `["--doc","x"]`
-   → `IsenoughError.usage`.
+   → `DisklesslyError.usage`.
 6. `testCLITopLevelUnknownOptionIsUsageError` (via the pure global-flag parser extracted from main.swift).
 7. `testLocateLauncherPrefersEnvThenSibling`: injected `isExecutable` closure; env override wins; sibling of CLI
    realpath next; equal-to-CLI → throws; none → throws.
@@ -279,18 +279,18 @@ Review baseline: `4ee74a3`; verdict **NOT SATISFIED**. See `docs/fb1-review.md` 
 phase layouts and current file:line evidence. This is missing implementation, not a one-line
 replacement of an unconditional predicate. Suggested new files below do not yet exist.
 
-1. **Implement durable restore WAL and a real mode branch.** In `Sources/IsenoughCore/RestoreJournal.swift`
+1. **Implement durable restore WAL and a real mode branch.** In `Sources/DisklesslyCore/RestoreJournal.swift`
    (new), model restore-in/out phases, transaction paths, stub/destination identity, owner pid+start,
    inspection/retention snapshot and terminal outcome/time. In
-   `Sources/IsenoughEngine/RestoreTransaction.swift` (new), implement restore-in/out with same-volume
+   `Sources/DisklesslyEngine/RestoreTransaction.swift` (new), implement restore-in/out with same-volume
    staging, journal-before-effect, file/directory fsync and idempotent phase replay; journal rollback too.
-   Change `IsenoughEngine.launch` in `Engine.swift` to dispatch on manifest mode instead of mounting every
+   Change `DisklesslyEngine.launch` in `Engine.swift` to dispatch on manifest mode instead of mounting every
    app. Do not advertise safe temporary restore while that branch is absent; refuse it explicitly until
    implemented. Add Linux temporary-directory/fake-platform tests proving restore mode invokes the
    transaction and detaches the extraction image before active, never the mount-session recovery path.
 
 2. **Put layout validation inside a pure per-phase decision function.** Add
-   `Sources/IsenoughCore/RestoreRecovery.swift`: `RestoreRecovery.decide(phase, layout, probe, ownerAlive)`.
+   `Sources/DisklesslyCore/RestoreRecovery.swift`: `RestoreRecovery.decide(phase, layout, probe, ownerAlive)`.
    Accept both sides of each WAL mutation as enumerated in `docs/fb1-review.md`, including incomplete
    owned extraction, absent destination before install, parked vs installed stub, moved app, already
    disposed/retained app, and retired/partially closed cleanup. Verify recorded paths/parent custody,
@@ -303,17 +303,17 @@ replacement of an unconditional predicate. Suggested new files below do not yet 
    live-owner no-op and no destination rename without the applicable clean-twice gate under L1.
 
 3. **Implement single-owner recovery and restore-specific waiting.** Add an engine recovery coordinator
-   (e.g. `Sources/IsenoughEngine/RecoveryCoordinator.swift`) using `FileLock` for L1 and pid+start checks.
+   (e.g. `Sources/DisklesslyEngine/RecoveryCoordinator.swift`) using `FileLock` for L1 and pid+start checks.
    Under L1, re-read journal, elect only for a dead owner and publish journal owner before mirror;
    short-lived callers that must wait spawn/record one detached `hook watch` child before unlocking.
-   Wire startup/launch/`gc` and `hook watch` in `Sources/isenough/main.swift`; keep status read-only.
+   Wire startup/launch/`gc` and `hook watch` in `Sources/disklessly/main.swift`; keep status read-only.
    Validate installed pre-effect rollback separately from post-effect adoption, active delay/hooks,
    quiesced/inspected re-probe and appMoved-or-later staging usage. Busy/unknown/held must wait without
    destructive action; never require an attached image. Add Linux fake-clock/probe tests for clean-twice,
    owner change, new usage between phases and hook epochs, plus multiprocess two-adopter/dead-child tests.
 
 4. **Preserve atomic updater replacements and make deletion independently safe.** Extend
-   `ImageManifest.App` in `Sources/IsenoughCore/Core.swift` and pack in `Engine.swift` with cdhash and tree
+   `ImageManifest.App` in `Sources/DisklesslyCore/Core.swift` and pack in `Engine.swift` with cdhash and tree
    hash; add `BundleHasher` and injectable archive/identity verification. A changed inode or cdhash at
    the controlled destination with established stub/path custody must be watched conservatively, not
    rejected as moved and not treated as deletable merely because bundle id matches. Re-inspect before
@@ -336,7 +336,7 @@ replacement of an unconditional predicate. Suggested new files below do not yet 
    variants and at least three repeated recoveries with identical final state and no repeated hooks.
 
 6. **Add the full Linux fault matrix, not just decision-table assertions.** Add
-   `Tests/IsenoughCoreTests/RestoreRecoveryTests.swift` and `RestoreTransactionTests.swift` using fake
+   `Tests/DisklesslyCoreTests/RestoreRecoveryTests.swift` and `RestoreTransactionTests.swift` using fake
    signing/probe/archive adapters and real temporary directories or a fake FS. Inject
    `beforeJournal`, `afterJournal`, `afterMutation` for every restore-in/out phase, abandon the runner
    without automatic cleanup, reopen durable artifacts, recover and recover again. Include each rename,
@@ -366,45 +366,45 @@ Run 39445816989 (HEAD `7e7ad60`), log `/tmp/ci-logs/39445816989.log`.
 
 ### Evidence
 - Build + unit tests green; E2E: `PASS fixture packed and stub generated`, `PASS stub executable exists`,
-  `FAIL stub contains launcher binary` (scripts/e2e.sh:75, `cmp -s <stub>/Contents/MacOS/isenough-stub
-  .build/debug/isenough-stub`). `pack` itself exited 0, so `locateLauncher` found and copied a launcher
+  `FAIL stub contains launcher binary` (scripts/e2e.sh:75, `cmp -s <stub>/Contents/MacOS/disklessly-stub
+  .build/debug/disklessly-stub`). `pack` itself exited 0, so `locateLauncher` found and copied a launcher
   (it refuses the CLI path) and `codesign --verify --strict` inside `installStub` passed.
 - `installStub` (Engine.swift ~l.115-121) copies the launcher, then runs
   `codesign --force --sign - <temp>.app`.
 
 ### Root cause
 The RC1 fix is correct; the new e2e assertion is unsatisfiable. Signing a bundle *always* signs its main
-executable (`CFBundleExecutable` = `isenough-stub`): the bundle's code signature is the LC_CODE_SIGNATURE blob
+executable (`CFBundleExecutable` = `disklessly-stub`): the bundle's code signature is the LC_CODE_SIGNATURE blob
 embedded in that Mach-O (with Info.plist + CodeResources hashes bound into it, identifier = bundle id).
 `--force` replaces the linker ad-hoc signature, so the copied file is byte-different from
-`.build/debug/isenough-stub` by construction. The Engine comment "Sign only the outer app bundle" is wrong
+`.build/debug/disklessly-stub` by construction. The Engine comment "Sign only the outer app bundle" is wrong
 in the same way (there is no outer-only signature). Byte equality was never a valid contract.
 
 ### Exact changes
 1. **scripts/e2e.sh** (replace l.75-76; assertion is made correct, not removed): compare code, not the
    signature. Helper `code_text() { /usr/bin/otool -t "$1" | tail -n +2; }` (`__TEXT,__text` is untouched
    by codesign; skip line 1 = file path). Assert
-   `cmp -s <(code_text "$STUB/Contents/MacOS/isenough-stub") <(code_text "$ROOT/.build/debug/isenough-stub")`
-   → `stub contains launcher binary`, and the same `cmp` against `.build/debug/isenough` must FAIL →
+   `cmp -s <(code_text "$STUB/Contents/MacOS/disklessly-stub") <(code_text "$ROOT/.build/debug/disklessly-stub")`
+   → `stub contains launcher binary`, and the same `cmp` against `.build/debug/disklessly` must FAIL →
    `stub is not CLI binary`.
    On failure, append `otool -t | head -5` of both files and `codesign -dvvv "$STUB"` to `$LOG` and print
    `tail -20 $LOG` so the next red run is self-explanatory.
-2. **Sources/IsenoughEngine/Engine.swift `installStub`**: fix the comment only ("signing the bundle
-   re-signs the main executable `isenough-stub` in place; no --deep needed because there are no nested
+2. **Sources/DisklesslyEngine/Engine.swift `installStub`**: fix the comment only ("signing the bundle
+   re-signs the main executable `disklessly-stub` in place; no --deep needed because there are no nested
    code items"). Keep the post-copy "not byte-identical to the CLI" guard but run it **before** codesign
    (compare the copied file vs CLI file right after `copyItem`), since after signing it is trivially true.
 3. No Linux-testable change; no unit test changes required.
 
 ### Contract amendment (§3.1 / e2e list)
 "Stub executable is the launcher" := the `__TEXT,__text` contents (`otool -t`) of
-`<Stub>.app/Contents/MacOS/isenough-stub` equal those of the built `isenough-stub` and differ from the
-built `isenough`. The stub executable bytes are expected to differ from the build product because `pack`
+`<Stub>.app/Contents/MacOS/disklessly-stub` equal those of the built `disklessly-stub` and differ from the
+built `disklessly`. The stub executable bytes are expected to differ from the build product because `pack`
 ad-hoc re-signs the generated bundle (G5 is about the *real* app, which stays byte-identical in the image).
 
 ## CI round 2 — diagnosis
 
 Run 39446984273 (HEAD `814cbbc`), logs `/tmp/ci-logs/39446984273.log`, artifact
-`/tmp/ci-logs/art-39446984273/macos-e2e-log/isenough-e2e.log`.
+`/tmp/ci-logs/art-39446984273/macos-e2e-log/disklessly-e2e.log`.
 
 ### Evidence
 - All of RC1-RC3 now PASS: stub = launcher (code-section compare), codesign ok, manifest/image named by
@@ -420,10 +420,10 @@ Run 39446984273 (HEAD `814cbbc`), logs `/tmp/ci-logs/39446984273.log`, artifact
 Harness race, not an engine bug: scripts/e2e.sh l.115-117 samples `hdiutil info` once, immediately after the
 cache-file poll. "Cache file exists" is not a sync point for "attached". The deterministic `wait_for` from §4
 (B3) was never implemented; only the cache poll was. The same missing piece will hit the next assertions:
-- B1: fixture is still the bash script reading `$ISENOUGH_E2E_ARGV`; LS (`open -n -a`) does not pass env and
+- B1: fixture is still the bash script reading `$DISKLESSLY_E2E_ARGV`; LS (`open -n -a`) does not pass env and
   delivers docs via `odoc` → the script dies on `:?`, no argv file.
 - B2: `launch` never writes `state.json` (`running`/`cached`, `lastUsed`) → state assertions fail.
-- B3: post-quit `sleep 3` vs 2 s pgrep poll + `ISENOUGH_DETACH_DELAY=1` + detach → flaky.
+- B3: post-quit `sleep 3` vs 2 s pgrep poll + `DISKLESSLY_DETACH_DELAY=1` + detach → flaky.
 
 ### Exact changes
 1. **scripts/e2e.sh**
@@ -435,12 +435,12 @@ cache-file poll. "Cache file exists" is not a sync point for "attached". The det
      (its stderr is in `$LOG`). Assertion names/meaning unchanged.
    - Fixture (B1): `Tests/Fixtures/E2EApp/main.swift` (AppKit, ~40 lines) compiled with `swiftc` into
      `Fixture.app/Contents/MacOS/Fixture`; writes argv + `application(_:open:)` paths to Info.plist key
-     `IsenoughE2EOutput` and its pid to `IsenoughE2EPidFile` (values baked into Info.plist by the script).
-     `wait_for 60 'fixture process launched and recorded arguments' grep -Fq -- "$TMP/docs/open-me.txt" "$ISENOUGH_E2E_ARGV"`.
+     `DisklesslyE2EOutput` and its pid to `DisklesslyE2EPidFile` (values baked into Info.plist by the script).
+     `wait_for 60 'fixture process launched and recorded arguments' grep -Fq -- "$TMP/docs/open-me.txt" "$DISKLESSLY_E2E_ARGV"`.
    - B3: replace `sleep 3` with `wait_for 30 'post-quit hook detached mount after configured delay' not_mounted`.
    - State (B2): assert `"state" : "cached"` via `plutil -extract "apps.<bundleId>.state" raw`, not substring.
    - Silence the harmless `tail: stdout: Broken pipe` (`code_text … 2>/dev/null`).
-2. **Sources/IsenoughEngine/Engine.swift `launch`** (B2): after attach, `StateStore.write` apps[bundleId] =
+2. **Sources/DisklesslyEngine/Engine.swift `launch`** (B2): after attach, `StateStore.write` apps[bundleId] =
    `{imageId, state:"running", mountPoint, lastUsed}` and cache[imageId].lastUsed; after detach
    `state:"cached"`, `lastUsed`, remove `mountPoint`; detach failure → `state:"backoff"` + stderr (no `try?`).
    Create the mount directory itself (`createDirectory(at:mount)`) and resolve symlinks before attach.
@@ -455,7 +455,7 @@ No restore/F-B1 dependency in this path (launch is `mode: mount`).
 ## CI round 3 — diagnosis
 
 Run 39447977155 (HEAD `c2f456b`), logs `/tmp/ci-logs/r3.log`, artifact
-`/tmp/ci-logs/r3art/macos-e2e-log/isenough-e2e.log` (Xcode 26.6, Swift 6.3.3, macOS 26.6.2).
+`/tmp/ci-logs/r3art/macos-e2e-log/disklessly-e2e.log` (Xcode 26.6, Swift 6.3.3, macOS 26.6.2).
 
 ### Evidence
 - PASS build, PASS repo init; then `FAIL: compile Swift fixture app`. The artifact holds the compiler error:
@@ -491,8 +491,8 @@ has the same problem (a file named `main.swift` is always top-level code). The p
 ### Contract amendment
 Fixture build contract: the e2e fixture is a single-file AppKit app compiled with
 `swiftc -parse-as-library`. Its entry point is `@MainActor @main`. Its output paths come only from Info.plist
-keys `IsenoughE2EOutput` and `IsenoughE2EPidFile`, because LaunchServices does not pass env vars.
-`ISENOUGH_E2E_ARGV` and `ISENOUGH_E2E_PID` are harness-side names for the same paths. No F-B1 dependency.
+keys `DisklesslyE2EOutput` and `DisklesslyE2EPidFile`, because LaunchServices does not pass env vars.
+`DISKLESSLY_E2E_ARGV` and `DISKLESSLY_E2E_PID` are harness-side names for the same paths. No F-B1 dependency.
 
 ## CI round 4 — diagnosis
 
@@ -502,15 +502,15 @@ Run 39449244178 (HEAD `6ba40b7`), log `/tmp/ci-logs/r4.log`.
 - Every check up to `PASS: LRU timestamp updated` passed: stub, cache fetch, sha256, read-only attach, doc
   forwarding, post-quit detach, state.json exists and contains `lastUsed`. RC1-RC3 and round 3 are verified.
 - The first failure is scripts/e2e.sh l.173:
-  `plutil -extract "apps.io.github.s546126.256isenough.e2efixture.state" raw -o - "$STATE" 2>/dev/null`.
+  `plutil -extract "apps.io.github.s546126.disklessly.e2efixture.state" raw -o - "$STATE" 2>/dev/null`.
   It returned something other than `cached`, and `2>/dev/null` hid the plutil error.
 - The engine writes `apps[<bundleId>].state = "cached"` (`StateStore.setAppState`, called from
   `Engine.launch` right after a successful `hdiutil detach`). The other two code paths would have written
   `backoff` and made the detach check fail. Neither happened, so the detach succeeded.
 
 ### Root cause (harness bug, not an engine bug)
-1. plutil keypaths split on every `.`, and there is no escape syntax. The key `io.github.s546126.256isenough.e2efixture`
-   becomes the path apps→io→github→s546126→256isenough→e2efixture→state. That path does not exist, so
+1. plutil keypaths split on every `.`, and there is no escape syntax. The key `io.github.s546126.disklessly.e2efixture`
+   becomes the path apps→io→github→s546126→Disklessly→e2efixture→state. That path does not exist, so
    plutil exits non-zero with empty output. The assertion can never pass for a reverse-DNS bundle id,
    whatever the engine writes. The earlier plutil reads (`imageId`, `image.file`) work only because they
    have no dotted keys.
@@ -528,13 +528,13 @@ Run 39449244178 (HEAD `6ba40b7`), log `/tmp/ci-logs/r4.log`.
    wait_for 10 'lifecycle state returned to cached/idle' state_is_cached
    pass 'lifecycle state returned to cached/idle'
    ```
-   Define `FIXTURE_BUNDLE_ID=io.github.s546126.256isenough.e2efixture` once and use it in the Info.plist
+   Define `FIXTURE_BUNDLE_ID=io.github.s546126.disklessly.e2efixture` once and use it in the Info.plist
    heredoc (l.76) too. On failure, write the state file to the log: `cat "$STATE" >>"$LOG"`.
    The assertion keeps its name and its meaning (`state == cached`). Only the reader changes and the race
    gets a bounded wait.
 2. scripts/e2e.sh, audit: no other `plutil -extract` keypath in the script may contain a bundle id or any
    other dotted key. Any later reads under `apps.`/`cache.` must use `app_state` or a similar JXA helper.
-3. Engine, optional hardening (same round, small): in `Engine.launch` (Sources/IsenoughEngine/Engine.swift
+3. Engine, optional hardening (same round, small): in `Engine.launch` (Sources/DisklesslyEngine/Engine.swift
    ~l.204), call `state.setAppState(..., state:"detaching", mountPoint:mount.path)` before
    `hdiutil detach`. The state then goes running→detaching→cached, which matches the `SessionState`
    enum. The "cached" write stays after a successful detach and "backoff" stays on failure. No other behaviour changes.

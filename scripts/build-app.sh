@@ -1,35 +1,35 @@
 #!/usr/bin/env bash
-# Build build/256isenough.app: the native menu-bar app with the isenough CLI and
+# Build build/Disklessly.app: the native menu-bar app with the disklessly CLI and
 # the stub launcher inside it.
 #
-#   Contents/MacOS/256isenough     menu-bar app (IsenoughMac), main executable
-#   Contents/MacOS/isenough        CLI and engine
-#   Contents/MacOS/isenough-stub   launcher template copied into generated stubs
+#   Contents/MacOS/DisklesslyApp  menu-bar app (DisklesslyMac), main executable
+#   Contents/MacOS/disklessly        CLI and engine
+#   Contents/MacOS/disklessly-stub   launcher template copied into generated stubs
 #   Contents/Resources/web/        management page
 #   Contents/Resources/AppIcon.icns  app icon (Resources/AppIcon.icns, see scripts/make-icon.sh)
 #
 # The CLI and the stub sit beside the main executable because the engine looks
-# for isenough-stub next to the running binary.
+# for disklessly-stub next to the running binary.
 #
 # Environment:
-#   ISENOUGH_ARCHS      space separated, default "arm64 x86_64" (universal)
-#   ISENOUGH_BUILD_DIR  output folder, default <repo>/build
-#   ISENOUGH_KEEP_VERSION=1  leave the stamped EngineInstall.swift in place
+#   DISKLESSLY_ARCHS      space separated, default "arm64 x86_64" (universal)
+#   DISKLESSLY_BUILD_DIR  output folder, default <repo>/build
+#   DISKLESSLY_KEEP_VERSION=1  leave the stamped EngineInstall.swift in place
 #
 # The bundle is ad-hoc signed so it runs on this Mac. scripts/release-sign.sh
 # re-signs it with a Developer ID for distribution.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-OUT="${ISENOUGH_BUILD_DIR:-$ROOT/build}"
-APP="$OUT/256isenough.app"
-read -r -a ARCHS <<<"${ISENOUGH_ARCHS:-arm64 x86_64}"
+OUT="${DISKLESSLY_BUILD_DIR:-$ROOT/build}"
+APP="$OUT/Disklessly.app"
+read -r -a ARCHS <<<"${DISKLESSLY_ARCHS:-arm64 x86_64}"
 [[ "$(uname -s)" == Darwin ]] || { echo "build-app: needs macOS" >&2; exit 69; }
 
-VERSION_FILE="$ROOT/Sources/IsenoughEngine/EngineInstall.swift"
+VERSION_FILE="$ROOT/Sources/DisklesslyEngine/EngineInstall.swift"
 SAVED="$(mktemp)"
 cp "$VERSION_FILE" "$SAVED"
 restore_version() {
-  if [[ "${ISENOUGH_KEEP_VERSION:-}" != 1 ]]; then cat "$SAVED" >"$VERSION_FILE"; fi
+  if [[ "${DISKLESSLY_KEEP_VERSION:-}" != 1 ]]; then cat "$SAVED" >"$VERSION_FILE"; fi
   rm -f "$SAVED"
 }
 trap restore_version EXIT
@@ -43,16 +43,16 @@ for arch in "${ARCHS[@]}"; do ARCH_FLAGS+=(--arch "$arch"); done
 cd "$ROOT"
 swift build -c release "${ARCH_FLAGS[@]}"
 BIN="$(swift build -c release "${ARCH_FLAGS[@]}" --show-bin-path)"
-for product in IsenoughMac isenough isenough-stub; do
+for product in DisklesslyMac disklessly disklessly-stub; do
   [[ -x "$BIN/$product" ]] || { echo "build-app: $BIN/$product was not built" >&2; exit 70; }
 done
 
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-cp "$BIN/IsenoughMac" "$APP/Contents/MacOS/256isenough"
-cp "$BIN/isenough" "$APP/Contents/MacOS/isenough"
-cp "$BIN/isenough-stub" "$APP/Contents/MacOS/isenough-stub"
-cp -R "$ROOT/Sources/isenough/web" "$APP/Contents/Resources/web"
+cp "$BIN/DisklesslyMac" "$APP/Contents/MacOS/DisklesslyApp"
+cp "$BIN/disklessly" "$APP/Contents/MacOS/disklessly"
+cp "$BIN/disklessly-stub" "$APP/Contents/MacOS/disklessly-stub"
+cp -R "$ROOT/Sources/disklessly/web" "$APP/Contents/Resources/web"
 cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/PRIVACY.md" "$APP/Contents/Resources/"
 cp "$ROOT/packaging/Info.plist" "$APP/Contents/Info.plist"
 # App icon: Resources/AppIcon.icns is committed; regenerate it only if it is missing.
@@ -76,14 +76,14 @@ for exe in "$APP/Contents/MacOS/"*; do
 done
 
 # Inside-out ad-hoc signature. The release identity replaces it later.
-for exe in isenough-stub isenough; do
+for exe in disklessly-stub disklessly; do
   /usr/bin/codesign --force --sign - "$APP/Contents/MacOS/$exe"
 done
 /usr/bin/codesign --force --sign - "$APP"
 /usr/bin/codesign --verify --strict "$APP"
 
 status=0
-for exe in 256isenough isenough isenough-stub; do
+for exe in Disklessly disklessly disklessly-stub; do
   have="$(/usr/bin/lipo -archs "$APP/Contents/MacOS/$exe")"
   for arch in "${ARCHS[@]}"; do
     if [[ " $have " != *" $arch "* ]]; then
