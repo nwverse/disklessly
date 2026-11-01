@@ -87,6 +87,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         try server.start()
         self.server = server
+        // Apps packed before icons were saved, or on another Mac, show a blank tile until
+        // their icon is extracted. Do that once in the background so the list fills in.
+        DispatchQueue.global(qos: .utility).async {
+            guard engine.missingIconCount() > 0 else { return }
+            _ = try? engine.backfillIcons(appId: nil)
+        }
     }
 
     private func installStatusItem() {

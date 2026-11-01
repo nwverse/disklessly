@@ -1912,6 +1912,7 @@ async function loadRecommendations(rescan) {
 let usageData = null;
 let usageFocus = []; // child indexes from the root
 let usageTimer = null;
+let usageAutoStarted = false;
 
 const USAGE_LEGEND = ["bundle", "cache", "data", "offloaded", "personal", "library", "system", "free"];
 const usageKindText = { bundle: "usage_bundle", cache: "usage_cache", data: "usage_data", offloaded: "usage_disklessly", personal: "usage_personal", library: "usage_library", system: "usage_system", free: "usage_free" };
@@ -2047,6 +2048,11 @@ async function loadUsage() {
     if (error.code === "unauthorized") return;
     document.querySelector("#usage-summary").replaceChildren(bi("usageFailed"), errorBlock(error.code, error.message));
     return;
+  }
+  // Nothing measured since the app started: analyze right away, it only reads sizes.
+  if (usageData.state === "idle" && !usageAutoStarted) {
+    usageAutoStarted = true;
+    return startUsageScan();
   }
   renderUsage();
   if (usageData.state === "scanning" && !expired) usageTimer = setTimeout(loadUsage, 2000);
