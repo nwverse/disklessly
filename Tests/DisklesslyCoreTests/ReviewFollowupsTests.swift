@@ -55,6 +55,8 @@ final class ReviewFollowupsTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: URL(fileURLWithPath: config.repoPath).appendingPathComponent("trash/images/orphan.dmg").path))
     }
 
+    // gc and icons are macOS only; LinuxSupportTests checks the refusal.
+    #if os(macOS)
     func testGcAndIconsHelpPrintUsage() throws {
         let binary = try cliBinary()
         let gc = try run(binary, ["gc", "--help"])
@@ -91,16 +93,12 @@ final class ReviewFollowupsTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("devices").path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: repo.appendingPathComponent("trash").path))
     }
+    #endif
 
     private func cliBinary() throws -> URL {
         let fm = FileManager.default
-        // Use the binary from the same build as this test bundle. Walking `.build`
-        // returns whichever `disklessly` the enumerator meets first, which on macOS can
-        // be a stale `Release/disklessly` from an older `swift build -c release`.
-        for bundle in Bundle.allBundles where bundle.bundlePath.hasSuffix(".xctest") {
-            let sibling = bundle.bundleURL.deletingLastPathComponent().appendingPathComponent("disklessly")
-            if fm.isExecutableFile(atPath: sibling.path) { return sibling }
-        }
+        // Prefer this build's binary: walking `.build` can meet a stale `Release/disklessly`.
+        if let built = builtCLISibling() { return built }
         var url = URL(fileURLWithPath: #filePath)
         while url.path != "/" {
             if fm.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {

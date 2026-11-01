@@ -22,6 +22,7 @@
 14. [卸载 Disklessly](#卸载-Disklessly)
 15. [隐私](#隐私)
 16. [挂载生命周期与仓库归属](#挂载生命周期与仓库归属)
+17. [Linux 版](#linux-版)
 
 ## 它做什么
 
@@ -285,6 +286,31 @@ NAS / WebDAV 密码和会话加密密钥保存在钥匙串中。详见 [PRIVACY.
 - `disklessly reap [--dry-run]`：卸载挂载目录下所有者已退出的遗留挂载。`launch`、`gc` 和 `doctor --fix` 也会自动回收。
 - 替身按仓库区分：`stub.json` 记录 `repoId`，其他仓库不会认领它。旧替身可用 `disklessly stub refresh --all` 补写。
 
+## Linux 版
+
+Linux 版只有命令行，包含不依赖 macOS 的部分：编程助手会话归档（`disklessly sessions`，支持
+`--encrypt`）、磁盘占用图与仪表盘（`disklessly ui --open`）、`backend`、`devices`、`license`、
+`init`、`list`、`status`、`version`。卸载应用相关的命令（`pack`、`launch`、`unpack`、`recommend`、
+替身、`gc`、`doctor` 等）只在 macOS 上可用，在 Linux 上会以退出码 3 报「… is macOS only」。
+
+```sh
+tar -xzf disklessly-<版本>-linux-x86_64.tar.gz     # ARM 机器用 -linux-aarch64
+sudo cp -R disklessly-<版本>-linux-*/{bin,share} /usr/local/
+disklessly init
+disklessly sessions            # 预览：哪些会话会被归档
+disklessly sessions --apply    # 归档 14 天没动过的会话（--days N 可改）
+```
+
+- 需要 glibc 2.34 及以上和 libsqlite3（RHEL/Oracle/Rocky 9、Debian 12、Ubuntu 22.04 及更新版本）。
+- 状态在 `~/.local/share/disklessly`，缓存在 `~/.cache/disklessly`，默认仓库在 `~/.local/share/disklessly/repo`。
+  用 `disklessly init --root 目录` 或 `disklessly backend add` 换到 NAS 等别的位置。
+- 密码和会话密钥：有桌面会话（D-Bus）时存进系统密钥环（`secret-tool`），否则存进
+  `~/.config/disklessly/secrets.json`（权限 0600）。用了 `--encrypt` 就要备份这个文件，丢了密钥就读不回加密归档。
+- SMB/NFS 共享要先由系统挂载好，再用 `--mount 目录` 指给 Disklessly。
+- 磁盘占用图会把 `/opt`、Flatpak、Snap 应用和它们的数据算在「应用」里，`~` 下的隐藏目录算在「应用数据」里。
+
+详细说明和以后支持 AppImage 的设计见 [linux.md](linux.md)。
+
 ---
 
 <a id="english"></a>
@@ -411,3 +437,19 @@ to the repo you configure. See [PRIVACY.md](../PRIVACY.md).
 - `disklessly detach APP [--force]` detaches an app's image now instead of waiting for the detach delay; it refuses while the app is running.
 - `disklessly reap [--dry-run]` detaches images left mounted after their owner died. `launch`, `gc`, and `doctor --fix` also reap.
 - Each stub records its repo (`repoId` in `stub.json`), so another repo never claims it. `disklessly stub refresh --all` stamps older stubs.
+
+### Linux
+
+The Linux build is a CLI for what does not need macOS: `disklessly sessions`
+(archive, search, restore, `--encrypt`), the disk usage map and dashboard
+(`disklessly ui --open`), `backend`, `devices`, `license`, `init`, `list`, `status`,
+and `version`. App offloading (`pack`, `launch`, `unpack`, `recommend`, stubs, `gc`,
+`doctor`, ...) exits 3 with "… is macOS only".
+
+Unpack the `disklessly-<version>-linux-<arch>.tar.gz` tarball keeping `bin/` and
+`share/disklessly/web` together. It needs glibc 2.34+ and libsqlite3. State is in
+`~/.local/share/disklessly`, the cache in `~/.cache/disklessly`, and the default repo
+in `~/.local/share/disklessly/repo`. Secrets go to the Secret Service through
+`secret-tool` when a D-Bus session is up, else to `~/.config/disklessly/secrets.json`
+(0600); back it up if you use `--encrypt`. Mount SMB/NFS shares yourself and pass
+`--mount DIR`. See [linux.md](linux.md) for details and the AppImage plan.

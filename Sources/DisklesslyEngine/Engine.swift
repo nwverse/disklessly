@@ -91,8 +91,9 @@ public struct RuntimeConfig: Codable {
         try container.encode(sessionEncryption, forKey: .sessionEncryption)
     }
 
-    public static func environment(_ env: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory()) -> RuntimeConfig {
+    public static func environment(_ env: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory(), platform: HostPlatform = .current) -> RuntimeConfig {
         func v(_ key: String, _ fallback: String) -> String { env["DISKLESSLY_\(key)"] ?? fallback }
+        if platform == .linux { return linuxEnvironment(env, home: home) }
         // An install made before the rename keeps its `256isenough` folders; nothing is moved or copied.
         func dir(_ parent: String) -> String {
             let current = "\(home)/\(parent)/Disklessly", legacy = "\(home)/\(parent)/256isenough"
@@ -107,6 +108,24 @@ public struct RuntimeConfig: Codable {
         if let floor = env["DISKLESSLY_MIN_FREE_BYTES"].flatMap(UInt64.init) { config.minFreeBytes = floor }
         if let identity = env["DISKLESSLY_SIGN_IDENTITY"], !identity.isEmpty { config.signIdentity = identity }
         if let format = env["DISKLESSLY_RESTORE_IMAGE_FORMAT"], !format.isEmpty { config.restoreImageFormat = format }
+        return config
+    }
+
+    /// XDG folders. There is no iCloud Drive, so the default repo is a plain folder
+    /// under the data dir until `init --root` or `backend add` points elsewhere.
+    /// Stubs are never written on Linux; `~/Applications` is where AppImages usually live.
+    static func linuxEnvironment(_ env: [String: String], home: String) -> RuntimeConfig {
+        func v(_ key: String, _ fallback: String) -> String { env["DISKLESSLY_\(key)"] ?? fallback }
+        func xdg(_ key: String, _ fallback: String) -> String {
+            if let value = env[key], value.hasPrefix("/") { return value }
+            return "\(home)/\(fallback)"
+        }
+        let stateDefault = xdg("XDG_DATA_HOME", ".local/share") + "/disklessly"
+        let cacheDefault = xdg("XDG_CACHE_HOME", ".cache") + "/disklessly"
+        let cacheDir = v("CACHE_DIR", cacheDefault)
+        var config = RuntimeConfig(repoPath: v("REPO_PATH", "\(stateDefault)/repo"), cacheDir: cacheDir, stateDir: v("STATE_DIR", stateDefault), mountRoot: v("MOUNT_ROOT", "\(cacheDefault)/mnt"), stubDir: v("STUB_DIR", "\(home)/Applications"))
+        if let quota = env["DISKLESSLY_QUOTA_BYTES"].flatMap(UInt64.init) { config.quotaBytes = quota }
+        if let floor = env["DISKLESSLY_MIN_FREE_BYTES"].flatMap(UInt64.init) { config.minFreeBytes = floor }
         return config
     }
 
@@ -241,7 +260,7 @@ public struct DisklesslyEngine {
         let services=services ?? RestoreServices.live(config: config)
         self.services=services
         self.restore=RestoreCoordinator(config: config, services: services, faults: faults)
-        self.secrets = secrets ?? KeychainSecretStore()
+        self.secrets = secrets ?? PlatformSecrets.store()
         self.shareOpener = shareOpener
         self.backendOverride = nil
         self.recommendEnvironment = nil
@@ -275,7 +294,9 @@ public struct DisklesslyEngine {
     }
     public func initialize() throws {
         let fm = FileManager.default
-        for p in [config.cacheDir, config.stateDir, config.mountRoot, config.stubDir] { try fm.createDirectory(atPath: p, withIntermediateDirectories: true) }
+        // Linux writes no stubs, so it does not create the stub folder.
+        let folders = HostPlatform.current.offloadsApps ? [config.cacheDir, config.stateDir, config.mountRoot, config.stubDir] : [config.cacheDir, config.stateDir]
+        for p in folders { try fm.createDirectory(atPath: p, withIntermediateDirectories: true) }
         let backend = try repo
         if let root = backend.localRoot() {
             try fm.createDirectory(at: root, withIntermediateDirectories: true)
@@ -283,7 +304,8 @@ public struct DisklesslyEngine {
         try RepoIdentity.ensure(backend)
         for p in ["images", "manifests", "catalog", "devices", "trash"] { try backend.ensureCollection(p) }
         try saveConfig()
-        if EngineInstall.runningExecutable().lastPathComponent == "disklessly" {
+        // The installed engine is what stubs call; Linux has no stubs.
+        if HostPlatform.current.offloadsApps, EngineInstall.runningExecutable().lastPathComponent == "disklessly" {
             try installEngine()
         }
     }
@@ -301,7 +323,8 @@ public struct DisklesslyEngine {
 
     /// Path written into new stubs. Prefers the stable copy once it exists.
     public func installedEnginePath() throws -> String {
-        if EngineInstall.runningExecutable().lastPathComponent == "disklessly" {
+        // The installed engine is what stubs call; Linux has no stubs.
+        if HostPlatform.current.offloadsApps, EngineInstall.runningExecutable().lastPathComponent == "disklessly" {
             try installEngine()
         }
         let binary = EngineInstall.binary(stateDir: config.stateDir)
@@ -922,7 +945,8 @@ public struct DisklesslyEngine {
     public func launch(_ manifest:ImageManifest, documents:[String]=[], urls:[String]=[], arguments:[String]=[], wait:Bool=true) throws {
         try assertDeviceLaunch(manifest)
         restore.loadConfiguredFaults()
-        if EngineInstall.runningExecutable().lastPathComponent == "disklessly" {
+        // The installed engine is what stubs call; Linux has no stubs.
+        if HostPlatform.current.offloadsApps, EngineInstall.runningExecutable().lastPathComponent == "disklessly" {
             try installEngine()
         }
         if manifest.mode == .restore {

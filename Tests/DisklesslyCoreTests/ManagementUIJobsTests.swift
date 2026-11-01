@@ -13,7 +13,7 @@ final class ManagementUIJobsTests: XCTestCase {
         defer { world.cleanup() }
         let release = DispatchSemaphore(value: 0)
         let calls = CallLog()
-        let context = ManagementUIContext(actions: ManagementActions { kind, app, progress in
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { kind, app, progress in
             calls.append("\(kind.rawValue):\(app)")
             progress.phase("download")
             _ = release.wait(timeout: .now() + 10)
@@ -74,7 +74,7 @@ final class ManagementUIJobsTests: XCTestCase {
         let world = try World()
         defer { world.cleanup() }
         let calls = CallLog()
-        let context = ManagementUIContext(actions: ManagementActions { kind, app, _ in calls.append("\(kind.rawValue):\(app)") })
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { kind, app, _ in calls.append("\(kind.rawValue):\(app)") })
         let server = world.server(context: context)
         try server.start()
         defer { server.stop() }
@@ -91,7 +91,7 @@ final class ManagementUIJobsTests: XCTestCase {
         let world = try World()
         defer { world.cleanup() }
         let seen = CallLog()
-        let context = ManagementUIContext(actions: ManagementActions(perform: { kind, app, options, _ in seen.append("\(kind.rawValue):\(app):\(options.path ?? "-")") }))
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions(perform: { kind, app, options, _ in seen.append("\(kind.rawValue):\(app):\(options.path ?? "-")") }))
         let server = world.server(context: context)
         try server.start()
         defer { server.stop() }
@@ -103,6 +103,8 @@ final class ManagementUIJobsTests: XCTestCase {
         XCTAssertEqual(try post(["app": "X", "path": "/Applications/../tmp/X.app"]).status, 400, "traversal")
         XCTAssertEqual(try post(["app": "X", "path": "/Applications"]).status, 400, "not an app")
         XCTAssertEqual(try post(["app": "X", "path": "/Applications/Nope-\(UUID().uuidString).app"]).status, 400, "missing")
+        // The accepted case needs a real app in /Applications, which only a Mac has.
+        guard FileManager.default.fileExists(atPath: "/Applications") else { return }
         let installed = try FileManager.default.contentsOfDirectory(atPath: "/Applications").first { $0.hasSuffix(".app") }
         let name = try XCTUnwrap(installed, "no app installed in /Applications")
         let started = try post(["app": "X", "path": "/Applications/\(name)"])
@@ -115,7 +117,7 @@ final class ManagementUIJobsTests: XCTestCase {
     func testFailedJobsCarryStableCodes() throws {
         let world = try World()
         defer { world.cleanup() }
-        let context = ManagementUIContext(actions: ManagementActions { _, app, _ in
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { _, app, _ in
             switch app {
             case "integrity": throw DisklesslyError.integrity("sha256 mismatch")
             case "space": throw DisklesslyError.noSpace("free space would fall below the floor")
@@ -167,7 +169,7 @@ final class ManagementUIJobsTests: XCTestCase {
         let world = try World()
         defer { world.cleanup() }
         var clock = Date(timeIntervalSince1970: 1_800_000_000)
-        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in }, now: { clock })
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { _, _, _ in }, now: { clock })
         let server = world.server(context: context)
         try server.start()
         defer { server.stop() }
@@ -190,7 +192,7 @@ final class ManagementUIJobsTests: XCTestCase {
         XCTAssertEqual((bad.object["error"] as? [String: Any])?["code"] as? String, "bad_request")
 
         var scans = 0
-        let direct = ManagementUIContext()
+        let direct = ManagementUIContext(platform: .macOS)
         for rescan in [false, false, true, false] {
             _ = direct.recommendations(key: "k", rescan: rescan) {
                 scans += 1
@@ -207,7 +209,7 @@ final class ManagementUIJobsTests: XCTestCase {
         try StateStore(world.config.stateDir).update { state in
             state.apps["com.test.app"] = AppState(imageId: world.manifest.imageId, state: "cached", lastUsed: used, needsResolution: ["reason": .string("diverged")])
         }
-        let server = world.server(context: ManagementUIContext(actions: ManagementActions { _, _, _ in }))
+        let server = world.server(context: ManagementUIContext(platform: .macOS, actions: ManagementActions { _, _, _ in }))
         try server.start()
         defer { server.stop() }
         let status = try world.get(server, "/api/status").object

@@ -1,5 +1,10 @@
 import Foundation
 import DisklesslyCore
+#if canImport(Glibc)
+import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
 
 /// One box of the disk usage map. `key` names the fixed boxes the page translates
 /// (`apps`, `bundle`, `cache`, ...); `name` is the literal label (an app or a folder).
@@ -72,6 +77,9 @@ public struct UsageInputs {
     public var otherDisklesslyBytes: UInt64 = 0
     public var personal: [Entry] = []
     public var library: [Entry] = []
+    /// The page's label for the `library` box: `library` (~/Library) on macOS,
+    /// `appdata` (the dot folders under ~) on Linux.
+    public var libraryKey = "library"
 
     public init(totalBytes: UInt64, freeBytes: UInt64) { self.totalBytes = totalBytes; self.freeBytes = freeBytes }
 }
@@ -100,7 +108,7 @@ public enum UsageMap {
         let disklessly = UsageNode.group(name: "Disklessly", key: "disklessly", kind: .offloaded, offloadedNodes)
 
         let personal = UsageNode.group(name: "Personal files", key: "personal", kind: .personal, merged(input.personal.map { UsageNode(name: $0.name, kind: $0.kind == .other ? .personal : $0.kind, bytes: $0.bytes) }, kind: .personal))
-        let library = UsageNode.group(name: "Library", key: "library", kind: .library, merged(input.library.map(libraryNode), kind: .library))
+        let library = UsageNode.group(name: input.libraryKey == "library" ? "Library" : "App data", key: input.libraryKey, kind: .library, merged(input.library.map(libraryNode), kind: .library))
 
         var top = [apps, disklessly, personal, library].filter { $0.bytes > 0 }
         let used = input.totalBytes > input.freeBytes ? input.totalBytes - input.freeBytes : 0
@@ -175,8 +183,12 @@ public enum UsageScan {
         func get() -> Data { lock.lock(); defer { lock.unlock() }; return data }
     }
 
-    /// Measures this Mac and builds the tree. Slow on a big disk: callers run it off the request thread.
+    /// Measures this machine and builds the tree. Slow on a big disk: callers run it off the request thread.
     public static func run(engine: DisklesslyEngine, timeout: TimeInterval = 240, progress: (String) -> Void = { _ in }) -> (tree: UsageNode, partial: Bool) {
+        HostPlatform.current == .linux ? runLinux(engine: engine, timeout: timeout, progress: progress) : runMac(engine: engine, timeout: timeout, progress: progress)
+    }
+
+    static func runMac(engine: DisklesslyEngine, timeout: TimeInterval, progress: (String) -> Void) -> (tree: UsageNode, partial: Bool) {
         let home = NSHomeDirectory()
         let volume = try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey])
         var input = UsageInputs(
@@ -273,6 +285,149 @@ public enum UsageScan {
         ]
         input.library = entries.map { .init(name: $0.key, bytes: $0.value, kind: $0.key == "Caches" ? .cache : .library, children: inside[$0.key] ?? []) }
         return (UsageMap.assemble(input), partial)
+    }
+
+    // MARK: Linux
+
+    /// What a Linux scan measured, by name: the direct children of each root (`du -d 1`).
+    public struct LinuxMeasurements {
+        public var home: [String: UInt64] = [:]
+        /// `~/.cache`, `~/.local/share`, `~/.config`, `~/.var/app` (Flatpak data), `~/snap` (Snap data).
+        public var cache: [String: UInt64] = [:]
+        public var share: [String: UInt64] = [:]
+        public var config: [String: UInt64] = [:]
+        public var varApp: [String: UInt64] = [:]
+        public var snapHome: [String: UInt64] = [:]
+        /// Installed software: `/opt/<name>`, Flatpak apps by id, Snap packages by name.
+        public var opt: [String: UInt64] = [:]
+        public var flatpakSystem: [String: UInt64] = [:]
+        public var flatpakUser: [String: UInt64] = [:]
+        public var snaps: [String: UInt64] = [:]
+        /// Bytes to take off a top-level home entry because another box already counts them (the repo).
+        public var homeClaimed: [String: UInt64] = [:]
+        public init() {}
+    }
+
+    static func minus(_ a: UInt64, _ b: UInt64) -> UInt64 { a > b ? a - b : 0 }
+
+    /// The dot folders that the `appdata` box shows instead of `personal`.
+    static let linuxDataFolders = [".cache", ".local", ".config", ".var", "snap"]
+
+    /// Linux apps and app data. Each app claims its own cache and data folders by name;
+    /// what no app claims stays under its dot folder. `disklessly` folders are left to
+    /// the Disklessly box. Pure, so tests feed it a table.
+    public static func linuxInputs(_ m: LinuxMeasurements, into input: inout UsageInputs) {
+        var cache = m.cache, share = m.share, config = m.config, varApp = m.varApp, snapHome = m.snapHome
+        // User Flatpak apps sit inside ~/.local/share/flatpak; they count as apps, not as data.
+        let userFlatpak = m.flatpakUser.values.reduce(0, +)
+        if let flatpak = share["flatpak"] { share["flatpak"] = minus(flatpak, userFlatpak) }
+        var claimed: [String: UInt64] = [".local": userFlatpak]
+        func take(_ dict: inout [String: UInt64], _ keys: [String], folder: String) -> UInt64 {
+            var bytes: UInt64 = 0
+            for key in Set(keys) { if let v = dict.removeValue(forKey: key) { bytes += v } }
+            claimed[folder, default: 0] += bytes
+            return bytes
+        }
+        _ = take(&cache, ["disklessly"], folder: ".cache")
+        _ = take(&share, ["disklessly"], folder: ".local")
+
+        for (id, bytes) in m.flatpakSystem {
+            input.apps.append(.init(name: id, bundleBytes: bytes, dataBytes: take(&varApp, [id], folder: ".var")))
+        }
+        for (id, bytes) in m.flatpakUser {
+            let name = m.flatpakSystem[id] == nil ? id : "\(id) (user)"
+            input.apps.append(.init(name: name, bundleBytes: bytes, dataBytes: take(&varApp, [id], folder: ".var")))
+        }
+        for (name, bytes) in m.snaps {
+            input.apps.append(.init(name: name, bundleBytes: bytes, dataBytes: take(&snapHome, [name], folder: "snap")))
+        }
+        for (name, bytes) in m.opt {
+            let keys = [name, name.lowercased()]
+            let cacheBytes = take(&cache, keys, folder: ".cache")
+            let data = take(&share, keys, folder: ".local") + take(&config, keys, folder: ".config")
+            input.apps.append(.init(name: name, bundleBytes: bytes, cacheBytes: cacheBytes, dataBytes: data))
+        }
+
+        var home = m.home
+        for (name, bytes) in m.homeClaimed { if let v = home[name] { home[name] = minus(v, bytes) } }
+        let inside: [String: [String: UInt64]] = [".cache": cache, ".local": share, ".config": config, ".var": varApp, "snap": snapHome]
+        input.library = linuxDataFolders.compactMap { folder in
+            guard let total = home.removeValue(forKey: folder) else { return nil }
+            let children = (inside[folder] ?? [:]).map { UsageInputs.Entry(name: $0.key, bytes: $0.value) }
+            return .init(name: folder, bytes: minus(total, claimed[folder] ?? 0), kind: folder == ".cache" ? .cache : .other, children: children)
+        }
+        input.personal = home.map { .init(name: $0.key, bytes: $0.value, kind: .personal) }
+        input.libraryKey = "appdata"
+    }
+
+    /// Size and free space of the file system holding `path` (on Linux `/home` is often its own partition).
+    static func fileSystemBytes(_ path: String) -> (total: UInt64, free: UInt64) {
+        var info = statvfs()
+        guard statvfs(path, &info) == 0 else { return (0, 0) }
+        let unit = UInt64(info.f_frsize == 0 ? info.f_bsize : info.f_frsize)
+        return (UInt64(info.f_blocks) * unit, UInt64(info.f_bavail) * unit)
+    }
+
+    /// Allocated bytes of each `<name>_<revision>.snap` under `/var/lib/snapd/snaps`, summed by name.
+    /// `/snap` itself is squashfs mounts, so du there is slow and counts the unpacked size.
+    static func snapPackages(_ folder: String = "/var/lib/snapd/snaps") -> [String: UInt64] {
+        var result: [String: UInt64] = [:]
+        for file in (try? FileManager.default.contentsOfDirectory(atPath: folder)) ?? [] where file.hasSuffix(".snap") {
+            var info = stat()
+            guard lstat("\(folder)/\(file)", &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else { continue }
+            let name = file.split(separator: "_").first.map(String.init) ?? String(file.dropLast(5))
+            result[name, default: 0] += UInt64(info.st_blocks) * 512
+        }
+        return result
+    }
+
+    static func runLinux(engine: DisklesslyEngine, timeout: TimeInterval, progress: (String) -> Void) -> (tree: UsageNode, partial: Bool) {
+        let home = NSHomeDirectory()
+        let disk = fileSystemBytes(home)
+        var input = UsageInputs(totalBytes: disk.total, freeBytes: disk.free)
+        let jobs: [(String, String)] = [
+            ("home", home), ("cache", home + "/.cache"), ("share", home + "/.local/share"), ("config", home + "/.config"),
+            ("varApp", home + "/.var/app"), ("snapHome", home + "/snap"), ("opt", "/opt"),
+            ("flatpakSystem", "/var/lib/flatpak/app"), ("flatpakUser", home + "/.local/share/flatpak/app"),
+            ("cacheDir", engine.config.cacheDir), ("stateDir", engine.config.stateDir), ("repo", engine.config.repoPath),
+        ]
+        progress("scan")
+        let results = LockedResults()
+        DispatchQueue.concurrentPerform(iterations: jobs.count) { index in
+            let (name, path) = jobs[index]
+            guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return }
+            results.set(name, path: path, sizes(of: path, timeout: timeout))
+        }
+        let snaps = snapPackages()
+        progress("assemble")
+        func children(_ name: String) -> [String: UInt64] {
+            guard let hit = results.get(name) else { return [:] }
+            return Dictionary(hit.sizes.compactMap { key, value in key == hit.path ? nil : (URL(fileURLWithPath: key).lastPathComponent, value) }, uniquingKeysWith: max)
+        }
+        func total(_ name: String) -> UInt64 {
+            guard let hit = results.get(name) else { return 0 }
+            return hit.sizes[hit.path] ?? 0
+        }
+        var m = LinuxMeasurements()
+        m.home = children("home"); m.cache = children("cache"); m.share = children("share"); m.config = children("config")
+        m.varApp = children("varApp"); m.snapHome = children("snapHome"); m.opt = children("opt")
+        m.flatpakSystem = children("flatpakSystem"); m.flatpakUser = children("flatpakUser"); m.snaps = snaps
+
+        // Disklessly's own folders count once, in the Disklessly box. The repo may sit in
+        // the state folder (the default), or anywhere else under ~.
+        let repoTotal = total("repo"), stateTotal = total("stateDir"), cacheTotal = total("cacheDir")
+        let config = engine.config
+        let repoInState = config.repoPath.hasPrefix(config.stateDir + "/")
+        input.repoBytes = repoTotal
+        input.otherDisklesslyBytes = cacheTotal + (repoInState ? minus(stateTotal, repoTotal) : stateTotal)
+        let own = [(config.cacheDir, cacheTotal), (config.stateDir, stateTotal)] + (repoInState ? [] : [(config.repoPath, repoTotal)])
+        for (path, bytes) in own where path.hasPrefix(home + "/") {
+            // ~/.cache/disklessly and ~/.local/share/disklessly are dropped by name in linuxInputs.
+            if path == home + "/.cache/disklessly" || path.hasPrefix(home + "/.local/share/disklessly") { continue }
+            if let first = path.dropFirst(home.count + 1).split(separator: "/").first { m.homeClaimed[String(first), default: 0] += bytes }
+        }
+        linuxInputs(m, into: &input)
+        return (UsageMap.assemble(input), results.anyIncomplete)
     }
 
     private final class LockedResults: @unchecked Sendable {

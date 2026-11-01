@@ -6,6 +6,9 @@ import FoundationNetworking
 @testable import DisklesslyCore
 @testable import DisklesslyEngine
 
+/// These tests cover the macOS dashboard, also when they run on Linux.
+private let macContext = ManagementUIContext(platform: .macOS)
+
 final class VerificationFixesTests: XCTestCase {
     func testClonefileFlagWidthIsUnsigned() {
         // The macOS 27 SDK types clonefile's flags as UInt32. Both call sites cast.
@@ -195,9 +198,9 @@ final class VerificationFixesTests: XCTestCase {
         let doctor = engine.doctor()
         XCTAssertEqual(doctor["iconHint"] as? String, "1 apps have no icon: run disklessly icons backfill")
         _ = engine.recommend(options: RecommendOptions(minSizeBytes: 1, now: Date()))
-        let status = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/status"))
-        let recommend = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/recommend", query: ["minSize": "1"]))
-        let icon = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/icon/app"))
+        let status = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/status"), context: macContext)
+        let recommend = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/recommend", query: ["minSize": "1"]), context: macContext)
+        let icon = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/icon/app"), context: macContext)
         XCTAssertEqual(status.status, 200)
         XCTAssertEqual(recommend.status, 200)
         XCTAssertEqual(icon.status, 200)
@@ -211,7 +214,7 @@ final class VerificationFixesTests: XCTestCase {
         let marker = AppIcon.genericPNG + Data([1, 2, 3])
         try marker.write(to: cache)
         XCTAssertEqual(AppIcon.existingPath(stateDir: state.path, repoPath: repo.path, imageId: "app"), cache.path)
-        let cachedIcon = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/icon/app"))
+        let cachedIcon = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/icon/app"), context: macContext)
         XCTAssertEqual(cachedIcon.body, marker)
         let quiet = engine.doctor()
         XCTAssertNil(quiet["iconHint"])
@@ -263,7 +266,7 @@ final class VerificationFixesTests: XCTestCase {
         let second = try engine.backfillIcons(appId: "cached")
         XCTAssertEqual(second.skipped, ["cached"])
         XCTAssertFalse(faulty.calls.dropFirst(mid).contains { $0.hasPrefix("put:") })
-        let response = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "POST", path: "/api/icons/backfill", query: ["app": "mount"]))
+        let response = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "POST", path: "/api/icons/backfill", query: ["app": "mount"]), context: macContext)
         XCTAssertNotEqual(response.status, 404)
         let body = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
         XCTAssertEqual(body["ok"] as? Bool, true)
@@ -282,7 +285,7 @@ final class VerificationFixesTests: XCTestCase {
         ), secrets: MemorySecretStore())
         engine.backendOverride = try LocalFolderBackend(root: repo)
         let server = LoopbackUIServer(token: "icon-token") { request in
-            ManagementUI.respond(engine: engine, webRoot: nil, request: request)
+            ManagementUI.respond(engine: engine, webRoot: nil, request: request, context: macContext)
         }
         try server.start()
         defer { server.stop() }

@@ -225,6 +225,7 @@ const copy = {
     usage_disklessly: "Disklessly",
     usage_personal: "个人文件",
     usage_library: "资源库",
+    usage_appdata: "应用数据（~ 下的隐藏目录）",
     usage_system: "系统及其他",
     usage_free: "可用",
     usage_bundle: "包体",
@@ -476,6 +477,7 @@ const copy = {
     usage_disklessly: "Disklessly",
     usage_personal: "Personal files",
     usage_library: "Library",
+    usage_appdata: "App data (dot folders in ~)",
     usage_system: "System & other",
     usage_free: "Free",
     usage_bundle: "Bundle",
@@ -1809,10 +1811,23 @@ function renderOnboarding(status) {
 
 // ---- load -----------------------------------------------------------------
 
+/// A Linux build cannot offload apps: hide the app list, onboarding, and recommendations.
+function appsSupported() {
+  return !lastStatus || lastStatus.platform !== "linux";
+}
+
+function applyPlatform() {
+  const off = !appsSupported();
+  for (const id of ["#apps", "#recommend-section", "#cache-card"]) document.querySelector(id).hidden = off;
+  if (off) document.querySelector("#onboarding").hidden = true;
+  document.querySelector("#skip").setAttribute("href", off ? "#sessions-section" : "#apps");
+}
+
 function render(status) {
   lastStatus = status;
   applyChrome();
   renderOnboarding(status);
+  applyPlatform();
   renderBackend(status.backend || null);
   renderCache(status.cache || null);
   if (status.appsError) showBanner(appsErrorCode(status), status.appsError);
@@ -2091,7 +2106,9 @@ function refresh() {
   if (!refreshing) {
     const button = document.querySelector("#refresh");
     button.setAttribute("aria-busy", "true");
-    refreshing = Promise.all([load(), loadRecommendations(false)]).finally(() => {
+    // The first status says whether this build offloads apps; after that both load together.
+    const recommend = () => (appsSupported() ? loadRecommendations(false) : null);
+    refreshing = Promise.all(lastStatus ? [load(), recommend()] : [load().then(recommend)]).finally(() => {
       refreshing = null;
       button.removeAttribute("aria-busy");
     });

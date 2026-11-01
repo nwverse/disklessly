@@ -7,7 +7,7 @@ import Darwin
 import Glibc
 #endif
 
-let helpText = """
+let macHelpText = """
 disklessly: keep rarely used Mac apps in a repo and open them on demand.
 Usage: disklessly [--json] [--config PATH] [--state-dir PATH] <command> [options]
 
@@ -58,13 +58,45 @@ Environment overrides: DISKLESSLY_REPO_PATH, DISKLESSLY_CACHE_DIR, DISKLESSLY_ST
   DISKLESSLY_QUOTA_BYTES, DISKLESSLY_MIN_FREE_BYTES, DISKLESSLY_SIGN_IDENTITY,
   DISKLESSLY_DOCTOR_TIMEOUT, DISKLESSLY_WEB_ROOT, DISKLESSLY_DEBUG
 """
+let linuxHelpText = """
+disklessly: archive coding-agent sessions and see what fills your disk (Linux build).
+Usage: disklessly [--json] [--config PATH] [--state-dir PATH] <command> [options]
+
+Coding-agent sessions
+  sessions [--apply] [--days N] [--home DIR] [--encrypt] | sessions search QUERY [--limit N]
+  sessions restore ID|PATH [--to PATH] | sessions reindex | sessions migrate | sessions verify [--legacy]
+  sessions key init | sessions key status
+
+Dashboard
+  ui [--open]                     sessions, disk usage, devices and license on 127.0.0.1
+
+Repos and machines
+  init [--root DIR] [--cache-dir DIR]
+  backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
+  devices [list] | devices rename NAME | devices forget DEVICEID --yes
+  list | status                   images in the repo (offloaded from Macs)
+  license [status] | license activate CODE | deactivate
+
+Other
+  version | help
+
+Offloading apps (pack, launch, unpack, recommend, stubs, ...) is macOS only; see docs/linux.md.
+SMB and NFS shares must already be mounted; pass their folder with --mount.
+Secrets go to the Secret Service through secret-tool when a D-Bus session is up, otherwise to
+  ${XDG_CONFIG_HOME:-~/.config}/disklessly/secrets.json (mode 0600). DISKLESSLY_SECRET_STORE=file|secret-tool forces one.
+--json is accepted before or after the command.
+Environment overrides: DISKLESSLY_REPO_PATH, DISKLESSLY_CACHE_DIR, DISKLESSLY_STATE_DIR,
+  DISKLESSLY_CONFIG, DISKLESSLY_SECRET_STORE, DISKLESSLY_WEB_ROOT, DISKLESSLY_DEBUG
+"""
+let helpText = HostPlatform.current == .linux ? linuxHelpText : macHelpText
 func usage() -> Never {
     print(helpText)
     exit(0)
 }
 /// `disklessly` with no command. Exit 64 is EX_USAGE from sysexits(3).
 func noCommand() -> Never {
-    fputs("disklessly: no command given.\nRun `disklessly help` for the commands, `disklessly recommend` to find apps worth offloading, or `disklessly ui --open` for the dashboard.\n", stderr)
+    let next = HostPlatform.current == .linux ? "`disklessly sessions` to see which coding-agent sessions can be archived" : "`disklessly recommend` to find apps worth offloading"
+    fputs("disklessly: no command given.\nRun `disklessly help` for the commands, \(next), or `disklessly ui --open` for the dashboard.\n", stderr)
     exit(64)
 }
 let invocation: GlobalArguments
@@ -133,9 +165,16 @@ func printEvict(_ report: LocalEvictReport, files: [MaterialFile]) {
     for line in report.skipped { print("skipped  \(decorated(line))"); count += 1 }
     if count == 0 { print("nothing to evict") }
 }
+/// Linux images often ship without lsof; the `/proc` fd links stand in, read once per run.
+/// If neither works every file counts as open, so nothing live is archived.
+let procOpenPaths: Set<String>? = HostPlatform.current == .linux ? OpenFileProbe.procOpenPaths() : nil
 func liveSessionOpen(_ path: String) -> Bool {
     let lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].first { FileManager.default.isExecutableFile(atPath: $0) }
-    guard let lsof else { return false }
+    guard let lsof else {
+        guard HostPlatform.current == .linux else { return false }
+        guard let procOpenPaths else { return true }
+        return procOpenPaths.contains(SessionPaths.canonical(path))
+    }
     let process = Process()
     process.executableURL = URL(fileURLWithPath: lsof)
     process.arguments = ["-Fn", "--", path]
@@ -228,6 +267,7 @@ func openInBrowser(_ url: String) {
 }
 do {
     guard let command=args.first else { noCommand() }; args.removeFirst()
+    if let refusal = PlatformCommands.refusal(command, on: .current) { throw refusal }
     // The stub is a session leader. A hangup must not kill `launch` / `hook watch`
     // before the journal reaches a terminal phase. SIGKILL faults still apply.
     if command == "launch" || command == "hook" || command == "restore" {
@@ -240,6 +280,7 @@ do {
         else { printVersionLine() }
     case "init":
         while !args.isEmpty { let a=args.removeFirst(); if a=="--backend", !args.isEmpty { config.backend=args.removeFirst() } else if a=="--root", !args.isEmpty { config.repoPath=args.removeFirst() } else if a=="--cache-dir", !args.isEmpty { config.cacheDir=args.removeFirst() } }
+        if HostPlatform.current == .linux && config.backend == "icloud" { throw DisklesslyError.unsupported("iCloud Drive is not available on Linux; use --root DIR or disklessly backend add") }
         try DisklesslyEngine(config:config).initialize()
         say(["ok":true,"repo":config.repoPath,"cacheDir":config.cacheDir,"quotaBytes":NSNumber(value: config.quotaBytes)], CLIText.initialized(config))
     case "pack":

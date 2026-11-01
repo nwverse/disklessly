@@ -6,6 +6,9 @@ import FoundationNetworking
 import DisklesslyCore
 import DisklesslyEngine
 
+/// These tests cover the macOS dashboard, also when they run on Linux.
+private let macContext = ManagementUIContext(platform: .macOS)
+
 final class UIServerTests: XCTestCase {
     func testLoopbackRequiresToken() throws {
         let server = LoopbackUIServer(token: "ui-token-9f3a") { request in
@@ -50,7 +53,7 @@ final class UIServerTests: XCTestCase {
         let entry = SessionIndexEntry(id: "abc123", tool: "pi", path: "/tmp/session.jsonl", sha256: sha, size: 4, modified: Date(timeIntervalSince1970: 1_700_000_000), archive: "sessions/pi/2023-11.tar.gz", member: "pi/abc-session.jsonl", preview: "blender notes")
         try SessionArchive.saveIndex(SessionIndex(entries: [entry]), stateDir: config.stateDir)
         let server = LoopbackUIServer(token: "page-token") { request in
-            ManagementUI.respond(engine: engine, webRoot: web, request: request)
+            ManagementUI.respond(engine: engine, webRoot: web, request: request, context: macContext)
         }
         try server.start()
         defer { server.stop() }
@@ -263,7 +266,7 @@ final class UIServerTests: XCTestCase {
         engine.backendOverride = try LocalFolderBackend(root: repo)
         try engine.initialize()
         let server = LoopbackUIServer(token: "page-token") { request in
-            ManagementUI.respond(engine: engine, webRoot: web, request: request)
+            ManagementUI.respond(engine: engine, webRoot: web, request: request, context: macContext)
         }
         try server.start()
         defer { server.stop() }

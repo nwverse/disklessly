@@ -57,6 +57,12 @@ final class ReleaseLayoutTests: XCTestCase {
         let binary = try cliBinary()
         XCTAssertEqual(try run(binary, ["init", "--json"]).status, 0)
         let result = try run(binary, ["gc", "--json"])
+        #if os(Linux)
+        // gc rewrites the shared repo's images, so a Linux build refuses it.
+        XCTAssertEqual(result.status, 3, result.out + result.err)
+        XCTAssertTrue(result.out.contains("macOS only"), result.out)
+        return
+        #endif
         XCTAssertEqual(result.status, 0, result.err)
         let object = try JSONSerialization.jsonObject(with: Data(result.out.utf8)) as? [String: Any]
         XCTAssertEqual(object?["ok"] as? Bool, true)
@@ -67,6 +73,15 @@ final class ReleaseLayoutTests: XCTestCase {
         let result = try run(try cliBinary(), ["help"])
         XCTAssertEqual(result.status, 0)
         XCTAssertTrue(result.out.contains("Usage:"))
+        #if os(Linux)
+        XCTAssertTrue(result.out.contains("Linux build"))
+        XCTAssertTrue(result.out.contains("sessions key init"))
+        XCTAssertFalse(result.out.contains("pack APP.app"), "Linux help lists only commands that run there")
+        for hidden in ["hooks", "serve", "daemon", "stub rebuild"] {
+            XCTAssertFalse(result.out.contains(hidden), "help still lists \(hidden)")
+        }
+        return
+        #endif
         XCTAssertTrue(result.out.contains("resolve APP"))
         XCTAssertTrue(result.out.contains("Get started"))
         XCTAssertTrue(result.out.contains("ui [--open]"))
@@ -100,6 +115,11 @@ final class ReleaseLayoutTests: XCTestCase {
         let binary = try cliBinary()
         XCTAssertEqual(try run(binary, ["init"]).status, 0)
         let result = try run(binary, ["launch", "NoSuchApp"])
+        #if os(Linux)
+        XCTAssertEqual(result.status, 3, "launch is macOS only")
+        XCTAssertTrue(result.err.contains("macOS only"), result.err)
+        return
+        #endif
         XCTAssertEqual(result.status, 2)
         XCTAssertTrue(result.err.contains("Unknown app: NoSuchApp"), result.err)
         XCTAssertFalse(result.err.contains("details:"))
@@ -212,10 +232,7 @@ final class ReleaseLayoutTests: XCTestCase {
 
     private func cliBinary() throws -> URL {
         let fm = FileManager.default
-        for bundle in Bundle.allBundles where bundle.bundlePath.hasSuffix(".xctest") {
-            let sibling = bundle.bundleURL.deletingLastPathComponent().appendingPathComponent("disklessly")
-            if fm.isExecutableFile(atPath: sibling.path) { return sibling }
-        }
+        if let built = builtCLISibling() { return built }
         var url = URL(fileURLWithPath: #filePath)
         while url.path != "/" {
             if fm.fileExists(atPath: url.appendingPathComponent("Package.swift").path) {

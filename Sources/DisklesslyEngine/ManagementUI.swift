@@ -123,6 +123,7 @@ public enum ManagementUI {
         }
         return [
             "ok": true,
+            "platform": context.platform.rawValue,
             "backend": backendInfo(engine, health: health),
             "cache": cache,
             "apps": apps,
@@ -263,6 +264,9 @@ public enum ManagementUI {
             object["ok"] = true
             return .json(object)
         }
+        if !context.platform.offloadsApps, isAppRoute(request) {
+            return failure(code: "unsupported", message: "Offloading apps is macOS only; this \(context.platform.rawValue) build serves sessions, disk usage, devices, and license.", status: 501)
+        }
         if request.method == "POST", let kind = UIJobKind(path: request.path) {
             guard let name = appName(request) else { return failure(code: "bad_request", message: "app is required", status: 400) }
             let actions = context.actions ?? .live(engine)
@@ -391,6 +395,12 @@ public enum ManagementUI {
         }
         if nsError.domain == NSURLErrorDomain { return ("offline", nsError.localizedDescription) }
         return ("failed", (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
+    }
+
+    /// Routes that pack, launch, or scan app bundles.
+    static func isAppRoute(_ request: UIRequest) -> Bool {
+        if request.method == "POST", UIJobKind(path: request.path) != nil { return true }
+        return request.path == "/api/recommend" || request.path == "/api/icons/backfill"
     }
 
     private static func failure(_ error: Error, status: Int) -> UIResponse {
@@ -780,8 +790,12 @@ public final class ManagementUIContext {
     private let scanLock = NSLock()
     private var recommendCache: [String: (report: [String: Any], scannedAt: Date)] = [:]
 
-    public init(jobs: UIJobStore = UIJobStore(), actions: ManagementActions? = nil, health: BackendHealthProbe = BackendHealthProbe(), usage: UsageScanner = UsageScanner(), now: @escaping () -> Date = Date.init) {
+    /// Linux serves sessions, usage, devices, and license; the app routes answer 501.
+    public let platform: HostPlatform
+
+    public init(platform: HostPlatform = .current, jobs: UIJobStore = UIJobStore(), actions: ManagementActions? = nil, health: BackendHealthProbe = BackendHealthProbe(), usage: UsageScanner = UsageScanner(), now: @escaping () -> Date = Date.init) {
         self.jobs = jobs
+        self.platform = platform
         self.usage = usage
         self.health = health
         self.actions = actions

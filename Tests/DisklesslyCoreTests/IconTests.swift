@@ -2,6 +2,9 @@ import XCTest
 import DisklesslyCore
 @testable import DisklesslyEngine
 
+/// These tests cover the macOS dashboard, also when they run on Linux.
+private let macContext = ManagementUIContext(platform: .macOS)
+
 final class IconTests: XCTestCase {
     func testPlistIconKeys() {
         XCTAssertEqual(
@@ -47,7 +50,7 @@ final class IconTests: XCTestCase {
             stubDir: root.appendingPathComponent("apps").path
         )
         let engine = DisklesslyEngine(config: config, secrets: MemorySecretStore())
-        let missing = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/icon/com.example.Missing-1_b1-arm64-aaaaaaaa", query: [:], headers: [:], body: Data()))
+        let missing = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/icon/com.example.Missing-1_b1-arm64-aaaaaaaa", query: [:], headers: [:], body: Data()), context: macContext)
         XCTAssertEqual(missing.status, 200)
         XCTAssertEqual(missing.contentType, "image/png")
         XCTAssertEqual(missing.body, AppIcon.genericPNG)
@@ -59,11 +62,11 @@ final class IconTests: XCTestCase {
         var png = AppIcon.genericPNG
         png.append(contentsOf: [1, 2, 3, 4])
         try png.write(to: cache)
-        let hit = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/icon/\(imageId)", query: [:], headers: [:], body: Data()))
+        let hit = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/icon/\(imageId)", query: [:], headers: [:], body: Data()), context: macContext)
         XCTAssertEqual(hit.status, 200)
         XCTAssertEqual(hit.body, png)
 
-        let escaped = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/icon/..%2Fsecret", query: [:], headers: [:], body: Data()))
+        let escaped = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/icon/..%2Fsecret", query: [:], headers: [:], body: Data()), context: macContext)
         XCTAssertEqual(escaped.status, 404)
     }
 }
