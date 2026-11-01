@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Draw the Disklessly app icon and build Resources/AppIcon.icns.
 #
-# The icon follows the menu-bar symbol (a drive with a cloud) in the macOS icon
-# style: one centred glyph, a white cloud behind a translucent glass drive, light
-# from above, soft shadows and no outlines. A small Swift script draws the 1024 px
+# The icon is the menu-bar glyph on a blue tile: a white outline drive with a
+# solid cloud at its lower left, cut out from the drive by a small gap. The paths
+# are our own drawing of that shape (SF Symbols may not be used in app icons). A small Swift script draws the 1024 px
 # master with CoreGraphics (no Python, no image editor), sips scales it into an
 # .iconset, and iconutil packs the .icns. The outputs are committed, so a normal build does not need this;
 # scripts/build-app.sh runs it only when Resources/AppIcon.icns is missing.
@@ -37,83 +37,67 @@ func rgb(_ hex: UInt32, _ alpha: CGFloat = 1) -> CGColor {
 func gradient(_ stops: [(UInt32, CGFloat, CGFloat)]) -> CGGradient {
     CGGradient(colorsSpace: space, colors: stops.map { rgb($0.0, $0.1) } as CFArray, locations: stops.map { $0.2 })!
 }
-let extend: CGGradientDrawingOptions = [.drawsBeforeStartLocation, .drawsAfterEndLocation]
-func vertical(_ path: CGPath, _ g: CGGradient, top: CGFloat, bottom: CGFloat) {
-    ctx.saveGState(); ctx.addPath(path); ctx.clip()
-    ctx.drawLinearGradient(g, start: CGPoint(x: 0, y: top), end: CGPoint(x: 0, y: bottom), options: extend)
-    ctx.restoreGState()
-}
-/// A light rim just inside the top edge of `path`, fading out downward: the specular edge of glass.
-func rim(_ path: CGPath, width: CGFloat, top: CGFloat, bottom: CGFloat, alpha: CGFloat) {
-    ctx.saveGState()
-    ctx.addPath(path); ctx.clip()
-    ctx.addPath(path.copy(strokingWithWidth: width * 2, lineCap: .round, lineJoin: .round, miterLimit: 1)); ctx.clip()
-    ctx.drawLinearGradient(gradient([(0xFFFFFF, alpha, 0), (0xFFFFFF, 0, 1)]), start: CGPoint(x: 0, y: top), end: CGPoint(x: 0, y: bottom), options: [])
-    ctx.restoreGState()
-}
 
-// 1. Tile: the macOS icon grid, 824 pt square with continuous-looking corners.
+// Tile on the macOS icon grid.
 let tile = CGRect(x: 100, y: 100, width: 824, height: 824)
 let tilePath = CGPath(roundedRect: tile, cornerWidth: 185, cornerHeight: 185, transform: nil)
 ctx.saveGState()
 ctx.setShadow(offset: CGSize(width: 0, height: -10), blur: 24, color: rgb(0x000000, 0.28))
 ctx.addPath(tilePath); ctx.setFillColor(rgb(0x2A6FF2)); ctx.fillPath()
 ctx.restoreGState()
-vertical(tilePath, gradient([(0x6CC4FF, 1, 0), (0x2F7BFF, 1, 0.55), (0x1B4FD8, 1, 1)]), top: tile.maxY, bottom: tile.minY)
-// Light from above.
 ctx.saveGState(); ctx.addPath(tilePath); ctx.clip()
-ctx.drawRadialGradient(gradient([(0xFFFFFF, 0.30, 0), (0xFFFFFF, 0, 1)]), startCenter: CGPoint(x: 512, y: 980), startRadius: 0,
-                       endCenter: CGPoint(x: 512, y: 980), endRadius: 620, options: [])
+ctx.drawLinearGradient(gradient([(0x5FBBFF, 1, 0), (0x2B78FF, 1, 0.55), (0x1A4CD6, 1, 1)]),
+                       start: CGPoint(x: 0, y: tile.maxY), end: CGPoint(x: 0, y: tile.minY), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+ctx.drawRadialGradient(gradient([(0xFFFFFF, 0.26, 0), (0xFFFFFF, 0, 1)]), startCenter: CGPoint(x: 512, y: 980), startRadius: 0,
+                       endCenter: CGPoint(x: 512, y: 980), endRadius: 600, options: [])
 ctx.restoreGState()
-rim(tilePath, width: 5, top: tile.maxY, bottom: tile.midY, alpha: 0.45)
 
-let dy: CGFloat = -22   // shifts the whole glyph so it sits optically centred
-
-// 2. Cloud, behind: solid white, soft shadow, no outline.
-func cloudPath() -> CGPath {
-    let p = CGMutablePath()
-    p.addRoundedRect(in: CGRect(x: 252, y: 452 + dy, width: 520, height: 196), cornerWidth: 98, cornerHeight: 98)
-    p.addEllipse(in: CGRect(x: 322, y: 540 + dy, width: 196, height: 196))
-    p.addEllipse(in: CGRect(x: 418, y: 512 + dy, width: 300, height: 300))
-    return p
+// The glyph is laid out in a 1120 x 702 design box (y down) and placed centred on the tile.
+let box = CGRect(x: 115, y: 123, width: 1120, height: 702)
+let k: CGFloat = 640 / box.width
+func P(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+    CGPoint(x: 512 + (x - box.midX) * k, y: 512 + (box.midY - y) * k)
 }
-let cloud = cloudPath()
-ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: -18), blur: 46, color: rgb(0x0A2A7A, 0.32))
-ctx.addPath(cloud); ctx.setFillColor(rgb(0xFFFFFF)); ctx.fillPath()
-ctx.restoreGState()
-vertical(cloud, gradient([(0xFFFFFF, 1, 0), (0xF2F7FF, 1, 0.6), (0xD9E7FF, 1, 1)]), top: 812 + dy, bottom: 452 + dy)
+func R(_ r: CGFloat) -> CGFloat { r * k }
+let stroke = R(62)
 
-// 3. Drive, in front: a glass slab. Translucent, so the cloud shows through its top
-//    and the blue through its bottom; a bright top edge and a soft shadow lift it.
-let drive = CGRect(x: 232, y: 268 + dy, width: 560, height: 236)
-let drivePath = CGPath(roundedRect: drive, cornerWidth: 64, cornerHeight: 64, transform: nil)
+// Drive: the top (a trapezoid whose sides lean out) and the front slab with its light.
+let top = CGMutablePath()
+top.move(to: P(412, 440))
+top.addLine(to: P(476, 228))
+top.addQuadCurve(to: P(612, 150), control: P(505, 150))
+top.addLine(to: P(936, 150))
+top.addQuadCurve(to: P(1072, 228), control: P(1043, 150))
+top.addLine(to: P(1180, 500))
+top.addQuadCurve(to: P(1203, 613), control: P(1203, 550))
+let slab = CGPath(roundedRect: CGRect(x: P(300, 758).x, y: P(300, 758).y, width: R(1203 - 300), height: R(758 - 469)),
+                  cornerWidth: R(144.5), cornerHeight: R(144.5), transform: nil)
+let dot = CGRect(x: P(1000, 662).x, y: P(1000, 662).y, width: R(98), height: R(98))
+
+// Cloud, filled.
+let cloud = CGMutablePath()
+func circle(_ cx: CGFloat, _ cy: CGFloat, _ r: CGFloat) { cloud.addEllipse(in: CGRect(x: P(cx - r, cy + r).x, y: P(cx - r, cy + r).y, width: R(2 * r), height: R(2 * r))) }
+circle(235, 712, 113)
+circle(272, 612, 80)
+circle(410, 628, 155)
+circle(515, 722, 103)
+cloud.addRect(CGRect(x: P(235, 825).x, y: P(235, 825).y, width: R(280), height: R(125)))
+
+// Draw the glyph in its own layer so the gap around the cloud cuts through the drive only.
 ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: -20), blur: 44, color: rgb(0x061F66, 0.40))
-ctx.addPath(drivePath); ctx.setFillColor(rgb(0xFFFFFF, 0.01)); ctx.fillPath()
-ctx.restoreGState()
-// Frosted body: a cool white wash that is denser at the top.
-vertical(drivePath, gradient([(0xFFFFFF, 0.80, 0), (0xF0F6FF, 0.66, 0.5), (0xD2E3FF, 0.58, 1)]), top: drive.maxY, bottom: drive.minY)
-// A faint darker band along the bottom gives the slab thickness.
-ctx.saveGState(); ctx.addPath(drivePath); ctx.clip()
-ctx.drawLinearGradient(gradient([(0x0B2C8A, 0.0, 0), (0x0B2C8A, 0.12, 1)]), start: CGPoint(x: 0, y: drive.minY + 60), end: CGPoint(x: 0, y: drive.minY), options: [])
-ctx.restoreGState()
-rim(drivePath, width: 4, top: drive.maxY, bottom: drive.minY + 40, alpha: 1.0)
-// A hairline all round so the glass edge reads against the blue.
-ctx.saveGState()
-ctx.addPath(drivePath); ctx.clip()
-ctx.addPath(drivePath); ctx.setStrokeColor(rgb(0xFFFFFF, 0.55)); ctx.setLineWidth(5); ctx.strokePath()
-ctx.restoreGState()
-// Front face details: a slim status bar and a light.
-let bar = CGRect(x: drive.minX + 72, y: drive.minY + 96, width: 168, height: 30)
-ctx.saveGState()
-ctx.addPath(CGPath(roundedRect: bar, cornerWidth: 15, cornerHeight: 15, transform: nil))
-ctx.setFillColor(rgb(0x2457D6, 0.42)); ctx.fillPath()
-ctx.restoreGState()
-let led = CGRect(x: drive.maxX - 72 - 34, y: drive.minY + 94, width: 34, height: 34)
-ctx.saveGState()
-ctx.setShadow(offset: .zero, blur: 18, color: rgb(0x38E0A0, 0.95))
-ctx.setFillColor(rgb(0x3BE6A6)); ctx.fillEllipse(in: led)
+ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 30, color: rgb(0x08236E, 0.38))
+ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+ctx.setStrokeColor(rgb(0xFFFFFF)); ctx.setLineWidth(stroke); ctx.setLineCap(.round); ctx.setLineJoin(.round)
+ctx.addPath(top); ctx.strokePath()
+ctx.addPath(slab); ctx.strokePath()
+ctx.setFillColor(rgb(0xFFFFFF)); ctx.fillEllipse(in: dot)
+// Gap: clear the cloud grown by the gap width.
+ctx.setBlendMode(.clear)
+ctx.addPath(cloud); ctx.fillPath()
+ctx.addPath(cloud.copy(strokingWithWidth: R(100), lineCap: .round, lineJoin: .round, miterLimit: 1)); ctx.fillPath()
+ctx.setBlendMode(.normal)
+ctx.addPath(cloud); ctx.setFillColor(rgb(0xFFFFFF)); ctx.fillPath()
+ctx.endTransparencyLayer()
 ctx.restoreGState()
 
 guard let image = ctx.makeImage(),
