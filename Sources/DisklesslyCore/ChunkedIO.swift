@@ -224,7 +224,7 @@ public enum ChunkedIO {
         }
     }
 
-    private static func systemRead(_ fd: Int32, _ buffer: UnsafeMutableRawPointer, _ count: Int) -> Int {
+    static func systemRead(_ fd: Int32, _ buffer: UnsafeMutableRawPointer, _ count: Int) -> Int {
         while true {
             let n = libcRead(fd, buffer, count)
             if n < 0 && errno == EINTR { continue }
@@ -232,7 +232,7 @@ public enum ChunkedIO {
         }
     }
 
-    private static func systemWrite(_ fd: Int32, _ buffer: UnsafeRawPointer, _ count: Int) -> Int {
+    static func systemWrite(_ fd: Int32, _ buffer: UnsafeRawPointer, _ count: Int) -> Int {
         while true {
             let n = libcWrite(fd, buffer, count)
             if n < 0 && errno == EINTR { continue }

@@ -15,6 +15,7 @@ Get started
   init [--backend local|icloud] [--root DIR] [--cache-dir DIR]
   recommend [--all] [--min-size SIZE] [--limit N] [--min-idle-days N]
   pack APP.app [--mode mount|restore] [--image-format ULMO|ULFO] [--no-stub] [--keep-original] [--stub-dir DIR]
+                                  [--encrypt|--no-encrypt]
   ui [--open]                     dashboard on 127.0.0.1 (prints its URL; --json prints url, port, token)
 
 Use offloaded apps
@@ -39,6 +40,11 @@ Repos and Macs
   backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
   devices [list] | devices rename NAME | devices forget DEVICEID --yes
 
+Encrypted images
+  images key init | images key status   make or show the image key (iCloud Keychain)
+  images key export | images key import  print the key as base64 / read one from stdin
+  images encrypt on|off           encrypt new packs before upload (pack --encrypt overrides)
+
 Coding-agent sessions
   sessions [--apply] [--days N] [--home DIR] [--encrypt] | sessions search QUERY [--limit N]
   sessions restore ID|PATH [--to PATH] | sessions reindex | sessions migrate | sessions verify [--legacy]
@@ -56,7 +62,7 @@ evict --force only overrides a pin; a mounted or running image is always refused
 Environment overrides: DISKLESSLY_REPO_PATH, DISKLESSLY_CACHE_DIR, DISKLESSLY_STATE_DIR,
   DISKLESSLY_MOUNT_ROOT, DISKLESSLY_STUB_DIR, DISKLESSLY_CONFIG, DISKLESSLY_DETACH_DELAY,
   DISKLESSLY_QUOTA_BYTES, DISKLESSLY_MIN_FREE_BYTES, DISKLESSLY_SIGN_IDENTITY,
-  DISKLESSLY_DOCTOR_TIMEOUT, DISKLESSLY_WEB_ROOT, DISKLESSLY_DEBUG
+  DISKLESSLY_DOCTOR_TIMEOUT, DISKLESSLY_WEB_ROOT, DISKLESSLY_DEBUG, DISKLESSLY_IMAGE_ENCRYPTION
 """
 func usage() -> Never {
     print(helpText)
@@ -245,7 +251,7 @@ do {
     case "pack":
         let parsed = try PackArguments.parse(args)
         if let stubDir = parsed.stubDir { config.stubDir = stubDir; engine = DisklesslyEngine(config: config) }
-        let published=try engine.pack(parsed.app,mode:parsed.mode,keepOriginal:parsed.keepOriginal,noStub:parsed.noStub,imageFormat:parsed.imageFormat); let m=published.manifest
+        let published=try engine.pack(parsed.app,mode:parsed.mode,keepOriginal:parsed.keepOriginal,noStub:parsed.noStub,imageFormat:parsed.imageFormat,encrypt:parsed.encrypt); let m=published.manifest
         let path = parsed.app
         if json { for warning in published.warnings { fputs("disklessly: \(warning)\n", stderr) } }
         for path in published.evicted { fputs("disklessly: evicted local iCloud copy \(path)\n", stderr) }
@@ -253,7 +259,7 @@ do {
             let retained = URL(fileURLWithPath: config.stubDir).appendingPathComponent(URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent + ".256orig.app")
             fputs("disklessly: kept original at \(retained.path): \(kept)\n", stderr)
         }
-        var packed: [String: Any] = ["ok":true,"imageId":m.imageId,"bundleId":m.bundleId,"mode":m.mode.rawValue,"sha256":m.image.sha256,"reused":published.reused,"uploaded":published.uploaded,"warnings":published.warnings,"evicted":published.evicted]
+        var packed: [String: Any] = ["ok":true,"imageId":m.imageId,"bundleId":m.bundleId,"mode":m.mode.rawValue,"sha256":m.image.sha256,"reused":published.reused,"uploaded":published.uploaded,"warnings":published.warnings,"evicted":published.evicted,"encrypted":m.image.encryption != nil]
         if let kept = published.originalKept { packed["originalKept"] = kept }
         say(packed, CLIText.packed(published, appPath: path, stubDir: config.stubDir, noStub: parsed.noStub, keepOriginal: parsed.keepOriginal))
     case "list":
@@ -468,6 +474,40 @@ do {
         case .keyStatus:
             guard let id = try SessionArchive.sessionKeyId(secrets: secrets) else { throw DisklesslyError.usage("no session key; run disklessly sessions key init") }
             emit(["ok": true, "keyId": id])
+        }
+    case "images":
+        let secrets = engine.secrets
+        switch Array(args.prefix(2)) {
+        case ["key", "init"]:
+            let id = try ImageKeyStore.create(secrets: secrets)
+            var payload: [String: Any] = ["ok": true, "keyId": id]
+            if let keychain = secrets as? KeychainSecretStore, case .localFallback = keychain.lastSaveOutcome {
+                payload["synced"] = false
+                fputs("disklessly: warning: the image key is on this Mac only. Other Macs cannot open encrypted images until you run disklessly images key export here and images key import there.\n", stderr)
+            }
+            say(payload, "Made image key \(id). Turn on encryption for new packs with disklessly images encrypt on.")
+        case ["key", "status"]:
+            guard let id = try ImageKeyStore.currentKeyId(secrets: secrets) else { throw DisklesslyError.usage("no image key; run disklessly images key init") }
+            let usable = try ImageKeyStore.load(secrets: secrets, keyId: id) != nil
+            let on = try engine.imageEncryptionDefault()
+            say(["ok": true, "keyId": id, "usable": usable, "encryptNewPacks": on], "Image key \(id)\(usable ? "" : " (missing from the Keychain)"); new packs are \(on ? "encrypted" : "not encrypted")")
+        case ["key", "export"]:
+            guard let id = try ImageKeyStore.currentKeyId(secrets: secrets) else { throw DisklesslyError.usage("no image key; run disklessly images key init") }
+            print(try ImageKeyStore.exportKey(secrets: secrets, keyId: id))
+        case ["key", "import"]:
+            let text = String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
+            let id = try ImageKeyStore.importKey(base64: text, secrets: secrets)
+            say(["ok": true, "keyId": id], "Imported image key \(id)")
+        case ["encrypt", "on"], ["encrypt", "off"]:
+            guard args.count == 2 else { throw DisklesslyError.usage("images encrypt takes on or off") }
+            let on = args[1] == "on"
+            if on, try ImageKeyStore.current(secrets: secrets) == nil { throw DisklesslyError.usage("no image key; run disklessly images key init first") }
+            config.imageEncryption = on ? "aes-gcm" : "off"
+            engine.config = config
+            try engine.saveConfig()
+            say(["ok": true, "imageEncryption": config.imageEncryption], on ? "New packs will be encrypted" : "New packs will not be encrypted")
+        default:
+            throw DisklesslyError.usage("images takes key init|status|export|import or encrypt on|off")
         }
     case "backend":
         guard let sub = args.first else { throw DisklesslyError.usage("backend requires add, list, or use") }

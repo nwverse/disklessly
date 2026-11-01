@@ -221,6 +221,20 @@ disklessly sessions restore ID      # 把会话写回原来的位置
 
 加密的会话段只能用钥匙串里的那把密钥解开，丢失密钥就无法恢复。详见 [sessions.md](sessions.md)。
 
+## 加密 App 镜像 `images`
+
+开启后，新打包的镜像在上传前先加密（AES-256-GCM，按 1 MiB 分段），仓库里只有密文；本机缓存仍是解密后的普通磁盘镜像。
+
+```sh
+disklessly images key init          # 创建镜像密钥（存在钥匙串，可经 iCloud 钥匙串同步到其他 Mac）
+disklessly images encrypt on        # 之后的 pack 都加密；pack --encrypt / --no-encrypt 只管这一次
+disklessly images key status        # 查看密钥 id、是否可用、新打包是否加密
+disklessly images key export        # 导出密钥（base64），在另一台 Mac 上用 images key import 导入
+```
+
+没有这把密钥的 Mac 打不开加密镜像：取镜像时直接报错，打包同一个 App 时拒绝复用并保留原 App。
+旧版 Disklessly 挂载不了加密镜像，开启前请先升级所有共用仓库的 Mac。详见 [image-encryption.md](image-encryption.md)。
+
 ## 排查问题 `doctor`
 
 ```sh
@@ -363,6 +377,13 @@ sessions live only in the repo. `sessions key init` plus `--encrypt` encrypts
 segments with a Keychain key; without that key they cannot be read.
 `disklessly sessions search QUERY` finds them and `disklessly sessions restore ID`
 writes one back. See [sessions.md](sessions.md).
+
+### Encrypted images
+
+`disklessly images key init` makes an image key in the Keychain (synchronizable
+through iCloud Keychain). `disklessly images encrypt on` or `pack --encrypt` then
+encrypts new images before upload; the cache keeps the decrypted image. A Mac
+without the key cannot fetch them. See [image-encryption.md](image-encryption.md).
 
 ### Troubleshooting
 
