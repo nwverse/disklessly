@@ -36,9 +36,15 @@ final class WebWindowController: NSWindowController, NSWindowDelegate, WKNavigat
 
     func present() {
         if webView.url == nil { webView.load(URLRequest(url: url)) }
+        // The app lives in the menu bar; while its window is open it also gets a Dock icon.
+        NSApp.setActivationPolicy(.regular)
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
     }
 
     @objc func reload(_ sender: Any?) {
