@@ -211,6 +211,30 @@ const copy = {
     couldFree: "大约可腾出",
     scannedAgo: (iso) => `扫描于${relativeTime(iso, "zh")}`,
     rescan: "重新扫描",
+    usage: "磁盘占用",
+    usageScan: "分析占用",
+    usageRescan: "重新分析",
+    usageScanning: "正在分析磁盘…",
+    usageIntro: "看看 256G 都被谁占了：应用的包体、缓存和数据，以及 Disklessly 自己的缓存。只读取大小，不会改动任何文件。",
+    usagePartial: "部分目录超时没有读完，没读完的部分计入“系统及其他”。",
+    usageFailed: "无法读取占用",
+    usageHint: "点击方块放大，点击上方路径返回。",
+    usageTotal: (used, free, total) => `共 ${total} · 已用 ${used} · 可用 ${free}`,
+    usage_disk: "整块磁盘",
+    usage_apps: "应用",
+    usage_disklessly: "Disklessly",
+    usage_personal: "个人文件",
+    usage_library: "资源库",
+    usage_system: "系统及其他",
+    usage_free: "可用",
+    usage_bundle: "包体",
+    usage_cache: "缓存",
+    usage_data: "数据",
+    usage_repo: "本机仓库",
+    usage_state: "状态与临时文件",
+    usage_files: "散落文件",
+    usage_rest: (n) => `其余 ${n} 项`,
+    usage_other: "其他",
     copyCommand: "复制命令",
     copyCommandFor: (name) => `复制命令：打包 ${name}`,
     copied: (name) => `已复制 ${name} 的打包命令`,
@@ -438,6 +462,30 @@ const copy = {
     couldFree: "Could free about",
     scannedAgo: (iso) => `Scanned ${relativeTime(iso, "en")}`,
     rescan: "Rescan",
+    usage: "Disk usage",
+    usageScan: "Analyze",
+    usageRescan: "Analyze again",
+    usageScanning: "Analyzing the disk…",
+    usageIntro: "See what takes up your 256G: each app's bundle, cache and data, plus Disklessly's own cache. It only reads sizes and changes nothing.",
+    usagePartial: "Some folders timed out and were not fully read; what is missing is counted as System & other.",
+    usageFailed: "Could not read disk usage",
+    usageHint: "Click a box to zoom in; click the path above to go back.",
+    usageTotal: (used, free, total) => `${total} total · ${used} used · ${free} free`,
+    usage_disk: "Whole disk",
+    usage_apps: "Apps",
+    usage_disklessly: "Disklessly",
+    usage_personal: "Personal files",
+    usage_library: "Library",
+    usage_system: "System & other",
+    usage_free: "Free",
+    usage_bundle: "Bundle",
+    usage_cache: "Cache",
+    usage_data: "Data",
+    usage_repo: "Repo on this Mac",
+    usage_state: "State and temp files",
+    usage_files: "Loose files",
+    usage_rest: (n) => `${n} more`,
+    usage_other: "Other",
     copyCommand: "Copy command",
     copyCommandFor: (name) => `Copy command to pack ${name}`,
     copied: (name) => `Copied the pack command for ${name}`,
@@ -1859,6 +1907,163 @@ async function loadRecommendations(rescan) {
   else renderRecommend(null, recommendError);
 }
 
+// ---- disk usage -----------------------------------------------------------
+
+let usageData = null;
+let usageFocus = []; // child indexes from the root
+let usageTimer = null;
+
+const USAGE_LEGEND = ["bundle", "cache", "data", "offloaded", "personal", "library", "system", "free"];
+const usageKindText = { bundle: "usage_bundle", cache: "usage_cache", data: "usage_data", offloaded: "usage_disklessly", personal: "usage_personal", library: "usage_library", system: "usage_system", free: "usage_free" };
+
+function usageLabel(node, parent) {
+  const key = node.key;
+  if (key === "rest") return t("usage_rest", node.name);
+  if (["bundle", "cache", "data"].includes(key) && (!parent || parent.key !== "disklessly")) return t("usage_" + key);
+  if (key && has("usage_" + key) && !["cache"].includes(key)) return t("usage_" + key);
+  return node.name;
+}
+
+function usageLabelBoth(node, parent) {
+  const key = node.key;
+  const keyed = (k, ...a) => both("usage_" + k, ...a);
+  if (key === "rest") return keyed("rest", node.name);
+  if (["bundle", "cache", "data"].includes(key) && (!parent || parent.key !== "disklessly")) return keyed(key);
+  if (key && has("usage_" + key) && key !== "cache") return keyed(key);
+  return node.name;
+}
+
+function usageNodeAt(path) {
+  let node = usageData.tree;
+  const trail = [{ node, parent: null }];
+  for (const index of path) {
+    const child = node.children && node.children[index];
+    if (!child) break;
+    trail.push({ node: child, parent: node });
+    node = child;
+  }
+  return trail;
+}
+
+function renderUsage() {
+  const chart = document.querySelector("#usage-chart");
+  const crumbs = document.querySelector("#usage-crumbs");
+  const legend = document.querySelector("#usage-legend");
+  const summary = document.querySelector("#usage-summary");
+  const scanned = document.querySelector("#usage-scanned");
+  const button = document.querySelector("#usage-scan");
+  const tip = document.querySelector("#usage-tip");
+  summary.replaceChildren();
+  scanned.replaceChildren();
+  const scanning = usageData && usageData.state === "scanning";
+  button.disabled = Boolean(scanning);
+  button.firstElementChild.replaceChildren(bi(usageData && usageData.tree ? "usageRescan" : "usageScan"));
+  if (scanning) button.setAttribute("aria-busy", "true"); else button.removeAttribute("aria-busy");
+  if (!usageData || !usageData.tree) {
+    chart.hidden = crumbs.hidden = legend.hidden = tip.hidden = true;
+    summary.append(bi(scanning ? "usageScanning" : "usageIntro"));
+    return;
+  }
+  if (usageData.scannedAt) scanned.append(bi("scannedAgo", usageData.scannedAt));
+  const root = usageData.tree;
+  const free = (root.children.find((c) => c.key === "free") || {}).bytes || 0;
+  summary.append(one("usageTotal", bytes(root.bytes - free), bytes(free), bytes(root.bytes)));
+  if (usageData.partial) summary.append(el("br"), bi("usagePartial"));
+  if (scanning) summary.append(el("br"), bi("usageScanning"));
+  summary.append(el("br"), bi("usageHint"));
+
+  const trail = usageNodeAt(usageFocus);
+  crumbs.hidden = false;
+  crumbs.replaceChildren();
+  trail.forEach((step, depth) => {
+    if (depth) crumbs.append(el("span", "usage-sep", "›"));
+    const last = depth === trail.length - 1;
+    const label = depth === 0 ? usageLabel(step.node, null) : usageLabel(step.node, step.parent);
+    const item = el(last ? "span" : "button", last ? "usage-crumb current" : "usage-crumb", label);
+    if (!last) {
+      item.type = "button";
+      item.addEventListener("click", () => { usageFocus = usageFocus.slice(0, depth); renderUsage(); });
+    }
+    crumbs.append(item);
+  });
+
+  const focus = trail[trail.length - 1].node;
+  chart.hidden = false;
+  chart.replaceChildren();
+  const levels = 4;
+  const rowHeight = 30;
+  chart.style.height = `${levels * rowHeight}px`;
+  const draw = (node, parent, left, width, depth, path) => {
+    if (depth >= levels || width < 0.35) return;
+    const box = el("button", `usage-box u-${node.kind}`);
+    box.type = "button";
+    box.style.left = `${left}%`;
+    box.style.width = `calc(${width}% - 2px)`;
+    box.style.top = `${depth * rowHeight}px`;
+    box.style.height = `${rowHeight - 2}px`;
+    const label = usageLabel(node, parent);
+    const pct = focus.bytes ? `${((node.bytes / focus.bytes) * 100).toFixed(node.bytes / focus.bytes < 0.1 ? 1 : 0)}%` : "";
+    if (width > 4) box.append(el("span", "usage-name", label), width > 9 ? el("span", "usage-size", bytes(node.bytes)) : document.createTextNode(""));
+    const full = usageLabelBoth(node, parent);
+    const named = node.key && ["bundle", "cache", "data"].includes(node.key) && parent && parent.name && parent.key == null ? `${parent.name} · ${full}` : full;
+    box.title = `${named} · ${bytes(node.bytes)} · ${pct}`;
+    box.setAttribute("aria-label", box.title);
+    const zoomable = Boolean(node.children && node.children.length) && depth > 0;
+    if (zoomable) box.classList.add("zoomable");
+    box.addEventListener("click", () => {
+      if (!zoomable) return;
+      usageFocus = path;
+      renderUsage();
+    });
+    box.addEventListener("mouseenter", () => { tip.hidden = false; tip.textContent = box.title; });
+    chart.append(box);
+    let x = left;
+    (node.children || []).forEach((child, i) => {
+      const w = node.bytes ? (child.bytes / node.bytes) * width : 0;
+      draw(child, node, x, w, depth + 1, [...path, i]);
+      x += w;
+    });
+  };
+  // The focused box fills the top row; its children and theirs sit below it.
+  draw(focus, trail.length > 1 ? trail[trail.length - 2].node : null, 0, 100, 0, usageFocus);
+  // Row 0 is the focus itself and never zooms; children are found by their parent's list.
+  const rootBox = chart.firstElementChild;
+  if (rootBox) rootBox.classList.remove("zoomable");
+
+  legend.hidden = false;
+  legend.replaceChildren();
+  for (const kind of USAGE_LEGEND) {
+    const item = el("li", "usage-legend-item");
+    item.append(el("span", `usage-swatch u-${kind}`), bi(usageKindText[kind]));
+    legend.append(item);
+  }
+}
+
+async function loadUsage() {
+  clearTimeout(usageTimer);
+  try {
+    usageData = await api("/api/usage");
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    document.querySelector("#usage-summary").replaceChildren(bi("usageFailed"), errorBlock(error.code, error.message));
+    return;
+  }
+  renderUsage();
+  if (usageData.state === "scanning" && !expired) usageTimer = setTimeout(loadUsage, 2000);
+}
+
+async function startUsageScan() {
+  try {
+    usageData = await api("/api/usage/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    usageFocus = [];
+    renderUsage();
+    clearTimeout(usageTimer);
+    usageTimer = setTimeout(loadUsage, 1500);
+  } catch (error) {
+    if (error.code !== "unauthorized") toast({ title: bi("usageFailed"), error: { code: error.code, message: error.message }, tone: "error" });
+  }
+}
+
 async function load() {
   if (expired) return;
   let status;
@@ -1878,6 +2083,7 @@ async function load() {
   adoptServerJobs(status);
   render(status);
   loadLicense();
+  loadUsage();
 }
 
 function refresh() {
@@ -1904,6 +2110,7 @@ async function retryNow() {
 document.querySelector("#refresh").addEventListener("click", refresh);
 document.querySelector("#retry").addEventListener("click", retryNow);
 document.querySelector("#rescan").addEventListener("click", () => loadRecommendations(true));
+document.querySelector("#usage-scan").addEventListener("click", startUsageScan);
 document.querySelector("#license-form").addEventListener("submit", submitLicense);
 document.querySelector("#license-remove").addEventListener("click", removeLicense);
 document.querySelector("#icon-backfill").addEventListener("click", async (event) => {

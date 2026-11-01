@@ -311,6 +311,13 @@ public enum ManagementUI {
             } catch {
                 return failure(error, status: 400)
             }
+        case ("GET", "/api/usage"):
+            return .json(context.usage.snapshot())
+        case ("POST", "/api/usage/scan"):
+            let started = context.usage.start(engine: engine)
+            var object = context.usage.snapshot()
+            object["started"] = started
+            return .json(object, status: 202)
         case ("GET", "/api/license"):
             return .json(licenseObject(engine))
         case ("POST", "/api/license/activate"):
@@ -762,6 +769,8 @@ private final class LaunchOutcome: @unchecked Sendable {
 /// Shared state for one management server: running jobs and the last scan.
 public final class ManagementUIContext {
     public let jobs: UIJobStore
+    /// The disk usage map scan (`/api/usage`).
+    public let usage: UsageScanner
     /// Backend reachability with latency; bounded by its timeout and shared across requests.
     public let health: BackendHealthProbe
     /// Replaces the engine-backed actions, for tests.
@@ -771,8 +780,9 @@ public final class ManagementUIContext {
     private let scanLock = NSLock()
     private var recommendCache: [String: (report: [String: Any], scannedAt: Date)] = [:]
 
-    public init(jobs: UIJobStore = UIJobStore(), actions: ManagementActions? = nil, health: BackendHealthProbe = BackendHealthProbe(), now: @escaping () -> Date = Date.init) {
+    public init(jobs: UIJobStore = UIJobStore(), actions: ManagementActions? = nil, health: BackendHealthProbe = BackendHealthProbe(), usage: UsageScanner = UsageScanner(), now: @escaping () -> Date = Date.init) {
         self.jobs = jobs
+        self.usage = usage
         self.health = health
         self.actions = actions
         self.now = now
