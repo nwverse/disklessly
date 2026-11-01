@@ -99,7 +99,9 @@ extension DisklesslyEngine {
         guard let root = try? openBackend().localRoot() else { return nil }
         let url = root.appendingPathComponent("images/\(imageId).dmg")
         guard !url.lastPathComponent.hasPrefix(".") else { return nil }
-        return FileManager.default.fileExists(atPath: url.path) ? url.path : nil
+        // An encrypted repo object is not a disk image; only the decrypted cache copy is.
+        guard FileManager.default.fileExists(atPath: url.path), !ImageCrypto.looksSealed(url) else { return nil }
+        return url.path
     }
 
     private func stubPath(for candidate: IconBackfill.Candidate) -> String? {
