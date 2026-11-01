@@ -55,28 +55,21 @@ enum Onboarding {
     }
 }
 
-private struct Bi: View {
-    let zh: String
-    let en: String
-    var font: Font = .body
-    var body: some View {
-        (Text(zh).font(font) + Text("  " + en).font(font).foregroundColor(.secondary))
-    }
+/// One language, following the system's preferred language (Chinese or English).
+enum L {
+    static let zh = Locale.preferredLanguages.first?.lowercased().hasPrefix("zh") ?? false
+    static func s(_ zh: String, _ en: String) -> String { Self.zh ? zh : en }
 }
 
 private extension MacPermission {
     var symbol: String { self == .appManagement ? "app.badge.checkmark" : "internaldrive" }
-    var zh: String { self == .appManagement ? "App 管理" : "完全磁盘访问权限" }
-    var en: String { self == .appManagement ? "App Management" : "Full Disk Access" }
-    var whyZh: String {
+    var title: String { self == .appManagement ? L.s("App 管理", "App Management") : L.s("完全磁盘访问权限", "Full Disk Access") }
+    var why: String {
         self == .appManagement
-            ? "卸载和还原时要把 /Applications 里的应用换成入口、再换回来。必需。"
-            : "读取受保护的文件夹，用于磁盘占用分析，并避免 iCloud 仓库卡住。建议开启。"
-    }
-    var whyEn: String {
-        self == .appManagement
-            ? "Needed to swap apps in /Applications for their launchers and back."
-            : "Reads protected folders for the usage map and keeps an iCloud repo from stalling. Recommended."
+            ? L.s("卸载和还原时要把 /Applications 里的应用换成入口、再换回来。必需。",
+                  "Needed to swap apps in /Applications for their launchers and back. Required.")
+            : L.s("读取受保护的文件夹，用于磁盘占用分析，并避免 iCloud 仓库卡住。建议开启。",
+                  "Reads protected folders for the usage map and keeps an iCloud repo from stalling. Recommended.")
     }
 }
 
@@ -88,7 +81,7 @@ private struct DraggableAppIcon: View {
             .resizable()
             .frame(width: size, height: size)
             .onDrag { NSItemProvider(object: Bundle.main.bundleURL as NSURL) }
-            .help("拖到系统设置的列表里 · Drag into the list in System Settings")
+            .help(L.s("拖到系统设置的列表里", "Drag into the list in System Settings"))
     }
 }
 
@@ -97,11 +90,11 @@ private struct StatusBadge: View {
     var body: some View {
         switch state {
         case .granted:
-            Label("已授权", systemImage: "checkmark.circle.fill").foregroundColor(.green)
+            Label(L.s("已授权", "Granted"), systemImage: "checkmark.circle.fill").foregroundColor(.green)
         case .denied:
-            Label("未授权", systemImage: "exclamationmark.circle.fill").foregroundColor(.orange)
+            Label(L.s("未授权", "Not granted"), systemImage: "exclamationmark.circle.fill").foregroundColor(.orange)
         case .unknown:
-            Label("无法检测", systemImage: "questionmark.circle").foregroundColor(.secondary)
+            Label(L.s("无法检测", "Can't check"), systemImage: "questionmark.circle").foregroundColor(.secondary)
         }
     }
 }
@@ -118,14 +111,13 @@ private struct PermissionRow: View {
                 .frame(width: 32)
             VStack(alignment: .leading, spacing: 4) {
                 HStack {
-                    Bi(zh: permission.zh, en: permission.en, font: .headline)
+                    Text(permission.title).font(.headline)
                     Spacer()
                     StatusBadge(state: model.state(permission)).font(.callout)
                 }
-                Text(permission.whyZh).font(.callout)
-                Text(permission.whyEn).font(.caption).foregroundColor(.secondary)
+                Text(permission.why).font(.callout)
                 if model.state(permission) != .granted {
-                    Button { open(permission) } label: { Text("打开系统设置  Open Settings") }
+                    Button { open(permission) } label: { Text(L.s("打开系统设置", "Open Settings")) }
                         .padding(.top, 4)
                 }
             }
@@ -147,27 +139,25 @@ private struct OnboardingView: View {
             HStack(spacing: 14) {
                 DraggableAppIcon(size: 56)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("开始前，给 Disklessly 两项权限").font(.title2).bold()
-                    Text("Before you start, give Disklessly two permissions").foregroundColor(.secondary)
+                    Text(L.s("开始前，给 Disklessly 两项权限", "Before you start, give Disklessly two permissions")).font(.title2).bold()
                 }
             }
             ForEach(MacPermission.allCases, id: \.self) { permission in
                 PermissionRow(permission: permission, model: model, open: open)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text("在系统设置里打开 Disklessly 的开关；列表里没有它时，把图标（或下方小窗里的图标）拖进去。macOS 不会为这两项弹出允许对话框。")
+                Text(L.s("在系统设置里打开 Disklessly 的开关；列表里没有它时，把图标（或下方小窗里的图标）拖进去。macOS 不会为这两项弹出允许对话框。",
+                         "Turn Disklessly on in System Settings; drag the icon in if it is not listed. macOS shows no prompt for these two."))
                     .font(.callout)
-                Text("Turn Disklessly on in System Settings; drag the icon in if it is not listed. macOS shows no prompt for these two.")
-                    .font(.caption).foregroundColor(.secondary)
-                Text("开关已打开但仍显示未授权时，重新打开 Disklessly 即可生效。")
+                Text(L.s("开关已打开但仍显示未授权时，重新打开 Disklessly 即可生效。", "If the switch is on but this still says not granted, relaunch Disklessly."))
                     .font(.caption).foregroundColor(.secondary).padding(.top, 4)
             }
             HStack {
-                Button("重新检查  Check again", action: recheck)
-                Button("重新打开  Relaunch") { Onboarding.relaunch() }
+                Button(L.s("重新检查", "Check again"), action: recheck)
+                Button(L.s("重新打开", "Relaunch")) { Onboarding.relaunch() }
                 Spacer()
-                Button("稍后  Later", action: later)
-                Button("开始使用  Continue", action: done)
+                Button(L.s("稍后", "Later"), action: later)
+                Button(L.s("开始使用", "Continue"), action: done)
                     .keyboardShortcut(.defaultAction)
                     .disabled(!model.requiredGranted)
             }
@@ -186,15 +176,14 @@ private struct DragHelperView: View {
             DraggableAppIcon(size: 52)
             VStack(alignment: .leading, spacing: 3) {
                 if model.state(permission) == .granted {
-                    Label("\(permission.zh)已授权", systemImage: "checkmark.circle.fill").foregroundColor(.green).font(.headline)
+                    Label(L.s("\(permission.title)已授权", "\(permission.title) granted"), systemImage: "checkmark.circle.fill").foregroundColor(.green).font(.headline)
                 } else {
-                    Text("在「\(permission.zh)」里打开 Disklessly 的开关").font(.headline)
-                    Text("列表里没有 Disklessly 时，把图标拖进去。").font(.caption)
-                    Text("Turn Disklessly on under \(permission.en); if it is not listed, drag the icon in.").font(.caption).foregroundColor(.secondary)
+                    Text(L.s("在「\(permission.title)」里打开 Disklessly 的开关", "Turn Disklessly on under \(permission.title)")).font(.headline)
+                    Text(L.s("列表里没有 Disklessly 时，把图标拖进去。", "If it is not listed, drag the icon in.")).font(.caption)
                 }
             }
             Spacer(minLength: 8)
-            Button("完成", action: close)
+            Button(L.s("完成", "Done"), action: close)
         }
         .padding(16)
         .frame(width: 440)
