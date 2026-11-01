@@ -238,7 +238,8 @@ disklessly ui --open
 ```
 
 Keep `bin/` and `share/disklessly/web` side by side. The binary needs glibc 2.34 or
-later and libsqlite3 (RHEL/Oracle/Rocky 9, Debian 12, Ubuntu 22.04 and newer).
+later plus libsqlite3, libcurl, and libxml2, which servers and desktops already have
+(RHEL/Oracle/Rocky 9, Debian 12, Ubuntu 22.04 and newer).
 State lives in `~/.local/share/disklessly`, the cache in `~/.cache/disklessly`.
 Secrets go to the Secret Service via `secret-tool` when a desktop session is up,
 otherwise to `~/.config/disklessly/secrets.json` (mode 0600); back that file up if

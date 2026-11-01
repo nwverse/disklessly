@@ -29,6 +29,8 @@ case "$MODE" in build) exit 0 ;; esac
 [ "$MODE" = smoke ] || swift test $B
 bash scripts/linux-smoke.sh "$(swift build $B --show-bin-path)/disklessly"'
 
-ARGS=(run --rm --memory 8g --cpus 8 -v "$PWD:/src" -v disklessly-linux-build:/build -e "MODE=$MODE")
+# One build volume per image, so two compilers never share module caches.
+VOLUME="disklessly-linux-build-$(printf '%s' "$IMAGE" | tr -c 'a-zA-Z0-9.' '-')"
+ARGS=(run --rm --memory 8g --cpus 8 -v "$PWD:/src" -v "$VOLUME:/build" -e "MODE=$MODE")
 if [ "$MODE" = shell ]; then exec "$RUNTIME" "${ARGS[@]}" -it "$IMAGE" bash; fi
 exec "$RUNTIME" "${ARGS[@]}" "$IMAGE" bash -c "$INNER"

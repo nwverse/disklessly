@@ -83,8 +83,9 @@ scripts/release-linux.sh       # dist/disklessly-<ver>-linux-<arch>.tar.gz
 ```
 
 Both use Docker or Apple's `container`. The release builds in `swift:6.0-rhel-ubi9`
-with the Swift runtime linked statically, so the binary needs only glibc ≥ 2.34 and
-libsqlite3. The tarball holds `bin/disklessly` and `share/disklessly/web` (the dashboard
+with the Swift runtime linked statically, so the binary needs only glibc ≥ 2.34,
+libsqlite3, and libcurl and libxml2 (for FoundationNetworking/FoundationXML). Minimal
+container images may lack the last two: `apt-get install libsqlite3-0 libcurl4 libxml2`. The tarball holds `bin/disklessly` and `share/disklessly/web` (the dashboard
 page, found relative to the binary).
 
 ---

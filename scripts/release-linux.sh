@@ -17,7 +17,8 @@
 #   SHA256SUMS (appended)
 #
 # The Swift runtime and Foundation are linked statically. At run time the binary needs
-# glibc and libsqlite3 (sqlite-libs / libsqlite3-0), which every target distro ships.
+# glibc, libsqlite3, libcurl, and libxml2 (FoundationNetworking/FoundationXML), which
+# server and desktop installs ship; slim container images may need them installed.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DIST="${DISKLESSLY_DIST_DIR:-$ROOT/dist}"

@@ -301,7 +301,8 @@ disklessly sessions            # 预览：哪些会话会被归档
 disklessly sessions --apply    # 归档 14 天没动过的会话（--days N 可改）
 ```
 
-- 需要 glibc 2.34 及以上和 libsqlite3（RHEL/Oracle/Rocky 9、Debian 12、Ubuntu 22.04 及更新版本）。
+- 需要 glibc 2.34 及以上，以及 libsqlite3、libcurl、libxml2（RHEL/Oracle/Rocky 9、Debian 12、Ubuntu 22.04
+  及更新版本一般都自带）。
 - 状态在 `~/.local/share/disklessly`，缓存在 `~/.cache/disklessly`，默认仓库在 `~/.local/share/disklessly/repo`。
   用 `disklessly init --root 目录` 或 `disklessly backend add` 换到 NAS 等别的位置。
 - 密码和会话密钥：有桌面会话（D-Bus）时存进系统密钥环（`secret-tool`），否则存进
@@ -447,7 +448,7 @@ and `version`. App offloading (`pack`, `launch`, `unpack`, `recommend`, stubs, `
 `doctor`, ...) exits 3 with "… is macOS only".
 
 Unpack the `disklessly-<version>-linux-<arch>.tar.gz` tarball keeping `bin/` and
-`share/disklessly/web` together. It needs glibc 2.34+ and libsqlite3. State is in
+`share/disklessly/web` together. It needs glibc 2.34+, libsqlite3, libcurl, and libxml2. State is in
 `~/.local/share/disklessly`, the cache in `~/.cache/disklessly`, and the default repo
 in `~/.local/share/disklessly/repo`. Secrets go to the Secret Service through
 `secret-tool` when a D-Bus session is up, else to `~/.config/disklessly/secrets.json`
