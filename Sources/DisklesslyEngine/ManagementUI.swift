@@ -48,6 +48,10 @@ public enum ManagementUI {
         let manifests = loadedApps.1
         appsError = loadedApps.2.message
         appsErrorCode = loadedApps.2.code
+        // The repo is shared by every Mac, so say per row what this Mac actually has.
+        let home = NSHomeDirectory()
+        let localApps = LocalAppIndex(folders: Array(Set([engine.config.stubDir, "/Applications", home + "/Applications"])))
+        let ownImageIds = Set(deviceRows.first { $0.deviceId == listing?.localDeviceId }?.images.map(\.imageId) ?? [])
         for manifest in manifests {
                 let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
                 let exists = FileManager.default.fileExists(atPath: cached.path)
@@ -82,6 +86,7 @@ public enum ManagementUI {
                     "iconPath": AppIcon.existingPath(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: manifest.imageId) ?? "",
                     // Where the stub lives and where a permanent restore puts the app.
                     "installPath": manifest.app.originalPath,
+                    "local": localApps.presence(bundleId: manifest.bundleId, imageId: manifest.imageId, ownImageIds: ownImageIds).jsonObject,
                 ]
                 if let used = record?.lastUsed { row["lastUsed"] = isoFormatter.string(from: used) }
                 apps.append(row)

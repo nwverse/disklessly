@@ -103,6 +103,13 @@ const copy = {
     toDownload: "需下载",
     lastUsedAt: (iso) => `${relativeTime(iso, "zh")}使用`,
     onDevices: (names) => `也在 ${names}`,
+    packedOn: (names) => `在 ${names} 上卸载`,
+    notInstalledHere: "这台 Mac 没有安装",
+    launcherMissing: "这台 Mac 上的入口不见了",
+    fullAppHere: (version) => `这台 Mac 已装完整版 ${version}`.trim(),
+    elsewhereTitle: (n) => `其他 Mac 上卸载的应用（${n}）`,
+    elsewhereNote: "仓库在 iCloud 里由你的各台 Mac 共用，所以能看到它们。这些不是这台 Mac 卸载的，这台 Mac 上的应用没有被动过。",
+    nothingHere: "这台 Mac 还没有卸载过应用。",
     open: "打开",
     openFor: (name) => `打开 ${name}`,
     prefetch: "预取",
@@ -354,6 +361,13 @@ const copy = {
     toDownload: "to download",
     lastUsedAt: (iso) => `used ${relativeTime(iso, "en")}`,
     onDevices: (names) => `Also on ${names}`,
+    packedOn: (names) => `Offloaded on ${names}`,
+    notInstalledHere: "Not installed on this Mac",
+    launcherMissing: "This Mac's launcher is missing",
+    fullAppHere: (version) => `Full app ${version} is installed on this Mac`.replace("  ", " "),
+    elsewhereTitle: (n) => `Offloaded on other Macs (${n})`,
+    elsewhereNote: "Your Macs share one repo in iCloud, so their apps show up here. They were not offloaded from this Mac, and nothing on this Mac was touched.",
+    nothingHere: "No apps offloaded on this Mac yet.",
     open: "Open",
     openFor: (name) => `Open ${name}`,
     prefetch: "Prefetch",
@@ -1206,7 +1220,8 @@ function overflowMenu(app, busy) {
   menu.setAttribute("role", "menu");
   menu.hidden = true;
   const dir = installDir(app);
-  const items = [
+  // With the full app already installed here, restore and unpack would collide with it.
+  const items = fullAppHere(app) ? [] : [
     [bi("restore"), both("restore"), () => confirmAction("restore", app)],
     [bi("unpack", dir), both("unpack", dir), () => confirmAction("unpack", app)],
   ];
@@ -1347,10 +1362,11 @@ function renderAppsSummary(apps) {
     node.replaceChildren();
     return;
   }
+  const mine = apps.filter(isOnThisMac);
   const cached = apps.filter((app) => app.cached);
   const size = bytes(cached.reduce((sum, app) => sum + Number(app.cachedBytes || 0), 0));
   const pinned = apps.filter((app) => app.pinned).length;
-  node.replaceChildren(one("appsSummary", apps.length, cached.length, size, pinned));
+  node.replaceChildren(one("appsSummary", mine.length, cached.length, size, pinned));
 }
 
 function renderApps(list, failure) {
@@ -1378,7 +1394,50 @@ function renderApps(list, failure) {
     return;
   }
   const quota = Number((lastStatus && lastStatus.cache && lastStatus.cache.quotaBytes) || 0);
-  for (const app of shown) {
+  // The repo is shared by every Mac on the account. Apps offloaded on another Mac are listed
+  // apart, so they do not look like apps that vanished from this one.
+  const here = shown.filter(isOnThisMac);
+  const elsewhere = shown.filter((app) => !isOnThisMac(app));
+  for (const app of here) rootNode.append(appRow(app, quota));
+  if (!here.length) rootNode.append(el("div", "state-note", both("nothingHere")));
+  if (elsewhere.length) {
+    const group = el("details", "elsewhere");
+    group.open = elsewhereOpen;
+    group.addEventListener("toggle", () => { elsewhereOpen = group.open; });
+    const summary = el("summary", "elsewhere-head");
+    summary.append(bi("elsewhereTitle", elsewhere.length));
+    group.append(summary, el("p", "elsewhere-note", both("elsewhereNote")));
+    for (const app of elsewhere) group.append(appRow(app, quota));
+    rootNode.append(group);
+  }
+  if (focusedKey) {
+    const again = rootNode.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`);
+    if (again && !again.disabled) again.focus();
+  }
+}
+
+let elsewhereOpen = false;
+
+/// Rows from servers without `local` count as this Mac's, as before.
+function isOnThisMac(app) {
+  const local = app.local;
+  return !local || local.kind === "stub" || local.mine === true;
+}
+
+/// The full app is installed here: launching or restoring the image would fight with it.
+function fullAppHere(app) {
+  return Boolean(app.local && app.local.kind === "installed");
+}
+
+function localNote(app) {
+  const local = app.local;
+  if (!local) return "";
+  if (local.kind === "installed") return t("fullAppHere", local.version ? `v${String(local.version).replace(/^v/, "")}` : "");
+  if (local.kind === "absent") return t(local.mine ? "launcherMissing" : "notInstalledHere");
+  return "";
+}
+
+function appRow(app, quota) {
     const job = pending.get(app.name);
     const busy = Boolean(job);
     const row = el("article", "app-row");
@@ -1396,7 +1455,8 @@ function renderApps(list, failure) {
     meta.append(has(modeKey) ? bi(modeKey) : document.createTextNode(String(app.mode || "")));
     words.append(meta);
     const holders = (app.devices || []).filter(Boolean);
-    const extra = [app.lastUsed ? t("lastUsedAt", app.lastUsed) : "", holders.length ? t("onDevices", holders.join(", ")) : ""].filter(Boolean);
+    const fromKey = isOnThisMac(app) ? "onDevices" : "packedOn";
+    const extra = [localNote(app), app.lastUsed ? t("lastUsedAt", app.lastUsed) : "", holders.length ? t(fromKey, holders.join(", ")) : ""].filter(Boolean);
     if (extra.length) words.append(el("div", "app-extra", extra.join(" · ")));
     if (job) {
       const line = el("div", "job-line");
@@ -1425,15 +1485,11 @@ function renderApps(list, failure) {
     }
     open.dataset.key = `${app.name}:launch`;
     pinButton.dataset.key = `${app.name}:pin`;
-    actions.append(open, pinButton, second, overflowMenu(app, busy));
+    if (fullAppHere(app)) actions.append(pinButton, second, overflowMenu(app, busy));
+    else actions.append(open, pinButton, second, overflowMenu(app, busy));
 
     row.append(who, status, cacheCell(app, quota), actions);
-    rootNode.append(row);
-  }
-  if (focusedKey) {
-    const again = rootNode.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`);
-    if (again && !again.disabled) again.focus();
-  }
+    return row;
 }
 
 // ---- jobs -----------------------------------------------------------------

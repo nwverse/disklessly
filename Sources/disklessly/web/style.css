@@ -662,3 +662,9 @@ img.avatar { background: transparent; }
 .u-other { background: #8a8a91; }
 .u-free { background: var(--track); color: var(--muted); border: 1px dashed var(--line-strong); }
 .u-free.usage-swatch { border-style: dashed; }
+
+/* Apps offloaded on other Macs that share the repo. */
+.elsewhere { border-top: 1px solid var(--line); }
+.elsewhere-head { padding: 14px 20px; cursor: pointer; font-weight: 600; color: var(--muted); }
+.elsewhere-note { margin: 0; padding: 0 20px 10px; color: var(--muted); font-size: 12px; }
+.elsewhere .app-row { opacity: .85; }
