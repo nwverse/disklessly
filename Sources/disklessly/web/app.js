@@ -242,6 +242,10 @@ const copy = {
     usage_files: "散落文件",
     usage_rest: (n) => `其余 ${n} 项`,
     usage_other: "其他",
+    usageTips: "可以腾出空间的地方",
+    tipRemoveMacAITitle: "Apple Intelligence 模型",
+    tipRemoveMacAIBody: "“系统及其他”里有 Apple Intelligence 下载的模型，往往有好几 GB。开源工具 RemoveMacAI 可以关掉 Apple Intelligence、删掉这些模型并阻止重新下载，随时能撤销。",
+    tipRemoveMacAILink: "打开 RemoveMacAI",
     copyCommand: "复制命令",
     copyCommandFor: (name) => `复制命令：打包 ${name}`,
     copied: (name) => `已复制 ${name} 的打包命令`,
@@ -500,6 +504,10 @@ const copy = {
     usage_files: "Loose files",
     usage_rest: (n) => `${n} more`,
     usage_other: "Other",
+    usageTips: "Where to free up space",
+    tipRemoveMacAITitle: "Apple Intelligence models",
+    tipRemoveMacAIBody: "\"System & other\" includes the models Apple Intelligence downloads, often several GB. The open-source RemoveMacAI turns Apple Intelligence off, deletes those models and stops them downloading again. Every change can be undone.",
+    tipRemoveMacAILink: "Open RemoveMacAI",
     copyCommand: "Copy command",
     copyCommandFor: (name) => `Copy command to pack ${name}`,
     copied: (name) => `Copied the pack command for ${name}`,
@@ -2017,7 +2025,7 @@ function renderUsage() {
   button.firstElementChild.replaceChildren(bi(usageData && usageData.tree ? "usageRescan" : "usageScan"));
   if (scanning) button.setAttribute("aria-busy", "true"); else button.removeAttribute("aria-busy");
   if (!usageData || !usageData.tree) {
-    chart.hidden = crumbs.hidden = legend.hidden = tip.hidden = true;
+    chart.hidden = crumbs.hidden = legend.hidden = tip.hidden = document.querySelector("#usage-tips").hidden = true;
     summary.append(bi(scanning ? "usageScanning" : "usageIntro"));
     return;
   }
@@ -2087,12 +2095,44 @@ function renderUsage() {
   const rootBox = chart.firstElementChild;
   if (rootBox) rootBox.classList.remove("zoomable");
 
+  renderUsageTips(focus, trail.length === 1);
+
   legend.hidden = false;
   legend.replaceChildren();
   for (const kind of USAGE_LEGEND) {
     const item = el("li", "usage-legend-item");
     item.append(el("span", `usage-swatch u-${kind}`), bi(usageKindText[kind]));
     legend.append(item);
+  }
+}
+
+/// Tools outside Disklessly that free space Disklessly can't, shown for the
+/// whole disk and for the part of it they act on.
+const USAGE_TIPS = [
+  { id: "RemoveMacAI", kind: "system", url: "https://github.com/omlahore/RemoveMacAI" },
+];
+
+function renderUsageTips(focus, atRoot) {
+  const list = document.querySelector("#usage-tips");
+  const tips = USAGE_TIPS.filter((tip) => atRoot || focus.kind === tip.kind || focus.key === tip.kind);
+  list.hidden = !tips.length;
+  list.replaceChildren();
+  if (!tips.length) return;
+  list.append(el("h3", "usage-tips-title"));
+  list.firstChild.append(bi("usageTips"));
+  for (const tip of tips) {
+    const item = el("div", `usage-tip-item`);
+    const title = el("div", "usage-tip-head");
+    title.append(el("span", `usage-swatch u-${tip.kind}`), bi(`tip${tip.id}Title`));
+    const body = el("p", "muted small");
+    body.append(bi(`tip${tip.id}Body`));
+    const link = el("a", "link");
+    link.href = tip.url;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    link.append(bi(`tip${tip.id}Link`), document.createTextNode(" ↗"));
+    item.append(title, body, link);
+    list.append(item);
   }
 }
 
