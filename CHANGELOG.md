@@ -8,6 +8,9 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Permission onboarding in the menu-bar app. At launch it checks App Management (required to swap apps in
+  /Applications) and Full Disk Access (recommended), opens the matching System Settings pane, and floats a small
+  panel with the app icon to drag into the list there. Also under Permissions… in the menu.
 - Disk usage card in the dashboard: a flame chart of what fills the disk. Boxes zoom in; each app splits into
   bundle, cache and data, Disklessly's own cache and repo get their own box, and the rest is System & other.
   The scan only reads sizes (`du`), runs in the background on request (`POST /api/usage/scan`), and a timeout
