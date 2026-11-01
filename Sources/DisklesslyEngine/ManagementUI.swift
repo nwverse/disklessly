@@ -267,7 +267,13 @@ public enum ManagementUI {
             guard let name = appName(request) else { return failure(code: "bad_request", message: "app is required", status: 400) }
             let actions = context.actions ?? .live(engine)
             // Evicting a pinned app needs an explicit force; the page sends force=false.
-            let options = UIJobOptions(force: flag(request, "force"))
+            var options = UIJobOptions(force: flag(request, "force"))
+            if kind == .pack {
+                guard let path = packPath(request), let valid = validPackPath(path) else {
+                    return failure(code: "bad_request", message: "path must be an .app in /Applications or ~/Applications", status: 400)
+                }
+                options.path = valid
+            }
             switch context.jobs.start(kind: kind, app: name, work: { progress in try actions.perform(kind, name, options, progress) }) {
             case .started(let job):
                 var object = job.jsonObject()
@@ -407,6 +413,27 @@ public enum ManagementUI {
         return false
     }
 
+    private static func packPath(_ request: UIRequest) -> String? {
+        if let query = request.query["path"], !query.isEmpty { return query }
+        if let object = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any],
+           let path = object["path"] as? String, !path.isEmpty {
+            return path
+        }
+        return nil
+    }
+
+    /// Only a top-level `.app` folder directly inside /Applications or ~/Applications may be packed from the page.
+    static func validPackPath(_ path: String) -> String? {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard url.pathExtension == "app" else { return nil }
+        let parent = url.deletingLastPathComponent().path
+        let allowed = ["/Applications", NSHomeDirectory() + "/Applications"]
+        guard allowed.contains(parent) else { return nil }
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else { return nil }
+        return url.path
+    }
+
     private static func appName(_ request: UIRequest) -> String? {
         if let query = request.query["app"], !query.isEmpty { return query }
         if let object = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any],
@@ -469,6 +496,8 @@ public enum ManagementUI {
 /// request returns at once and the page polls `GET /api/jobs/:id`.
 public enum UIJobKind: String, CaseIterable {
     case launch, prefetch, evict, restore, unpack, pin, unpin
+    /// Offloads an installed app (`disklessly pack`). The request carries the app's `path`.
+    case pack
 
     public init?(path: String) {
         guard path.hasPrefix("/api/") else { return nil }
@@ -485,7 +514,9 @@ public enum UIJobError: Error, Equatable {
 /// Request options for a job. `force` lets evict drop a pinned app's cache.
 public struct UIJobOptions: Equatable {
     public var force: Bool
-    public init(force: Bool = false) { self.force = force }
+    /// Bundle path for `pack`.
+    public var path: String?
+    public init(force: Bool = false, path: String? = nil) { self.force = force; self.path = path }
 }
 
 public enum UIJobState: String {
@@ -640,6 +671,12 @@ public struct ManagementActions {
 
     public static func live(_ engine: DisklesslyEngine) -> ManagementActions {
         ManagementActions(perform: { kind, name, options, progress in
+            if kind == .pack {
+                guard let path = options.path else { throw DisklesslyError.usage("pack needs the app path") }
+                progress.phase("pack")
+                _ = try engine.pack(path)
+                return
+            }
             progress.phase("resolve")
             guard var manifest = engine.manifest(named: name, in: try engine.list()) else { throw UIJobError.unknownApp(name) }
             switch kind {
@@ -670,6 +707,8 @@ public struct ManagementActions {
             case .unpin:
                 progress.phase("pin")
                 try engine.setPinned(manifest, pinned: false)
+            case .pack:
+                break
             }
         })
     }

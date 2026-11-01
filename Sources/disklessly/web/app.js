@@ -142,6 +142,14 @@ const copy = {
     actionunpack: "永久还原",
     actionpin: "固定",
     actionunpin: "取消固定",
+    actionpack: "卸载",
+    phasepack: "卸载中",
+    offloadNow: "立即卸载",
+    offloadNowFor: (name) => `立即卸载 ${name}`,
+    offloading: "卸载中…",
+    confirmPackTitle: (name) => `卸载 ${name}？`,
+    confirmPackBody: (size) => `应用会被打包进仓库（约 ${size}），原位置换成一个入口，之后按需下载打开。需要先退出这个应用；可能要几分钟。`,
+    confirmPackOk: "卸载",
     phasequeued: "排队中",
     phaseresolve: "查找镜像",
     phasedownload: "下载中",
@@ -361,6 +369,14 @@ const copy = {
     actionunpack: "permanent restore",
     actionpin: "pin",
     actionunpin: "unpin",
+    actionpack: "offload",
+    phasepack: "Offloading",
+    offloadNow: "Offload now",
+    offloadNowFor: (name) => `Offload ${name} now`,
+    offloading: "Offloading…",
+    confirmPackTitle: (name) => `Offload ${name}?`,
+    confirmPackBody: (size) => `The app is packed into your repo (about ${size}) and its place gets a launcher that downloads and opens it on demand. Quit the app first. This can take a few minutes.`,
+    confirmPackOk: "Offload",
     phasequeued: "Queued",
     phaseresolve: "Finding image",
     phasedownload: "Downloading",
@@ -1381,6 +1397,7 @@ function confirmAction(kind, app) {
   const spec = {
     evict: { title: ["confirmEvictTitle", app.name], body: ["confirmEvictBody", size], ok: "confirmEvictOk", danger: true },
     restore: { title: ["confirmRestoreTitle", app.name], body: ["confirmRestoreBody"], ok: "confirmRestoreOk", danger: false },
+    pack: { title: ["confirmPackTitle", app.name], body: ["confirmPackBody", size], ok: "confirmPackOk", danger: false },
     unpack: { title: ["confirmUnpackTitle", app.name, dir], body: ["confirmUnpackBody", app.installPath || `${dir}/${app.name}.app`], ok: "confirmUnpackOk", danger: true },
   }[kind];
   const title = document.querySelector("#confirm-title");
@@ -1421,7 +1438,7 @@ async function startJob(kind, app) {
   rerenderApps();
   try {
     // Evict never forces from the page: a pinned app is refused by the server too.
-    const payload = kind === "evict" ? { app: app.name, force: false } : { app: app.name };
+    const payload = kind === "evict" ? { app: app.name, force: false } : kind === "pack" ? { app: app.name, path: app.path } : { app: app.name };
     const started = await api(`/api/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     pending.set(app.name, { kind, jobId: started.jobId, phase: started.phase || "queued" });
     rerenderApps();
@@ -1464,6 +1481,7 @@ async function pollJob(name, kind, jobId) {
   }
   pending.delete(name);
   await load();
+  if (kind === "pack") loadRecommendations(true);
 }
 
 function adoptServerJobs(status) {
@@ -1475,6 +1493,7 @@ function adoptServerJobs(status) {
 }
 
 function rerenderApps() {
+  if (lastRecommend && !recommendLoading) renderRecommend(lastRecommend, null);
   if (lastStatus) renderApps(lastStatus.apps || [], lastStatus.appsError ? { code: appsErrorCode(lastStatus), message: lastStatus.appsError } : null);
 }
 
@@ -1644,6 +1663,17 @@ function renderRecommend(report, failure) {
     words.append(el("code", "inline-command", command));
     who.append(words);
     const actions = el("div", "actions");
+    const job = pending.get(app.name);
+    const packing = Boolean(job && job.kind === "pack");
+    actions.append(actionButton({
+      labelKey: packing ? "offloading" : "offloadNow",
+      name: both("offloadNowFor", app.name),
+      icon: iconTray,
+      className: "primary",
+      busy: packing,
+      disabled: Boolean(job),
+      onClick: () => confirmAction("pack", { name: app.name, path: app.path, cachedBytes: app.sizeBytes }),
+    }));
     actions.append(actionButton({
       labelKey: "copyCommand",
       name: both("copyCommandFor", app.name),

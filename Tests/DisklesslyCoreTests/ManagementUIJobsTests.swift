@@ -78,13 +78,38 @@ final class ManagementUIJobsTests: XCTestCase {
         let server = world.server(context: context)
         try server.start()
         defer { server.stop() }
-        for kind in UIJobKind.allCases {
+        for kind in UIJobKind.allCases where kind != .pack {
             let started = try world.post(server, "/api/\(kind.rawValue)", app: "App-\(kind.rawValue)")
             XCTAssertEqual(started.status, 202, kind.rawValue)
             let id = try XCTUnwrap(started.object["jobId"] as? String)
             XCTAssertEqual(context.jobs.wait(id, timeout: 5)?.state, .done)
         }
-        XCTAssertEqual(Set(calls.values), Set(UIJobKind.allCases.map { "\($0.rawValue):App-\($0.rawValue)" }))
+        XCTAssertEqual(Set(calls.values), Set(UIJobKind.allCases.filter { $0 != .pack }.map { "\($0.rawValue):App-\($0.rawValue)" }))
+    }
+
+    func testPackJobNeedsAnInstalledAppPathAndPassesItOn() throws {
+        let world = try World()
+        defer { world.cleanup() }
+        let seen = CallLog()
+        let context = ManagementUIContext(actions: ManagementActions(perform: { kind, app, options, _ in seen.append("\(kind.rawValue):\(app):\(options.path ?? "-")") }))
+        let server = world.server(context: context)
+        try server.start()
+        defer { server.stop() }
+        func post(_ body: [String: Any]) throws -> (status: Int, object: [String: Any]) {
+            try world.postRaw(server, "/api/pack", body: try JSONSerialization.data(withJSONObject: body))
+        }
+        XCTAssertEqual(try post(["app": "X"]).status, 400, "no path")
+        XCTAssertEqual(try post(["app": "X", "path": "/tmp/X.app"]).status, 400, "outside Applications")
+        XCTAssertEqual(try post(["app": "X", "path": "/Applications/../tmp/X.app"]).status, 400, "traversal")
+        XCTAssertEqual(try post(["app": "X", "path": "/Applications"]).status, 400, "not an app")
+        XCTAssertEqual(try post(["app": "X", "path": "/Applications/Nope-\(UUID().uuidString).app"]).status, 400, "missing")
+        let installed = try FileManager.default.contentsOfDirectory(atPath: "/Applications").first { $0.hasSuffix(".app") }
+        let name = try XCTUnwrap(installed, "no app installed in /Applications")
+        let started = try post(["app": "X", "path": "/Applications/\(name)"])
+        XCTAssertEqual(started.status, 202)
+        let id = try XCTUnwrap(started.object["jobId"] as? String)
+        XCTAssertEqual(context.jobs.wait(id, timeout: 5)?.state, .done)
+        XCTAssertEqual(seen.values, ["pack:X:/Applications/\(name)"])
     }
 
     func testFailedJobsCarryStableCodes() throws {
@@ -256,6 +281,10 @@ private struct World {
 
     func post(_ server: LoopbackUIServer, _ path: String, app: String) throws -> (status: Int, object: [String: Any]) {
         try send(server, path, method: "POST", body: try JSONSerialization.data(withJSONObject: ["app": app]))
+    }
+
+    func postRaw(_ server: LoopbackUIServer, _ path: String, body: Data) throws -> (status: Int, object: [String: Any]) {
+        try send(server, path, method: "POST", body: body)
     }
 
     private func send(_ server: LoopbackUIServer, _ path: String, method: String, body: Data?) throws -> (status: Int, object: [String: Any]) {
