@@ -235,12 +235,15 @@ extension DisklesslyEngine {
             // manifest's sha256/size and the write-once checks all see ciphertext.
             var imageFile = plainFile
             var encryption: ImageManifest.Encryption?
+            var staged: URL?
+            defer { if let staged { try? FileManager.default.removeItem(at: staged) } }
             let sha: String, size: UInt64
             if request.encrypt {
                 guard let current = try ImageKeyStore.current(secrets: secrets) else {
                     throw DisklesslyError.usage("image encryption is on but this Mac has no image key; run disklessly images key init")
                 }
                 imageFile = plainFile.appendingPathExtension("dkli")
+                staged = imageFile
                 let sealed = try ImageCrypto.seal(plainFile, to: imageFile, key: current.key)
                 encryption = ImageManifest.Encryption(scheme: ImageCrypto.scheme, keyId: current.id, plainSha256: sealed.plainSha256, plainSize: sealed.plainSize)
                 sha = sealed.sha256
@@ -249,7 +252,6 @@ extension DisklesslyEngine {
                 sha = try SHA256Digest.hexFile(plainFile)
                 size = try ChunkedIO.byteCount(plainFile)
             }
-            defer { if imageFile != plainFile { try? FileManager.default.removeItem(at: imageFile) } }
             let image = ImageManifest.Image(file: "images/\(imageId).dmg", format: request.imageFormat, sha256: sha, size: size, volumeName: request.volumeName, appPathInVolume: request.appPathInVolume, encryption: encryption)
             let app = ImageManifest.App(originalPath: request.originalPath, executable: request.executable, documentTypes: request.documentTypes, urlTypes: request.urlTypes, cdhash: request.cdhash, treeHash: request.postImageTreeHash ?? request.identity.treeHash)
             var manifest = ImageManifest(bundleId: request.identity.bundleId, name: request.name, version: request.identity.version, image: image, app: app, mode: request.mode, createdAt: now, build: request.identity.build, architectures: request.identity.architectures, contentTreeHash: request.identity.treeHash, imageId: imageId)
