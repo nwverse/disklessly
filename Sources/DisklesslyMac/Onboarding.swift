@@ -155,9 +155,9 @@ private struct OnboardingView: View {
                 PermissionRow(permission: permission, model: model, open: open)
             }
             VStack(alignment: .leading, spacing: 2) {
-                Text("在系统设置里，把上面的 Disklessly 图标（或弹出的小窗里的图标）拖进列表，再打开开关。")
+                Text("在系统设置里打开 Disklessly 的开关；列表里没有它时，把图标（或下方小窗里的图标）拖进去。macOS 不会为这两项弹出允许对话框。")
                     .font(.callout)
-                Text("In System Settings, drag the Disklessly icon into the list and turn it on.")
+                Text("Turn Disklessly on in System Settings; drag the icon in if it is not listed. macOS shows no prompt for these two.")
                     .font(.caption).foregroundColor(.secondary)
                 Text("开关已打开但仍显示未授权时，重新打开 Disklessly 即可生效。")
                     .font(.caption).foregroundColor(.secondary).padding(.top, 4)
@@ -188,8 +188,9 @@ private struct DragHelperView: View {
                 if model.state(permission) == .granted {
                     Label("\(permission.zh)已授权", systemImage: "checkmark.circle.fill").foregroundColor(.green).font(.headline)
                 } else {
-                    Text("把图标拖进「\(permission.zh)」列表").font(.headline)
-                    Text("Drag the icon into the \(permission.en) list, then turn it on.").font(.caption).foregroundColor(.secondary)
+                    Text("在「\(permission.zh)」里打开 Disklessly 的开关").font(.headline)
+                    Text("列表里没有 Disklessly 时，把图标拖进去。").font(.caption)
+                    Text("Turn Disklessly on under \(permission.en); if it is not listed, drag the icon in.").font(.caption).foregroundColor(.secondary)
                 }
             }
             Spacer(minLength: 8)
