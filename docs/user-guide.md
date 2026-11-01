@@ -433,7 +433,7 @@ adds Foundation error details. After an upgrade run `disklessly install-engine` 
 ### Free version and license
 
 The free version offloads up to 2 items at once: apps and files or folders offloaded with `offload`, counted together. Bringing files back is always free. Starting, restoring (`unpack`), evicting and detaching apps
-you already offloaded never needs a license; only `pack` checks the limit, and re-packing an offloaded app
+you already offloaded never needs a license; only `pack` and `offload` check the limit, and re-packing an offloaded app
 is not a new app. A license code lifts the limit: `disklessly license activate CODE` (also `license`,
 `license deactivate`, and the License card in the dashboard). Codes are verified offline. A buyout code does
 not expire; a promo code has a last day, after which the free limit applies again.

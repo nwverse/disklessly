@@ -17,7 +17,7 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `disklessly fetch PLACEHOLDER` brings it back. Open files, app bundles and their contents, `~/Library`, VM disks
   and Disklessly's own folders are refused. See `docs/files.md`.
 - `disklessly files` and a "Large files and folders" list under Worth offloading in the dashboard. They show files and
-  whole folders of 500 MiB or more not opened for 30 days, using Spotlight's last-used date, else mtime/atime. The scan
+  whole folders of 500 MiB or more not opened for 30 days, using the newest of Spotlight's last-used date, mtime and atime. The scan
   skips hidden and tool folders, source checkouts, package stores, iCloud items and running VM images. Each row has an
   Offload now button (`POST /api/offloadfile`, `GET /api/files`, `POST /api/files/scan`).
 - Finder right-click: Services → "Offload with Disklessly" and "Bring back with Disklessly". `.disklessly`

@@ -22,7 +22,8 @@ choose **Services → Bring back with Disklessly**, or run `disklessly fetch`. R
    - the standard folders themselves (`~/Downloads`), though what is inside them is allowed;
    - app bundles and anything inside one (use `pack` for apps);
    - photo and music libraries, VM bundles and disks (`.utm`, `.vmwarevm`, `.pvm`, `.vmdk`, `.qcow2`, …) and sparse images;
-   - symbolic links, existing placeholders, and anything that holds Disklessly's own repo, cache or state.
+   - symbolic links, existing placeholders, and anything that holds Disklessly's own repo, cache or state;
+   - items in iCloud Drive (iCloud already offloads them, and deleting one deletes it on every device).
 
    A file that any process has open (`lsof`), or a folder with an open file inside (`lsof +D`), is refused with exit 9.
 2. **Free limit.** Offloaded files and folders count toward the free limit together with offloaded apps. See below.
@@ -30,16 +31,20 @@ choose **Services → Bring back with Disklessly**, or run `disklessly fetch`. R
    streams, and uploaded as one `.tar.zst`. The repo path is content-addressed: `files/objects/<sha256>.bin` or
    `files/objects/<sha256>.tar.zst`. The object is published write-once, so an existing object with other bytes is
    never overwritten.
-4. **Verify.** The object is read back from the repo in ranges and hashed. The original is deleted only when that hash
-   matches. Before deleting, Disklessly checks again that the original did not change (size, mtime and inode; for a
+4. **Verify.** The repo copy is hashed again: in place for a file-backed repo (local folder, iCloud, SMB/NFS), or after
+   one download into the cache for WebDAV and OpenList, so that needs the stored size free there. The original is
+   deleted only when that hash matches. Before deleting, Disklessly checks again that the original did not change (size, mtime and inode; for a
    folder, the tree) and that nothing opened it during the upload.
 5. **Placeholder.** `Name.ext.disklessly` is a small JSON file (`schema: file/1`) with:
    - the id, kind, name and logical size;
    - the object path, its sha256 and stored size;
    - the repo id, the original path, the mtime and permissions.
 
-   It gets the Finder tag `Disklessly`. It is written before the original is removed. If Disklessly crashes in
-   between, both are left, and `fetch` keeps the original once it matches the hash.
+   It gets the Finder tag `Disklessly`. It is written before the original is removed. The original is first renamed
+   aside (`.Name.disklessly-removing-…`) and then deleted. If the delete stops halfway, for example on a locked file,
+   the placeholder stays, because the repo copy is complete, and Disklessly reports the leftover. If Disklessly crashes
+   between writing the placeholder and the rename, both are left. For a file, `fetch` then keeps the original once
+   it matches the hash. For a folder, `fetch` refuses with "already exists"; delete the placeholder yourself.
 6. **Registry.** `<stateDir>/files/offloaded.json` lists the placeholders on this Mac. It is used for counting. The
    placeholder itself is the source of truth, so a placeholder copied to another Mac that uses the same repo can be
    fetched there.
@@ -61,9 +66,9 @@ another repo is refused.
 
 The large-file scan walks the home folder in the background (`POST /api/files/scan`, `GET /api/files`). It has a
 timeout and keeps what it found. It lists files of at least 500 MiB whose last use is older than 30 days. The last use
-is Spotlight's `kMDItemLastUsedDate`, or the newer of mtime and atime when Spotlight has no date. It also lists whole
-folders, at least two levels down (`~/Documents/Old Project`), when they are that large and nothing in them changed
-in that time. Then nothing inside such a folder is listed separately.
+is the newest of Spotlight's `kMDItemLastUsedDate`, the mtime and the atime, so a file some tool rewrote yesterday is
+not idle. It also lists whole folders, at least two levels down (`~/Documents/Old Project`), when they are that large
+and nothing in them was changed or read in that time. Then nothing inside such a folder is listed separately.
 
 The scan skips:
 
@@ -85,6 +90,8 @@ back is always free.
 
 ## Not yet
 
+- **Extended attributes of single files.** Finder tags and comments on a file do not survive the round trip,
+  because the file is stored as plain bytes. A folder keeps them, because tar stores them.
 - **Encryption.** Image encryption has not landed. File objects are stored as they are, so a repo on a shared server
   can read them. When image encryption lands, file objects should use the same key and AES-GCM framing (`codec`
   gains an encrypted variant and the placeholder schema stays `file/1` with a new field).

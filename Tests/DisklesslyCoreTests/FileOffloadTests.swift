@@ -45,9 +45,11 @@ final class FileOffloadTests: XCTestCase {
         return url
     }
 
+    /// Sets both atime and mtime `days` back.
     private func age(_ url: URL, _ days: Double) throws {
-        let date = Date().addingTimeInterval(-days * 86_400)
-        try FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: url.path)
+        let seconds = Int(Date().addingTimeInterval(-days * 86_400).timeIntervalSince1970)
+        var times = [timeval(tv_sec: seconds, tv_usec: 0), timeval(tv_sec: seconds, tv_usec: 0)]
+        XCTAssertEqual(utimes(url.path, &times), 0)
     }
 
     /// Relative path, kind, size, content hash and mtime (seconds) of everything under `folder`.
@@ -182,6 +184,36 @@ final class FileOffloadTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: result.placeholderPath))
         let parent = (try? FileManager.default.contentsOfDirectory(atPath: home.appendingPathComponent("Documents").path)) ?? []
         XCTAssertEqual(parent, ["Project"], "no staging leftovers")
+    }
+
+    func testScannerTreatsARecentAccessAsUse() throws {
+        let min = 64 * 1024
+        let file = try write("Downloads/watched.mov", bytes: min * 2, age: 90)
+        let seconds = Int(Date().timeIntervalSince1970)
+        let old = Int(Date().addingTimeInterval(-90 * 86_400).timeIntervalSince1970)
+        var times = [timeval(tv_sec: seconds, tv_usec: 0), timeval(tv_sec: old, tv_usec: 0)]
+        XCTAssertEqual(utimes(file.path, &times), 0)
+        let scan = LargeFileScan.scan(root: home, protected: [], options: LargeFileOptions(minBytes: UInt64(min), minIdleDays: 30), lastUsed: { _ in Date.distantPast.addingTimeInterval(1) }, openPaths: { _ in [] })
+        XCTAssertTrue(scan.items.isEmpty, "\(scan.items)")
+    }
+
+    func testAFolderDeleteThatStopsHalfwayKeepsThePlaceholder() throws {
+        #if os(macOS)
+        let engine = try engine()
+        let locked = try write("Documents/Stuck/inner/locked.bin", bytes: 1_000)
+        try write("Documents/Stuck/other.bin", bytes: 2_000)
+        XCTAssertEqual(chflags(locked.path, UInt32(UF_IMMUTABLE)), 0)
+        let result = try engine.offloadFile(home.appendingPathComponent("Documents/Stuck").path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.placeholderPath), "the placeholder points at the complete repo copy")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.appendingPathComponent("Documents/Stuck").path))
+        XCTAssertTrue(result.warnings.contains { $0.contains("could not delete") }, "\(result.warnings)")
+        XCTAssertEqual(engine.offloadedFileCount(), 1)
+        // Clean up the leftover so the temp folder can be removed.
+        let documents = home.appendingPathComponent("Documents")
+        for name in try FileManager.default.contentsOfDirectory(atPath: documents.path) where name.contains("disklessly-removing") {
+            _ = chflags(documents.appendingPathComponent(name).appendingPathComponent("inner/locked.bin").path, 0)
+        }
+        #endif
     }
 
     func testOpenFileIsRefusedAndKept() throws {

@@ -31,6 +31,8 @@ extension DisklesslyEngine {
         let url = URL(fileURLWithPath: path).standardizedFileURL
         var info = stat()
         guard lstat(url.path, &info) == 0 else { return "does not exist" }
+        // iCloud Drive syncs it already; deleting it would delete it on every device.
+        if (try? url.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem) == true { return "is in iCloud Drive, which already offloads it" }
         let kind = info.st_mode & S_IFMT
         guard kind == S_IFREG || kind == S_IFDIR || kind == S_IFLNK else { return "is not a regular file or folder" }
         return FileOffloadPolicy.refusal(path: url.path, home: homeDirectory, protected: protectedPaths, isDirectory: kind == S_IFDIR, isSymlink: kind == S_IFLNK)
@@ -93,7 +95,7 @@ extension DisklesslyEngine {
         guard let remote = try backend.stat(object), remote.size == stored else {
             throw DisklesslyError.integrity("the repo copy of \(source.lastPathComponent) has the wrong size; the original was not changed")
         }
-        let readBack = try SHA256Digest.hexRemote(backend: backend, path: object, size: stored)
+        let readBack = try readBackDigest(backend, object, size: stored)
         guard readBack == sha else {
             throw DisklesslyError.integrity("the repo copy of \(source.lastPathComponent) does not match (sha256 \(readBack), expected \(sha)); the original was not changed")
         }
@@ -106,6 +108,9 @@ extension DisklesslyEngine {
         // and `fetch` then sees the original and only removes the placeholder.
         try Self.writeExclusively(placeholder.encode(), to: placeholderURL)
         Self.tagPlaceholder(placeholderURL)
+        // The original is renamed aside first, so a failure before that point changes nothing,
+        // and a delete that stops halfway still leaves the placeholder pointing at the whole copy.
+        let aside = source.deletingLastPathComponent().appendingPathComponent(".\(source.lastPathComponent).disklessly-removing-\(UUID().uuidString)")
         do {
             if try fingerprint(source, folder: isFolder) != before {
                 throw DisklesslyError.busy("\(source.lastPathComponent) changed while it was uploaded; it was kept and the placeholder removed")
@@ -114,22 +119,31 @@ extension DisklesslyEngine {
                 throw DisklesslyError.busy("\(source.lastPathComponent) was opened while it was uploaded; it was kept and the placeholder removed")
             }
             progress("remove")
-            try FileManager.default.removeItem(at: source)
+            try FileManager.default.moveItem(at: source, to: aside)
         } catch {
             try? FileManager.default.removeItem(at: placeholderURL)
             throw error
         }
-        try OffloadedFileRegistry.update(stateDir: config.stateDir) { records in
-            records.removeAll { $0.placeholderPath == placeholderURL.path }
-            records.append(OffloadedFileRecord(id: placeholder.id, placeholderPath: placeholderURL.path, name: placeholder.name, kind: kind, size: logical, object: object, createdAt: placeholder.createdAt))
-        }
         var warnings: [String] = []
+        if (try? FileManager.default.removeItem(at: aside)) == nil, FileManager.default.fileExists(atPath: aside.path) {
+            warnings.append("could not delete all of \(aside.path); the repo copy is complete, so delete what is left yourself")
+        }
+        do {
+            try OffloadedFileRegistry.update(stateDir: config.stateDir) { records in
+                records.removeAll { $0.placeholderPath == placeholderURL.path }
+                records.append(OffloadedFileRecord(id: placeholder.id, placeholderPath: placeholderURL.path, name: placeholder.name, kind: kind, size: logical, object: object, createdAt: placeholder.createdAt))
+            }
+        } catch {
+            warnings.append("offloaded, but the local list of offloaded files could not be updated: \(error.localizedDescription)")
+        }
         if let root = backend.localRoot() {
             let objectURL = root.appendingPathComponent(object)
             if ICloudFolderBackend.looksLikeICloud(root) {
                 // The space comes back once iCloud has uploaded the object and drops the local copy.
+                #if os(macOS)
                 do { try FileManager.default.evictUbiquitousItem(at: objectURL) }
                 catch { warnings.append("iCloud keeps a local copy of \(object) until it finishes uploading; run `disklessly evict-local` later to free the space") }
+                #endif
             } else if PackPreflight.deviceID(root.path) == PackPreflight.deviceID(placeholderURL.deletingLastPathComponent().path) {
                 warnings.append("the repo is on this disk, so offloading \(source.lastPathComponent) frees no space here")
             }
@@ -191,6 +205,24 @@ extension DisklesslyEngine {
         try FileManager.default.moveItem(at: ready, to: target)
         try finishFetch(placeholderURL)
         return target
+    }
+
+    /// SHA-256 of the object as the repo now holds it. A file-backed repo is hashed in place; an HTTP
+    /// repo is downloaded once into the cache, since ranged reads there may resend the rest of the object.
+    private func readBackDigest(_ backend: any StorageBackend, _ object: String, size: UInt64) throws -> String {
+        if let root = backend.localRoot() {
+            let file = root.appendingPathComponent(object)
+            _ = try backend.stat(object)
+            return try SHA256Digest.hexFile(file)
+        }
+        let free = try VolumeSpace.availableBytes(at: config.cacheDir)
+        guard SpaceFloor.admits(freeBytes: free, incoming: size, floor: config.minFreeBytes) else {
+            throw DisklesslyError.noSpace("checking the repo copy needs \(size) bytes in \(config.cacheDir), which has \(free) free above the \(config.minFreeBytes) byte floor; the original was not changed")
+        }
+        let temp = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("verify-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: temp) }
+        _ = try backend.download(object, to: temp, offset: 0)
+        return try SHA256Digest.hexFile(temp)
     }
 
     private func finishFetch(_ placeholderURL: URL) throws {

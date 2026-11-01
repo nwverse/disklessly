@@ -91,18 +91,19 @@ public enum LargeFileScan {
                     summary.blocked = summary.blocked || inner.blocked
                     if depth >= 1, !inner.blocked, inner.bytes >= options.minBytes, inner.newest < cutoff {
                         let used = lastUsed(child)
-                        if used.map({ $0 < cutoff }) ?? true {
+                        if (used ?? .distantPast) < cutoff {
                             folders.append(LargeFileItem(path: path, name: name, kind: .folder, bytes: inner.bytes, lastUsed: max(used ?? .distantPast, inner.newest)))
                         }
                     }
                 } else if values.isRegularFile == true {
                     let bytes = UInt64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
-                    let modified = values.contentModificationDate ?? .distantPast
+                    // The newest of every signal: a file a tool rewrote yesterday is not idle, whatever Spotlight says.
+                    let modified = max(values.contentModificationDate ?? .distantPast, values.contentAccessDate ?? .distantPast)
                     summary.bytes += bytes
                     summary.newest = max(summary.newest, modified)
                     if FileOffloadPolicy.skipsFile(name: name) { summary.blocked = true; continue }
                     guard bytes >= options.minBytes else { continue }
-                    let used = lastUsed(child) ?? max(modified, values.contentAccessDate ?? .distantPast)
+                    let used = max(lastUsed(child) ?? .distantPast, modified)
                     if used < cutoff {
                         files.append(LargeFileItem(path: path, name: name, kind: .file, bytes: bytes, lastUsed: used == .distantPast ? nil : used))
                     } else {

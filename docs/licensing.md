@@ -1,7 +1,8 @@
 # Licensing (maintainers)
 
-Disklessly is a buyout product with a free tier: up to 2 offloaded apps at once without a code
-(`License.freeAppLimit`). Only `pack` checks it. A code is `DSL1.<payload>.<signature>`, base64url, with an
+Disklessly is a buyout product with a free tier: up to 2 offloaded items at once without a code
+(`License.freeAppLimit`): apps and files or folders offloaded with `disklessly offload`, counted together. Only `pack`
+and `offload` check it; bringing anything back never does. A code is `DSL1.<payload>.<signature>`, base64url, with an
 Ed25519 signature over the JSON payload. The app embeds only the public key
 (`License.publicKeyBase64`); it never contacts a server to check a code.
 

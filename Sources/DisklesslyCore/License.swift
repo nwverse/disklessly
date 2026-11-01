@@ -45,8 +45,8 @@ public enum LicenseState: Equatable {
     }
 }
 
-/// Free tier and license codes. Only `pack` checks the limit: starting, restoring, unpacking,
-/// evicting and detaching already packed apps never depend on a license.
+/// Free tier and license codes. Only `pack` and `offload` check the limit: starting, restoring, unpacking,
+/// evicting and detaching already packed apps, and fetching offloaded files, never depend on a license.
 public enum License {
     public static let product = "disklessly"
     /// Apps, files and folders that may be offloaded at the same time without a license.

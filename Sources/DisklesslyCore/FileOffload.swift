@@ -187,7 +187,12 @@ public enum OffloadedFileRegistry {
         load(stateDir: stateDir).filter { FileManager.default.fileExists(atPath: $0.placeholderPath) }
     }
 
+    private static let lock = NSLock()
+
+    /// Read-modify-write under a process-wide lock; dashboard jobs run concurrently.
     public static func update(stateDir: String, _ change: (inout [OffloadedFileRecord]) -> Void) throws {
+        lock.lock()
+        defer { lock.unlock() }
         var records = load(stateDir: stateDir)
         change(&records)
         let encoder = JSONEncoder()
@@ -196,24 +201,5 @@ public enum OffloadedFileRegistry {
         let target = url(stateDir: stateDir)
         try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
         try encoder.encode(records).write(to: target, options: .atomic)
-    }
-}
-
-extension SHA256Digest {
-    /// Hashes a repo object by reading it back in ranges, without keeping a local copy.
-    /// This is the check that runs before the original is deleted.
-    public static func hexRemote(backend: any StorageBackend, path: String, size: UInt64, chunk: UInt64 = 8 << 20) throws -> String {
-        var hasher = Hasher()
-        var offset: UInt64 = 0
-        while offset < size {
-            let end = min(size, offset + chunk)
-            let data = try backend.get(path, range: offset..<end)
-            guard UInt64(data.count) == end - offset else {
-                throw DisklesslyError.integrity("reading back \(path) returned \(data.count) bytes at offset \(offset), expected \(end - offset)")
-            }
-            hasher.update(data)
-            offset = end
-        }
-        return hasher.finalize()
     }
 }

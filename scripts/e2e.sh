@@ -569,7 +569,7 @@ pass 'pack of a running app exits 9'
 # Large files: offload a file and a folder, then bring both back through the placeholders.
 FILES_HOME="$TMP/files-home"
 mkdir -p "$FILES_HOME/Downloads/Old Project/sub"
-head -c 2500000 /dev/urandom > "$FILES_HOME/Downloads/movie.mov"
+head -c 20000000 /dev/urandom > "$FILES_HOME/Downloads/movie.mov"
 printf 'notes\n' > "$FILES_HOME/Downloads/Old Project/notes.txt"
 head -c 300000 /dev/urandom > "$FILES_HOME/Downloads/Old Project/sub/data.bin"
 FILE_SHA="$(shasum -a 256 "$FILES_HOME/Downloads/movie.mov" | cut -d' ' -f1)"
