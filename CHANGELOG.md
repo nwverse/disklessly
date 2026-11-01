@@ -8,6 +8,11 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Disk usage card in the dashboard: a flame chart of what fills the disk. Boxes zoom in; each app splits into
+  bundle, cache and data, Disklessly's own cache and repo get their own box, and the rest is System & other.
+  The scan only reads sizes (`du`), runs in the background on request (`POST /api/usage/scan`), and a timeout
+  keeps what finished.
+- Offload now button on the recommendations: the dashboard packs the app itself, with a confirm dialog and progress.
 - Free version limit and license codes. The free version offloads up to 2 apps at once; `disklessly license
   [status|activate CODE|deactivate]` and a License card in the dashboard manage an Ed25519-signed code that is
   verified offline. Only `pack` checks the limit (exit code 15, `license_required` in the dashboard API).
