@@ -95,7 +95,7 @@ final class LinuxSupportTests: XCTestCase {
 
     func testLinuxStoreUsesSecretToolWithADBusSessionAndReadsTheFileToo() throws {
         let bin = try fakeSecretTool()
-        let env = ["PATH": bin.path, "DBUS_SESSION_BUS_ADDRESS": "unix:path=/x", "XDG_CONFIG_HOME": root.path]
+        let env = ["PATH": bin.path, "DBUS_SESSION_BUS_ADDRESS": "unix:path=/x", "WAYLAND_DISPLAY": "wayland-0", "XDG_CONFIG_HOME": root.path]
         // A secret saved to the file before the keyring was used is still found.
         try FileSecretStore(url: FileSecretStore.defaultURL(environment: env, home: "/unused")).save(service: "svc", account: "old", secret: "from-file")
         let store = LinuxSecretStore(environment: env, home: "/unused")
@@ -107,16 +107,34 @@ final class LinuxSupportTests: XCTestCase {
         XCTAssertNil(try store.load(service: "svc", account: "missing"))
     }
 
-    func testLinuxStoreWithoutDBusUsesTheFile() throws {
+    func testLinuxStoreWithoutADesktopSessionUsesTheFile() throws {
         let bin = try fakeSecretTool()
-        let env = ["PATH": bin.path, "XDG_CONFIG_HOME": root.path]
-        let store = LinuxSecretStore(environment: env, home: "/unused")
-        try store.save(service: "svc", account: "a", secret: "x")
-        XCTAssertEqual(try store.file.load(service: "svc", account: "a"), "x")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("keyring/svc--a").path))
+        // No D-Bus at all, and an SSH login (D-Bus from pam_systemd but no display).
+        for env in [["PATH": bin.path, "XDG_CONFIG_HOME": root.path],
+                    ["PATH": bin.path, "XDG_CONFIG_HOME": root.path, "DBUS_SESSION_BUS_ADDRESS": "unix:path=/run/user/1000/bus"]] {
+            let store = LinuxSecretStore(environment: env, home: "/unused")
+            XCTAssertNil(store.tool)
+            try store.save(service: "svc", account: "a", secret: "x")
+            XCTAssertEqual(try store.file.load(service: "svc", account: "a"), "x")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("keyring/svc--a").path))
+        }
 
         let forced = LinuxSecretStore(environment: ["PATH": "/nonexistent", "DISKLESSLY_SECRET_STORE": "secret-tool", "XDG_CONFIG_HOME": root.path], home: "/unused")
         XCTAssertThrowsError(try forced.save(service: "svc", account: "a", secret: "x"))
+    }
+
+    func testAFailingSecretToolIsNotAskedAgain() throws {
+        let bin = root.appendingPathComponent("broken")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        let tool = bin.appendingPathComponent("secret-tool")
+        try "#!/bin/sh\necho 'Cannot autolaunch D-Bus' >&2\nexit 1\n".write(to: tool, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tool.path)
+        let store = LinuxSecretStore(environment: ["PATH": bin.path, "DBUS_SESSION_BUS_ADDRESS": "x", "DISPLAY": ":0", "XDG_CONFIG_HOME": root.path], home: "/unused")
+        XCTAssertNotNil(store.tool)
+        XCTAssertNil(try store.load(service: "svc", account: "a"))
+        XCTAssertNil(store.tool, "the file is used for the rest of the run")
+        try store.save(service: "svc", account: "a", secret: "x")
+        XCTAssertEqual(try store.file.load(service: "svc", account: "a"), "x")
     }
 
     func testLinuxUsageGivesAppsTheirDataAndCountsDotFoldersOnce() {

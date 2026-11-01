@@ -18,9 +18,12 @@ jobs:
     container: swift:${{ matrix.swift }}-jammy
     steps:
       - uses: actions/checkout@v4
-      - name: Install SQLite headers
-        run: apt-get update && apt-get install -y libsqlite3-dev g++
+      - name: Install SQLite headers and test tools
+        # python3 and sqlite3 back the WebDAV/OpenList fixtures and the index tests.
+        run: apt-get update && apt-get install -y libsqlite3-dev g++ python3 sqlite3 curl
       - name: Build
         run: swift build
       - name: Test
         run: swift test --parallel
+      - name: Smoke-run the CLI
+        run: bash scripts/linux-smoke.sh "$(swift build --show-bin-path)/disklessly"

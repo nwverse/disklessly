@@ -90,14 +90,15 @@ public final class FileSecretStore: SecretStore {
 /// `FileSecretStore` as the fallback. Secrets go to `secret-tool` on stdin, never in argv.
 ///
 /// `DISKLESSLY_SECRET_STORE=file` forces the file; `secret-tool` forces the Secret
-/// Service. The default uses the Secret Service only when a D-Bus session is present,
-/// because without one `secret-tool` fails or waits on an unlock prompt nobody sees.
+/// Service. The default uses the Secret Service only in a desktop session (D-Bus and
+/// a display). SSH logins get a D-Bus address from pam_systemd too, but there the
+/// keyring is usually locked and its unlock prompt has nowhere to appear.
 public final class LinuxSecretStore: SecretStore {
     public enum Mode: String { case auto, file, secretTool = "secret-tool" }
 
     public let file: FileSecretStore
     let mode: Mode
-    let tool: String?
+    private(set) var tool: String?
     /// Seconds before an unanswered `secret-tool` (an unlock prompt) is given up on.
     let timeout: TimeInterval
 
@@ -110,14 +111,21 @@ public final class LinuxSecretStore: SecretStore {
         switch mode {
         case .file: tool = nil
         case .secretTool: tool = found
-        case .auto: tool = (environment["DBUS_SESSION_BUS_ADDRESS"] ?? "").isEmpty ? nil : found
+        case .auto:
+            let has = { (key: String) in !(environment[key] ?? "").isEmpty }
+            tool = has("DBUS_SESSION_BUS_ADDRESS") && (has("DISPLAY") || has("WAYLAND_DISPLAY")) ? found : nil
         }
     }
 
     /// The Secret Service first, then the file, so a secret saved before a switch is still found.
     public func load(service: String, account: String) throws -> String? {
-        if let tool, case .found(let secret) = run(tool, ["lookup", "service", service, "account", account], stdin: nil) {
-            return secret
+        if let tool {
+            switch run(tool, ["lookup", "service", service, "account", account], stdin: nil) {
+            case .found(let secret): return secret
+            case .missing: break
+            // In auto mode one failure (no keyring daemon, a timeout) means the file from now on.
+            case .failed: if mode == .auto { self.tool = nil }
+            }
         }
         if mode == .secretTool && tool == nil { throw DisklesslyError.unsupported("secret-tool is not installed; install libsecret-tools or set DISKLESSLY_SECRET_STORE=file") }
         return try file.load(service: service, account: account)
@@ -132,6 +140,7 @@ public final class LinuxSecretStore: SecretStore {
                 return
             case .failed(let detail):
                 if mode == .secretTool { throw DisklesslyError.backend("secret-tool store failed: \(detail)") }
+                self.tool = nil
                 FileHandle.standardError.write(Data("disklessly: warning: Secret Service unavailable (\(detail)); saved \(account) to \(file.url.path) (mode 0600) instead.\n".utf8))
             }
         } else if mode == .secretTool {

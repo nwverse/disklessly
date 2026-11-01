@@ -82,7 +82,7 @@ Other
 
 Offloading apps (pack, launch, unpack, recommend, stubs, ...) is macOS only; see docs/linux.md.
 SMB and NFS shares must already be mounted; pass their folder with --mount.
-Secrets go to the Secret Service through secret-tool when a D-Bus session is up, otherwise to
+Secrets go to the Secret Service through secret-tool in a desktop session (D-Bus and a display), otherwise to
   ${XDG_CONFIG_HOME:-~/.config}/disklessly/secrets.json (mode 0600). DISKLESSLY_SECRET_STORE=file|secret-tool forces one.
 --json is accepted before or after the command.
 Environment overrides: DISKLESSLY_REPO_PATH, DISKLESSLY_CACHE_DIR, DISKLESSLY_STATE_DIR,

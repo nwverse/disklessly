@@ -305,7 +305,7 @@ disklessly sessions --apply    # 归档 14 天没动过的会话（--days N 可�
   及更新版本一般都自带）。
 - 状态在 `~/.local/share/disklessly`，缓存在 `~/.cache/disklessly`，默认仓库在 `~/.local/share/disklessly/repo`。
   用 `disklessly init --root 目录` 或 `disklessly backend add` 换到 NAS 等别的位置。
-- 密码和会话密钥：有桌面会话（D-Bus）时存进系统密钥环（`secret-tool`），否则存进
+- 密码和会话密钥：在桌面会话里（有 D-Bus 和显示器）存进系统密钥环（`secret-tool`），SSH 登录等情况存进
   `~/.config/disklessly/secrets.json`（权限 0600）。用了 `--encrypt` 就要备份这个文件，丢了密钥就读不回加密归档。
 - SMB/NFS 共享要先由系统挂载好，再用 `--mount 目录` 指给 Disklessly。
 - 磁盘占用图会把 `/opt`、Flatpak、Snap 应用和它们的数据算在「应用」里，`~` 下的隐藏目录算在「应用数据」里。
@@ -451,6 +451,6 @@ Unpack the `disklessly-<version>-linux-<arch>.tar.gz` tarball keeping `bin/` and
 `share/disklessly/web` together. It needs glibc 2.34+, libsqlite3, libcurl, and libxml2. State is in
 `~/.local/share/disklessly`, the cache in `~/.cache/disklessly`, and the default repo
 in `~/.local/share/disklessly/repo`. Secrets go to the Secret Service through
-`secret-tool` when a D-Bus session is up, else to `~/.config/disklessly/secrets.json`
+`secret-tool` in a desktop session (D-Bus and a display), else to `~/.config/disklessly/secrets.json`
 (0600); back it up if you use `--encrypt`. Mount SMB/NFS shares yourself and pass
 `--mount DIR`. See [linux.md](linux.md) for details and the AppImage plan.

@@ -38,10 +38,12 @@ XDG base directories, lower-case `disklessly`:
 
 Backend passwords and the session encryption key go to:
 
-1. The Secret Service (GNOME Keyring, KWallet) through `secret-tool`, when it is on
-   `PATH` and `DBUS_SESSION_BUS_ADDRESS` is set. The secret is written to
-   `secret-tool`'s stdin, never its arguments. A call that does not answer in 15 s
-   (a locked keyring waiting on a prompt over SSH) falls back to the file.
+1. The Secret Service (GNOME Keyring, KWallet) through `secret-tool`, in a desktop
+   session: `secret-tool` on `PATH`, `DBUS_SESSION_BUS_ADDRESS` set, and `DISPLAY` or
+   `WAYLAND_DISPLAY` set. SSH logins usually get a D-Bus address from pam_systemd but
+   no display, and use the file. The secret is written to `secret-tool`'s stdin, never
+   its arguments. A call that fails or does not answer in 15 s (a locked keyring)
+   falls back to the file for the rest of the run.
 2. Otherwise `secrets.json`, created 0600 in a 0700 folder and replaced atomically.
 
 Reads check the Secret Service first and then the file, so a secret saved before

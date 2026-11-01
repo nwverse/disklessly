@@ -1827,13 +1827,13 @@ function render(status) {
   lastStatus = status;
   applyChrome();
   renderOnboarding(status);
-  applyPlatform();
   renderBackend(status.backend || null);
   renderCache(status.cache || null);
   if (status.appsError) showBanner(appsErrorCode(status), status.appsError);
   rerenderApps();
   renderDevices(status);
   renderSessions(status.sessions || null);
+  applyPlatform();
 }
 
 function renderFailure() {
@@ -1844,6 +1844,7 @@ function renderFailure() {
   renderApps([], loadError || { code: "offline", message: "" });
   renderDevices(null);
   renderSessions(null);
+  applyPlatform();
 }
 
 // ---- license --------------------------------------------------------------
