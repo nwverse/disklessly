@@ -2050,7 +2050,9 @@ function renderUsage() {
   legend.replaceChildren();
   for (const kind of USAGE_LEGEND) {
     const item = el("li", "usage-legend-item");
-    item.append(el("span", `usage-swatch u-${kind}`), bi(usageKindText[kind]));
+    // Linux names the "library" box App data (the dot folders under ~).
+    const text = kind === "library" && !appsSupported() ? "usage_appdata" : usageKindText[kind];
+    item.append(el("span", `usage-swatch u-${kind}`), bi(text));
     legend.append(item);
   }
 }
