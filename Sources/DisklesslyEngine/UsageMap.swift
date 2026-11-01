@@ -13,13 +13,16 @@ public struct UsageNode: Equatable {
     public var kind: Kind
     public var bytes: UInt64
     public var children: [UsageNode]
+    /// A cleanup the page can offer on this box (`UsageCleanup` id).
+    public var action: String?
 
-    public init(name: String, key: String? = nil, kind: Kind, bytes: UInt64 = 0, children: [UsageNode] = []) {
+    public init(name: String, key: String? = nil, kind: Kind, bytes: UInt64 = 0, children: [UsageNode] = [], action: String? = nil) {
         self.name = name
         self.key = key
         self.kind = kind
         self.bytes = bytes
         self.children = children
+        self.action = action
     }
 
     /// A box that is the sum of its children.
@@ -30,6 +33,7 @@ public struct UsageNode: Equatable {
     public func jsonObject() -> [String: Any] {
         var object: [String: Any] = ["name": name, "kind": kind.rawValue, "bytes": NSNumber(value: bytes)]
         if let key { object["key"] = key }
+        if let action { object["action"] = action }
         if !children.isEmpty { object["children"] = children.map { $0.jsonObject() } }
         return object
     }
@@ -58,8 +62,10 @@ public struct UsageInputs {
         public var kind: UsageNode.Kind
         /// What is inside, when the scan looked (one level).
         public var children: [Entry] = []
-        public init(name: String, bytes: UInt64, kind: UsageNode.Kind = .other, children: [Entry] = []) {
-            self.name = name; self.bytes = bytes; self.kind = kind; self.children = children
+        public var key: String?
+        public var action: String?
+        public init(name: String, bytes: UInt64, kind: UsageNode.Kind = .other, children: [Entry] = [], key: String? = nil, action: String? = nil) {
+            self.name = name; self.bytes = bytes; self.kind = kind; self.children = children; self.key = key; self.action = action
         }
     }
 
@@ -72,6 +78,9 @@ public struct UsageInputs {
     public var otherDisklesslyBytes: UInt64 = 0
     public var personal: [Entry] = []
     public var library: [Entry] = []
+    /// Measured parts of what used to be one "System & other" box: macOS volumes, /Library,
+    /// Homebrew, /private/var. The rest stays as "not measured".
+    public var system: [Entry] = []
 
     public init(totalBytes: UInt64, freeBytes: UInt64) { self.totalBytes = totalBytes; self.freeBytes = freeBytes }
 }
@@ -105,20 +114,34 @@ public enum UsageMap {
         var top = [apps, disklessly, personal, library].filter { $0.bytes > 0 }
         let used = input.totalBytes > input.freeBytes ? input.totalBytes - input.freeBytes : 0
         let measured = top.reduce(0) { $0 + $1.bytes }
-        top.append(UsageNode(name: "System & other", key: "system", kind: .system, bytes: used > measured ? used - measured : 0))
+        let leftover = used > measured ? used - measured : 0
+        if input.system.isEmpty {
+            top.append(UsageNode(name: "System & other", key: "system", kind: .system, bytes: leftover))
+        } else {
+            var parts = input.system.map { entryNode($0, kind: .system) }.filter { $0.bytes > 0 }.sorted { $0.bytes > $1.bytes }
+            let partsBytes = parts.reduce(0) { $0 + $1.bytes }
+            // Snapshots, purgeable space, other users and folders the scan could not read.
+            if leftover > partsBytes { parts.append(UsageNode(name: "Not measured", key: "unmeasured", kind: .system, bytes: leftover - partsBytes)) }
+            top.append(UsageNode.group(name: "System & other", key: "system", kind: .system, parts))
+        }
         top.append(UsageNode(name: "Free", key: "free", kind: .free, bytes: min(input.freeBytes, input.totalBytes)))
         // If the boxes add up to more than the disk (clones, snapshots), the root grows to fit.
         return UsageNode.group(name: "Disk", key: "disk", kind: .root, top)
     }
 
     private static func libraryNode(_ entry: UsageInputs.Entry) -> UsageNode {
-        let kind: UsageNode.Kind = entry.kind == .other ? .library : entry.kind
-        guard !entry.children.isEmpty else { return UsageNode(name: entry.name, kind: kind, bytes: entry.bytes) }
-        let inside = merged(entry.children.map { UsageNode(name: $0.name, kind: kind, bytes: $0.bytes) }, kind: kind)
+        entryNode(entry, kind: entry.kind == .other ? .library : entry.kind)
+    }
+
+    private static func entryNode(_ entry: UsageInputs.Entry, kind: UsageNode.Kind) -> UsageNode {
+        guard !entry.children.isEmpty else { return UsageNode(name: entry.name, key: entry.key, kind: kind, bytes: entry.bytes, action: entry.action) }
+        let inside = merged(entry.children.map { entryNode($0, kind: kind) }, kind: kind)
         // The folder's own size stays: files directly in it show up as the difference.
         let loose = entry.bytes > inside.reduce(0, { $0 + $1.bytes }) ? entry.bytes - inside.reduce(0, { $0 + $1.bytes }) : 0
         let parts = loose > 0 ? inside + [UsageNode(name: "files", key: "files", kind: kind, bytes: loose)] : inside
-        return UsageNode.group(name: entry.name, kind: kind, parts)
+        var node = UsageNode.group(name: entry.name, key: entry.key, kind: kind, parts)
+        node.action = entry.action
+        return node
     }
 
     /// Largest first; the tail past `maxListed` becomes one "Other" box.
@@ -140,7 +163,8 @@ public enum UsageScan {
     static func sizes(of path: String, timeout: TimeInterval) -> (sizes: [String: UInt64], complete: Bool) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/du")
-        process.arguments = ["-k", "-d", "1", path]
+        // -x: stay on this volume, so mounted disk images (Disklessly's own, simulator runtimes) are not counted.
+        process.arguments = ["-x", "-k", "-d", "1", path]
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
@@ -188,6 +212,10 @@ public enum UsageScan {
             ("apps", "/Applications"), ("userApps", home + "/Applications"), ("home", home), ("library", library),
             ("caches", library + "/Caches"), ("support", library + "/Application Support"), ("containers", library + "/Containers"),
             ("cacheDir", engine.config.cacheDir), ("repo", engine.config.repoPath),
+            // Parts of "System & other".
+            ("sysLibrary", "/Library"), ("simRuntimes", "/Library/Developer/CoreSimulator"), ("homebrew", "/opt/homebrew"),
+            ("usrLocal", "/usr/local"), ("var", "/private/var"),
+            ("userDeveloper", library + "/Developer"), ("derivedData", library + "/Developer/Xcode/DerivedData"),
         ]
         progress("scan")
         let results = LockedResults()
@@ -272,7 +300,68 @@ public enum UsageScan {
             "Containers": unclaimed(containers, used: usedContainers),
         ]
         input.library = entries.map { .init(name: $0.key, bytes: $0.value, kind: $0.key == "Caches" ? .cache : .library, children: inside[$0.key] ?? []) }
+        // ~/Library/Developer: simulator devices and Xcode's DerivedData get their own boxes and cleanups.
+        if let index = input.library.firstIndex(where: { $0.name == "Developer" }) {
+            let derived = total("derivedData")
+            input.library[index].children = children("userDeveloper").map { name, bytes in
+                switch name {
+                case "CoreSimulator": return .init(name: "Simulator devices", bytes: bytes, key: "simdevices", action: UsageCleanup.simulatorDevices)
+                case "Xcode" where derived > 0:
+                    return .init(name: "Xcode", bytes: bytes, children: [
+                        .init(name: "DerivedData", bytes: derived, key: "deriveddata", action: UsageCleanup.derivedData),
+                        .init(name: "other", bytes: bytes > derived ? bytes - derived : 0),
+                    ])
+                default: return .init(name: name, bytes: bytes)
+                }
+            }
+        }
+        input.system = systemParts(children: children, total: total)
         return (UsageMap.assemble(input), partial)
+    }
+
+    /// macOS volumes in the boot container, and the big folders outside the home folder.
+    static func systemParts(children: (String) -> [(String, UInt64)], total: (String) -> UInt64) -> [UsageInputs.Entry] {
+        var parts: [UsageInputs.Entry] = []
+        let volumes = apfsVolumes()
+        let macOS = ["System", "Preboot", "Recovery", "Update"].reduce(UInt64(0)) { $0 + (volumes[$1] ?? 0) }
+        if macOS > 0 { parts.append(.init(name: "macOS", bytes: macOS, key: "macos")) }
+        if let vm = volumes["VM"], vm > 0 { parts.append(.init(name: "Virtual memory", bytes: vm, key: "vm")) }
+        let runtimes = total("simRuntimes")
+        let library = children("sysLibrary").map { name, bytes -> UsageInputs.Entry in
+            name == "Developer" && runtimes > 0 ? .init(name: name, bytes: bytes > runtimes ? bytes - runtimes : 0) : .init(name: name, bytes: bytes)
+        }
+        if runtimes > 0 { parts.append(.init(name: "Simulator runtimes", bytes: runtimes, key: "simruntimes", action: UsageCleanup.simulatorRuntimes)) }
+        let libraryBytes = library.reduce(0) { $0 + $1.bytes }
+        if libraryBytes > 0 { parts.append(.init(name: "/Library", bytes: libraryBytes, children: library)) }
+        if total("homebrew") > 0 { parts.append(.init(name: "Homebrew", bytes: total("homebrew"), key: "homebrew", action: UsageCleanup.homebrew)) }
+        if total("usrLocal") > 0 { parts.append(.init(name: "/usr/local", bytes: total("usrLocal"))) }
+        if total("var") > 0 { parts.append(.init(name: "/private/var", bytes: total("var"), key: "var")) }
+        return parts
+    }
+
+    /// Bytes in use per APFS role (System, Preboot, Recovery, Update, VM) in the container holding "/".
+    static func apfsVolumes() -> [String: UInt64] {
+        #if os(macOS)
+        func plist(_ args: [String]) -> Any? {
+            let data = Data(ProcessRunner.capture("/usr/sbin/diskutil", args).utf8)
+            return try? PropertyListSerialization.propertyList(from: data, options: [], format: nil)
+        }
+        guard let info = plist(["info", "-plist", "/"]) as? [String: Any],
+              let container = info["APFSContainerReference"] as? String,
+              let list = plist(["apfs", "list", "-plist"]) as? [String: Any],
+              let containers = list["Containers"] as? [[String: Any]],
+              let mine = containers.first(where: { $0["ContainerReference"] as? String == container }),
+              let volumes = mine["Volumes"] as? [[String: Any]] else { return [:] }
+        var out: [String: UInt64] = [:]
+        for volume in volumes {
+            let roles = volume["Roles"] as? [String] ?? []
+            let bytes = (volume["CapacityInUse"] as? NSNumber)?.uint64Value ?? 0
+            for role in roles where role != "Data" { out[role, default: 0] += bytes }
+        }
+        return out
+        #else
+        return [:]
+        #endif
     }
 
     private final class LockedResults: @unchecked Sendable {

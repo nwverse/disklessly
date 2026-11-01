@@ -226,6 +226,25 @@ const copy = {
     usage_personal: "个人文件",
     usage_library: "资源库",
     usage_system: "系统及其他",
+    usage_macos: "macOS 系统",
+    usage_vm: "虚拟内存",
+    usage_simruntimes: "iOS 模拟器运行时",
+    usage_simdevices: "模拟器设备",
+    usage_deriveddata: "Xcode 编译缓存",
+    usage_homebrew: "Homebrew",
+    usage_var: "系统数据 /private/var",
+    usage_unmeasured: "未能测量",
+    cleanTitle: "可以腾出空间的地方",
+    cleanNote: "“未能测量”包括时间机器本地快照、可清除空间、其他用户的文件，以及没有完全磁盘访问权限时读不到的文件夹。",
+    cleanRun: "清理",
+    cleanRunning: "清理中…",
+    cleanDone: (name, freed) => `${name}：腾出 ${freed}`,
+    cleanFailed: (name) => `${name}清理失败`,
+    cleanWhat_brew_cleanup: "删除旧版本和下载缓存（brew cleanup --prune=all）",
+    cleanWhat_sim_runtimes: "删除已有更新版本或已损坏的模拟器运行时（simctl runtime delete --outdated / --unusable）",
+    cleanWhat_sim_devices: "删除运行时已经不存在的模拟器设备（simctl delete unavailable）",
+    cleanWhat_derived_data: "删除 Xcode 的编译缓存，下次编译时会重新生成",
+    cleanConfirm: (name) => `清理${name}？`,
     usage_free: "可用",
     usage_bundle: "包体",
     usage_cache: "缓存",
@@ -477,6 +496,25 @@ const copy = {
     usage_personal: "Personal files",
     usage_library: "Library",
     usage_system: "System & other",
+    usage_macos: "macOS",
+    usage_vm: "Virtual memory",
+    usage_simruntimes: "iOS simulator runtimes",
+    usage_simdevices: "Simulator devices",
+    usage_deriveddata: "Xcode DerivedData",
+    usage_homebrew: "Homebrew",
+    usage_var: "System data /private/var",
+    usage_unmeasured: "Not measured",
+    cleanTitle: "Where you can free space",
+    cleanNote: "Not measured covers Time Machine local snapshots, purgeable space, other users' files, and folders unreadable without Full Disk Access.",
+    cleanRun: "Clean up",
+    cleanRunning: "Cleaning…",
+    cleanDone: (name, freed) => `${name}: freed ${freed}`,
+    cleanFailed: (name) => `${name}: cleanup failed`,
+    cleanWhat_brew_cleanup: "Removes old versions and the download cache (brew cleanup --prune=all)",
+    cleanWhat_sim_runtimes: "Deletes simulator runtimes replaced by a newer build or marked unusable (simctl runtime delete --outdated / --unusable)",
+    cleanWhat_sim_devices: "Deletes simulator devices whose runtime is gone (simctl delete unavailable)",
+    cleanWhat_derived_data: "Deletes Xcode's build cache; it is rebuilt on the next build",
+    cleanConfirm: (name) => `Clean up ${name}?`,
     usage_free: "Free",
     usage_bundle: "Bundle",
     usage_cache: "Cache",
@@ -2038,6 +2076,57 @@ function renderUsage() {
     item.append(el("span", `usage-swatch u-${kind}`), bi(usageKindText[kind]));
     legend.append(item);
   }
+  renderCleanups(root);
+}
+
+/// Boxes with a cleanup, anywhere in the tree, largest first.
+function usageActions(node, parent, out = []) {
+  if (node.action && node.bytes > 0) out.push({ node, parent });
+  for (const child of node.children || []) usageActions(child, node, out);
+  return out.sort((a, b) => b.node.bytes - a.node.bytes);
+}
+
+function renderCleanups(root) {
+  const box = document.querySelector("#usage-clean");
+  const found = usageActions(root);
+  box.hidden = !found.length;
+  box.replaceChildren();
+  if (!found.length) return;
+  box.append(el("h3", "usage-clean-title", t("cleanTitle")));
+  const cleanup = (usageData && usageData.cleanup) || {};
+  const list = el("ul", "usage-clean-list");
+  for (const { node, parent } of found) {
+    const name = usageLabel(node, parent);
+    const item = el("li", "usage-clean-item");
+    const words = el("div", "usage-clean-words");
+    words.append(el("strong", "", `${name} · ${bytes(node.bytes)}`), el("span", "muted", t("cleanWhat_" + node.action.replace(/-/g, "_"))));
+    const running = cleanup.state === "running" && cleanup.action === node.action;
+    const button = el("button", "btn outline", t(running ? "cleanRunning" : "cleanRun"));
+    button.type = "button";
+    button.disabled = cleanup.state === "running";
+    if (running) button.setAttribute("aria-busy", "true");
+    button.addEventListener("click", () => {
+      if (window.confirm(`${t("cleanConfirm", name)}\n\n${t("cleanWhat_" + node.action.replace(/-/g, "_"))}`)) runCleanup(node.action, name);
+    });
+    item.append(words, button);
+    list.append(item);
+  }
+  box.append(list, el("p", "muted small", t("cleanNote")));
+}
+
+let cleanupName = "";
+
+async function runCleanup(action, name) {
+  cleanupName = name;
+  try {
+    const started = await api("/api/usage/clean", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action }) });
+    usageData = Object.assign({}, usageData, { cleanup: started.cleanup });
+    renderUsage();
+    clearTimeout(usageTimer);
+    usageTimer = setTimeout(loadUsage, 1500);
+  } catch (error) {
+    if (error.code !== "unauthorized") toast({ title: bi("cleanFailed", name), error: { code: error.code, message: error.message }, tone: "error" });
+  }
 }
 
 async function loadUsage() {
@@ -2055,7 +2144,14 @@ async function loadUsage() {
     return startUsageScan();
   }
   renderUsage();
-  if (usageData.state === "scanning" && !expired) usageTimer = setTimeout(loadUsage, 2000);
+  const cleanup = usageData.cleanup || {};
+  if (cleanupName && cleanup.state && cleanup.state !== "running") {
+    const name = cleanupName;
+    cleanupName = "";
+    if (cleanup.state === "done") toast({ title: bi("cleanDone", name, bytes(cleanup.freedBytes || 0)), tone: "ok" });
+    else toast({ title: bi("cleanFailed", name), error: { code: "failed", message: cleanup.message || "" }, tone: "error" });
+  }
+  if ((usageData.state === "scanning" || cleanup.state === "running") && !expired) usageTimer = setTimeout(loadUsage, 2000);
 }
 
 async function startUsageScan() {

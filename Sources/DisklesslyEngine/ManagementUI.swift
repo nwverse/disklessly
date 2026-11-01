@@ -312,7 +312,17 @@ public enum ManagementUI {
                 return failure(error, status: 400)
             }
         case ("GET", "/api/usage"):
-            return .json(context.usage.snapshot())
+            var object = context.usage.snapshot()
+            object["cleanup"] = context.cleaner.snapshot()
+            return .json(object)
+        case ("POST", "/api/usage/clean"):
+            let id = ((try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any])?["action"] as? String ?? ""
+            guard UsageCleanup.all.contains(id) else { return failure(code: "bad_request", message: "unknown cleanup", status: 400) }
+            // Rescan when it finishes, so the map shows the new sizes.
+            let usage = context.usage
+            let started = context.cleaner.start(id) { _ = usage.start(engine: engine) }
+            guard started else { return failure(code: "busy", message: "a cleanup is already running", status: 409) }
+            return .json(["ok": true, "cleanup": context.cleaner.snapshot()], status: 202)
         case ("POST", "/api/usage/scan"):
             let started = context.usage.start(engine: engine)
             var object = context.usage.snapshot()
@@ -771,6 +781,7 @@ public final class ManagementUIContext {
     public let jobs: UIJobStore
     /// The disk usage map scan (`/api/usage`).
     public let usage: UsageScanner
+    public let cleaner = UsageCleaner()
     /// Backend reachability with latency; bounded by its timeout and shared across requests.
     public let health: BackendHealthProbe
     /// Replaces the engine-backed actions, for tests.
