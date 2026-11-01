@@ -1,8 +1,8 @@
 // Loopback management page. The token stays in the page URL; the server rejects
 // calls that do not present it. No remote assets and no embedded secrets.
 //
-// Labels are bilingual inline: the primary language (Chinese unless ?lang=en)
-// followed by the other one in a smaller grey run. All text lives in `copy`.
+// The page shows one language (Chinese or English), chosen in index.html and switched
+// from the top bar. All text lives in `copy`.
 
 const params = new URLSearchParams(location.search);
 const token = params.get("token") || "";
@@ -520,7 +520,6 @@ window.disklesslyI18n = { copy };
 
 const root = document.documentElement;
 const primary = root.getAttribute("data-lang") === "en" ? "en" : "zh";
-const secondary = primary === "zh" ? "en" : "zh";
 const langTag = { zh: "zh-Hans", en: "en" };
 
 let lastStatus = null;
@@ -555,24 +554,19 @@ function has(key) {
   return copy.zh[key] !== undefined && copy.en[key] !== undefined;
 }
 
-/// "清除缓存 Evict": both languages in one string, for aria-label and title.
+/// Text in the chosen language, for aria-label and title.
 function both(key, ...args) {
-  const first = tl(primary, key, ...args);
-  const second = tl(secondary, key, ...args);
-  return first === second ? first : `${first} ${second}`;
+  return tl(primary, key, ...args);
 }
 
-/// Primary text, then the other language in a smaller grey run.
+/// Text in the chosen language as a node.
 function bi(key, ...args) {
-  return biPair(tl(primary, key, ...args), tl(secondary, key, ...args));
+  return biPair(tl(primary, key, ...args));
 }
 
-/// Number-heavy lines: primary text only, the other language as its tooltip, so
-/// figures are not printed twice.
 function one(key, ...args) {
   const node = el("span", "one", tl(primary, key, ...args));
   node.lang = langTag[primary];
-  node.title = tl(secondary, key, ...args);
   return node;
 }
 
@@ -583,16 +577,12 @@ function biValue(key, value) {
   return node;
 }
 
-function biPair(first, second, className) {
+/// The page shows one language, switched from the top bar.
+function biPair(first, _unused, className) {
   const node = el("span", ["bi", className].filter(Boolean).join(" "));
   const main = el("span", "bi-p", first);
   main.lang = langTag[primary];
   node.append(main);
-  if (second && second !== first) {
-    const extra = el("span", "bi-s", second);
-    extra.lang = langTag[secondary];
-    node.append(document.createTextNode(" "), extra);
-  }
   return node;
 }
 
@@ -733,10 +723,26 @@ function applyChrome() {
   for (const node of document.querySelectorAll("[data-t]")) {
     node.replaceChildren(node.dataset.mono === "1" ? document.createTextNode(t(node.dataset.t)) : bi(node.dataset.t));
   }
-  // Options and other text-only slots take both languages as plain text.
+  // Options and other text-only slots take plain text.
   for (const node of document.querySelectorAll("[data-tp]")) setText(node, both(node.dataset.tp));
   for (const node of document.querySelectorAll("[data-t-label]")) node.setAttribute("aria-label", both(node.dataset.tLabel));
   renderUpdated();
+}
+
+/// Saves the other language and reloads. Keeps the token, drops any ?lang= override.
+function setupLanguageToggle() {
+  const button = document.querySelector("#lang-toggle");
+  if (!button) return;
+  const other = primary === "zh" ? "en" : "zh";
+  button.textContent = other === "en" ? "English" : "中文";
+  button.lang = langTag[other];
+  button.setAttribute("aria-label", other === "en" ? "Switch to English" : "切换到中文");
+  button.addEventListener("click", () => {
+    document.cookie = `disklessly_lang=${other}; path=/; max-age=31536000; SameSite=Strict`;
+    const next = new URL(location.href);
+    next.searchParams.delete("lang");
+    location.replace(next);
+  });
 }
 
 function renderUpdated() {
@@ -921,7 +927,7 @@ function healthTitleKey(status) {
 function healthSubline(backend) {
   const words = el("span", "health-sub");
   const status = backend.health;
-  const parts = [tl(secondary, healthTitleKey(status))];
+  const parts = [];
   if (backend.latencyMs != null && status !== "offline") parts.push(t("latency", backend.latencyMs));
   else if (status === "offline" && backend.timedOut) parts.push(t("timedOut", Math.round(Number(backend.timeoutMs || 5000) / 1000)));
   else if (status === "offline") parts.push(t("offlineHint"));
@@ -944,8 +950,6 @@ function renderBackend(backend) {
     dot.setAttribute("aria-hidden", "true");
     const words = el("div");
     words.append(el("strong", "health-title", t("healthoffline")));
-    const sub = el("span", "health-sub", tl(secondary, "healthoffline"));
-    words.append(sub);
     status.append(dot, words);
     body.append(status);
     return;
@@ -1270,7 +1274,6 @@ function cacheCell(app, quota) {
     const line = el("div", "cache-size muted");
     line.append(bi("notCached"));
     const sub = el("div", "cache-sub", `${t("toDownload")} ${bytes(app.imageBytes)}`);
-    sub.title = `${tl(secondary, "toDownload")} ${bytes(app.imageBytes)}`;
     cell.append(line, sub);
     return cell;
   }
@@ -1298,15 +1301,7 @@ function emptyState() {
   const icon = el("div", "tray");
   icon.append(svgIcon(iconTray, 22));
   empty.append(icon, el("strong", "", t("emptyApps")));
-  const second = el("span", "muted", tl(secondary, "emptyApps"));
-  second.lang = langTag[secondary];
-  empty.append(second);
   empty.append(el("span", "muted", t("emptyAppsHint")));
-  if (primary === "zh") {
-    const hint = el("span", "muted small", tl(secondary, "emptyAppsHint"));
-    hint.lang = langTag[secondary];
-    empty.append(hint);
-  }
   return empty;
 }
 
@@ -1323,9 +1318,6 @@ function errorState(code, raw) {
   head.append(svgIcon(iconAlert, 18));
   const words = el("div");
   words.append(el("strong", "", t(titleKey)));
-  const second = el("span", "", tl(secondary, titleKey));
-  second.lang = langTag[secondary];
-  words.append(second);
   head.append(words);
   box.append(head);
   const backend = lastStatus && lastStatus.backend;
@@ -1450,14 +1442,8 @@ function confirmAction(kind, app) {
   }[kind];
   const title = document.querySelector("#confirm-title");
   title.replaceChildren(document.createTextNode(t(...spec.title)));
-  const titleSecond = el("span", "dialog-second", tl(secondary, ...spec.title));
-  titleSecond.lang = langTag[secondary];
-  title.append(titleSecond);
   const body = document.querySelector("#confirm-body");
   body.replaceChildren(document.createTextNode(t(...spec.body)));
-  const bodySecond = el("span", "dialog-second", tl(secondary, ...spec.body));
-  bodySecond.lang = langTag[secondary];
-  body.append(bodySecond);
   const ok = document.querySelector("#confirm-ok");
   ok.replaceChildren(bi(spec.ok));
   ok.className = spec.danger ? "btn danger" : "btn primary";
@@ -1477,7 +1463,7 @@ function confirmAction(kind, app) {
 }
 
 function jobTitle(key, kind, name) {
-  return biPair(tl(primary, key, tl(primary, "action" + kind), name), tl(secondary, key, tl(secondary, "action" + kind), name));
+  return biPair(tl(primary, key, tl(primary, "action" + kind), name));
 }
 
 async function startJob(kind, app) {
@@ -1579,7 +1565,6 @@ function renderSessions(sessions) {
     item.append(path);
     const age = entry.ageDays != null ? Number(entry.ageDays) : Math.max(0, Math.floor((Date.now() - (Date.parse(entry.modified || "") || Date.now())) / 86400000));
     const ageNode = el("span", "session-age", t("daysAgo", age));
-    ageNode.title = tl(secondary, "daysAgo", age);
     item.append(ageNode);
     list.append(item);
   }
@@ -1643,7 +1628,7 @@ function renderLeftovers(report) {
   paths.hidden = !items.length;
   if (!items.length) return;
   const total = bytes(items.reduce((sum, item) => sum + Number(item.sizeBytes || 0), 0));
-  line.append(biPair(`${tl(primary, "leftoverBackups", items.length, total)} ${tl(primary, "leftoverAdmin")}`, `${tl(secondary, "leftoverBackups", items.length, total)} ${tl(secondary, "leftoverAdmin")}`));
+  line.append(biPair(`${tl(primary, "leftoverBackups", items.length, total)} ${tl(primary, "leftoverAdmin")}`));
   for (const item of items) paths.append(el("li", "mono path", item.path || ""));
 }
 
@@ -1706,7 +1691,7 @@ function renderRecommend(report, failure) {
     nameLine.append(el("h3", "app-name", app.name || ""), pill(app.macAppStore ? "amber" : "blue", modeKeyFor(app.suggestedMode)));
     words.append(nameLine, el("div", "app-meta", [bytes(app.sizeBytes), app.bundleId || ""].filter(Boolean).join(" · ")));
     const reason = recommendReason(app, primary);
-    if (reason) words.append(biPair(reason, recommendReason(app, secondary), "rec-reason"));
+    if (reason) words.append(biPair(reason, "", "rec-reason"));
     const command = packCommand(app.path);
     words.append(el("code", "inline-command", command));
     who.append(words);
@@ -1741,7 +1726,7 @@ function renderRecommend(report, failure) {
     const item = el("li", "poor-row");
     const top = el("div", "rec-name");
     top.append(el("span", "app-name", app.name || ""), pill("grey", modeKeyFor(app.suggestedMode)));
-    item.append(top, el("div", "mono path", app.path || ""), biPair(recommendReason(app, primary), recommendReason(app, secondary), "rec-reason"));
+    item.append(top, el("div", "mono path", app.path || ""), biPair(recommendReason(app, primary), "", "rec-reason"));
     warnings.append(item);
   }
   renderLeftovers(report);
@@ -2163,5 +2148,6 @@ document.addEventListener("visibilitychange", () => {
 });
 
 applyChrome();
+setupLanguageToggle();
 document.querySelector("#app-list").replaceChildren(skeleton(3));
 refresh();
