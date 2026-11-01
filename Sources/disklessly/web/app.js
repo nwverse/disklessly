@@ -235,6 +235,14 @@ const copy = {
     usage_files: "散落文件",
     usage_rest: (n) => `其余 ${n} 项`,
     usage_other: "其他",
+    cachesLine: (size, n) => `已卸载的 ${n} 个应用还留着 ${size} 缓存，可以清掉。`,
+    cachesNone: "已卸载的应用没有留下缓存。",
+    cachesRunning: (names) => `运行中的应用会跳过：${names}`,
+    cachesClear: "清理应用缓存",
+    cachesConfirmTitle: (size) => `清理已卸载应用的缓存（${size}）？`,
+    cachesConfirmBody: "只清空 ~/Library/Caches 里这些应用的缓存文件夹，以及沙盒容器里的 Data/Library/Caches。Application Support 和其他数据不会动；正在运行的应用会跳过。应用下次打开时会重新生成缓存。",
+    cachesDone: (size) => `已清理 ${size} 缓存`,
+    cachesFailed: "无法清理缓存",
     copyCommand: "复制命令",
     copyCommandFor: (name) => `复制命令：打包 ${name}`,
     copied: (name) => `已复制 ${name} 的打包命令`,
@@ -486,6 +494,14 @@ const copy = {
     usage_files: "Loose files",
     usage_rest: (n) => `${n} more`,
     usage_other: "Other",
+    cachesLine: (size, n) => `${n} offloaded ${n === 1 ? "app still leaves" : "apps still leave"} ${size} of caches you can clear.`,
+    cachesNone: "Offloaded apps left no caches behind.",
+    cachesRunning: (names) => `Running apps are skipped: ${names}`,
+    cachesClear: "Clear app caches",
+    cachesConfirmTitle: (size) => `Clear the caches of offloaded apps (${size})?`,
+    cachesConfirmBody: "Only these apps' folders in ~/Library/Caches and a sandbox container's Data/Library/Caches are emptied. Application Support and other data stay; running apps are skipped. Apps rebuild their caches the next time they open.",
+    cachesDone: (size) => `Cleared ${size} of caches`,
+    cachesFailed: "Could not clear caches",
     copyCommand: "Copy command",
     copyCommandFor: (name) => `Copy command to pack ${name}`,
     copied: (name) => `Copied the pack command for ${name}`,
@@ -1439,7 +1455,6 @@ function renderApps(list, failure) {
 // ---- jobs -----------------------------------------------------------------
 
 function confirmAction(kind, app) {
-  const dialog = document.querySelector("#confirm");
   const dir = installDir(app);
   const size = bytes(app.cachedBytes || app.imageBytes);
   const spec = {
@@ -1448,6 +1463,12 @@ function confirmAction(kind, app) {
     pack: { title: ["confirmPackTitle", app.name], body: ["confirmPackBody", size], ok: "confirmPackOk", danger: false },
     unpack: { title: ["confirmUnpackTitle", app.name, dir], body: ["confirmUnpackBody", app.installPath || `${dir}/${app.name}.app`], ok: "confirmUnpackOk", danger: true },
   }[kind];
+  confirmDialog(spec, () => startJob(kind, app));
+}
+
+/// The shared confirm dialog. `spec` holds [key, ...args] for title and body.
+function confirmDialog(spec, onOk) {
+  const dialog = document.querySelector("#confirm");
   const title = document.querySelector("#confirm-title");
   title.replaceChildren(document.createTextNode(t(...spec.title)));
   const titleSecond = el("span", "dialog-second", tl(secondary, ...spec.title));
@@ -1465,14 +1486,14 @@ function confirmAction(kind, app) {
   dialog.returnValue = "";
   dialog.onclose = () => {
     dialog.onclose = null;
-    if (dialog.returnValue === "ok") startJob(kind, app);
+    if (dialog.returnValue === "ok") onOk();
     else if (opener && opener.isConnected) opener.focus();
   };
   if (typeof dialog.showModal === "function") {
     dialog.showModal();
     document.querySelector("#confirm-cancel").focus();
   } else if (window.confirm(`${title.textContent}\n\n${body.textContent}`)) {
-    startJob(kind, app);
+    onOk();
   }
 }
 
@@ -2039,6 +2060,57 @@ function renderUsage() {
   }
 }
 
+// Caches of offloaded apps, measured after a usage scan and cleared on request.
+let cachesData = null;
+let cachesScannedAt = null;
+
+function renderCaches() {
+  const line = document.querySelector("#usage-caches");
+  const text = document.querySelector("#usage-caches-text");
+  const button = document.querySelector("#usage-caches-clear");
+  if (!cachesData) { line.hidden = true; return; }
+  const apps = (cachesData.apps || []).filter((a) => a.bytes > 0);
+  const clearable = apps.filter((a) => !a.refused);
+  const running = apps.filter((a) => a.refused).map((a) => a.name);
+  line.hidden = false;
+  text.replaceChildren(clearable.length ? one("cachesLine", bytes(cachesData.freedBytes), clearable.length) : bi("cachesNone"));
+  if (running.length) text.append(el("br"), one("cachesRunning", running.join(", ")));
+  button.hidden = !clearable.length;
+}
+
+async function loadCaches() {
+  try {
+    cachesData = await api("/api/caches");
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    cachesData = null;
+  }
+  renderCaches();
+}
+
+function clearCaches() {
+  if (!cachesData || !cachesData.freedBytes) return;
+  const size = bytes(cachesData.freedBytes);
+  confirmDialog({ title: ["cachesConfirmTitle", size], body: ["cachesConfirmBody"], ok: "cachesClear", danger: true }, async () => {
+    const button = document.querySelector("#usage-caches-clear");
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    try {
+      const report = await api("/api/caches/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      cachesData = report;
+      const failed = report.failed || [];
+      if (failed.length) toast({ title: bi("cachesFailed"), error: { code: "failed", message: failed.join("; ") }, tone: "error" });
+      else toast({ title: one("cachesDone", bytes(report.freedBytes)) });
+      await loadCaches();
+    } catch (error) {
+      if (error.code !== "unauthorized") toast({ title: bi("cachesFailed"), error: { code: error.code, message: error.message }, tone: "error" });
+    } finally {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  });
+}
+
 async function loadUsage() {
   clearTimeout(usageTimer);
   try {
@@ -2050,6 +2122,8 @@ async function loadUsage() {
   }
   renderUsage();
   if (usageData.state === "scanning" && !expired) usageTimer = setTimeout(loadUsage, 2000);
+  // Measured once a scan finished, and again after the next one.
+  else if (usageData.tree && usageData.scannedAt !== cachesScannedAt) { cachesScannedAt = usageData.scannedAt; loadCaches(); }
 }
 
 async function startUsageScan() {
@@ -2111,6 +2185,7 @@ document.querySelector("#refresh").addEventListener("click", refresh);
 document.querySelector("#retry").addEventListener("click", retryNow);
 document.querySelector("#rescan").addEventListener("click", () => loadRecommendations(true));
 document.querySelector("#usage-scan").addEventListener("click", startUsageScan);
+document.querySelector("#usage-caches-clear").addEventListener("click", clearCaches);
 document.querySelector("#license-form").addEventListener("submit", submitLicense);
 document.querySelector("#license-remove").addEventListener("click", removeLicense);
 document.querySelector("#icon-backfill").addEventListener("click", async (event) => {
