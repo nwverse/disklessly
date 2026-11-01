@@ -8,6 +8,22 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Offload any large file or folder, not only apps. `disklessly offload PATH` moves it into the repo:
+  - a file is stored as is, a folder as tar + zstd;
+  - the object is write-once at `files/objects/<sha256>`;
+  - the original is deleted only after the repo copy reads back with the same SHA-256;
+  - a `PATH.disklessly` placeholder with the Finder tag "Disklessly" is left in its place.
+
+  `disklessly fetch PLACEHOLDER` brings it back. Open files, app bundles and their contents, `~/Library`, VM disks
+  and Disklessly's own folders are refused. See `docs/files.md`.
+- `disklessly files` and a "Large files and folders" list under Worth offloading in the dashboard. They show files and
+  whole folders of 500 MiB or more not opened for 30 days, using Spotlight's last-used date, else mtime/atime. The scan
+  skips hidden and tool folders, source checkouts, package stores, iCloud items and running VM images. Each row has an
+  Offload now button (`POST /api/offloadfile`, `GET /api/files`, `POST /api/files/scan`).
+- Finder right-click: Services → "Offload with Disklessly" and "Bring back with Disklessly". `.disklessly`
+  placeholders are a document type of Disklessly.app, so double-clicking one brings the file back.
+- `DISKLESSLY_HOME` overrides the home folder that `files` and `offload` use (for tests).
+
 - Disk usage card in the dashboard: a flame chart of what fills the disk. Boxes zoom in; each app splits into
   bundle, cache and data, Disklessly's own cache and repo get their own box, and the rest is System & other.
   The scan only reads sizes (`du`), runs in the background on request (`POST /api/usage/scan`), and a timeout
@@ -20,6 +36,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   issues codes; it is not part of any release artifact.
 
 ### Changed
+
+- The free limit counts offloaded files and folders together with apps (2 items at once).
 
 - The project is now **Disklessly** ("256G is enough"). CLI `disklessly` (short alias `dkl`), stub launcher
   `disklessly-stub`, env vars `DISKLESSLY_*`, bundle id prefix `io.github.s546126.disklessly`, Homebrew cask

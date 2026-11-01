@@ -274,7 +274,18 @@ public enum ManagementUI {
                 }
                 options.path = valid
             }
-            switch context.jobs.start(kind: kind, app: name, work: { progress in try actions.perform(kind, name, options, progress) }) {
+            if kind == .offloadfile {
+                guard let path = packPath(request) else { return failure(code: "bad_request", message: "path is required", status: 400) }
+                let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+                if let why = engine.fileOffloadRefusal(standardized) {
+                    return failure(code: "bad_request", message: "\(standardized) \(why)", status: 400)
+                }
+                options.path = standardized
+            }
+            switch context.jobs.start(kind: kind, app: name, work: { progress in
+                try actions.perform(kind, name, options, progress)
+                if kind == .offloadfile, let path = options.path { context.files.forget(path: path) }
+            }) {
             case .started(let job):
                 var object = job.jsonObject()
                 object["ok"] = true
@@ -311,6 +322,13 @@ public enum ManagementUI {
             } catch {
                 return failure(error, status: 400)
             }
+        case ("GET", "/api/files"):
+            return .json(context.files.snapshot())
+        case ("POST", "/api/files/scan"):
+            let started = context.files.start(engine: engine)
+            var object = context.files.snapshot()
+            object["started"] = started
+            return .json(object, status: 202)
         case ("GET", "/api/usage"):
             return .json(context.usage.snapshot())
         case ("POST", "/api/usage/scan"):
@@ -347,10 +365,10 @@ public enum ManagementUI {
         }
     }
 
-    /// License state for the page. `offloaded` is how many apps count against the free limit.
+    /// License state for the page. `offloaded` is how many apps and files count against the free limit.
     static func licenseObject(_ engine: DisklesslyEngine) -> [String: Any] {
         var object: [String: Any] = ["ok": true, "freeLimit": License.freeAppLimit]
-        object["offloaded"] = (try? engine.offloadedBundleIdCount()) ?? 0
+        object["offloaded"] = ((try? engine.offloadedBundleIdCount()) ?? 0) + engine.offloadedFileCount()
         switch License.load(stateDir: engine.config.stateDir) {
         case .free: object["state"] = "free"
         case .licensed(let p):
@@ -505,6 +523,8 @@ public enum UIJobKind: String, CaseIterable {
     case launch, prefetch, evict, restore, unpack, pin, unpin
     /// Offloads an installed app (`disklessly pack`). The request carries the app's `path`.
     case pack
+    /// Offloads a large file or folder (`disklessly offload`). The request carries its `path`.
+    case offloadfile
 
     public init?(path: String) {
         guard path.hasPrefix("/api/") else { return nil }
@@ -684,6 +704,11 @@ public struct ManagementActions {
                 _ = try engine.pack(path)
                 return
             }
+            if kind == .offloadfile {
+                guard let path = options.path else { throw DisklesslyError.usage("offload needs the file path") }
+                _ = try engine.offloadFile(path) { progress.phase($0) }
+                return
+            }
             progress.phase("resolve")
             guard var manifest = engine.manifest(named: name, in: try engine.list()) else { throw UIJobError.unknownApp(name) }
             switch kind {
@@ -714,7 +739,7 @@ public struct ManagementActions {
             case .unpin:
                 progress.phase("pin")
                 try engine.setPinned(manifest, pinned: false)
-            case .pack:
+            case .pack, .offloadfile:
                 break
             }
         })
@@ -771,6 +796,8 @@ public final class ManagementUIContext {
     public let jobs: UIJobStore
     /// The disk usage map scan (`/api/usage`).
     public let usage: UsageScanner
+    /// Large idle files and folders (`/api/files`).
+    public let files: LargeFileScanner
     /// Backend reachability with latency; bounded by its timeout and shared across requests.
     public let health: BackendHealthProbe
     /// Replaces the engine-backed actions, for tests.
@@ -780,9 +807,10 @@ public final class ManagementUIContext {
     private let scanLock = NSLock()
     private var recommendCache: [String: (report: [String: Any], scannedAt: Date)] = [:]
 
-    public init(jobs: UIJobStore = UIJobStore(), actions: ManagementActions? = nil, health: BackendHealthProbe = BackendHealthProbe(), usage: UsageScanner = UsageScanner(), now: @escaping () -> Date = Date.init) {
+    public init(jobs: UIJobStore = UIJobStore(), actions: ManagementActions? = nil, health: BackendHealthProbe = BackendHealthProbe(), usage: UsageScanner = UsageScanner(), files: LargeFileScanner = LargeFileScanner(), now: @escaping () -> Date = Date.init) {
         self.jobs = jobs
         self.usage = usage
+        self.files = files
         self.health = health
         self.actions = actions
         self.now = now

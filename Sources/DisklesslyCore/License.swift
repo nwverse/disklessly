@@ -49,7 +49,7 @@ public enum LicenseState: Equatable {
 /// evicting and detaching already packed apps never depend on a license.
 public enum License {
     public static let product = "disklessly"
-    /// Apps that may be offloaded at the same time without a license.
+    /// Apps, files and folders that may be offloaded at the same time without a license.
     public static let freeAppLimit = 2
     public static let tokenPrefix = "DSL1"
     public static let fileName = "license.key"
@@ -134,13 +134,25 @@ public enum License {
 
     // MARK: The limit
 
-    /// Refuses a pack that would push the number of offloaded apps over the free limit.
+    /// Refuses a pack that would push the number of offloaded items over the free limit.
+    /// Offloaded files and folders (`files`) count too: the limit is on things offloaded at once.
     /// Re-packing an app that is already offloaded is not a new app.
-    public static func checkPack(state: LicenseState, offloaded: Set<String>, packing bundleId: String) throws {
-        if state.unlimited || offloaded.contains(bundleId) || offloaded.count < freeAppLimit { return }
-        var why = "The free version offloads up to \(freeAppLimit) apps at once and \(offloaded.count) are offloaded already."
+    public static func checkPack(state: LicenseState, offloaded: Set<String>, packing bundleId: String, files: Int = 0) throws {
+        if state.unlimited || offloaded.contains(bundleId) { return }
+        try checkLimit(state: state, count: offloaded.count + files)
+    }
+
+    /// Refuses offloading one more file or folder past the free limit. `apps` and `files` are what is offloaded now.
+    public static func checkOffloadFile(state: LicenseState, apps: Int, files: Int) throws {
+        if state.unlimited { return }
+        try checkLimit(state: state, count: apps + files)
+    }
+
+    private static func checkLimit(state: LicenseState, count: Int) throws {
+        if count < freeAppLimit { return }
+        var why = "The free version offloads up to \(freeAppLimit) apps or files at once and \(count) are offloaded already."
         if case .expired(let payload) = state { why = "Your promo code expired on \(payload.expires ?? "an earlier date"). " + why }
-        throw DisklesslyError.licenseRequired(why + " Starting, restoring and unpacking your offloaded apps stays free. Enter a license code with `disklessly license activate CODE` to offload more.")
+        throw DisklesslyError.licenseRequired(why + " Starting, restoring and unpacking your offloaded apps, and bringing back offloaded files, stays free. Enter a license code with `disklessly license activate CODE` to offload more.")
     }
 
     // MARK: Helpers

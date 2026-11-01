@@ -30,6 +30,11 @@ Use offloaded apps
 Bring an app back
   unpack APP [--to DIR]           put the real app back in place of its stub (or copy it to DIR)
 
+Large files and folders
+  files [--min-size SIZE] [--min-idle-days N] [--limit N]   large items in your home folder not opened lately
+  offload PATH...                 move a file or folder into the repo; leaves PATH.disklessly in its place
+  fetch PLACEHOLDER...            bring back the file or folder of a .disklessly placeholder
+
 Keep things tidy
   gc [--dry-run] [--include-legacy]
   evict-local | cleanup-backups | doctor [--fix] | reap [--dry-run]
@@ -56,7 +61,7 @@ evict --force only overrides a pin; a mounted or running image is always refused
 Environment overrides: DISKLESSLY_REPO_PATH, DISKLESSLY_CACHE_DIR, DISKLESSLY_STATE_DIR,
   DISKLESSLY_MOUNT_ROOT, DISKLESSLY_STUB_DIR, DISKLESSLY_CONFIG, DISKLESSLY_DETACH_DELAY,
   DISKLESSLY_QUOTA_BYTES, DISKLESSLY_MIN_FREE_BYTES, DISKLESSLY_SIGN_IDENTITY,
-  DISKLESSLY_DOCTOR_TIMEOUT, DISKLESSLY_WEB_ROOT, DISKLESSLY_DEBUG
+  DISKLESSLY_DOCTOR_TIMEOUT, DISKLESSLY_WEB_ROOT, DISKLESSLY_HOME, DISKLESSLY_DEBUG
 """
 func usage() -> Never {
     print(helpText)
@@ -299,7 +304,7 @@ do {
         switch sub {
         case "status":
             let state = License.load(stateDir: config.stateDir)
-            let offloaded = (try? engine.offloadedBundleIdCount()) ?? 0
+            let offloaded = ((try? engine.offloadedBundleIdCount()) ?? 0) + engine.offloadedFileCount()
             say(CLIText.licenseDictionary(state, offloaded: offloaded), CLIText.licenseStatus(state, offloaded: offloaded))
         case "activate":
             guard args.count == 2 else { throw DisklesslyError.usage("usage: disklessly license activate CODE") }
@@ -403,6 +408,51 @@ do {
         default:
             throw DisklesslyError.usage("Unknown devices command: \(sub)")
         }
+    case "files":
+        var options = LargeFileOptions()
+        while !args.isEmpty {
+            let flag = args.removeFirst()
+            guard !args.isEmpty, ["--min-size", "--min-idle-days", "--limit"].contains(flag) else { throw DisklesslyError.usage("Unknown option: \(flag)") }
+            let value = args.removeFirst()
+            switch flag {
+            case "--min-size": options.minBytes = try RecommendArguments.parseSize(value)
+            case "--min-idle-days": guard let n = Int(value), n >= 0 else { throw DisklesslyError.usage("--min-idle-days takes a number") }; options.minIdleDays = n
+            default: guard let n = Int(value), n > 0 else { throw DisklesslyError.usage("--limit takes a number") }; options.limit = n
+            }
+        }
+        let scan = engine.largeFiles(options: options)
+        let now = Date()
+        if json {
+            emit(["ok": true, "partial": scan.partial, "minSizeBytes": NSNumber(value: options.minBytes), "minIdleDays": options.minIdleDays, "items": scan.items.map { $0.jsonObject(now: now) }] as [String: Any])
+        } else if scan.items.isEmpty {
+            print("No files or folders of \(sizeText(options.minBytes)) or more left unopened for \(options.minIdleDays) days.")
+        } else {
+            for item in scan.items {
+                let idle = item.lastUsed.map { "\(max(0, Int(now.timeIntervalSince($0) / 86_400))) days idle" } ?? "never opened"
+                print("\(sizeText(item.bytes))  \(item.kind == .folder ? "folder" : "file  ")  \(idle)  \(item.path)")
+            }
+            if scan.partial { print("(the scan stopped early; the list may be incomplete)") }
+            print("Offload one with: disklessly offload PATH")
+        }
+    case "offload":
+        guard !args.isEmpty, !args.contains(where: { $0.hasPrefix("--") }) else { throw DisklesslyError.usage("usage: disklessly offload PATH...") }
+        var results: [[String: Any]] = []
+        for path in args {
+            let result = try engine.offloadFile(path)
+            for warning in result.warnings { fputs("disklessly: \(warning)\n", stderr) }
+            results.append(result.jsonObject())
+            if !json { print("Offloaded \(result.placeholder.name) (\(sizeText(result.placeholder.size))) -> \(result.placeholderPath)") }
+        }
+        if json { emit(results.count == 1 ? results[0] : ["ok": true, "items": results] as [String: Any]) }
+    case "fetch":
+        guard !args.isEmpty, !args.contains(where: { $0.hasPrefix("--") }) else { throw DisklesslyError.usage("usage: disklessly fetch PLACEHOLDER...") }
+        var restored: [String] = []
+        for path in args {
+            let target = try engine.fetchFile(path)
+            restored.append(target.path)
+            if !json { print("Brought back \(target.path)") }
+        }
+        if json { emit(["ok": true, "restored": restored] as [String: Any]) }
     case "recommend":
         let parsed = try RecommendArguments.parse(args)
         if parsed.json { json = true }

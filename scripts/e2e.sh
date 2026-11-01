@@ -566,4 +566,41 @@ wait "$RUN_PID" 2>/dev/null || true
 [[ -d "$TMP/running/Running.app" ]] || fail 'pack of a running app removed it'
 pass 'pack of a running app exits 9'
 
+# Large files: offload a file and a folder, then bring both back through the placeholders.
+FILES_HOME="$TMP/files-home"
+mkdir -p "$FILES_HOME/Downloads/Old Project/sub"
+head -c 2500000 /dev/urandom > "$FILES_HOME/Downloads/movie.mov"
+printf 'notes\n' > "$FILES_HOME/Downloads/Old Project/notes.txt"
+head -c 300000 /dev/urandom > "$FILES_HOME/Downloads/Old Project/sub/data.bin"
+FILE_SHA="$(shasum -a 256 "$FILES_HOME/Downloads/movie.mov" | cut -d' ' -f1)"
+TREE_BEFORE="$(cd "$FILES_HOME/Downloads/Old Project" && find . -type f -exec shasum -a 256 {} + | sort)"
+export DISKLESSLY_HOME="$FILES_HOME"
+DISKLESSLY_MIN_FREE_BYTES=0 run_cli offload "$FILES_HOME/Downloads/movie.mov" "$FILES_HOME/Downloads/Old Project" || fail 'offload a file and a folder'
+[[ ! -e "$FILES_HOME/Downloads/movie.mov" && ! -e "$FILES_HOME/Downloads/Old Project" ]] || fail 'offload left the originals in place'
+assert_file "$FILES_HOME/Downloads/movie.mov.disklessly" 'offload leaves a file placeholder'
+assert_file "$FILES_HOME/Downloads/Old Project.disklessly" 'offload leaves a folder placeholder'
+xattr -p com.apple.metadata:_kMDItemUserTags "$FILES_HOME/Downloads/movie.mov.disklessly" >/dev/null 2>&1 || fail 'placeholder has no Finder tag'
+ls "$DISKLESSLY_REPO_PATH/files/objects/$FILE_SHA.bin" >/dev/null || fail 'file object is not in the repo under its sha256'
+set +e
+DISKLESSLY_MIN_FREE_BYTES=0 "$ROOT/.build/debug/disklessly" offload "$FILES_HOME/Downloads/movie.mov.disklessly" >>"$LOG" 2>&1
+REOFFLOAD=$?
+set -e
+[[ "$REOFFLOAD" -eq 2 ]] || fail "offloading a placeholder exited $REOFFLOAD, expected 2"
+DISKLESSLY_MIN_FREE_BYTES=0 run_cli fetch "$FILES_HOME/Downloads/movie.mov.disklessly" "$FILES_HOME/Downloads/Old Project.disklessly" || fail 'fetch a file and a folder'
+[[ "$(shasum -a 256 "$FILES_HOME/Downloads/movie.mov" | cut -d' ' -f1)" == "$FILE_SHA" ]] || fail 'fetched file differs'
+[[ "$(cd "$FILES_HOME/Downloads/Old Project" && find . -type f -exec shasum -a 256 {} + | sort)" == "$TREE_BEFORE" ]] || fail 'fetched folder differs'
+[[ ! -e "$FILES_HOME/Downloads/movie.mov.disklessly" && ! -e "$FILES_HOME/Downloads/Old Project.disklessly" ]] || fail 'fetch left the placeholders'
+tail -f /dev/null < "$FILES_HOME/Downloads/movie.mov" &
+HOLD_PID=$!
+sleep 0.3
+set +e
+DISKLESSLY_MIN_FREE_BYTES=0 "$ROOT/.build/debug/disklessly" offload "$FILES_HOME/Downloads/movie.mov" >>"$LOG" 2>&1
+OPEN_CODE=$?
+set -e
+kill "$HOLD_PID" 2>/dev/null || true
+wait "$HOLD_PID" 2>/dev/null || true
+[[ "$OPEN_CODE" -eq 9 && -f "$FILES_HOME/Downloads/movie.mov" ]] || fail "offload of an open file exited $OPEN_CODE, expected 9 and the file kept"
+unset DISKLESSLY_HOME
+pass 'offload and fetch of a file and a folder round-trip; open files are refused'
+
 printf 'PASS: all macOS end-to-end assertions completed\n' | tee -a "$LOG"

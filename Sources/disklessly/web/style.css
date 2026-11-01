@@ -662,3 +662,7 @@ img.avatar { background: transparent; }
 .u-other { background: #8a8a91; }
 .u-free { background: var(--track); color: var(--muted); border: 1px dashed var(--line-strong); }
 .u-free.usage-swatch { border-style: dashed; }
+
+.files-head {
+  margin-top: 1.5rem;
+}
