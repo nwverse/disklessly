@@ -5,6 +5,7 @@
 #   Contents/MacOS/DisklesslyApp  menu-bar app (DisklesslyMac), main executable
 #   Contents/MacOS/disklessly        CLI and engine
 #   Contents/MacOS/disklessly-stub   launcher template copied into generated stubs
+#   Contents/MacOS/rclone          pinned rclone for cloud drives (scripts/fetch-rclone.sh)
 #   Contents/Resources/web/        management page
 #   Contents/Resources/AppIcon.icns  app icon (Resources/AppIcon.icns, see scripts/make-icon.sh)
 #
@@ -15,6 +16,7 @@
 #   DISKLESSLY_ARCHS      space separated, default "arm64 x86_64" (universal)
 #   DISKLESSLY_BUILD_DIR  output folder, default <repo>/build
 #   DISKLESSLY_KEEP_VERSION=1  leave the stamped EngineInstall.swift in place
+#   DISKLESSLY_NO_RCLONE=1     leave rclone out (cloud drives then use rclone from PATH)
 #
 # The bundle is ad-hoc signed so it runs on this Mac. scripts/release-sign.sh
 # re-signs it with a Developer ID for distribution.
@@ -52,6 +54,12 @@ mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp "$BIN/DisklesslyMac" "$APP/Contents/MacOS/DisklesslyApp"
 cp "$BIN/disklessly" "$APP/Contents/MacOS/disklessly"
 cp "$BIN/disklessly-stub" "$APP/Contents/MacOS/disklessly-stub"
+HELPERS=(disklessly-stub disklessly)
+if [[ "${DISKLESSLY_NO_RCLONE:-}" != 1 ]]; then
+  DISKLESSLY_RCLONE_DIR="$OUT/rclone" bash "$ROOT/scripts/fetch-rclone.sh"
+  cp "$OUT/rclone/rclone" "$APP/Contents/MacOS/rclone"
+  HELPERS=(rclone "${HELPERS[@]}")
+fi
 cp -R "$ROOT/Sources/disklessly/web" "$APP/Contents/Resources/web"
 cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/PRIVACY.md" "$APP/Contents/Resources/"
 cp "$ROOT/packaging/Info.plist" "$APP/Contents/Info.plist"
@@ -76,14 +84,14 @@ for exe in "$APP/Contents/MacOS/"*; do
 done
 
 # Inside-out ad-hoc signature. The release identity replaces it later.
-for exe in disklessly-stub disklessly; do
+for exe in "${HELPERS[@]}"; do
   /usr/bin/codesign --force --sign - "$APP/Contents/MacOS/$exe"
 done
 /usr/bin/codesign --force --sign - "$APP"
 /usr/bin/codesign --verify --strict "$APP"
 
 status=0
-for exe in Disklessly disklessly disklessly-stub; do
+for exe in DisklesslyApp "${HELPERS[@]}"; do
   have="$(/usr/bin/lipo -archs "$APP/Contents/MacOS/$exe")"
   for arch in "${ARCHS[@]}"; do
     if [[ " $have " != *" $arch "* ]]; then

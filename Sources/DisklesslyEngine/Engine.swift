@@ -148,6 +148,18 @@ public struct RuntimeConfig: Codable {
         backend = endpoint.type
         if let mount = endpoint.mountPoint { repoPath = mount }
     }
+
+    /// Adds or replaces `endpoint` without switching the active repo to it.
+    public mutating func store(_ endpoint: BackendEndpoint) {
+        backends.removeAll { $0.id == endpoint.id }
+        backends.append(endpoint)
+    }
+
+    /// Back to the repo at `repoPath` (iCloud Drive or a local folder).
+    public mutating func useDefaultRepo() {
+        activeBackendId = nil
+        backend = ICloudFolderBackend.looksLikeICloud(URL(fileURLWithPath: repoPath)) ? "icloud" : "local"
+    }
 }
 
 public enum Hashing {

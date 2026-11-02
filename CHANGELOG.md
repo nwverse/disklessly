@@ -8,6 +8,16 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Cloud drives through a bundled rclone (v1.75.2, `Contents/MacOS/rclone`). `disklessly cloud connect
+  gdrive|dropbox|onedrive|box|pcloud` signs in in the browser and stores an `rclone` backend without switching
+  the repo; `cloud list`, `cloud disconnect NAME`, `backend add rclone --remote NAME`, `backend use default`, and
+  `disklessly rclone ARGS...` (the bundled rclone with Disklessly's own config under the state dir). Whole-file
+  downloads use several streams at once. Google Drive asks only for files Disklessly creates (`drive.file`).
+- One-click OpenList: `disklessly openlist install|status|password|start|stop|uninstall` downloads the pinned
+  release, checks its SHA-256, and runs it on 127.0.0.1 as a LaunchAgent with an admin password kept in the
+  Keychain. OpenList is downloaded on request and never bundled.
+- Cloud drives card in the dashboard: connect a drive, install and open OpenList, and switch the repo (with a
+  warning about apps offloaded to the current repo) or switch back to iCloud Drive.
 - Disk usage card in the dashboard: a flame chart of what fills the disk. Boxes zoom in; each app splits into
   bundle, cache and data, Disklessly's own cache and repo get their own box, and the rest is System & other.
   The scan only reads sizes (`du`), runs in the background on request (`POST /api/usage/scan`), and a timeout
