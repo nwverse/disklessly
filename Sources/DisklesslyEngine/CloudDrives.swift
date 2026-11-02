@@ -47,7 +47,7 @@ public struct CloudDrives {
         guard RcloneTool.validRemoteName(remote) else { throw DisklesslyError.usage("a remote name may use letters, digits, - and _") }
         guard !taken.contains(remote) else { throw DisklesslyError.usage("a remote named \(remote) already exists; pick another --name") }
         try FileManager.default.createDirectory(atPath: (configPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
-        let result = try RcloneTool.run(binary: binary, config: configPath, ["config", "create", remote, provider.type] + provider.extra, timeout: 600)
+        let result = try RcloneTool.run(binary: binary, config: configPath, ["config", "create", remote, provider.type] + RcloneTool.createArguments(provider: provider.id), timeout: 600)
         guard result.status == 0, try remotes().contains(remote) else {
             let reason = RcloneTool.lastLine(result.stderr)
             throw DisklesslyError.backend("could not connect \(provider.name)\(reason.isEmpty ? "" : ": \(reason)")")

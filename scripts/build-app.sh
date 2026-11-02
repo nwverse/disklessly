@@ -17,6 +17,11 @@
 #   DISKLESSLY_BUILD_DIR  output folder, default <repo>/build
 #   DISKLESSLY_KEEP_VERSION=1  leave the stamped EngineInstall.swift in place
 #   DISKLESSLY_NO_RCLONE=1     leave rclone out (cloud drives then use rclone from PATH)
+#   DISKLESSLY_GOOGLE_OAUTH    JSON with Disklessly's Google OAuth desktop client
+#                              ({"client_id", "client_secret"}), default
+#                              ~/.disklessly-oauth/gdrive-client.json; copied to
+#                              Contents/Resources/google-oauth.json when it exists.
+#                              Without it Google Drive uses rclone's shared, rate-limited client.
 #
 # The bundle is ad-hoc signed so it runs on this Mac. scripts/release-sign.sh
 # re-signs it with a Developer ID for distribution.
@@ -63,6 +68,12 @@ fi
 cp -R "$ROOT/Sources/disklessly/web" "$APP/Contents/Resources/web"
 cp "$ROOT/LICENSE" "$ROOT/THIRD_PARTY_NOTICES.md" "$ROOT/PRIVACY.md" "$APP/Contents/Resources/"
 cp "$ROOT/packaging/Info.plist" "$APP/Contents/Info.plist"
+GOOGLE_OAUTH="${DISKLESSLY_GOOGLE_OAUTH:-$HOME/.disklessly-oauth/gdrive-client.json}"
+if [[ -s "$GOOGLE_OAUTH" ]]; then
+  cp "$GOOGLE_OAUTH" "$APP/Contents/Resources/google-oauth.json"
+else
+  echo "build-app: no Google OAuth client ($GOOGLE_OAUTH); Google Drive will use rclone's shared client" >&2
+fi
 # App icon: Resources/AppIcon.icns is committed; regenerate it only if it is missing.
 ICON="$ROOT/Resources/AppIcon.icns"
 [[ -s "$ICON" ]] || bash "$ROOT/scripts/make-icon.sh" "$ROOT/Resources"

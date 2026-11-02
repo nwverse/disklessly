@@ -45,6 +45,40 @@ public enum RcloneTool {
         ("pcloud", "pcloud", "pCloud", []),
     ]
 
+    /// Disklessly's own Google OAuth client, so Google Drive does not share rclone's rate-limited
+    /// one. `DISKLESSLY_GDRIVE_CLIENT_ID` and `_SECRET` win; otherwise the app bundle's
+    /// `Contents/Resources/google-oauth.json` (`{"client_id", "client_secret"}`, added by
+    /// scripts/build-app.sh). A desktop client's secret is not confidential, but it stays out of git.
+    public static func googleClient(environment: [String: String] = ProcessInfo.processInfo.environment,
+                                    executable: URL = URL(fileURLWithPath: CommandLine.arguments.first ?? "").resolvingSymlinksInPath()) -> (id: String, secret: String)? {
+        if let id = environment["DISKLESSLY_GDRIVE_CLIENT_ID"], let secret = environment["DISKLESSLY_GDRIVE_CLIENT_SECRET"], !id.isEmpty, !secret.isEmpty {
+            return (id, secret)
+        }
+        let home = environment["HOME"] ?? NSHomeDirectory()
+        let contents = executable.deletingLastPathComponent().deletingLastPathComponent()
+        let files = [contents.appendingPathComponent("Resources/google-oauth.json").path,
+                     "/Applications/Disklessly.app/Contents/Resources/google-oauth.json",
+                     "\(home)/Applications/Disklessly.app/Contents/Resources/google-oauth.json"]
+        for file in files {
+            guard let data = FileManager.default.contents(atPath: file),
+                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                  let id = object["client_id"] as? String, let secret = object["client_secret"] as? String,
+                  !id.isEmpty, !secret.isEmpty else { continue }
+            return (id, secret)
+        }
+        return nil
+    }
+
+    /// `rclone config create` arguments for `provider` beyond its type.
+    public static func createArguments(provider id: String, googleClient: (id: String, secret: String)? = googleClient()) -> [String] {
+        guard let provider = providers.first(where: { $0.id == id }) else { return [] }
+        var extra = provider.extra
+        if provider.type == "drive", let googleClient {
+            extra += ["client_id", googleClient.id, "client_secret", googleClient.secret]
+        }
+        return extra
+    }
+
     public struct Result {
         public var status: Int32
         public var stdout: Data

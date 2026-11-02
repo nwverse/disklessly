@@ -161,4 +161,18 @@ final class RcloneTests: XCTestCase {
         XCTAssertEqual(try backend.get("x.txt", range: nil), Data("hi".utf8))
         XCTAssertEqual(try RcloneTool.remotes(binary: binary, config: config), ["t"])
     }
+
+    func testGoogleClientFromEnvironmentOrBundle() throws {
+        XCTAssertEqual(RcloneTool.googleClient(environment: ["DISKLESSLY_GDRIVE_CLIENT_ID": "id", "DISKLESSLY_GDRIVE_CLIENT_SECRET": "s"])?.id, "id")
+        let app = root.appendingPathComponent("D.app/Contents")
+        try FileManager.default.createDirectory(at: app.appendingPathComponent("Resources"), withIntermediateDirectories: true)
+        try Data(#"{"client_id":"bundled","client_secret":"x"}"#.utf8).write(to: app.appendingPathComponent("Resources/google-oauth.json"))
+        let found = RcloneTool.googleClient(environment: ["HOME": root.path], executable: app.appendingPathComponent("MacOS/disklessly"))
+        XCTAssertEqual(found?.id, "bundled")
+        XCTAssertEqual(found?.secret, "x")
+        XCTAssertEqual(RcloneTool.createArguments(provider: "gdrive", googleClient: ("i", "s")),
+                       ["scope", "drive.file", "client_id", "i", "client_secret", "s"])
+        XCTAssertEqual(RcloneTool.createArguments(provider: "gdrive", googleClient: nil), ["scope", "drive.file"])
+        XCTAssertEqual(RcloneTool.createArguments(provider: "dropbox", googleClient: ("i", "s")), [])
+    }
 }
