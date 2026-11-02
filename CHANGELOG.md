@@ -12,7 +12,9 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   gdrive|dropbox|onedrive|box|pcloud` signs in in the browser and stores an `rclone` backend without switching
   the repo; `cloud list`, `cloud disconnect NAME`, `backend add rclone --remote NAME`, `backend use default`, and
   `disklessly rclone ARGS...` (the bundled rclone with Disklessly's own config under the state dir). Whole-file
-  downloads use several streams at once. Google Drive asks only for files Disklessly creates (`drive.file`).
+  downloads use several streams at once. Google Drive asks only for files Disklessly creates (`drive.file`) and
+  signs in through Disklessly's own Google OAuth client (`Contents/Resources/google-oauth.json`, or
+  `DISKLESSLY_GDRIVE_CLIENT_ID`/`_SECRET`) instead of rclone's shared, rate-limited one.
 - One-click OpenList: `disklessly openlist install|status|password|start|stop|uninstall` downloads the pinned
   release, checks its SHA-256, and runs it on 127.0.0.1 as a LaunchAgent with an admin password kept in the
   Keychain. OpenList is downloaded on request and never bundled.
