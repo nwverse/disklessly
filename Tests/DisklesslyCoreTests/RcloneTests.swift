@@ -117,10 +117,32 @@ final class RcloneTests: XCTestCase {
         XCTAssertEqual((listing["providers"] as? [[String: String]])?.first?["id"], "gdrive")
     }
 
-    func testBackendRoundTripThroughRealRclone() throws {
+    func testBackendRoundTripThroughRcloneDaemon() throws {
         let binary = try rclone()
         let config = try aliasConfig()
-        let backend = RcloneBackend(binary: binary, config: config, remote: "t", root: "repo", streams: 4)
+        XCTAssertNotNil(RcloneDaemon.shared(binary: binary, config: config), "rclone rcd should start")
+        try roundTrip(RcloneBackend(binary: binary, config: config, remote: "t", root: "repo", streams: 4))
+    }
+
+    func testBackendRoundTripThroughRcloneCLI() throws {
+        let binary = try rclone()
+        let config = try aliasConfig()
+        setenv("DISKLESSLY_RCLONE_DAEMON", "0", 1)
+        defer { unsetenv("DISKLESSLY_RCLONE_DAEMON") }
+        XCTAssertNil(RcloneDaemon.shared(binary: binary, config: config))
+        try roundTrip(RcloneBackend(binary: binary, config: config, remote: "t", root: "repo", streams: 4))
+    }
+
+    func testLocationSplitsFsAndPath() throws {
+        let backend = RcloneBackend(binary: URL(fileURLWithPath: "/bin/false"), config: "/dev/null", remote: "gdrive", root: "Disklessly")
+        XCTAssertEqual(try backend.location("images/a b.dmg").fs, "gdrive:Disklessly")
+        XCTAssertEqual(try backend.location("images/a b.dmg").remote, "images/a b.dmg")
+        let bare = RcloneBackend(binary: URL(fileURLWithPath: "/bin/false"), config: "/dev/null", remote: "box", root: "")
+        XCTAssertEqual(try bare.location("/manifests").fs, "box:")
+        XCTAssertEqual(try bare.location("/manifests").remote, "manifests")
+    }
+
+    private func roundTrip(_ backend: RcloneBackend) throws {
         XCTAssertEqual(try backend.list("manifests"), [])
         XCTAssertNil(try backend.stat("manifests/missing.json"))
         try backend.ensureCollection("manifests")
@@ -128,6 +150,10 @@ final class RcloneTests: XCTestCase {
         XCTAssertEqual(try backend.list("manifests"), ["a.json"])
         XCTAssertEqual(try backend.stat("manifests/a.json")?.size, 7)
         XCTAssertEqual(try backend.get("manifests/a.json", range: 1..<4), Data("\"a\"".utf8))
+        XCTAssertEqual(try backend.get("manifests/a.json", range: nil), Data("{\"a\":1}".utf8))
+        try backend.put("manifests/with space+[x].json", data: Data("s".utf8))
+        XCTAssertEqual(try backend.get("manifests/with space+[x].json", range: nil), Data("s".utf8))
+        try backend.delete("manifests/with space+[x].json")
 
         let payload = Data((0..<300_000).map { UInt8($0 % 251) })
         let source = root.appendingPathComponent("payload.bin")

@@ -164,8 +164,9 @@ public enum RcloneTool {
     }
 }
 
-/// A repo on any rclone remote (Google Drive, Dropbox, OneDrive, S3, ...), driven through the
-/// rclone CLI. Nothing runs in the background between calls.
+/// A repo on any rclone remote (Google Drive, Dropbox, OneDrive, S3, ...). Calls go to a
+/// `rclone rcd` this process keeps running (see `RcloneDaemon`), or to the rclone CLI when the
+/// daemon cannot start.
 public struct RcloneBackend: StorageBackend {
     public let binary: URL
     public let config: String
@@ -190,6 +191,23 @@ public struct RcloneBackend: StorageBackend {
         return "\(remote):\(joined)"
     }
 
+    /// `remote:root` and the path inside it, for rc calls.
+    func location(_ path: String) throws -> (fs: String, remote: String) {
+        let fs = try target("")
+        let inside = try target(path).dropFirst(fs.count).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        return (fs, inside)
+    }
+
+    private var daemon: RcloneDaemon? { RcloneDaemon.shared(binary: binary, config: config) }
+
+    /// Runs an rc method; 404 (not found) comes back as nil.
+    private func rc(_ method: String, _ parameters: [String: Any], on daemon: RcloneDaemon) throws -> [String: Any]? {
+        let (status, reply) = try daemon.call(method, parameters)
+        if status == 404 { return nil }
+        guard status == 200 else { throw DisklesslyError.backend("rclone \(method) failed: \(RcloneDaemon.message(reply))") }
+        return reply
+    }
+
     private func run(_ args: [String], input: Data? = nil, stdoutFile: URL? = nil) throws -> RcloneTool.Result {
         try RcloneTool.run(binary: binary, config: config, args, input: input, stdoutFile: stdoutFile)
     }
@@ -209,6 +227,11 @@ public struct RcloneBackend: StorageBackend {
     }
 
     public func list(_ path: String) throws -> [String] {
+        if let daemon {
+            let (fs, inside) = try location(path)
+            guard let reply = try rc("operations/list", ["fs": fs, "remote": inside, "opt": ["noModTime": true, "noMimeType": true]], on: daemon) else { return [] }
+            return ((reply["list"] as? [[String: Any]]) ?? []).compactMap { $0["Name"] as? String }.sorted()
+        }
         let result = try run(["lsjson", "--no-mimetype", "--no-modtime", try target(path)])
         if Self.isMissing(result) { return [] }
         guard result.status == 0 else { throw fail("lsjson", result) }
@@ -217,17 +240,40 @@ public struct RcloneBackend: StorageBackend {
     }
 
     public func stat(_ path: String) throws -> BackendStat? {
+        if let daemon {
+            let (fs, inside) = try location(path)
+            guard let reply = try rc("operations/stat", ["fs": fs, "remote": inside, "opt": ["noMimeType": true]], on: daemon),
+                  let item = reply["item"] as? [String: Any] else { return nil }
+            let size = (item["Size"] as? NSNumber)?.int64Value ?? 0
+            return BackendStat(size: UInt64(max(0, size)), modified: Self.date(item["ModTime"] as? String ?? ""))
+        }
         let result = try run(["lsjson", "--stat", "--no-mimetype", try target(path)])
         if Self.isMissing(result) { return nil }
         guard result.status == 0 else { throw fail("lsjson --stat", result) }
         let entry = try JSONDecoder().decode(Entry.self, from: result.stdout)
+        return BackendStat(size: UInt64(max(0, entry.Size)), modified: Self.date(entry.ModTime))
+    }
+
+    static func date(_ text: String) -> Date {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let modified = formatter.date(from: entry.ModTime) ?? ISO8601DateFormatter().date(from: entry.ModTime) ?? Date(timeIntervalSince1970: 0)
-        return BackendStat(size: UInt64(max(0, entry.Size)), modified: modified)
+        return formatter.date(from: text) ?? ISO8601DateFormatter().date(from: text) ?? Date(timeIntervalSince1970: 0)
     }
 
     public func get(_ path: String, range: Range<UInt64>?) throws -> Data {
+        if let daemon {
+            if let range, range.isEmpty { return Data() }
+            let (fs, inside) = try location(path)
+            let (status, body) = try daemon.fetch(fs: fs, path: inside, range: range)
+            if status == 404 { throw DisklesslyError.backend("remote object is missing: \(path)") }
+            guard status == 200 || status == 206 else { throw DisklesslyError.backend("rclone serve returned HTTP \(status) for \(path)") }
+            if let range, status == 200 {
+                // The server ignored Range; cut the slice out.
+                let upper = min(Int(range.upperBound), body.count)
+                return Int(range.lowerBound) < upper ? body.subdata(in: Int(range.lowerBound)..<upper) : Data()
+            }
+            return body
+        }
         var args = ["cat"]
         if let range { args += ["--offset", String(range.lowerBound), "--count", String(range.count)] }
         let result = try run(args + [try target(path)])
@@ -237,16 +283,34 @@ public struct RcloneBackend: StorageBackend {
     }
 
     public func put(_ path: String, data: Data) throws {
+        if daemon != nil {
+            let staging = FileManager.default.temporaryDirectory.appendingPathComponent("disklessly-rclone-\(UUID().uuidString)")
+            try data.write(to: staging)
+            defer { try? FileManager.default.removeItem(at: staging) }
+            return try put(path, file: staging)
+        }
         let result = try run(["rcat", try target(path)], input: data)
         guard result.status == 0 else { throw fail("rcat", result) }
     }
 
     public func put(_ path: String, file: URL) throws {
+        if let daemon {
+            let (fs, inside) = try location(path)
+            _ = try rc("operations/copyfile", ["srcFs": file.deletingLastPathComponent().path, "srcRemote": file.lastPathComponent,
+                                                "dstFs": fs, "dstRemote": inside, "_config": ["IgnoreTimes": true]], on: daemon)
+                ?? { throw DisklesslyError.backend("upload source is missing: \(file.path)") }()
+            return
+        }
         let result = try run(["copyto", "--ignore-times", file.path, try target(path)])
         guard result.status == 0 else { throw fail("copyto", result) }
     }
 
     public func delete(_ path: String) throws {
+        if let daemon {
+            let (fs, inside) = try location(path)
+            _ = try rc("operations/deletefile", ["fs": fs, "remote": inside], on: daemon)
+            return
+        }
         let result = try run(["deletefile", "--retries", "1", try target(path)])
         if Self.isMissing(result) { return }
         guard result.status == 0 else { throw fail("deletefile", result) }
@@ -255,6 +319,32 @@ public struct RcloneBackend: StorageBackend {
     /// A fresh download uses rclone's multi-thread download (several ranged streams at once).
     /// A resume appends the rest with `cat --offset`.
     public func download(_ path: String, to destination: URL, offset: UInt64) throws -> ResumableFile {
+        if let daemon {
+            let (fs, inside) = try location(path)
+            try FileManager.default.createDirectory(at: destination.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if offset == 0 {
+                let copied = try rc("operations/copyfile", ["srcFs": fs, "srcRemote": inside,
+                                                            "dstFs": destination.deletingLastPathComponent().path, "dstRemote": destination.lastPathComponent,
+                                                            "_config": ["IgnoreTimes": true, "MultiThreadStreams": max(1, streams), "MultiThreadCutoff": 16 * 1024 * 1024]], on: daemon)
+                if copied == nil { throw DisklesslyError.backend("remote object is missing: \(path)") }
+                return ResumableFile(restart: false, bytesWritten: (try? ChunkedIO.byteCount(destination)) ?? 0)
+            }
+            let staging = destination.deletingLastPathComponent().appendingPathComponent(".\(destination.lastPathComponent).rest-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: staging) }
+            let (status, _) = try daemon.fetch(fs: fs, path: inside, offset: offset, to: staging)
+            if status == 404 { throw DisklesslyError.backend("remote object is missing: \(path)") }
+            if status == 416 { return ResumableFile(restart: false, bytesWritten: 0) }
+            if status == 200 {
+                // Range ignored: the whole object came back, so it replaces the partial.
+                try? FileManager.default.removeItem(at: destination)
+                try FileManager.default.moveItem(at: staging, to: destination)
+                return ResumableFile(restart: true, bytesWritten: (try? ChunkedIO.byteCount(destination)) ?? 0)
+            }
+            guard status == 206 else { throw DisklesslyError.backend("rclone serve returned HTTP \(status) for \(path)") }
+            let added = (try? ChunkedIO.byteCount(staging)) ?? 0
+            try ChunkedIO.appendFile(staging, to: destination)
+            return ResumableFile(restart: false, bytesWritten: added)
+        }
         let source = try target(path)
         if offset == 0 {
             let result = try run(["copyto", "--ignore-times", "--multi-thread-streams", String(max(1, streams)), "--multi-thread-cutoff", "16M", source, destination.path])
@@ -273,6 +363,11 @@ public struct RcloneBackend: StorageBackend {
     public func localRoot() -> URL? { nil }
 
     public func ensureCollection(_ path: String) throws {
+        if let daemon {
+            let (fs, inside) = try location(path)
+            _ = try rc("operations/mkdir", ["fs": fs, "remote": inside], on: daemon)
+            return
+        }
         let result = try run(["mkdir", try target(path)])
         guard result.status == 0 else { throw fail("mkdir", result) }
     }
