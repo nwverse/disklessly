@@ -49,6 +49,8 @@ public struct CloudDrives {
         try FileManager.default.createDirectory(atPath: (configPath as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
         let result = try RcloneTool.run(binary: binary, config: configPath, ["config", "create", remote, provider.type] + RcloneTool.createArguments(provider: provider.id), timeout: 600)
         guard result.status == 0, try remotes().contains(remote) else {
+            // A sign-in that timed out or was cancelled leaves a section without a token.
+            _ = try? RcloneTool.run(binary: binary, config: configPath, ["config", "delete", remote])
             let reason = RcloneTool.lastLine(result.stderr)
             throw DisklesslyError.backend("could not connect \(provider.name)\(reason.isEmpty ? "" : ": \(reason)")")
         }
