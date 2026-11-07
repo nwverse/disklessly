@@ -40,8 +40,11 @@ public struct SessionEntryRow: Equatable {
     public var preview: String
     public var archivedAt: String
     public var state: String
+    /// Short text digest of the transcript (user prompts and final answers). Empty
+    /// for rows archived before schema 3 or imported from another Mac.
+    public var digest: String
 
-    public init(id: String, segmentId: String?, legacyArchive: String?, member: String, deviceId: String, tool: String, path: String, sha256: String, size: Int64, mtimeNs: Int64, ino: Int64?, preview: String, archivedAt: String, state: String) {
+    public init(id: String, segmentId: String?, legacyArchive: String?, member: String, deviceId: String, tool: String, path: String, sha256: String, size: Int64, mtimeNs: Int64, ino: Int64?, preview: String, archivedAt: String, state: String, digest: String = "") {
         self.id = id
         self.segmentId = segmentId
         self.legacyArchive = legacyArchive
@@ -56,10 +59,13 @@ public struct SessionEntryRow: Equatable {
         self.preview = preview
         self.archivedAt = archivedAt
         self.state = state
+        self.digest = digest
     }
 }
 
 public final class SessionIndexDB {
+    /// Schema 3 added `entries.digest` and the `digest` FTS column.
+    public static let schemaVersion: Int64 = 3
     private var db: OpaquePointer?
     private var compiledFTS = false
     public var ftsAvailable = false
@@ -73,13 +79,19 @@ public final class SessionIndexDB {
             throw DisklesslyError.failure("cannot open session index \(path)")
         }
         db = handle
+        // The dashboard reads while an apply holds a write transaction.
+        sqlite3_busy_timeout(handle, 5_000)
         try exec("PRAGMA journal_mode=WAL")
         try exec("PRAGMA synchronous=FULL")
-        let version = try pragma("user_version")
-        if version > 2 {
+        var version = try pragma("user_version")
+        if version > Self.schemaVersion {
             throw DisklesslyError.unsupported("session index is from a newer disklessly")
         }
         var fts = false
+        if version == 2 {
+            try migrateV2toV3()
+            version = Self.schemaVersion
+        }
         if version == 0 {
             try exec("BEGIN IMMEDIATE")
             do {
@@ -91,13 +103,13 @@ public final class SessionIndexDB {
             }
             if sqlite3_compileoption_used("ENABLE_FTS5") == 1 {
                 do {
-                    try exec("CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(id UNINDEXED, path, preview)")
+                    try exec("CREATE VIRTUAL TABLE IF NOT EXISTS entries_fts USING fts5(id UNINDEXED, path, preview, digest)")
                     fts = true
                 } catch {
                     fts = false
                 }
             }
-            try exec("PRAGMA user_version = 2")
+            try exec("PRAGMA user_version = \(Self.schemaVersion)")
         } else {
             fts = sqlite3_compileoption_used("ENABLE_FTS5") == 1 && tableExists("entries_fts")
         }
@@ -106,6 +118,51 @@ public final class SessionIndexDB {
     }
 
     deinit { sqlite3_close(db) }
+
+    /// v2 → v3: add `entries.digest` and rebuild the FTS table with a digest
+    /// column (FTS5 cannot add columns), all in one transaction.
+    private func migrateV2toV3() throws {
+        try exec("BEGIN IMMEDIATE")
+        do {
+            // Another process may have migrated between our read and the lock.
+            if try pragma("user_version") == 2 {
+                if !columnExists(table: "entries", column: "digest") {
+                    try exec("ALTER TABLE entries ADD COLUMN digest TEXT NOT NULL DEFAULT ''")
+                }
+                if sqlite3_compileoption_used("ENABLE_FTS5") == 1 {
+                    try exec("DROP TABLE IF EXISTS entries_fts")
+                    try exec("CREATE VIRTUAL TABLE entries_fts USING fts5(id UNINDEXED, path, preview, digest)")
+                    try exec("INSERT INTO entries_fts(id, path, preview, digest) SELECT id, path, preview, digest FROM entries")
+                }
+                try exec("PRAGMA user_version = 3")
+            }
+            try exec("COMMIT")
+        } catch {
+            _ = try? exec("ROLLBACK")
+            throw error
+        }
+    }
+
+    private func columnExists(table: String, column: String) -> Bool {
+        guard let statement = try? prepare("PRAGMA table_info(\(table))") else { return false }
+        defer { sqlite3_finalize(statement) }
+        while sqlite3_step(statement) == SQLITE_ROW {
+            if let name = sqlite3_column_text(statement, 1), String(cString: name) == column { return true }
+        }
+        return false
+    }
+
+    public func userVersion() throws -> Int64 { try pragma("user_version") }
+
+    /// The stored digest of one entry, or nil when the row is missing.
+    public func digest(id: String) throws -> String? {
+        let statement = try prepare("SELECT digest FROM entries WHERE id = ?")
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, id)
+        guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+        guard let raw = sqlite3_column_text(statement, 0) else { return "" }
+        return String(cString: raw)
+    }
 
     public func insert(entries: [SessionEntryRow]) throws {
         try exec("BEGIN IMMEDIATE")
@@ -121,7 +178,7 @@ public final class SessionIndexDB {
     }
 
     public func allEntries() throws -> [SessionEntryRow] {
-        let sql = "SELECT id, segment_id, legacy_archive, member, device_id, tool, path, sha256, size, mtime_ns, ino, preview, archived_at, state FROM entries"
+        let sql = "SELECT id, segment_id, legacy_archive, member, device_id, tool, path, sha256, size, mtime_ns, ino, preview, archived_at, state, digest FROM entries"
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
         var rows: [SessionEntryRow] = []
@@ -216,7 +273,8 @@ public final class SessionIndexDB {
             ino: ino,
             preview: text(11) ?? "",
             archivedAt: text(12) ?? "",
-            state: text(13) ?? ""
+            state: text(13) ?? "",
+            digest: text(14) ?? ""
         )
     }
 
@@ -225,7 +283,7 @@ public final class SessionIndexDB {
             return try queryIds("SELECT e.id FROM entries_fts f JOIN entries e ON e.id = f.id WHERE entries_fts MATCH ? LIMIT ?", query, limit)
         }
         let needle = "%" + query.replacingOccurrences(of: "%", with: "\\%").replacingOccurrences(of: "_", with: "\\_") + "%"
-        return try queryIds("SELECT id FROM entries WHERE path LIKE ? ESCAPE '\\' OR preview LIKE ? ESCAPE '\\' LIMIT ?", needle, limit, like: true)
+        return try queryIds("SELECT id FROM entries WHERE path LIKE ? ESCAPE '\\' OR preview LIKE ? ESCAPE '\\' OR digest LIKE ? ESCAPE '\\' LIMIT ?", needle, limit, like: true)
     }
 
     private func createTables() throws {
@@ -237,15 +295,16 @@ public final class SessionIndexDB {
         try exec("""
         CREATE TABLE entries(id TEXT PRIMARY KEY, segment_id TEXT, legacy_archive TEXT, member TEXT NOT NULL,
           device_id TEXT NOT NULL, tool TEXT NOT NULL, path TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL,
-          mtime_ns INTEGER NOT NULL, ino INTEGER, preview TEXT NOT NULL, archived_at TEXT NOT NULL, state TEXT NOT NULL)
+          mtime_ns INTEGER NOT NULL, ino INTEGER, preview TEXT NOT NULL, archived_at TEXT NOT NULL, state TEXT NOT NULL,
+          digest TEXT NOT NULL DEFAULT '')
         """)
         try exec("CREATE INDEX entries_path ON entries(path)")
     }
 
     private func insertOne(_ entry: SessionEntryRow) throws {
         let sql = """
-        INSERT INTO entries(id, segment_id, legacy_archive, member, device_id, tool, path, sha256, size, mtime_ns, ino, preview, archived_at, state)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO entries(id, segment_id, legacy_archive, member, device_id, tool, path, sha256, size, mtime_ns, ino, preview, archived_at, state, digest)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
@@ -263,15 +322,17 @@ public final class SessionIndexDB {
         bind(statement, 12, entry.preview)
         bind(statement, 13, entry.archivedAt)
         bind(statement, 14, entry.state)
+        bind(statement, 15, entry.digest)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw DisklesslyError.failure("session index insert failed: \(message())")
         }
         if ftsAvailable && compiledFTS {
-            let fts = try prepare("INSERT INTO entries_fts(id, path, preview) VALUES(?,?,?)")
+            let fts = try prepare("INSERT INTO entries_fts(id, path, preview, digest) VALUES(?,?,?,?)")
             defer { sqlite3_finalize(fts) }
             bind(fts, 1, entry.id)
             bind(fts, 2, entry.path)
             bind(fts, 3, entry.preview)
+            bind(fts, 4, entry.digest)
             guard sqlite3_step(fts) == SQLITE_DONE else {
                 throw DisklesslyError.failure("session index fts insert failed: \(message())")
             }
@@ -284,7 +345,8 @@ public final class SessionIndexDB {
         if like {
             bind(statement, 1, query)
             bind(statement, 2, query)
-            bind(statement, 3, Int64(limit))
+            bind(statement, 3, query)
+            bind(statement, 4, Int64(limit))
         } else {
             bind(statement, 1, query)
             bind(statement, 2, Int64(limit))
