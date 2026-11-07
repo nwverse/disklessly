@@ -31,10 +31,16 @@ enum SessionTierV2 {
             try verifyMembers(relative: built.relativePath, members: group.members, backend: backend, config: config, secrets: store)
             let created = SegmentWriter.createdAt(now)
             let row = SessionSegmentRow(id: built.sha256, path: built.relativePath, deviceId: device.deviceId, tool: group.tool, createdAt: created, bytes: Int64(built.stored.count), codec: built.codec, encrypted: key != nil, keyId: built.keyId)
+            // Digest from the snapshot bytes already in memory. The transcript
+            // itself is what was packed; the digest only goes into the index.
             let entries = group.members.map { member in
-                SessionEntryRow(id: member.entryId, segmentId: built.sha256, legacyArchive: nil, member: "m/\(member.entryId).jsonl", deviceId: device.deviceId, tool: member.tool, path: member.path, sha256: member.sha256, size: member.size, mtimeNs: member.mtimeNs, ino: member.ino, preview: member.preview, archivedAt: created, state: "pendingDelete")
+                SessionEntryRow(id: member.entryId, segmentId: built.sha256, legacyArchive: nil, member: "m/\(member.entryId).jsonl", deviceId: device.deviceId, tool: member.tool, path: member.path, sha256: member.sha256, size: member.size, mtimeNs: member.mtimeNs, ino: member.ino, preview: member.preview, archivedAt: created, state: "pendingDelete", digest: SessionDigest.digest(tool: member.tool, path: member.path, data: member.bytes))
             }
             try database.commit(segment: row, entries: entries)
+            for entry in entries {
+                // A digest file is a convenience; failing to write it never blocks the run.
+                try? writeDigestFile(entry, stateDir: config.stateDir)
+            }
             segments.append(built.relativePath)
             if let afterIndexCommit { try afterIndexCommit() }
             for member in group.members {
@@ -45,6 +51,19 @@ enum SessionTierV2 {
             }
         }
         return SessionReport(cold: cold.map(\.path), skipped: extraSkipped, applied: true, keptLocal: kept, segments: segments)
+    }
+
+    /// `stateDir/sessions/digests/<entryId>.md`.
+    static func digestURL(stateDir: String, id: String) -> URL {
+        URL(fileURLWithPath: stateDir).appendingPathComponent("sessions/digests/\(id).md")
+    }
+
+    static func writeDigestFile(_ entry: SessionEntryRow, stateDir: String) throws {
+        let url = digestURL(stateDir: stateDir, id: entry.id)
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let modified = Date(timeIntervalSince1970: Double(entry.mtimeNs) / 1_000_000_000)
+        let text = SessionDigest.markdown(id: entry.id, tool: entry.tool, path: entry.path, sha256: entry.sha256, modified: modified, digest: entry.digest)
+        try Data(text.utf8).write(to: url, options: .atomic)
     }
 
     static func search(config: RuntimeConfig, query: String) throws -> [SessionIndexEntry] {
@@ -312,7 +331,7 @@ enum SessionTierV2 {
 
     private static func indexEntry(_ row: SessionEntryRow, paths: [String: String]) -> SessionIndexEntry {
         let archive = row.legacyArchive ?? row.segmentId.flatMap { paths[$0] } ?? ""
-        return SessionIndexEntry(id: row.id, tool: row.tool, path: row.path, sha256: row.sha256, size: UInt64(max(0, row.size)), modified: Date(timeIntervalSince1970: Double(row.mtimeNs) / 1_000_000_000), archive: archive, member: row.member, preview: row.preview)
+        return SessionIndexEntry(id: row.id, tool: row.tool, path: row.path, sha256: row.sha256, size: UInt64(max(0, row.size)), modified: Date(timeIntervalSince1970: Double(row.mtimeNs) / 1_000_000_000), archive: archive, member: row.member, preview: row.preview, digest: row.digest.isEmpty ? nil : row.digest)
     }
 
     private static func restoreLegacyArchive(_ archivePath: String, member: String, sha256: String, tool: String, modified: Date, destination: String, backend: any StorageBackend) throws {

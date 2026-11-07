@@ -26,7 +26,7 @@ public struct RuntimeConfig: Codable {
     public var signIdentity: String = "-"
     /// Files untouched for this many days are cold-tier candidates. The 24 hour guard still applies.
     public var sessionColdDays: Int = 14
-    /// Extra session roots. When empty, the built-in pi, Claude Code, and Codex roots are used.
+    /// Session roots. When empty, the built-in agent roots (`SessionRoot.defaults`) are used.
     public var sessionRoots: [SessionRoot] = []
     /// Home used to build the built-in session roots. Overrides `$HOME` when set. `--home` overrides this.
     public var sessionHome: String? = nil

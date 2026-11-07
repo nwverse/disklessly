@@ -191,25 +191,7 @@ func printEvict(_ report: LocalEvictReport, files: [MaterialFile]) {
 }
 /// Linux images often ship without lsof; the `/proc` fd links stand in, read once per run.
 /// If neither works every file counts as open, so nothing live is archived.
-let procOpenPaths: Set<String>? = HostPlatform.current == .linux ? OpenFileProbe.procOpenPaths() : nil
-func liveSessionOpen(_ path: String) -> Bool {
-    let lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].first { FileManager.default.isExecutableFile(atPath: $0) }
-    guard let lsof else {
-        guard HostPlatform.current == .linux else { return false }
-        guard let procOpenPaths else { return true }
-        return procOpenPaths.contains(SessionPaths.canonical(path))
-    }
-    let process = Process()
-    process.executableURL = URL(fileURLWithPath: lsof)
-    process.arguments = ["-Fn", "--", path]
-    let output = Pipe()
-    process.standardOutput = output
-    process.standardError = Pipe()
-    guard (try? process.run()) != nil else { return false }
-    process.waitUntilExit()
-    let text = String(data: output.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    return OpenFileProbe.isOpen(lsofStatus: process.terminationStatus, lsofStdout: text, path: path)
-}
+let liveSessionOpen = SessionArchive.liveOpenProbe()
 func serveUntilSignaled(_ server: LoopbackUIServer) -> Never {
     signal(SIGINT, SIG_IGN)
     signal(SIGTERM, SIG_IGN)
@@ -567,7 +549,7 @@ do {
         switch parsed.command {
         case .tier:
             let report = try SessionArchive.tier(config: config, backend: engine.repo, apply: parsed.apply, coldDays: parsed.days, home: parsed.home, isOpen: liveSessionOpen, secrets: secrets, encrypt: parsed.encrypt)
-            emit(["ok": true, "applied": report.applied, "cold": report.cold, "skipped": report.skipped.map { ["path": $0.0, "reason": $0.1] }, "keptLocal": report.keptLocal.map { ["path": $0.0, "reason": $0.1] }, "segments": report.segments])
+            emit(report.jsonObject())
         case .search:
             let hits = try SessionArchive.search(config: config, query: parsed.query ?? "")
             let limited = parsed.limit.map { Array(hits.prefix($0)) } ?? hits

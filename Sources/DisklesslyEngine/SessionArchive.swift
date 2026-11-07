@@ -45,18 +45,24 @@ public enum SessionArchive {
 
     public static func scan(roots: [SessionRoot], isOpen: (String) -> Bool) throws -> [SessionCandidate] {
         var found: [SessionCandidate] = []
+        // Roots may overlap (a config root inside a default one). The first root
+        // that lists a file owns it, so one file is never packed twice.
+        var seen = Set<String>()
         let fm = FileManager.default
         for root in roots {
             var isDir: ObjCBool = false
             guard fm.fileExists(atPath: root.directory, isDirectory: &isDir), isDir.boolValue else { continue }
+            let canonicalRoot = SessionPaths.canonical(root.directory)
             guard let enumerator = fm.enumerator(at: URL(fileURLWithPath: root.directory), includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey], options: [.skipsHiddenFiles]) else { continue }
             for case let url as URL in enumerator {
                 let path = SessionPaths.canonical(url.path)
-                guard path.hasSuffix(root.suffix) else { continue }
+                guard root.accepts(path, canonicalDirectory: canonicalRoot) else { continue }
+                guard !seen.contains(path) else { continue }
                 let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
                 guard values.isRegularFile == true || values.isSymbolicLink == true else { continue }
                 var targetIsDirectory: ObjCBool = false
                 guard fm.fileExists(atPath: path, isDirectory: &targetIsDirectory), !targetIsDirectory.boolValue else { continue }
+                seen.insert(path)
                 let attributes = try? fm.attributesOfItem(atPath: path)
                 let preview = (try? ChunkedIO.prefix(URL(fileURLWithPath: path), maxBytes: 4096)) ?? Data()
                 found.append(SessionCandidate(
@@ -94,6 +100,18 @@ public enum SessionArchive {
         return SessionRoot.defaults(home: base)
     }
 
+    /// Roots whose tool is in `tools`. Nil keeps them all.
+    public static func restrict(_ roots: [SessionRoot], to tools: Set<String>?) throws -> [SessionRoot] {
+        guard let tools else { return roots }
+        guard !tools.isEmpty else { throw DisklesslyError.usage("no session tools selected") }
+        let known = Set(roots.map(\.tool))
+        let unknown = tools.subtracting(known)
+        if !unknown.isEmpty {
+            throw DisklesslyError.usage("unknown session tool: \(unknown.sorted().joined(separator: ", "))")
+        }
+        return roots.filter { tools.contains($0.tool) }
+    }
+
     /// Canonical paths that are not inside a configured root. Both sides of the
     /// comparison are canonical, and the returned spelling is the realpath form
     /// so a `/var` alias is reported as `/private/var`. `--apply` refuses these.
@@ -107,10 +125,20 @@ public enum SessionArchive {
 
     /// Without `apply`, nothing is uploaded or deleted. The first run is a dry run
     /// unless the caller passes `apply: true`.
-    public static func tier(config: RuntimeConfig, backend: any StorageBackend, now: Date = Date(), apply: Bool = false, coldDays: Int? = nil, home: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment, isOpen: (String) -> Bool = { _ in false }, secrets: (any SecretStore)? = nil, encrypt: Bool = false, beforeDelete: ((String) -> Void)? = nil, afterIndexCommit: (() throws -> Void)? = nil) throws -> SessionReport {
+    /// `tools` limits the run to those tool ids (the agents a user ticked). Nil
+    /// means every configured root. An empty set or an id with no root is a usage
+    /// error. Pending rows from earlier runs are settled whatever the filter.
+    public static func tier(config: RuntimeConfig, backend: any StorageBackend, now: Date = Date(), apply: Bool = false, coldDays: Int? = nil, home: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment, tools: Set<String>? = nil, isOpen: (String) -> Bool = { _ in false }, secrets: (any SecretStore)? = nil, encrypt: Bool = false, beforeDelete: ((String) -> Void)? = nil, afterIndexCommit: (() throws -> Void)? = nil) throws -> SessionReport {
         let days = coldDays ?? config.sessionColdDays
-        let roots = configuredRoots(config: config, home: home, environment: environment)
-        let candidates = try scan(roots: roots, isOpen: isOpen)
+        let roots = try restrict(configuredRoots(config: config, home: home, environment: environment), to: tools)
+        // Ask the open-file probe only about files that are cold by name and age;
+        // a recent file is skipped either way and lsof is slow per call.
+        let candidates = try scan(roots: roots, isOpen: { _ in false }).map { candidate -> SessionCandidate in
+            guard SessionTiering.decide(candidate, now: now, coldDays: days).cold else { return candidate }
+            var probed = candidate
+            probed.open = isOpen(candidate.path)
+            return probed
+        }
         let decisions = candidates.map { SessionTiering.decide($0, now: now, coldDays: days) }
         let cold = decisions.filter(\.cold).map(\.candidate)
         let skipped = decisions.filter { !$0.cold }.map { ($0.candidate.path, $0.reason) }
