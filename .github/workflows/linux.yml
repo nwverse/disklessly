@@ -1,19 +1,17 @@
 name: Linux
 
-# Minutes budget: push runs only on main; branches are covered by their PR run,
-# so a branch with an open PR is no longer built twice. Docs-only changes skip CI.
+# Routine runs are the Daily workflow's workflow_call, once each morning.
+# workflow_dispatch stays for an urgent Linux-only check. Push and pull_request
+# used to build a branch on the PR and again when it merged.
 on:
-  push:
-    branches: [main]
-    paths-ignore: ["**.md", "docs/**", "LICENSE"]
-  pull_request:
-    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
   contents: read
 
-# A newer push to the same PR or branch cancels the older run.
+# A newer run on the same ref cancels the older one. pull_request.number is
+# empty for workflow_call and workflow_dispatch, so those group by github.ref.
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true

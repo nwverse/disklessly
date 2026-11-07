@@ -1,16 +1,16 @@
 name: macOS E2E
 
-# macOS minutes bill at 10x Linux on a private repo, so this runs only on
-# pushes to main and release/** branches, by hand (workflow_dispatch), or on a
-# PR that carries the `macos-e2e` label. Tagged releases run the same E2E in
-# release.yml. Docs-only changes skip it.
+# macOS minutes bill at 10x Linux on a private repo. Routine runs are the Daily
+# workflow's workflow_call, once each morning. workflow_dispatch stays for an
+# urgent macOS-only check. Tagged releases still run this E2E inside release.yml,
+# which is not on the daily schedule.
+#
+# The job conditions run for every event other than an unlabelled pull_request.
+# workflow_call (what Daily uses), workflow_dispatch, and schedule all take that
+# path. This file no longer has a pull_request trigger, so the label clause does
+# not fire; it remains so a non-PR event cannot be skipped by it.
 on:
-  push:
-    branches: [main, "release/**"]
-    paths-ignore: ["**.md", "docs/**", "LICENSE"]
-  pull_request:
-    types: [opened, synchronize, reopened, labeled]
-    paths-ignore: ["**.md", "docs/**", "LICENSE"]
+  workflow_call:
   workflow_dispatch:
 
 permissions:
