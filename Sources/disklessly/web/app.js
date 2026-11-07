@@ -208,6 +208,40 @@ const copy = {
     licenseInvalid: "已保存的授权码无法使用，免费版限额生效",
     licenseOk: "授权已激活",
     licenseRemoved: "授权已移除",
+    cloudTitle: "云盘与仓库",
+    cloudRepoDefault: (kind) => kind === "icloud" ? "当前仓库：iCloud 云盘（默认）" : "当前仓库：本机文件夹（默认）",
+    cloudRepoBackend: (id) => `当前仓库：${id}`,
+    cloudSummary: (n) => n ? `已连接 ${n} 个网盘` : "仓库默认放在 iCloud 云盘",
+    cloudDrives: "网盘（内置 rclone）",
+    cloudDrivesNote: "连接后可以把已卸载的应用放到网盘里。登录在浏览器中完成，凭据只保存在这台 Mac 上。",
+    cloudConnect: (name) => `连接 ${name}`,
+    cloudNoRemotes: "还没有连接网盘。",
+    cloudUse: "设为仓库",
+    cloudDefaultName: (kind) => kind === "icloud" ? "iCloud 云盘" : "本机文件夹",
+    cloudActive: "当前仓库",
+    cloudDisconnect: "断开",
+    cloudBackDefault: (kind) => kind === "icloud" ? "切回 iCloud 云盘" : "切回本机文件夹",
+    cloudUseConfirm: (target, n) => n
+      ? `把仓库切换到 ${target}？\n\n这台 Mac 有 ${n} 个应用卸载在当前仓库里。切换后，在你切回来之前，它们的启动器找不到镜像。新仓库开始时是空的。`
+      : `把仓库切换到 ${target}？新仓库开始时是空的。`,
+    cloudDisconnectConfirm: (name) => `断开 ${name}？网盘上的文件不会被删除。`,
+    cloudTaskconnect: "正在等待你在浏览器里登录…",
+    cloudTaskopenlist: (phase) => `正在安装 OpenList（${({ download: "下载中", verify: "校验中", configure: "配置中", start: "启动中" })[phase] || "准备中"}）…`,
+    cloudTaskDone: "完成",
+    cloudTaskFailed: (msg) => `失败：${msg}`,
+    cloudSwitched: (target) => `仓库已切换到 ${target}`,
+    cloudNoRclone: "找不到内置的 rclone，请重新安装 Disklessly。",
+    openlistTitle: "OpenList（可选）",
+    openlistNote: "OpenList 能把阿里云盘、百度网盘、115、夸克等网盘统一成 WebDAV。它只在这台 Mac 的 127.0.0.1 上运行；首次安装需下载约 50 MB。",
+    openlistInstall: "一键安装 OpenList",
+    openlistRunning: (url) => `运行中：${url}`,
+    openlistStopped: "已停止",
+    openlistOpen: "打开管理页",
+    openlistPassword: "显示管理员密码",
+    openlistPasswordIs: (pw) => `用户 admin，密码 ${pw}`,
+    openlistStart: "启动",
+    openlistStop: "停止",
+    openlistHint: "先在管理页里添加你的网盘，再把 OpenList 设为仓库。",
     errlicense_required: "免费版的卸载数量已用完（应用和文件合计）。输入授权码可继续卸载。",
     sessionTiers: "会话分层",
     coldAfter: (n) => `${n} 天未用转冷`,
@@ -541,6 +575,40 @@ const copy = {
     licenseInvalid: "The saved license code is not usable; the free limit applies",
     licenseOk: "License activated",
     licenseRemoved: "License removed",
+    cloudTitle: "Cloud drives and repo",
+    cloudRepoDefault: (kind) => kind === "icloud" ? "Repo: iCloud Drive (default)" : "Repo: a folder on this Mac (default)",
+    cloudRepoBackend: (id) => `Repo: ${id}`,
+    cloudSummary: (n) => n ? `${n} cloud drive${n === 1 ? "" : "s"} connected` : "The repo lives in iCloud Drive by default",
+    cloudDrives: "Cloud drives (built-in rclone)",
+    cloudDrivesNote: "Connect a drive to keep offloaded apps there. You sign in in your browser; the credentials stay on this Mac.",
+    cloudConnect: (name) => `Connect ${name}`,
+    cloudNoRemotes: "No cloud drive connected yet.",
+    cloudUse: "Use as repo",
+    cloudDefaultName: (kind) => kind === "icloud" ? "iCloud Drive" : "the local folder",
+    cloudActive: "Current repo",
+    cloudDisconnect: "Disconnect",
+    cloudBackDefault: (kind) => kind === "icloud" ? "Back to iCloud Drive" : "Back to the local folder",
+    cloudUseConfirm: (target, n) => n
+      ? `Switch the repo to ${target}?\n\n${n} app${n === 1 ? " is" : "s are"} offloaded from this Mac to the current repo. Until you switch back, their launchers cannot find their images. The new repo starts empty.`
+      : `Switch the repo to ${target}? The new repo starts empty.`,
+    cloudDisconnectConfirm: (name) => `Disconnect ${name}? Files on the drive are not deleted.`,
+    cloudTaskconnect: "Waiting for you to sign in in the browser…",
+    cloudTaskopenlist: (phase) => `Installing OpenList (${({ download: "downloading", verify: "verifying", configure: "configuring", start: "starting" })[phase] || "preparing"})…`,
+    cloudTaskDone: "Done",
+    cloudTaskFailed: (msg) => `Failed: ${msg}`,
+    cloudSwitched: (target) => `The repo is now ${target}`,
+    cloudNoRclone: "The built-in rclone is missing. Reinstall Disklessly.",
+    openlistTitle: "OpenList (optional)",
+    openlistNote: "OpenList serves many cloud drives (Aliyun, Baidu, 115, Quark, …) over WebDAV. It runs only on this Mac at 127.0.0.1; the first install downloads about 50 MB.",
+    openlistInstall: "Install OpenList",
+    openlistRunning: (url) => `Running at ${url}`,
+    openlistStopped: "Stopped",
+    openlistOpen: "Open admin page",
+    openlistPassword: "Show admin password",
+    openlistPasswordIs: (pw) => `User admin, password ${pw}`,
+    openlistStart: "Start",
+    openlistStop: "Stop",
+    openlistHint: "Add your drives on the admin page first, then use OpenList as the repo.",
     errlicense_required: "The free limit (apps and files together) is used up. Enter a license code to offload more.",
     sessionTiers: "Session tiers",
     coldAfter: (n) => `Cold after ${n} days`,
@@ -2667,6 +2735,143 @@ async function retryNow() {
   return refresh();
 }
 
+// ---- cloud drives -----------------------------------------------------------
+
+let cloudState = null;
+let cloudPoll = null;
+
+function cloudButton(key, args, onClick, className) {
+  const button = el("button", `btn ${className || "outline"}`, t(key, ...(args || [])));
+  button.type = "button";
+  button.addEventListener("click", onClick);
+  return button;
+}
+
+function renderCloud(info) {
+  cloudState = info;
+  const summary = document.querySelector("#cloud-summary");
+  const repo = document.querySelector("#cloud-repo");
+  const task = document.querySelector("#cloud-task");
+  const list = document.querySelector("#cloud-remotes");
+  const connect = document.querySelector("#cloud-connect");
+  const openlist = document.querySelector("#cloud-openlist");
+  if (!info) { [summary, repo, list, connect, openlist].forEach((n) => n.replaceChildren()); task.hidden = true; return; }
+  const remotes = info.remotes || [];
+  const active = info.activeBackendId || "";
+  summary.textContent = t("cloudSummary", remotes.length);
+  repo.replaceChildren(document.createTextNode(active ? t("cloudRepoBackend", active) : t("cloudRepoDefault", info.defaultKind)));
+  if (active) {
+    repo.append(" ", cloudButton("cloudBackDefault", [info.defaultKind], () => useRepo({ id: "default" }, t("cloudDefaultName", info.defaultKind)), "quiet"));
+  }
+  const running = info.task && info.task.state === "running";
+  if (info.task && info.task.state) {
+    task.hidden = false;
+    task.dataset.state = info.task.state;
+    task.textContent = info.task.state === "running" ? t(`cloudTask${info.task.action}`, info.task.phase)
+      : info.task.state === "failed" ? t("cloudTaskFailed", info.task.message || "") : t("cloudTaskDone");
+  } else {
+    task.hidden = true;
+  }
+  list.replaceChildren(...(remotes.length ? remotes.map((remote) => {
+    const row = el("li", "cloud-row");
+    const name = el("span", "grow", `${remote.name}`);
+    if (remote.type) name.append(el("span", "muted", `  ${remote.type}`));
+    row.append(name);
+    if (remote.active) {
+      row.append(el("span", "pill green", t("cloudActive")));
+    } else {
+      row.append(cloudButton("cloudUse", [], () => useRepo(remote.backendId ? { id: remote.backendId } : { remote: remote.name }, remote.name), "tint"));
+      row.append(cloudButton("cloudDisconnect", [], () => disconnectRemote(remote.name), "quiet"));
+    }
+    return row;
+  }) : [el("li", "muted", t("cloudNoRemotes"))]));
+  if (!info.rclone) {
+    connect.replaceChildren(el("span", "muted", t("cloudNoRclone")));
+  } else {
+    connect.replaceChildren(...(info.providers || []).map((p) => {
+      const button = cloudButton("cloudConnect", [p.name], () => connectDrive(p.id));
+      button.disabled = running;
+      return button;
+    }));
+  }
+  const ol = info.openlist || {};
+  if (!ol.installed) {
+    const button = cloudButton("openlistInstall", [], installOpenList, "outline");
+    button.disabled = running;
+    openlist.replaceChildren(button);
+  } else {
+    const nodes = [el("span", "grow", ol.running ? t("openlistRunning", ol.url) : t("openlistStopped"))];
+    if (ol.running) {
+      const link = el("a", "btn outline", t("openlistOpen"));
+      link.href = ol.url;
+      link.target = "_blank";
+      link.rel = "noopener";
+      nodes.push(link);
+      nodes.push(cloudButton("openlistPassword", [], showOpenListPassword, "quiet"));
+      nodes.push(cloudButton("openlistStop", [], () => openListPower("stop"), "quiet"));
+    } else {
+      nodes.push(cloudButton("openlistStart", [], () => openListPower("start"), "outline"));
+    }
+    if (active === ol.backendId) nodes.push(el("span", "pill green", t("cloudActive")));
+    else nodes.push(cloudButton("cloudUse", [], () => useRepo({ id: ol.backendId }, "OpenList"), "tint"));
+    openlist.replaceChildren(...nodes, el("p", "muted", t("openlistHint")));
+  }
+  clearTimeout(cloudPoll);
+  if (running) cloudPoll = setTimeout(loadCloud, 2000);
+}
+
+async function loadCloud() {
+  const wasRunning = cloudState && cloudState.task && cloudState.task.state === "running";
+  try {
+    const info = await api("/api/cloud");
+    renderCloud(info);
+    if (wasRunning && info.task && info.task.state === "failed") toast({ title: t("cloudTitle"), error: { code: "failed", message: info.task.message || "" }, tone: "error" });
+    else if (wasRunning && info.task && info.task.state === "done") toast({ title: t("cloudTaskDone"), tone: "ok" });
+  } catch (error) {
+    if (error.code !== "unauthorized") renderCloud(null);
+  }
+}
+
+async function cloudPost(path, body) {
+  try {
+    const result = await api(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+    if (result.cloud) renderCloud(result.cloud);
+    return result;
+  } catch (error) {
+    if (error.code !== "unauthorized") toast({ title: t("cloudTitle"), error: { code: error.code, message: error.message }, tone: "error" });
+    return null;
+  }
+}
+
+function connectDrive(provider) { return cloudPost("/api/cloud/connect", { provider }); }
+function installOpenList() { return cloudPost("/api/openlist/install"); }
+function openListPower(which) { return cloudPost(`/api/openlist/${which}`); }
+
+async function disconnectRemote(name) {
+  if (!confirm(t("cloudDisconnectConfirm", name))) return;
+  await cloudPost("/api/cloud/disconnect", { remote: name });
+}
+
+async function useRepo(target, label) {
+  if (!confirm(t("cloudUseConfirm", label, (cloudState && cloudState.appsHere) || 0))) return;
+  const result = await cloudPost("/api/cloud/use", target);
+  if (result) {
+    toast({ title: t("cloudSwitched", label), tone: "ok" });
+    refresh();
+  }
+}
+
+async function showOpenListPassword(event) {
+  const button = event.currentTarget;
+  try {
+    const result = await api("/api/openlist/password");
+    const secret = el("span", "cloud-secret", t("openlistPasswordIs", result.password));
+    button.replaceWith(secret);
+  } catch (error) {
+    if (error.code !== "unauthorized") toast({ title: t("openlistPassword"), error: { code: error.code, message: error.message }, tone: "error" });
+  }
+}
+
 // ---- wiring ---------------------------------------------------------------
 
 document.querySelector("#refresh").addEventListener("click", refresh);
@@ -2724,3 +2929,4 @@ applyChrome();
 setupLanguageToggle();
 document.querySelector("#app-list").replaceChildren(skeleton(3));
 refresh();
+loadCloud();

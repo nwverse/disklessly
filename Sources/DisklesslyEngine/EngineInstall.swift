@@ -69,10 +69,26 @@ public enum EngineInstall {
         } else {
             try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dest.path)
         }
+        try installHelper("rclone", from: source, to: dest, fileManager: fileManager)
         let stamp: [String: Any] = ["version": version, "revision": revision]
         let data = try JSONSerialization.data(withJSONObject: stamp, options: [.prettyPrinted, .sortedKeys])
         try data.write(to: stampFile(stateDir: stateDir), options: .atomic)
         return dest
+    }
+
+    /// Copies a helper the app ships next to the engine (rclone) beside the stable copy, so
+    /// launchers that run the stable engine find it. Skipped when the copy is already the same size.
+    static func installHelper(_ name: String, from source: URL, to dest: URL, fileManager: FileManager) throws {
+        let from = source.resolvingSymlinksInPath().deletingLastPathComponent().appendingPathComponent(name)
+        let to = dest.deletingLastPathComponent().appendingPathComponent(name)
+        guard from.standardizedFileURL.path != to.standardizedFileURL.path, fileManager.isExecutableFile(atPath: from.path) else { return }
+        let size = { (url: URL) in (try? fileManager.attributesOfItem(atPath: url.path)[.size] as? NSNumber)?.int64Value }
+        if fileManager.isExecutableFile(atPath: to.path), size(from) == size(to) { return }
+        let tmp = to.deletingLastPathComponent().appendingPathComponent(".\(name)-install-\(UUID().uuidString)")
+        try fileManager.copyItem(at: from, to: tmp)
+        try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: tmp.path)
+        if fileManager.fileExists(atPath: to.path) { try fileManager.removeItem(at: to) }
+        try fileManager.moveItem(at: tmp, to: to)
     }
 
     public enum Freshness: Equatable {

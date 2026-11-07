@@ -8,6 +8,21 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Cloud drives through a bundled rclone (v1.75.2, `Contents/MacOS/rclone`). `disklessly cloud connect
+  gdrive|dropbox|onedrive|box|pcloud` signs in in the browser and stores an `rclone` backend without switching
+  the repo; `cloud list`, `cloud disconnect NAME`, `backend add rclone --remote NAME`, `backend use default`, and
+  `disklessly rclone ARGS...` (the bundled rclone with Disklessly's own config under the state dir). Whole-file
+  downloads use several streams at once. Google Drive asks only for files Disklessly creates (`drive.file`) and
+  signs in through Disklessly's own Google OAuth client (`Contents/Resources/google-oauth.json`, or
+  `DISKLESSLY_GDRIVE_CLIENT_ID`/`_SECRET`) instead of rclone's shared, rate-limited one.
+  Each Disklessly process keeps one `rclone rcd` on 127.0.0.1 (random credentials, stopped when the process
+  exits, even by a crash), so repo calls skip rclone's start-up and root lookup; `DISKLESSLY_RCLONE_DAEMON=0`
+  uses the rclone CLI instead.
+- One-click OpenList: `disklessly openlist install|status|password|start|stop|uninstall` downloads the pinned
+  release, checks its SHA-256, and runs it on 127.0.0.1 as a LaunchAgent with an admin password kept in the
+  Keychain. OpenList is downloaded on request and never bundled.
+- Cloud drives card in the dashboard: connect a drive, install and open OpenList, and switch the repo (with a
+  warning about apps offloaded to the current repo) or switch back to iCloud Drive.
 - Offload any large file or folder, not only apps. `disklessly offload PATH` moves it into the repo:
   - a file is stored as is, a folder as tar + zstd;
   - the object is write-once at `files/objects/<sha256>`;

@@ -50,7 +50,10 @@ Xcode simulators
   dev clean-derived-data          move Xcode's DerivedData to the Trash
 
 Repos and Macs
-  backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
+  backend add smb|nfs|webdav|openlist|rclone ... | backend list | backend use ID|default
+  cloud [list] | cloud connect gdrive|dropbox|onedrive|box|pcloud [--name N] [--root DIR] [--use]
+  cloud disconnect NAME | rclone ARGS...   (bundled rclone with Disklessly's own config)
+  openlist status|install [--use]|password|start|stop|uninstall [--purge]
   devices [list] | devices rename NAME | devices forget DEVICEID --yes
 
 Encrypted images
@@ -589,12 +592,18 @@ do {
             emit(config.backends.map { endpoint in
                 ["id": endpoint.id, "type": endpoint.type, "mountPoint": endpoint.mountPoint ?? "", "url": endpoint.url ?? "", "user": endpoint.user ?? ""]
             })
+        case "use" where args.first == "default":
+            config.useDefaultRepo()
+            engine.config = config
+            try engine.saveConfig()
+            emit(["ok": true, "active": config.backend, "repoPath": config.repoPath])
         case "use":
-            guard let id = args.first, config.backends.contains(where: { $0.id == id }) else { throw DisklesslyError.usage("backend use requires a known id") }
+            guard let id = args.first, config.backends.contains(where: { $0.id == id }) else { throw DisklesslyError.usage("backend use requires a known id (or default)") }
             guard let endpoint = config.backends.first(where: { $0.id == id }) else { throw DisklesslyError.usage("Unknown backend: \(id)") }
             config.remember(endpoint)
             engine.config = config
             try engine.saveConfig()
+            try engine.prepareRepo()
             emit(["ok": true, "active": id])
         case "add":
             var draft = try BackendCommands.parseAdd(args)
@@ -604,13 +613,114 @@ do {
                 guard !password.isEmpty else { throw DisklesslyError.usage("password from stdin was empty") }
                 draft.password = password
             }
+            if draft.type == "rclone" { draft.configPath = RcloneTool.configPath(stateDir: config.stateDir) }
             let endpoint = try BackendCatalog.store(draft, secrets: engine.secrets)
             config.remember(endpoint)
             engine.config = config
             try engine.saveConfig()
+            try engine.prepareRepo()
             emit(["ok": true, "id": endpoint.id, "type": endpoint.type])
         default:
             throw DisklesslyError.usage("Unknown backend command: \(sub)")
+        }
+    case "cloud":
+        let drives = CloudDrives(stateDir: config.stateDir)
+        let sub = args.first ?? "list"
+        if !args.isEmpty { args.removeFirst() }
+        switch sub {
+        case "list", "status":
+            let listing = drives.listing(config: config)
+            var lines = ["rclone: \(listing["version"] as? String ?? "not found")"]
+            for row in listing["remotes"] as? [[String: Any]] ?? [] {
+                let id = row["backendId"] as? String
+                lines.append("\(row["name"] ?? "")  \(row["type"] ?? "")  \(id.map { "backend \($0)\((row["active"] as? Bool) == true ? " (active repo)" : "")" } ?? "not a backend")")
+            }
+            if (listing["remotes"] as? [Any])?.isEmpty ?? true { lines.append("no cloud drives; connect one with disklessly cloud connect \(RcloneTool.providers.map(\.id).joined(separator: "|"))") }
+            say(listing, lines.joined(separator: "\n"))
+        case "connect":
+            guard let provider = args.first, !provider.hasPrefix("-") else {
+                throw DisklesslyError.usage("cloud connect requires \(RcloneTool.providers.map(\.id).joined(separator: "|")) [--name NAME] [--root DIR] [--use]")
+            }
+            args.removeFirst()
+            var name: String?, root: String?, use = false
+            while let flag = args.first {
+                args.removeFirst()
+                switch flag {
+                case "--use": use = true
+                case "--name", "--root":
+                    guard let value = args.first else { throw DisklesslyError.usage("\(flag) requires a value") }
+                    args.removeFirst()
+                    if flag == "--name" { name = value } else { root = value }
+                default: throw DisklesslyError.usage("Unknown option: \(flag)")
+                }
+            }
+            if !json { fputs("disklessly: finish signing in in the browser window rclone opens\n", stderr) }
+            let endpoint = try drives.connect(provider: provider, name: name, root: root)
+            if use { config.remember(endpoint) } else { config.store(endpoint) }
+            engine.config = config
+            try engine.saveConfig()
+            if use { try engine.prepareRepo() }
+            say(["ok": true, "id": endpoint.id, "remote": endpoint.remote ?? "", "active": use],
+                use ? "Connected \(endpoint.remote ?? "") and made it the repo" : "Connected \(endpoint.remote ?? "") as backend \(endpoint.id); disklessly backend use \(endpoint.id) makes it the repo")
+        case "disconnect":
+            guard let remote = args.first else { throw DisklesslyError.usage("cloud disconnect requires NAME") }
+            let ids = config.backends.filter { $0.type == "rclone" && $0.remote == remote }.map(\.id)
+            if let active = config.activeBackendId, ids.contains(active) {
+                throw DisklesslyError.usage("\(remote) is the active repo; switch first with disklessly backend use default")
+            }
+            try drives.disconnect(remote)
+            config.backends.removeAll { ids.contains($0.id) }
+            engine.config = config
+            try engine.saveConfig()
+            say(["ok": true, "removed": ids], "Disconnected \(remote); its files on the drive are untouched")
+        default:
+            throw DisklesslyError.usage("cloud requires list, connect, or disconnect")
+        }
+    case "rclone":
+        // Runs the bundled rclone with Disklessly's own config, e.g. `disklessly rclone lsd gdrive:`.
+        let binary = try RcloneTool.require()
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = ["--config", RcloneTool.configPath(stateDir: config.stateDir)] + args
+        try process.run()
+        process.waitUntilExit()
+        exit(process.terminationStatus)
+    case "openlist":
+        let service = OpenListService(stateDir: config.stateDir, secrets: engine.secrets)
+        let sub = args.first ?? "status"
+        if !args.isEmpty { args.removeFirst() }
+        switch sub {
+        case "status":
+            let status = service.status()
+            let text = (status["installed"] as? Bool) == true
+                ? "OpenList \(OpenListService.version) at \(service.url): \((status["running"] as? Bool) == true ? "running" : "stopped")"
+                : "OpenList is not installed; disklessly openlist install sets it up"
+            say(status, text)
+        case "install":
+            let use = args.contains("--use")
+            let endpoint = try service.install { phase in if !json { fputs("disklessly: openlist \(phase)\n", stderr) } }
+            if use { config.remember(endpoint) } else { config.store(endpoint) }
+            engine.config = config
+            try engine.saveConfig()
+            if use { try engine.prepareRepo() }
+            say(["ok": true, "url": service.url, "user": "admin", "backendId": endpoint.id, "active": use],
+                "OpenList is running at \(service.url) (user admin; disklessly openlist password prints the password). Add your drives there, then disklessly backend use \(endpoint.id)")
+        case "password":
+            guard let password = service.password() else { throw DisklesslyError.usage("OpenList is not installed") }
+            say(["ok": true, "user": "admin", "password": password], password)
+        case "start": try service.start(); say(["ok": true], "OpenList started at \(service.url)")
+        case "stop": try service.stop(); say(["ok": true], "OpenList stopped")
+        case "uninstall":
+            if config.activeBackendId == OpenListService.backendId {
+                throw DisklesslyError.usage("OpenList is the active repo; switch first with disklessly backend use default")
+            }
+            try service.uninstall(purge: args.contains("--purge"))
+            config.backends.removeAll { $0.id == OpenListService.backendId }
+            engine.config = config
+            try engine.saveConfig()
+            say(["ok": true], "OpenList removed")
+        default:
+            throw DisklesslyError.usage("openlist requires status, install [--use], password, start, stop, or uninstall [--purge]")
         }
     case "icons":
         if args.contains("--help") || args.contains("-h") { usage() }

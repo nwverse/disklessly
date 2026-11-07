@@ -135,7 +135,8 @@ they use; `devices rename NAME` sets this Mac's name, and
 stay on each Mac.
 
 Repos on a share or WebDAV server: `disklessly backend add smb|nfs|webdav|openlist ...`,
-then `backend use ID`. Passwords are read from `--password-stdin` and kept in the
+then `backend use ID`. Cloud drives go through the bundled rclone: `disklessly cloud connect
+gdrive|dropbox|onedrive|box|pcloud`, and `disklessly openlist install` sets up a local OpenList. Passwords are read from `--password-stdin` and kept in the
 Keychain. See [`docs/backends.md`](docs/backends.md).
 
 ## Free version and license

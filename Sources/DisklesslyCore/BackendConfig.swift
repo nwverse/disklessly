@@ -10,7 +10,11 @@ public struct BackendEndpoint: Codable, Equatable {
     public var mountPoint: String?
     public var url: String?
     public var root: String
-    public init(id: String, type: String, host: String? = nil, share: String? = nil, exportPath: String? = nil, user: String? = nil, mountPoint: String? = nil, url: String? = nil, root: String = "") {
+    /// rclone: the remote name in `configPath`.
+    public var remote: String?
+    /// rclone: Disklessly's own rclone.conf.
+    public var configPath: String?
+    public init(id: String, type: String, host: String? = nil, share: String? = nil, exportPath: String? = nil, user: String? = nil, mountPoint: String? = nil, url: String? = nil, root: String = "", remote: String? = nil, configPath: String? = nil) {
         self.id = id
         self.type = type
         self.host = host
@@ -20,6 +24,8 @@ public struct BackendEndpoint: Codable, Equatable {
         self.mountPoint = mountPoint
         self.url = url
         self.root = root
+        self.remote = remote
+        self.configPath = configPath
     }
 }
 
@@ -33,6 +39,10 @@ public struct BackendDraft: Equatable {
     public var mountPoint: String?
     public var url: String?
     public var remoteRoot: String?
+    /// rclone remote name (`--remote`).
+    public var remote: String?
+    /// rclone config file; the CLI fills it in from the state dir.
+    public var configPath: String?
     public var password: String?
     public var readPasswordFromStdin: Bool
     public init(type: String) {
@@ -56,8 +66,8 @@ public enum SpaceFloor {
 
 public enum BackendCommands {
     public static func parseAdd(_ args: [String]) throws -> BackendDraft {
-        guard let type = args.first, ["smb", "nfs", "webdav", "openlist"].contains(type) else {
-            throw DisklesslyError.usage("backend add requires smb, nfs, webdav, or openlist")
+        guard let type = args.first, ["smb", "nfs", "webdav", "openlist", "rclone"].contains(type) else {
+            throw DisklesslyError.usage("backend add requires smb, nfs, webdav, openlist, or rclone")
         }
         var draft = BackendDraft(type: type)
         var index = 1
@@ -83,10 +93,11 @@ public enum BackendCommands {
             case "--mount": draft.mountPoint = value
             case "--url": draft.url = value
             case "--root": draft.remoteRoot = value
+            case "--remote": draft.remote = value.hasSuffix(":") ? String(value.dropLast()) : value
             default: throw DisklesslyError.usage("Unknown option: \(flag)")
             }
         }
-        if draft.id == nil { draft.id = type }
+        if draft.id == nil { draft.id = type == "rclone" ? "rclone-\(draft.remote ?? "")" : type }
         switch type {
         case "smb":
             guard draft.host != nil, draft.share != nil, draft.mountPoint != nil else {
@@ -105,6 +116,10 @@ public enum BackendCommands {
                 throw DisklesslyError.usage("openlist requires --url http(s)://…")
             }
             guard draft.user != nil else { throw DisklesslyError.usage("openlist requires --user") }
+        case "rclone":
+            guard let remote = draft.remote, !remote.isEmpty, !remote.contains("/") else {
+                throw DisklesslyError.usage("rclone requires --remote NAME (a remote from disklessly cloud list)")
+            }
         default: break
         }
         return draft
@@ -147,6 +162,10 @@ public enum BackendCatalog {
         case "openlist":
             let root = draft.remoteRoot ?? "/"
             return BackendEndpoint(id: id, type: "openlist", user: draft.user, url: draft.url, root: root)
+        case "rclone":
+            let remote = draft.remote ?? ""
+            let root = draft.remoteRoot ?? "Disklessly"
+            return BackendEndpoint(id: id, type: "rclone", url: "rclone://\(remote)/\(root.trimmingCharacters(in: CharacterSet(charactersIn: "/")))", root: root, remote: remote, configPath: draft.configPath)
         default:
             throw DisklesslyError.usage("Unknown backend type: \(draft.type)")
         }
@@ -198,6 +217,10 @@ public enum BackendFactory {
             guard let password, !password.isEmpty else { throw DisklesslyError.backend("openlist credential is not in the Keychain") }
             let client = transport ?? URLSessionTransport(origin: url.host)
             return OpenListBackend(baseURL: url, root: endpoint.root, user: endpoint.user ?? "", password: password, transport: client, secrets: secrets, secretAccount: account)
+        case "rclone":
+            guard let remote = endpoint.remote, !remote.isEmpty else { throw DisklesslyError.backend("rclone backend has no remote") }
+            guard let config = endpoint.configPath, !config.isEmpty else { throw DisklesslyError.backend("rclone backend has no config path") }
+            return RcloneBackend(binary: try RcloneTool.require(), config: config, remote: remote, root: endpoint.root)
         default:
             throw DisklesslyError.backend("Unknown backend type: \(endpoint.type)")
         }

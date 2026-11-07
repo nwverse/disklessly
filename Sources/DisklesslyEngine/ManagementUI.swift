@@ -12,6 +12,12 @@ public enum ManagementUI {
     }
 
     public static func respond(engine: DisklesslyEngine, webRoot: URL?, request: UIRequest, context: ManagementUIContext) -> UIResponse {
+        var engine = engine
+        // The page can switch the repo; later requests use the saved config.
+        if let config = context.updatedConfig() { engine.config = config }
+        if request.path.hasPrefix("/api/cloud") || request.path.hasPrefix("/api/openlist") {
+            return cloudAPI(engine: engine, request: request, context: context)
+        }
         if request.path.hasPrefix("/api/") { return api(engine: engine, request: request, context: context) }
         return staticFile(webRoot: webRoot, request: request)
     }
@@ -441,16 +447,16 @@ public enum ManagementUI {
         return ("failed", (error as? LocalizedError)?.errorDescription ?? error.localizedDescription)
     }
 
-    private static func failure(_ error: Error, status: Int) -> UIResponse {
+    static func failure(_ error: Error, status: Int) -> UIResponse {
         let info = errorInfo(error)
         return failure(code: info.code, message: info.message, status: status)
     }
 
-    private static func failure(code: String, message: String, status: Int) -> UIResponse {
+    static func failure(code: String, message: String, status: Int) -> UIResponse {
         .json(failureObject(code: code, message: message), status: status)
     }
 
-    private static func failureObject(code: String, message: String) -> [String: Any] {
+    static func failureObject(code: String, message: String) -> [String: Any] {
         ["ok": false, "error": ["code": code, "message": message]]
     }
 
@@ -862,6 +868,9 @@ public final class ManagementUIContext {
     public let health: BackendHealthProbe
     /// Replaces the engine-backed actions, for tests.
     public let actions: ManagementActions?
+    /// Connecting a cloud drive or installing OpenList (`/api/cloud`).
+    public let cloud = CloudTaskRunner()
+    private var savedConfig: RuntimeConfig?
     private let now: () -> Date
     private let lock = NSLock()
     private let scanLock = NSLock()
@@ -874,6 +883,16 @@ public final class ManagementUIContext {
         self.health = health
         self.actions = actions
         self.now = now
+    }
+
+    /// The config the page saved last (after a repo switch or a new backend), if any.
+    public func updatedConfig() -> RuntimeConfig? {
+        lock.lock(); defer { lock.unlock() }
+        return savedConfig
+    }
+
+    public func configChanged(_ config: RuntimeConfig) {
+        lock.lock(); savedConfig = config; lock.unlock()
     }
 
     /// Returns the cached scan for `key` unless `rescan` is set. One scan runs at a time.

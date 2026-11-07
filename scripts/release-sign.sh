@@ -48,6 +48,7 @@ SIGN=(/usr/bin/codesign --force --options runtime --timestamp --sign "$IDENTITY"
 [[ -n "${DISKLESSLY_KEYCHAIN:-}" ]] && SIGN+=(--keychain "$DISKLESSLY_KEYCHAIN")
 
 # Inside-out: nested executables first, then the bundle (which signs the main executable).
+[[ -x "$APP/Contents/MacOS/rclone" ]] && run "${SIGN[@]}" "$APP/Contents/MacOS/rclone"
 run "${SIGN[@]}" "$APP/Contents/MacOS/disklessly-stub"
 run "${SIGN[@]}" "$APP/Contents/MacOS/disklessly"
 run "${SIGN[@]}" "$APP"
