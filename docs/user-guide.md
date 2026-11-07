@@ -133,7 +133,11 @@ disklessly prefetch APP         # 提前下载，比如上飞机前
 disklessly evict APP            # 删除本机缓存的镜像，仓库中的副本不受影响
 disklessly gc [--dry-run]       # 整理：补完中断的操作、清理无引用镜像（进仓库回收站，保留 7 天）、按配额修剪缓存
 disklessly evict-local          # 删除已确认上传完成的 iCloud 本地副本
+disklessly caches [--apply]     # 已卸载应用留在 ~/Library/Caches 的缓存：默认只列出，--apply 才清空
 ```
+
+`caches` 只清空 `~/Library/Caches/<bundleId>`、`~/Library/Caches/<应用名>` 和沙盒容器里的 `Data/Library/Caches`；
+Application Support 和其他应用数据不会动，正在运行的应用会跳过。仪表盘“磁盘占用”卡片分析完后也有“清理应用缓存”按钮。
 
 缓存超过配额时按最近最少使用（LRU）清理；已固定、正在挂载或正在使用的镜像不会被清理。
 下载会在磁盘剩余空间低于下限（默认 15 GiB）时拒绝执行（退出码 8）。
@@ -325,6 +329,7 @@ disklessly launch App [--doc FILE] [--url URL]
 disklessly list | status [APP]
 disklessly pin APP | unpin APP | prefetch APP | evict APP
 disklessly gc [--dry-run]
+disklessly caches [--apply]                  # caches offloaded apps left in ~/Library/Caches (dry run without --apply)
 disklessly unpack App [--to DIR]             # put the real app back (or copy it out)
 disklessly doctor [--fix]
 disklessly ui --open                         # dashboard in your browser

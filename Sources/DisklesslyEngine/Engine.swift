@@ -227,6 +227,8 @@ public struct DisklesslyEngine {
     /// Replaces the disk-image tool and process probe for `detach` and the
     /// orphan mount reaper. Nil uses `MountOps.live`.
     public var mountOpsOverride: MountOps? = nil
+    /// Tests: whether an offloaded app runs, for `caches`. Nil asks the state file and `ps`.
+    public var appRunningOverride: ((ImageManifest) -> Bool)? = nil
     /// Test hook. Called with a point name such as `pack.swapped` or
     /// `unpack.installed.beforeMutation`; a throw there is an ordinary failure,
     /// not a simulated crash. Production leaves it nil.
