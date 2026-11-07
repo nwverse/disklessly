@@ -104,13 +104,16 @@ extension DisklesslyEngine {
             try target.config.activate(id)
             let old = try openPrimaryBackend()
             let new = try target.openPrimaryBackend()
+            if Self.sameFolder(old, new) {
+                throw DisklesslyError.usage("\(id) is the same folder as the current repo; use backend use \(id) to switch without copying")
+            }
             progress(RepoCopyProgress(phase: "scan"))
             if try RepoCopier.hasContent(old) {
                 // A legacy repo gets its id now so the copy carries it.
                 _ = try? RepoIdentity.ensure(old)
                 try? FileManager.default.removeItem(at: repoSyncStaging)
                 defer { try? FileManager.default.removeItem(at: repoSyncStaging) }
-                let sync = RepoCopier(source: old, destination: new, staging: repoSyncStaging)
+                let sync = makeCopier(source: old, destination: new)
                 let first = try sync.run(progress: progress)
                 try Self.requireClean(first, what: "copying the repo")
                 // Another Mac may have written while the first pass ran.
@@ -131,10 +134,18 @@ extension DisklesslyEngine {
         }
         progress(RepoCopyProgress(phase: "switch"))
         var next = latest() ?? config
+        // Activating an SMB/NFS/local endpoint moves `repoPath` to its mount, so `default`
+        // would then name the new repo. The old folder is kept as its own backend first.
+        var mirrorId = from
+        if keepOldAsMirror, from == RuntimeConfig.defaultRepoId {
+            let endpoint = Self.folderEndpoint(config.repoPath)
+            if !next.backends.contains(where: { $0.id == endpoint.id }) { next.store(endpoint) }
+            mirrorId = endpoint.id
+        }
         try next.activate(id)
-        if keepOldAsMirror, from != id, next.knowsRepo(from), !next.mirrorBackendIds.contains(from) {
-            next.mirrorBackendIds.append(from)
-            report.keptAsMirror = from
+        if keepOldAsMirror, next.knowsRepo(mirrorId), mirrorId != next.activeRepoId, !next.mirrorBackendIds.contains(mirrorId) {
+            next.mirrorBackendIds.append(mirrorId)
+            report.keptAsMirror = mirrorId
         }
         var switched = self
         switched.config = next
@@ -143,6 +154,42 @@ extension DisklesslyEngine {
         self.config = next
         progress(RepoCopyProgress(phase: "done"))
         return report
+    }
+
+    /// A `local`/`icloud` backend for the folder at `path`, with an id derived from the path.
+    static func folderEndpoint(_ path: String) -> BackendEndpoint {
+        let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+        let type = ICloudFolderBackend.looksLikeICloud(URL(fileURLWithPath: standardized)) ? "icloud" : "local"
+        let id = "\(type)-\(SHA256Digest.hex(Data(standardized.utf8)).prefix(8))"
+        return BackendEndpoint(id: id, type: type, root: standardized)
+    }
+
+    /// Both backends are the same local folder (a mount that `default` also points at).
+    static func sameFolder(_ a: any StorageBackend, _ b: any StorageBackend) -> Bool {
+        guard let left = a.localRoot(), let right = b.localRoot() else { return false }
+        return left.resolvingSymlinksInPath().standardizedFileURL.path == right.resolvingSymlinksInPath().standardizedFileURL.path
+    }
+
+    /// A copier staged in the cache dir that keeps `minFreeBytes` free and, for an iCloud
+    /// source, evicts each placeholder again once its copy is on the destination.
+    func makeCopier(source: any StorageBackend, destination: any StorageBackend) -> RepoCopier {
+        var copier = RepoCopier(source: source, destination: destination, staging: repoSyncStaging)
+        copier.freeSpaceMargin = config.minFreeBytes
+        if let root = source.localRoot() {
+            let evictor = placeholderEvictor
+            copier.afterPlaceholderCopy = { path in evictor?(root.appendingPathComponent(path)) }
+        }
+        return copier
+    }
+
+    /// Hands a just-read iCloud file back to iCloud. Tests replace it with `placeholderEvictOverride`.
+    var placeholderEvictor: ((URL) -> Void)? {
+        if let placeholderEvictOverride { return placeholderEvictOverride }
+        #if os(macOS)
+        return { url in try? FileManager.default.evictUbiquitousItem(at: url) }
+        #else
+        return nil
+        #endif
     }
 
     static func requireClean(_ report: RepoCopyReport, what: String) throws {
@@ -156,6 +203,9 @@ extension DisklesslyEngine {
     public mutating func addMirror(_ id: String) throws {
         guard config.knowsRepo(id) else { throw DisklesslyError.usage("unknown backend: \(id)") }
         guard id != config.activeRepoId else { throw DisklesslyError.usage("\(id) is the active repo; a mirror must be another backend") }
+        if let mirror = try? openRepo(id: id), let primary = try? openPrimaryBackend(), Self.sameFolder(mirror, primary) {
+            throw DisklesslyError.usage("\(id) is the same folder as the active repo")
+        }
         if !config.mirrorBackendIds.contains(id) { config.mirrorBackendIds.append(id) }
         try saveConfig()
     }
@@ -180,7 +230,9 @@ extension DisklesslyEngine {
                 let mirror = try openRepo(id: id)
                 try? FileManager.default.removeItem(at: repoSyncStaging)
                 defer { try? FileManager.default.removeItem(at: repoSyncStaging) }
-                let sync = RepoCopier(source: primary, destination: mirror, staging: repoSyncStaging)
+                if Self.sameFolder(primary, mirror) { throw DisklesslyError.usage("\(id) is the same folder as the active repo") }
+                var sync = makeCopier(source: primary, destination: mirror)
+                sync.pruneManifests = true
                 let report = try sync.run { state in
                     var tagged = state
                     tagged.target = id

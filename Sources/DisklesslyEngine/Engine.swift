@@ -178,6 +178,7 @@ public struct RuntimeConfig: Codable {
         activeBackendId = endpoint.id
         backend = endpoint.type
         if let mount = endpoint.mountPoint { repoPath = mount }
+        mirrorBackendIds.removeAll { $0 == endpoint.id }
     }
 
     /// Adds or replaces `endpoint` without switching the active repo to it.
@@ -198,6 +199,7 @@ public struct RuntimeConfig: Codable {
     /// Back to the repo at `repoPath` (iCloud Drive or a local folder).
     public mutating func useDefaultRepo() {
         activeBackendId = nil
+        mirrorBackendIds.removeAll { $0 == Self.defaultRepoId }
         backend = ICloudFolderBackend.looksLikeICloud(URL(fileURLWithPath: repoPath)) ? "icloud" : "local"
     }
 }
@@ -286,6 +288,8 @@ public struct DisklesslyEngine {
     /// Replaces the disk-image tool and process probe for `detach` and the
     /// orphan mount reaper. Nil uses `MountOps.live`.
     public var mountOpsOverride: MountOps? = nil
+    /// Tests: replaces `evictUbiquitousItem` for iCloud objects a repo copy read.
+    public var placeholderEvictOverride: ((URL) -> Void)? = nil
     /// Tests: whether an offloaded app runs, for `caches`. Nil asks the state file and `ps`.
     public var appRunningOverride: ((ImageManifest) -> Bool)? = nil
     /// Test hook. Called with a point name such as `pack.swapped` or

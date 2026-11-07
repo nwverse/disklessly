@@ -73,10 +73,13 @@ A stub launched from Finder or LaunchServices has been observed to block for min
 - Every object is copied: images, manifests, catalog, device files, archived sessions, trash, and `repo.json`. Because `repo.json` comes along, the new repo has the same `repoId`, so stubs already in `/Applications` keep launching from it.
 - Objects go through one staging file under the cache dir (`<cacheDir>/repo-sync`), one at a time, so a multi-GB image is never held in memory and the staging volume needs free space for the largest object plus 256 MiB.
 - Images are checked against the sha256 in their manifest before upload, and every upload's size is checked on the destination. Images go first, then manifests, catalog and device files, then `repo.json`, so the new repo never lists an app whose image is not there yet.
+- Space: besides the staging copy, the copy keeps the free-space floor (`minFreeBytes`) free. Reading an evicted iCloud image downloads it into iCloud Drive's folder too, so that needs twice the image size; once its copy is uploaded the image is evicted again.
 - Our own staging files (`.x.tmp-…`), `locks/`, and conflict copies (`x 2.json`) are skipped. iCloud placeholders (`.x.dmg.icloud`) are copied by their real name; iCloud downloads them on read.
-- The copy runs twice (the second pass picks up anything another Mac wrote meanwhile) and is then verified: every manifest and its image must be on the destination with the recorded size. If anything fails, the config stays on the old repo. Running the command again resumes: objects already there with the same size (large files) or the same bytes (small files) are skipped.
+- The copy runs twice (the second pass picks up anything another Mac wrote meanwhile) and is then verified: every manifest and its image must be on the destination with the recorded size. If anything fails, the config stays on the old repo. Running the command again resumes: objects already there are skipped. Images and session segments are compared by size; the files Disklessly rewrites in place (`repo.json`, `manifests/`, `catalog/`, `devices/`, `trash/meta/`) by content.
 - A destination that already holds a different repo (another `repoId` with images or manifests) is refused.
-- An old repo with nothing but `repo.json` and empty folders switches at once. `--no-copy` switches without copying, like `backend use`.
+- An old repo with nothing but `repo.json` and empty folders switches at once. `--no-copy` switches without copying, like `backend use`. A target that is the same folder as the current repo is refused.
+- `backend add` and `cloud connect --use` switch at once. To move onto a new WebDAV, SMB, or rclone backend, add it without switching (`cloud connect` without `--use`), or add it and go back with `backend use default`, then run `repo migrate --to ID`.
+- With `--keep-old-as-mirror`, the old repo becomes a mirror. When the old repo was the default folder, it is first saved as its own `local`/`icloud` backend (id `local-…` or `icloud-…`), because switching to a mounted backend moves `repoPath` to that mount.
 
 ## Mirrors
 
@@ -90,7 +93,7 @@ disklessly repo mirror remove nas       # stop using it; its files stay
 ```
 
 - Reads fail over. `get` and `download` (manifests, images, session archives) try each mirror in order when the active repo errors or lacks the object, so an offloaded app still launches when the cloud drive is down. `list` and `stat` fail over only when the active repo errors: a repo that answers "not there" is believed, so a publish never skips an upload because an old copy sits on a mirror.
-- Writes and deletes go to the active repo only. Mirrors catch up on `repo mirror sync` (or `POST /api/cloud/mirrors/sync` in the dashboard).
+- Writes and deletes go to the active repo only. Mirrors catch up on `repo mirror sync` (or `POST /api/cloud/mirrors/sync` in the dashboard). A sync also removes mirror manifests that the active repo no longer has (a trashed app), so a failed-over listing does not show it as live. Images are never deleted from a mirror.
 - A mirror is opened only when a read needs it; one that cannot be opened (offline share, missing secret) is skipped.
 - Each sync's result is kept in `<stateDir>/mirrors.json` (time, ok, objects copied, unchanged, failed, bytes).
 - `repo migrate --keep-old-as-mirror` turns the old repo into a mirror after the move.

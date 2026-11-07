@@ -32,11 +32,13 @@ public struct RepoCopyReport: Equatable {
     public var skipped: [String] = []
     /// Path to error message.
     public var failed: [String: String] = [:]
+    /// Stale manifests removed from the destination (`pruneManifests`).
+    public var pruned: [String] = []
     public var bytesCopied: UInt64 = 0
     public init() {}
 
     public var dictionary: [String: Any] {
-        ["copied": copied.count, "skipped": skipped.count, "failed": failed.count,
+        ["copied": copied.count, "skipped": skipped.count, "failed": failed.count, "pruned": pruned.count,
          "bytesCopied": NSNumber(value: bytesCopied), "errors": failed.sorted { $0.key < $1.key }.prefix(20).map { "\($0.key): \($0.value)" }]
     }
 }
@@ -47,8 +49,8 @@ public struct RepoCopyReport: Equatable {
 ///   (`.x.tmp-…`, staging files, locks, conflict copies). iCloud placeholders
 ///   (`.x.dmg.icloud`) are real objects and are copied by their logical name; the
 ///   iCloud backend downloads them on read.
-/// - Copies only what the destination lacks or holds differently: large objects
-///   compare by size, small ones (JSON) by content.
+/// - Copies only what the destination lacks or holds differently: write-once objects
+///   (images, session segments) compare by size, small mutable files (`isMutable`) by content.
 /// - Streams each object through one staging file (`download` then `put(file:)`),
 ///   checks a disk image against the sha256 in its manifest before upload, and
 ///   checks the uploaded size afterwards.
@@ -62,12 +64,19 @@ public struct RepoCopier {
     public let destination: any StorageBackend
     /// Folder for the one staging file. Lives on this Mac's disk; the caller picks one with room.
     public let staging: URL
-    /// Objects at or below this size are compared by content, not size.
+    /// Mutable small files (see `isMutable`) at or below this size are compared by content;
+    /// everything else by size.
     public var smallObjectBytes: UInt64 = 4 * 1024 * 1024
     /// Free space kept on the staging volume beyond the object being copied.
     public var freeSpaceMargin: UInt64 = 256 * 1024 * 1024
     /// Tests: replaces the free-space probe.
     public var availableBytes: ((URL) -> UInt64?)?
+    /// Called after an object that was an iCloud placeholder in the source has been
+    /// copied, so the caller can evict the local copy reading it made.
+    public var afterPlaceholderCopy: ((String) -> Void)?
+    /// Delete `manifests/*.json` on the destination that the source no longer has (a
+    /// mirror would otherwise list trashed apps as live). Images are never deleted.
+    public var pruneManifests = false
 
     public init(source: any StorageBackend, destination: any StorageBackend, staging: URL) {
         self.source = source
@@ -78,6 +87,8 @@ public struct RepoCopier {
     public struct Item: Equatable {
         public var path: String
         public var size: UInt64?
+        /// Listed as an iCloud placeholder: reading it downloads it into iCloud Drive's local folder.
+        public var placeholder = false
     }
 
     // MARK: - Walk
@@ -109,7 +120,7 @@ public struct RepoCopier {
                 }
                 if RepoFileNames.isPlaceholder(entry.name) {
                     let logical = prefix + RepoFileNames.logicalName(entry.name)
-                    if items[logical] == nil { items[logical] = Item(path: logical, size: nil) }
+                    if items[logical] == nil { items[logical] = Item(path: logical, size: nil, placeholder: true) }
                 } else {
                     items[prefix + entry.name] = Item(path: prefix + entry.name, size: entry.size)
                 }
@@ -190,10 +201,27 @@ public struct RepoCopier {
             state.bytesDone += expected ?? 0
             progress(state)
         }
+        if pruneManifests && report.failed.isEmpty {
+            let live = Set(items.map(\.path).filter { $0.hasPrefix("manifests/") })
+            for name in (try? destination.list("manifests")) ?? [] where name.hasSuffix(".json") && !Self.isTransient(name) && !RepoFileNames.isPlaceholder(name) {
+                let path = "manifests/\(name)"
+                if !live.contains(path) {
+                    do { try destination.delete(path); report.pruned.append(path) }
+                    catch { report.failed[path] = "cannot remove the stale manifest: \(error)" }
+                }
+            }
+        }
         state.phase = "done"
         state.currentPath = nil
         progress(state)
         return report
+    }
+
+    /// Files the repo rewrites in place. Only these are compared by content; images and
+    /// session segments are write-once, so a matching size means the same object.
+    public static func isMutable(_ path: String) -> Bool {
+        if path == RepoIdentity.path { return true }
+        return ["catalog/", "devices/", "trash/meta/", "manifests/", "trash/manifests/"].contains { path.hasPrefix($0) }
     }
 
     /// Refuses to turn another repo into a copy of this one.
@@ -224,16 +252,18 @@ public struct RepoCopier {
         guard let present = try? destination.stat(item.path) else { return false }
         guard let expected else { return false }
         guard present.size == expected else { return false }
-        if expected > smallObjectBytes { return true }
+        if expected > smallObjectBytes || !Self.isMutable(item.path) { return true }
         guard let mine = try? source.get(item.path, range: nil), let theirs = try? destination.get(item.path, range: nil) else { return false }
         return mine == theirs
     }
 
     private func copy(_ item: Item, expected: UInt64?, digest: (sha256: String, size: UInt64)?, collections: inout Set<String>) throws -> UInt64 {
         if let expected {
+            // Reading an iCloud placeholder also downloads it into iCloud Drive's folder.
+            let needed = (item.placeholder ? 2 * expected : expected) + freeSpaceMargin
             let free = availableBytes?(staging) ?? (try? VolumeSpace.availableBytes(at: staging.path))
-            if let free, free < expected + freeSpaceMargin {
-                throw DisklesslyError.noSpace("copying \(item.path) needs \(expected) bytes of free space on this Mac to stage it")
+            if let free, free < needed {
+                throw DisklesslyError.noSpace("copying \(item.path) needs \(needed) bytes free on this Mac (the object plus the free-space floor)")
             }
         }
         let file = staging.appendingPathComponent("object-\(UUID().uuidString)")
@@ -264,6 +294,7 @@ public struct RepoCopier {
         guard written.size == size else {
             throw DisklesslyError.integrity("\(item.path) is \(written.size) bytes on the destination after upload, expected \(size)")
         }
+        if item.placeholder { afterPlaceholderCopy?(item.path) }
         return size
     }
 

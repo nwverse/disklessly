@@ -61,6 +61,7 @@ final class RepoMigrateMirrorTests: XCTestCase {
                                    stubDir: root.appendingPathComponent("apps").path)
         config.backends = backends
         config.activeBackendId = active
+        config.minFreeBytes = 0
         return DisklesslyEngine(config: config, secrets: MemorySecretStore())
     }
 
@@ -181,14 +182,19 @@ final class RepoMigrateMirrorTests: XCTestCase {
         let report = try engine.switchRepo(to: "nas", migrate: true, keepOldAsMirror: true) { phases.append($0.phase) }
 
         XCTAssertTrue(report.migrated)
-        XCTAssertEqual(report.keptAsMirror, "default")
+        let kept = try XCTUnwrap(report.keptAsMirror)
+        XCTAssertNotEqual(kept, "default", "activating a mounted backend moves repoPath, so default would name the new repo")
         XCTAssertEqual(engine.config.activeBackendId, "nas")
-        XCTAssertEqual(engine.config.mirrorBackendIds, ["default"])
+        XCTAssertEqual(engine.config.mirrorBackendIds, [kept])
+        XCTAssertEqual(try engine.openRepo(id: kept).localRoot()?.standardizedFileURL.path, root.appendingPathComponent("old").standardizedFileURL.path)
         XCTAssertEqual(engine.repoIdentity(), id, "the new repo is the same repo, so stubs keep working")
         let saved = try savedConfig(engine)
         XCTAssertEqual(saved.activeBackendId, "nas")
-        XCTAssertEqual(saved.mirrorBackendIds, ["default"])
+        XCTAssertEqual(saved.mirrorBackendIds, [kept])
         XCTAssertEqual(try engine.list().map(\.imageId).sorted(), ["alpha", "beta"])
+        // The old folder really is the mirror: an image gone from the new repo reads back from it.
+        try folder("new").delete("images/beta.dmg")
+        XCTAssertEqual(try engine.repo.get("images/beta.dmg", range: nil), Data("beta image".utf8))
         XCTAssertTrue(phases.contains("copy"))
         XCTAssertTrue(phases.contains("verify"))
         XCTAssertEqual(phases.last, "done")
@@ -258,6 +264,28 @@ final class RepoMigrateMirrorTests: XCTestCase {
         XCTAssertEqual(backend.lastServedBy, "m")
     }
 
+    func testMirrorOnTheSameFolderIsRefused() throws {
+        var engine = try makeEngine(repo: "primary", backends: [localEndpoint("same", folder: "primary")])
+        XCTAssertThrowsError(try engine.addMirror("same"))
+        _ = try populatedRepo("primary")
+        XCTAssertThrowsError(try engine.switchRepo(to: "same", migrate: true))
+        XCTAssertNil(engine.config.activeBackendId)
+    }
+
+    func testPlaceholderCopiesAreHandedBackToICloud() throws {
+        let inner = try folder("icloud")
+        try RepoIdentity.ensure(inner)
+        try addImage(inner, id: "evicted", bytes: Data("evicted image".utf8))
+        try addImage(inner, id: "local", bytes: Data("local image".utf8))
+        let source = PlaceholderListing(inner: inner, evicted: ["images/evicted.dmg"])
+        var engine = try makeEngine(repo: "icloud")
+        var evicted: [String] = []
+        engine.placeholderEvictOverride = { evicted.append($0.standardizedFileURL.path) }
+        let report = try engine.makeCopier(source: source, destination: try folder("new")).run()
+        XCTAssertEqual(report.failed, [:])
+        XCTAssertEqual(evicted, [inner.root.appendingPathComponent("images/evicted.dmg").standardizedFileURL.path])
+    }
+
     func testNoMirrorsMeansTheRawBackend() throws {
         let engine = try makeEngine(repo: "primary")
         XCTAssertTrue(try engine.repo is LocalFolderBackend)
@@ -285,6 +313,12 @@ final class RepoMigrateMirrorTests: XCTestCase {
         let second = try engine.syncMirrors()
         XCTAssertEqual(second["backup"]?.copied, 0)
         XCTAssertEqual(second["backup"]?.skipped, 8)
+
+        // A manifest gone from the primary (trashed) is removed from the mirror; its image stays.
+        try folder("primary").delete("manifests/beta.json")
+        XCTAssertEqual(try engine.syncMirrors()["backup"]?.ok, true)
+        XCTAssertNil(try folder("mirror").stat("manifests/beta.json"))
+        XCTAssertNotNil(try folder("mirror").stat("images/beta.dmg"))
         try engine.removeMirror("backup")
         XCTAssertEqual(try savedConfig(engine).mirrorBackendIds, [])
     }
@@ -327,7 +361,7 @@ final class RepoMigrateMirrorTests: XCTestCase {
         let task = try waitForTask(context)
         XCTAssertEqual(task["state"] as? String, "done", "\(task)")
         XCTAssertEqual(task["migrated"] as? Bool, true)
-        XCTAssertEqual(task["keptAsMirror"] as? String, "default")
+        XCTAssertNotNil(task["keptAsMirror"] as? String)
         let updated = try XCTUnwrap(context.updatedConfig())
         XCTAssertEqual(updated.activeBackendId, "nas")
         engine.config = updated
@@ -356,4 +390,26 @@ final class RepoMigrateMirrorTests: XCTestCase {
         let decoded = try JSONDecoder().decode(RuntimeConfig.self, from: try JSONEncoder().encode(config))
         XCTAssertEqual(decoded.mirrorBackendIds, ["default", "nas"])
     }
+}
+
+/// Lists chosen files the way iCloud Drive lists evicted items (`.name.icloud`).
+private struct PlaceholderListing: StorageBackend {
+    let inner: LocalFolderBackend
+    let evicted: Set<String>
+
+    func entries(_ path: String) throws -> [BackendEntry] {
+        let prefix = path.isEmpty ? "" : path + "/"
+        return try inner.entries(path).map { entry in
+            evicted.contains(prefix + entry.name) ? BackendEntry(name: ".\(entry.name).icloud", isDirectory: false, size: 160) : entry
+        }
+    }
+    func list(_ path: String) throws -> [String] { try entries(path).map(\.name) }
+    func stat(_ path: String) throws -> BackendStat? { try inner.stat(path) }
+    func get(_ path: String, range: Range<UInt64>?) throws -> Data { try inner.get(path, range: range) }
+    func put(_ path: String, data: Data) throws { try inner.put(path, data: data) }
+    func put(_ path: String, file: URL) throws { try inner.put(path, file: file) }
+    func delete(_ path: String) throws { try inner.delete(path) }
+    func download(_ path: String, to destination: URL, offset: UInt64) throws -> ResumableFile { try inner.download(path, to: destination, offset: offset) }
+    func localRoot() -> URL? { inner.root }
+    func ensureCollection(_ path: String) throws { try inner.ensureCollection(path) }
 }

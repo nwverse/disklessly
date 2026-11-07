@@ -72,6 +72,10 @@ extension ManagementUI {
             return started ? .json(["ok": true, "cloud": cloudObject(engine, drives: drives, openlist: openlist, context: context)], status: 202)
                 : failure(code: "busy", message: "another cloud task is running", status: 409)
         case ("POST", "/api/cloud/use"):
+            let task = context.cloud.snapshot()
+            if task["action"] as? String == "migrate", task["state"] as? String == "running" {
+                return failure(code: "busy", message: "the repo is being moved; wait for it to finish", status: 409)
+            }
             let id = body["id"] as? String ?? ""
             var updated = engine
             if let remote = body["remote"] as? String {
@@ -85,8 +89,6 @@ extension ManagementUI {
             } else {
                 return failure(code: "usage", message: "unknown backend: \(id)", status: 400)
             }
-            let activeId = updated.config.activeRepoId
-            updated.config.mirrorBackendIds.removeAll { $0 == activeId }
             do {
                 try updated.prepareRepo()
                 try updated.saveConfig()
