@@ -1,5 +1,5 @@
 // Disklessly menu-bar app. It runs the management page in-process on 127.0.0.1
-// and shows it in a WKWebView window. There is no Dock icon (LSUIElement).
+// and shows it in a WKWebView window. The Dock icon shows only while that window is open.
 #if canImport(AppKit)
 import AppKit
 

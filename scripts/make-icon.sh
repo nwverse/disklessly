@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
 # Draw the Disklessly app icon and build Resources/AppIcon.icns.
 #
-# The icon is the blue rounded "256" tile from the dashboard header. A small
-# Swift script draws the 1024 px master with CoreGraphics and CoreText (no
-# Python, no image editor), sips scales it into an .iconset, and iconutil packs
-# the .icns. The outputs are committed, so a normal build does not need this;
+# The icon is the menu-bar glyph on a blue tile: a white outline drive with a
+# solid cloud at its lower left, cut out from the drive by a small gap. The paths
+# are our own drawing of that shape (SF Symbols may not be used in app icons). A small Swift script draws the 1024 px
+# master with CoreGraphics (no Python, no image editor), sips scales it into an
+# .iconset, and iconutil packs the .icns. The outputs are committed, so a normal build does not need this;
 # scripts/build-app.sh runs it only when Resources/AppIcon.icns is missing.
 #
 #   Resources/AppIcon-1024.png   master image
@@ -23,66 +24,84 @@ trap 'rm -rf "$WORK"' EXIT
 cat >"$WORK/draw.swift" <<'SWIFT'
 import AppKit
 import CoreGraphics
-import CoreText
 import Foundation
 
 let output = CommandLine.arguments[1]
 let size = 1024
 let space = CGColorSpace(name: CGColorSpace.sRGB)!
 guard let ctx = CGContext(data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
-                          space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
-    fatalError("make-icon: could not create a bitmap context")
-}
+                          space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { fatalError("context") }
 func rgb(_ hex: UInt32, _ alpha: CGFloat = 1) -> CGColor {
-    CGColor(colorSpace: space, components: [CGFloat((hex >> 16) & 0xff) / 255, CGFloat((hex >> 8) & 0xff) / 255,
-                                            CGFloat(hex & 0xff) / 255, alpha])!
+    CGColor(colorSpace: space, components: [CGFloat((hex >> 16) & 0xff) / 255, CGFloat((hex >> 8) & 0xff) / 255, CGFloat(hex & 0xff) / 255, alpha])!
+}
+func gradient(_ stops: [(UInt32, CGFloat, CGFloat)]) -> CGGradient {
+    CGGradient(colorsSpace: space, colors: stops.map { rgb($0.0, $0.1) } as CFArray, locations: stops.map { $0.2 })!
 }
 
-// macOS icon grid: an 824 px tile centred on the 1024 canvas, corner radius about 22.5%.
+// Tile on the macOS icon grid.
 let tile = CGRect(x: 100, y: 100, width: 824, height: 824)
-let path = CGPath(roundedRect: tile, cornerWidth: 186, cornerHeight: 186, transform: nil)
-
-// Soft drop shadow under the tile.
+let tilePath = CGPath(roundedRect: tile, cornerWidth: 185, cornerHeight: 185, transform: nil)
 ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 28, color: rgb(0x000000, 0.30))
-ctx.addPath(path)
-ctx.setFillColor(rgb(0x0A7AFF))
-ctx.fillPath()
+ctx.setShadow(offset: CGSize(width: 0, height: -10), blur: 24, color: rgb(0x000000, 0.28))
+ctx.addPath(tilePath); ctx.setFillColor(rgb(0x2A6FF2)); ctx.fillPath()
+ctx.restoreGState()
+ctx.saveGState(); ctx.addPath(tilePath); ctx.clip()
+ctx.drawLinearGradient(gradient([(0x5FBBFF, 1, 0), (0x2B78FF, 1, 0.55), (0x1A4CD6, 1, 1)]),
+                       start: CGPoint(x: 0, y: tile.maxY), end: CGPoint(x: 0, y: tile.minY), options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
+ctx.drawRadialGradient(gradient([(0xFFFFFF, 0.26, 0), (0xFFFFFF, 0, 1)]), startCenter: CGPoint(x: 512, y: 980), startRadius: 0,
+                       endCenter: CGPoint(x: 512, y: 980), endRadius: 600, options: [])
 ctx.restoreGState()
 
-// Blue vertical gradient around the dashboard tile colour (#0A7AFF).
-ctx.saveGState()
-ctx.addPath(path)
-ctx.clip()
-let gradient = CGGradient(colorsSpace: space, colors: [rgb(0x4DA3FF), rgb(0x0A7AFF), rgb(0x0060DF)] as CFArray,
-                          locations: [0, 0.55, 1])!
-ctx.drawLinearGradient(gradient, start: CGPoint(x: 512, y: tile.maxY), end: CGPoint(x: 512, y: tile.minY), options: [])
-// A faint highlight along the top edge.
-let gloss = CGGradient(colorsSpace: space, colors: [rgb(0xFFFFFF, 0.18), rgb(0xFFFFFF, 0)] as CFArray, locations: [0, 1])!
-ctx.drawLinearGradient(gloss, start: CGPoint(x: 512, y: tile.maxY), end: CGPoint(x: 512, y: tile.midY), options: [])
-ctx.restoreGState()
-
-// "256" in heavy rounded white type, sized to fill most of the tile width.
-let base = NSFont.systemFont(ofSize: 100, weight: .heavy)
-let descriptor = base.fontDescriptor.withDesign(.rounded) ?? base.fontDescriptor
-func line(_ pointSize: CGFloat) -> CTLine {
-    let f = NSFont(descriptor: descriptor, size: pointSize) ?? base
-    let attrs: [NSAttributedString.Key: Any] = [.font: f, .foregroundColor: NSColor.white, .kern: -pointSize * 0.02]
-    return CTLineCreateWithAttributedString(NSAttributedString(string: "256", attributes: attrs))
+// The glyph is laid out in a 1120 x 702 design box (y down) and placed centred on the tile.
+let box = CGRect(x: 115, y: 123, width: 1120, height: 702)
+let k: CGFloat = 640 / box.width
+func P(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+    CGPoint(x: 512 + (x - box.midX) * k, y: 512 + (box.midY - y) * k)
 }
-let probe = CTLineGetBoundsWithOptions(line(100), .useGlyphPathBounds)
-let text = line(100 * (tile.width * 0.72) / probe.width)
-let bounds = CTLineGetBoundsWithOptions(text, .useGlyphPathBounds)
+func R(_ r: CGFloat) -> CGFloat { r * k }
+let stroke = R(62)
+
+// Drive: the top (a trapezoid whose sides lean out) and the front slab with its light.
+let top = CGMutablePath()
+top.move(to: P(412, 440))
+top.addLine(to: P(476, 228))
+top.addQuadCurve(to: P(612, 150), control: P(505, 150))
+top.addLine(to: P(936, 150))
+top.addQuadCurve(to: P(1072, 228), control: P(1043, 150))
+top.addLine(to: P(1180, 500))
+top.addQuadCurve(to: P(1203, 613), control: P(1203, 550))
+let slab = CGPath(roundedRect: CGRect(x: P(300, 758).x, y: P(300, 758).y, width: R(1203 - 300), height: R(758 - 469)),
+                  cornerWidth: R(144.5), cornerHeight: R(144.5), transform: nil)
+let dot = CGRect(x: P(1000, 662).x, y: P(1000, 662).y, width: R(98), height: R(98))
+
+// Cloud, filled.
+let cloud = CGMutablePath()
+func circle(_ cx: CGFloat, _ cy: CGFloat, _ r: CGFloat) { cloud.addEllipse(in: CGRect(x: P(cx - r, cy + r).x, y: P(cx - r, cy + r).y, width: R(2 * r), height: R(2 * r))) }
+circle(235, 712, 113)
+circle(272, 612, 80)
+circle(410, 628, 155)
+circle(515, 722, 103)
+cloud.addRect(CGRect(x: P(235, 825).x, y: P(235, 825).y, width: R(280), height: R(125)))
+
+// Draw the glyph in its own layer so the gap around the cloud cuts through the drive only.
 ctx.saveGState()
-ctx.setShadow(offset: CGSize(width: 0, height: -6), blur: 14, color: rgb(0x00306E, 0.35))
-ctx.textPosition = CGPoint(x: tile.midX - bounds.width / 2 - bounds.minX, y: tile.midY - bounds.height / 2 - bounds.minY)
-CTLineDraw(text, ctx)
+ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 30, color: rgb(0x08236E, 0.38))
+ctx.beginTransparencyLayer(auxiliaryInfo: nil)
+ctx.setStrokeColor(rgb(0xFFFFFF)); ctx.setLineWidth(stroke); ctx.setLineCap(.round); ctx.setLineJoin(.round)
+ctx.addPath(top); ctx.strokePath()
+ctx.addPath(slab); ctx.strokePath()
+ctx.setFillColor(rgb(0xFFFFFF)); ctx.fillEllipse(in: dot)
+// Gap: clear the cloud grown by the gap width.
+ctx.setBlendMode(.clear)
+ctx.addPath(cloud); ctx.fillPath()
+ctx.addPath(cloud.copy(strokingWithWidth: R(100), lineCap: .round, lineJoin: .round, miterLimit: 1)); ctx.fillPath()
+ctx.setBlendMode(.normal)
+ctx.addPath(cloud); ctx.setFillColor(rgb(0xFFFFFF)); ctx.fillPath()
+ctx.endTransparencyLayer()
 ctx.restoreGState()
 
-guard let image = ctx.makeImage() else { fatalError("make-icon: no image") }
-guard let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else {
-    fatalError("make-icon: PNG encoding failed")
-}
+guard let image = ctx.makeImage(),
+      let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) else { fatalError("png") }
 try png.write(to: URL(fileURLWithPath: output))
 SWIFT
 

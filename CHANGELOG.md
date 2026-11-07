@@ -17,6 +17,15 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   the cache and checks the plain hash; the cache and mounts are unchanged. Plain images keep working. A Mac without
   the key refuses to adopt an encrypted image and keeps the original app. Older Disklessly versions cannot attach
   encrypted images. See `docs/image-encryption.md`.
+- Permission onboarding in the menu-bar app. At launch it checks App Management (required to swap apps in
+  /Applications) and Full Disk Access (recommended), opens the matching System Settings pane, and floats a small
+  panel with the app icon to drag into the list there. Also under Permissions… in the menu.
+- `disklessly caches [--apply]` and a "Clear app caches" button in the Disk usage card: empties
+  `~/Library/Caches/<bundleId>`, `~/Library/Caches/<app name>` and a sandbox container's `Data/Library/Caches` for
+  offloaded apps. Dry run by default. An app that runs, has an open restore journal or is mid-detach is skipped;
+  links are not followed and Application Support and other app data are never touched (`GET /api/caches`,
+  `POST /api/caches/clear`). docs/app-data-offload.md designs moving app data itself into per-device data images.
+- The dashboard lists apps offloaded on another Mac in their own group and says what this Mac has (not installed, or the full app). The repo is shared by every Mac, so these used to look like apps that vanished from this Mac. Open, restore and unpack are hidden when the full app is installed here.
 - Disk usage card in the dashboard: a flame chart of what fills the disk. Boxes zoom in; each app splits into
   bundle, cache and data, Disklessly's own cache and repo get their own box, and the rest is System & other.
   The scan only reads sizes (`du`), runs in the background on request (`POST /api/usage/scan`), and a timeout

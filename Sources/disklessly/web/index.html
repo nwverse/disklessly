@@ -8,14 +8,18 @@
 <script>
 // Runs before the first paint so theme and language order never flash.
 // Theme follows prefers-color-scheme; ?theme=light|dark pins it (screenshots, debugging).
-// Labels are bilingual; Chinese leads unless ?lang=en puts English first.
+// One language at a time: ?lang= wins, then the choice saved by the top-bar switch (a cookie,
+// since the loopback port can change between launches), then the system language.
 (function () {
   var root = document.documentElement;
   var params = new URLSearchParams(location.search);
   var theme = params.get("theme");
   var lang = params.get("lang");
   if (theme === "light" || theme === "dark") root.setAttribute("data-theme", theme);
-  lang = lang === "en" ? "en" : "zh";
+  if (lang !== "en" && lang !== "zh") {
+    var saved = (document.cookie.match(/(?:^|; )disklessly_lang=(en|zh)/) || [])[1];
+    lang = saved || ((navigator.language || "").toLowerCase().indexOf("zh") === 0 ? "zh" : "en");
+  }
   root.setAttribute("data-lang", lang);
   root.lang = lang === "zh" ? "zh-Hans" : "en";
 })();
@@ -27,7 +31,6 @@
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
-      <div class="mark" aria-hidden="true">256</div>
       <div>
         <h1>Disklessly</h1>
         <p class="sub" data-t="subtitle"></p>
@@ -35,6 +38,7 @@
     </div>
     <div class="top-actions">
       <span id="updated" class="updated"></span>
+      <button id="lang-toggle" type="button" class="btn quiet lang-toggle"></button>
       <button id="refresh" type="button" class="btn outline"><span data-t="refresh"></span></button>
     </div>
   </div>
@@ -186,6 +190,16 @@
       <div id="usage-chart" class="usage-chart" hidden></div>
       <p id="usage-tip" class="usage-tip muted" aria-live="polite" hidden></p>
       <ul id="usage-legend" class="usage-legend" hidden></ul>
+      <p id="usage-caches" class="usage-caches muted" hidden>
+        <span id="usage-caches-text"></span>
+        <button id="usage-caches-clear" type="button" class="btn quiet" hidden><span data-t="cachesClear"></span></button>
+      </p>
+      <div id="usage-tips" class="usage-tips" hidden></div>
+    </section>
+    <section class="card" id="dev-section" aria-labelledby="dev-title">
+      <div class="card-head"><h2 id="dev-title" data-t="dev"></h2></div>
+      <p class="muted" data-t="devIntro"></p>
+      <div id="dev-list" class="rec-list" aria-busy="true"></div>
     </section>
     <details class="card fold" id="devices-section">
       <summary><h2 id="devices-title" data-t="devices"></h2><span id="devices-count" class="count"></span></summary>

@@ -15,7 +15,7 @@ public struct IconBackfillReport: Equatable {
 
 extension DisklesslyEngine {
     /// Images whose state-dir PNG is missing. Read-only.
-    func missingIconCount() -> Int {
+    public func missingIconCount() -> Int {
         guard let manifests = try? list() else { return 0 }
         return manifests.filter { manifest in
             AppIcon.existingPath(stateDir: config.stateDir, repoPath: config.repoPath, imageId: manifest.imageId) == nil

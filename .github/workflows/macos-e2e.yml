@@ -1,10 +1,16 @@
 name: macOS E2E
 
+# macOS minutes bill at 10x Linux on a private repo, so this runs only on
+# pushes to main and release/** branches, by hand (workflow_dispatch), or on a
+# PR that carries the `macos-e2e` label. Tagged releases run the same E2E in
+# release.yml. Docs-only changes skip it.
 on:
   push:
-    branches: [main, "release/**", feat/mvp, "cursor/**"]
+    branches: [main, "release/**"]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   pull_request:
-    branches: [main, "release/**", feat/mvp]
+    types: [opened, synchronize, reopened, labeled]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   workflow_dispatch:
 
 permissions:
@@ -13,7 +19,15 @@ permissions:
 jobs:
   macos-e2e:
     runs-on: macos-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'macos-e2e') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'macos-e2e'))
+    # Job-level so that a skipped run (unlabelled PR) never cancels a real one.
+    concurrency:
+      group: macos-e2e-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
       - name: Show macOS and toolchain versions
@@ -47,7 +61,14 @@ jobs:
   # Optional Mac mini runner. Register the machine by hand; this job stays idle until the variable is set.
   self-hosted-e2e:
     runs-on: [self-hosted, macOS]
-    if: vars.DISKLESSLY_SELF_HOSTED == 'true'
+    if: >-
+      vars.DISKLESSLY_SELF_HOSTED == 'true' &&
+      (github.event_name != 'pull_request' ||
+       (contains(github.event.pull_request.labels.*.name, 'macos-e2e') &&
+        (github.event.action != 'labeled' || github.event.label.name == 'macos-e2e')))
+    concurrency:
+      group: self-hosted-e2e-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

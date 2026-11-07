@@ -78,8 +78,10 @@ final class StreamingIOTests: XCTestCase {
         for name in names {
             let text = try String(contentsOf: web.appendingPathComponent(name), encoding: .utf8)
             combined += text
-            XCTAssertFalse(text.contains("http://"))
-            XCTAssertFalse(text.contains("https://"))
+            // The one link out: a usage tip the user opens in their own browser.
+            let local = text.replacingOccurrences(of: "https://github.com/omlahore/RemoveMacAI", with: "")
+            XCTAssertFalse(local.contains("http://"))
+            XCTAssertFalse(local.contains("https://"))
         }
         XCTAssertTrue(combined.contains("已缓存"))
         XCTAssertTrue(combined.contains("仅远端"))
