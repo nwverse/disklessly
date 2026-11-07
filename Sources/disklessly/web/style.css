@@ -656,6 +656,14 @@ img.avatar { background: transparent; }
 .u-free { background: var(--track); color: var(--muted); border: 1px dashed var(--line-strong); }
 .u-free.usage-swatch { border-style: dashed; }
 
+/* Cleanups under the usage map. */
+.usage-clean { margin-top: 16px; border-top: 1px solid var(--line); padding-top: 12px; }
+.usage-clean-title { font-size: 14px; margin: 0 0 8px; }
+.usage-clean-list { list-style: none; margin: 0; padding: 0; }
+.usage-clean-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.usage-clean-words { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.usage-clean-words .muted { font-size: 12px; }
+
 .files-head {
   margin-top: 1.5rem;
 }
