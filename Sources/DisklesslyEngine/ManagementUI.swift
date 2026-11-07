@@ -109,6 +109,7 @@ public enum ManagementUI {
                 "displayPath": homeRelative(entry.path),
                 "preview": entry.preview,
                 "archive": entry.archive,
+                "hasDigest": FileManager.default.fileExists(atPath: SessionArchive.digestURL(config: engine.config, id: entry.id).path),
                 "tier": "cold",
                 "ageDays": NSNumber(value: sessionAgeDays(modified: entry.modified, now: now)),
                 "modified": formatter.string(from: entry.modified),
@@ -361,6 +362,47 @@ public enum ManagementUI {
             let started = context.cleaner.start(id) { _ = usage.start(engine: engine); _ = big.start(engine: engine) }
             guard started else { return failure(code: "busy", message: "a cleanup is already running", status: 409) }
             return .json(["ok": true, "cleanup": context.cleaner.snapshot()], status: 202)
+        case ("GET", "/api/sessions/plan"):
+            // Reads the agents' folders only; nothing is opened in the repo or written.
+            do {
+                var object = try engine.sessionPlan().jsonObject()
+                object["ok"] = true
+                object["task"] = context.sessionTask.snapshot()
+                return .json(object)
+            } catch {
+                return failure(error, status: 500)
+            }
+        case ("POST", "/api/sessions/apply"):
+            // The user picked the agents on the page and confirmed: archive their cold sessions
+            // (full snapshot to the repo, short digest kept here), then delete the local files.
+            let body = ((try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any]) ?? [:]
+            let tools = Set((body["tools"] as? [String]) ?? [])
+            guard !tools.isEmpty else { return failure(code: "usage", message: "pick at least one agent", status: 400) }
+            let started = context.sessionTask.start("sessions-apply") { progress in
+                progress("archive")
+                return try engine.sessionApply(tools: tools).jsonObject()
+            }
+            guard started else { return failure(code: "busy", message: "sessions are already being archived", status: 409) }
+            return .json(["ok": true, "task": context.sessionTask.snapshot()], status: 202)
+        case ("GET", "/api/sessions/digest"):
+            let id = request.query["id"] ?? ""
+            guard !id.isEmpty, id.allSatisfy({ $0.isHexDigit }) else { return failure(code: "usage", message: "bad id", status: 400) }
+            guard let text = try? String(contentsOf: SessionArchive.digestURL(config: engine.config, id: id), encoding: .utf8) else {
+                return failure(code: "not_found", message: "no digest for \(id)", status: 404)
+            }
+            return .json(["ok": true, "id": id, "digest": text])
+        case ("POST", "/api/sessions/restore"):
+            let body = ((try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any]) ?? [:]
+            let id = body["id"] as? String ?? ""
+            guard !id.isEmpty, id.allSatisfy({ $0.isHexDigit }) else { return failure(code: "usage", message: "bad id", status: 400) }
+            let started = context.sessionTask.start("sessions-restore") { progress in
+                progress("restore")
+                return ["path": try SessionArchive.restore(config: engine.config, backend: try engine.repo, query: id, secrets: engine.secrets)]
+            }
+            guard started else { return failure(code: "busy", message: "a session task is already running", status: 409) }
+            return .json(["ok": true, "task": context.sessionTask.snapshot()], status: 202)
+        case ("GET", "/api/sessions/task"):
+            return .json(["ok": true, "task": context.sessionTask.snapshot()])
         case ("GET", "/api/bigitems"):
             var object = context.bigItems.snapshot()
             if object["state"] as? String == "idle" { context.bigItems.start(engine: engine); object["state"] = "scanning" }
@@ -895,6 +937,8 @@ public final class ManagementUIContext {
     public let actions: ManagementActions?
     /// Connecting a cloud drive or installing OpenList (`/api/cloud`).
     public let cloud = CloudTaskRunner()
+    /// Archiving or restoring agent sessions (`/api/sessions/apply`, `/api/sessions/restore`).
+    public let sessionTask = CloudTaskRunner()
     private var savedConfig: RuntimeConfig?
     private let now: () -> Date
     private let lock = NSLock()
