@@ -27,8 +27,13 @@ final class PermissionModel: ObservableObject {
         }
     }
 
-    var requiredGranted: Bool { MacPermission.allCases.filter(\.required).allSatisfy { state($0) != .denied } }
+    /// A required permission must test as granted; "can't check" is not good enough for it.
+    var requiredGranted: Bool { MacPermission.allCases.filter(\.required).allSatisfy { state($0) == .granted } }
     var allGranted: Bool { MacPermission.allCases.allSatisfy { state($0) != .denied } }
+    /// Permissions still to turn on: denied ones, and required ones that could not be checked.
+    var missing: [MacPermission] {
+        MacPermission.allCases.filter { state($0) == .denied || ($0.required && state($0) != .granted) }
+    }
 }
 
 enum Onboarding {
@@ -37,7 +42,7 @@ enum Onboarding {
     /// Show the window at launch when App Management is missing, or Full Disk Access is missing
     /// and the user has not set it aside before.
     static func needed(_ states: [MacPermission: PermissionState]) -> Bool {
-        if states[.appManagement] == .denied { return true }
+        if states[.appManagement] != .granted { return true }
         return states[.fullDiskAccess] == .denied && !UserDefaults.standard.bool(forKey: fdaDeclinedKey)
     }
 
@@ -116,7 +121,7 @@ private struct PermissionRow: View {
                     StatusBadge(state: model.state(permission)).font(.callout)
                 }
                 Text(permission.why).font(.callout)
-                if model.state(permission) != .granted {
+                if model.missing.contains(permission) || model.state(permission) == .unknown {
                     Button { open(permission) } label: { Text(L.s("打开系统设置", "Open Settings")) }
                         .padding(.top, 4)
                 }
@@ -167,26 +172,39 @@ private struct OnboardingView: View {
     }
 }
 
+/// Floats over System Settings. Lists every permission still missing, not only the one whose
+/// pane was opened, with a button to jump to each pane.
 private struct DragHelperView: View {
-    let permission: MacPermission
     @ObservedObject var model: PermissionModel
+    let open: (MacPermission) -> Void
     let close: () -> Void
     var body: some View {
-        HStack(spacing: 14) {
+        HStack(alignment: .top, spacing: 14) {
             DraggableAppIcon(size: 52)
-            VStack(alignment: .leading, spacing: 3) {
-                if model.state(permission) == .granted {
-                    Label(L.s("\(permission.title)已授权", "\(permission.title) granted"), systemImage: "checkmark.circle.fill").foregroundColor(.green).font(.headline)
-                } else {
-                    Text(L.s("在「\(permission.title)」里打开 Disklessly 的开关", "Turn Disklessly on under \(permission.title)")).font(.headline)
-                    Text(L.s("列表里没有 Disklessly 时，把图标拖进去。", "If it is not listed, drag the icon in.")).font(.caption)
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(MacPermission.allCases, id: \.self) { permission in
+                    HStack(spacing: 6) {
+                        if model.state(permission) == .granted {
+                            Label(L.s("\(permission.title)已授权", "\(permission.title) granted"), systemImage: "checkmark.circle.fill").foregroundColor(.green)
+                        } else {
+                            Label(L.s("在「\(permission.title)」里打开 Disklessly 的开关", "Turn Disklessly on under \(permission.title)"),
+                                  systemImage: permission.required ? "exclamationmark.circle.fill" : "circle")
+                                .foregroundColor(permission.required ? .orange : .primary)
+                            Spacer(minLength: 4)
+                            Button(L.s("前往", "Go")) { open(permission) }.controlSize(.small)
+                        }
+                    }
+                    .font(.callout)
                 }
+                Text(L.s("开关已在列表里但是关着时，直接打开；没有 Disklessly 时把图标拖进去。",
+                         "Turn the switch on if Disklessly is listed; otherwise drag the icon in."))
+                    .font(.caption).foregroundColor(.secondary)
             }
             Spacer(minLength: 8)
             Button(L.s("完成", "Done"), action: close)
         }
         .padding(16)
-        .frame(width: 440)
+        .frame(width: 500)
     }
 }
 
@@ -237,12 +255,13 @@ final class OnboardingController: NSObject, NSWindowDelegate {
 
     private func openSettings(_ permission: MacPermission) {
         Onboarding.openSettings(permission)
-        showPanel(for: permission)
+        showPanel()
     }
 
     /// A small floating panel at the bottom of the screen with the draggable icon. It stays above
     /// System Settings without taking focus from it.
-    private func showPanel(for permission: MacPermission) {
+    private func showPanel() {
+        if let panel, panel.isVisible { return }
         panel?.close()
         let panel = NSPanel(contentRect: .zero, styleMask: [.titled, .closable, .nonactivatingPanel, .utilityWindow], backing: .buffered, defer: false)
         panel.title = "Disklessly"
@@ -250,7 +269,7 @@ final class OnboardingController: NSObject, NSWindowDelegate {
         panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.becomesKeyOnlyIfNeeded = true
-        panel.contentViewController = NSHostingController(rootView: DragHelperView(permission: permission, model: model, close: { [weak panel] in panel?.close() }))
+        panel.contentViewController = NSHostingController(rootView: DragHelperView(model: model, open: { Onboarding.openSettings($0) }, close: { [weak panel] in panel?.close() }))
         if let screen = NSScreen.main?.visibleFrame {
             let size = panel.frame.size
             panel.setFrameOrigin(NSPoint(x: screen.midX - size.width / 2, y: screen.minY + 40))

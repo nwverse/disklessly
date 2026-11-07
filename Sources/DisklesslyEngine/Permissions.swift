@@ -45,9 +45,12 @@ public enum PermissionProbe {
     public static func appManagement(applications: [String] = ["/Applications"], ownTeamId: String? = ownTeamIdentifier()) -> PermissionState {
         for target in appManagementTargets(applications: applications, ownTeamId: ownTeamId, teamId: teamIdentifier(ofBundle:)) {
             let fd = open(target, O_WRONLY | O_APPEND | O_NONBLOCK)
-            if fd >= 0 { close(fd); return .granted }
-            if errno == EPERM { return .denied }
+            let code = errno
+            if fd >= 0 { close(fd); probeLog("appManagement granted via \(target)"); return .granted }
+            probeLog("appManagement open \(target): errno \(code)")
+            if code == EPERM { return .denied }
         }
+        probeLog("appManagement unknown: no probe target")
         return .unknown
     }
 
@@ -67,6 +70,14 @@ public enum PermissionProbe {
             }
         }
         return out
+    }
+
+    /// Probe results go to the unified log (`log show --predicate 'eventMessage CONTAINS "disklessly permission"'`),
+    /// so a wrong answer inside the app can be traced to the file it tried.
+    static func probeLog(_ message: String) {
+        #if os(macOS)
+        NSLog("disklessly permission: %@", message)
+        #endif
     }
 
     public static func current() -> [MacPermission: PermissionState] {
