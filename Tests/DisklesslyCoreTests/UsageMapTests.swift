@@ -68,4 +68,28 @@ final class UsageMapTests: XCTestCase {
         XCTAssertEqual(snap["partial"] as? Bool, true)
         XCTAssertNotNil((snap["tree"] as? [String: Any])?["children"])
     }
+
+    func testSystemPartsSplitTheLeftoverAndKeepActions() {
+        var i = UsageInputs(totalBytes: 1000, freeBytes: 300)
+        i.personal = [.init(name: "Documents", bytes: 100)]
+        i.system = [
+            .init(name: "macOS", bytes: 200, key: "macos"),
+            .init(name: "Homebrew", bytes: 50, key: "homebrew", action: UsageCleanup.homebrew),
+        ]
+        let tree = UsageMap.assemble(i)
+        let system = tree.children.first { $0.key == "system" }!
+        // used 700 - measured 100 = 600: 200 + 50 measured, 350 not measured.
+        XCTAssertEqual(system.bytes, 600)
+        XCTAssertEqual(system.children.compactMap(\.key), ["macos", "homebrew", "unmeasured"])
+        XCTAssertEqual(system.children.first { $0.key == "unmeasured" }?.bytes, 350)
+        XCTAssertEqual(system.children.first { $0.key == "homebrew" }?.action, UsageCleanup.homebrew)
+        XCTAssertEqual(system.children.first { $0.key == "homebrew" }?.jsonObject()["action"] as? String, "brew-cleanup")
+    }
+
+    func testWithoutSystemPartsTheBoxStaysWhole() {
+        let tree = UsageMap.assemble(UsageInputs(totalBytes: 1000, freeBytes: 400))
+        let system = tree.children.first { $0.key == "system" }!
+        XCTAssertEqual(system.bytes, 600)
+        XCTAssertTrue(system.children.isEmpty)
+    }
 }

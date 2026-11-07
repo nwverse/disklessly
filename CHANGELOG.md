@@ -23,6 +23,40 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Keychain. OpenList is downloaded on request and never bundled.
 - Cloud drives card in the dashboard: connect a drive, install and open OpenList, and switch the repo (with a
   warning about apps offloaded to the current repo) or switch back to iCloud Drive.
+- Offload any large file or folder, not only apps. `disklessly offload PATH` moves it into the repo:
+  - a file is stored as is, a folder as tar + zstd;
+  - the object is write-once at `files/objects/<sha256>`;
+  - the original is deleted only after the repo copy reads back with the same SHA-256;
+  - a `PATH.disklessly` placeholder with the Finder tag "Disklessly" is left in its place.
+
+  `disklessly fetch PLACEHOLDER` brings it back. Open files, app bundles and their contents, `~/Library`, VM disks
+  and Disklessly's own folders are refused. See `docs/files.md`.
+- `disklessly files` and a "Large files and folders" list under Worth offloading in the dashboard. They show files and
+  whole folders of 500 MiB or more not opened for 30 days, using the newest of Spotlight's last-used date, mtime and atime. The scan
+  skips hidden and tool folders, source checkouts, package stores, iCloud items and running VM images. Each row has an
+  Offload now button (`POST /api/offloadfile`, `GET /api/files`, `POST /api/files/scan`).
+- Finder right-click: Services → "Offload with Disklessly" and "Bring back with Disklessly". `.disklessly`
+  placeholders are a document type of Disklessly.app, so double-clicking one brings the file back.
+- `DISKLESSLY_HOME` overrides the home folder that `files` and `offload` use (for tests).
+
+- Optional encryption of app images in the repo. `disklessly images key init` makes a 256-bit image key in the
+  Keychain (synchronizable, so iCloud Keychain gives it to your other Macs; `images key export|import` copies it by
+  hand). `disklessly images encrypt on` (config `imageEncryption`, env `DISKLESSLY_IMAGE_ENCRYPTION`) or
+  `pack --encrypt` seals new images before upload: AES-256-GCM over 1 MiB segments (`DKLI`, ported from open-lark's
+  olk-file), streamed file to file. The manifest's `sha256`/`size` describe the ciphertext and a new
+  `image.encryption` carries the scheme, key id and plain sha256. Fetching verifies the ciphertext, decrypts it into
+  the cache and checks the plain hash; the cache and mounts are unchanged. Plain images keep working. A Mac without
+  the key refuses to adopt an encrypted image and keeps the original app. Older Disklessly versions cannot attach
+  encrypted images. See `docs/image-encryption.md`.
+- Permission onboarding in the menu-bar app. At launch it checks App Management (required to swap apps in
+  /Applications) and Full Disk Access (recommended), opens the matching System Settings pane, and floats a small
+  panel with the app icon to drag into the list there. Also under Permissions… in the menu.
+- `disklessly caches [--apply]` and a "Clear app caches" button in the Disk usage card: empties
+  `~/Library/Caches/<bundleId>`, `~/Library/Caches/<app name>` and a sandbox container's `Data/Library/Caches` for
+  offloaded apps. Dry run by default. An app that runs, has an open restore journal or is mid-detach is skipped;
+  links are not followed and Application Support and other app data are never touched (`GET /api/caches`,
+  `POST /api/caches/clear`). docs/app-data-offload.md designs moving app data itself into per-device data images.
+- The dashboard lists apps offloaded on another Mac in their own group and says what this Mac has (not installed, or the full app). The repo is shared by every Mac, so these used to look like apps that vanished from this Mac. Open, restore and unpack are hidden when the full app is installed here.
 - Disk usage card in the dashboard: a flame chart of what fills the disk. Boxes zoom in; each app splits into
   bundle, cache and data, Disklessly's own cache and repo get their own box, and the rest is System & other.
   The scan only reads sizes (`du`), runs in the background on request (`POST /api/usage/scan`), and a timeout
@@ -35,6 +69,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   issues codes; it is not part of any release artifact.
 
 ### Changed
+
+- The free limit counts offloaded files and folders together with apps (2 items at once).
 
 - The project is now **Disklessly** ("256G is enough"). CLI `disklessly` (short alias `dkl`), stub launcher
   `disklessly-stub`, env vars `DISKLESSLY_*`, bundle id prefix `io.github.s546126.disklessly`, Homebrew cask

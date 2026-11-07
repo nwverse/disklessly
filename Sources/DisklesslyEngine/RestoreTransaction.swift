@@ -254,8 +254,10 @@ enum RestoreArchive {
 
     static func verified(_ journal: RestoreJournal, config: RuntimeConfig) -> Bool {
         let urls = candidates(config: config, journal: journal, isLocal: repoIsHashedLocally)
-        for url in urls {
-            if ArchiveVerificationCache.shared.verify(url: url, expected: journal.imageSha256, hasher: { try SHA256Digest.hexFile($0) }) {
+        for (index, url) in urls.enumerated() {
+            // The cache holds the plain image; an encrypted repo object has its own hash.
+            let expected = index == 0 ? journal.imageSha256 : (journal.imageCipherSha256 ?? journal.imageSha256)
+            if ArchiveVerificationCache.shared.verify(url: url, expected: expected, hasher: { try SHA256Digest.hexFile($0) }) {
                 return true
             }
         }
@@ -611,7 +613,8 @@ public final class RestoreCoordinator {
             executable: manifest.app.executable,
             manifestCdhash: manifest.app.cdhash ?? "",
             manifestTreeHash: manifest.app.treeHash ?? "",
-            imageSha256: manifest.image.sha256
+            imageSha256: manifest.image.plainSha256,
+            imageCipherSha256: manifest.image.encryption == nil ? nil : manifest.image.sha256
         )
         let probe = services.probe([dest.path])
         if probe != .clean { throw DisklesslyError.busy("\(manifest.name) is already in use at \(dest.path)") }

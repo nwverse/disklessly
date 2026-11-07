@@ -35,10 +35,13 @@ public struct RuntimeConfig: Codable {
     public var sessionMaxFileBytes: UInt64 = 512 * 1024 * 1024
     /// `off` or `aes-gcm`. Schema stays `config/1`.
     public var sessionEncryption: String = "off"
+    /// `off` or `aes-gcm`: whether `pack` encrypts new images before upload (`ImageCrypto`).
+    /// `pack --encrypt` / `--no-encrypt` and `DISKLESSLY_IMAGE_ENCRYPTION` override it.
+    public var imageEncryption: String = "off"
     public init(repoPath: String, cacheDir: String, stateDir: String, mountRoot: String, stubDir: String) { self.repoPath=repoPath; self.cacheDir=cacheDir; self.stateDir=stateDir; self.mountRoot=mountRoot; self.stubDir=stubDir }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, restoreImageFormat, backends, activeBackendId, signIdentity, sessionColdDays, sessionRoots, sessionHome, sessionSegmentMaxBytes, sessionSoloBytes, sessionMaxFileBytes, sessionEncryption
+        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, restoreImageFormat, backends, activeBackendId, signIdentity, sessionColdDays, sessionRoots, sessionHome, sessionSegmentMaxBytes, sessionSoloBytes, sessionMaxFileBytes, sessionEncryption, imageEncryption
     }
 
     public init(from decoder: Decoder) throws {
@@ -64,6 +67,7 @@ public struct RuntimeConfig: Codable {
         sessionSoloBytes = try container.decodeIfPresent(UInt64.self, forKey: .sessionSoloBytes) ?? 8 * 1024 * 1024
         sessionMaxFileBytes = try container.decodeIfPresent(UInt64.self, forKey: .sessionMaxFileBytes) ?? 512 * 1024 * 1024
         sessionEncryption = try container.decodeIfPresent(String.self, forKey: .sessionEncryption) ?? "off"
+        imageEncryption = try container.decodeIfPresent(String.self, forKey: .imageEncryption) ?? "off"
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -89,6 +93,7 @@ public struct RuntimeConfig: Codable {
         try container.encode(sessionSoloBytes, forKey: .sessionSoloBytes)
         try container.encode(sessionMaxFileBytes, forKey: .sessionMaxFileBytes)
         try container.encode(sessionEncryption, forKey: .sessionEncryption)
+        try container.encode(imageEncryption, forKey: .imageEncryption)
     }
 
     public static func environment(_ env: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory()) -> RuntimeConfig {
@@ -107,6 +112,7 @@ public struct RuntimeConfig: Codable {
         if let floor = env["DISKLESSLY_MIN_FREE_BYTES"].flatMap(UInt64.init) { config.minFreeBytes = floor }
         if let identity = env["DISKLESSLY_SIGN_IDENTITY"], !identity.isEmpty { config.signIdentity = identity }
         if let format = env["DISKLESSLY_RESTORE_IMAGE_FORMAT"], !format.isEmpty { config.restoreImageFormat = format }
+        if let encryption = env["DISKLESSLY_IMAGE_ENCRYPTION"], !encryption.isEmpty { config.imageEncryption = encryption }
         return config
     }
 
@@ -137,6 +143,7 @@ public struct RuntimeConfig: Codable {
         if env["DISKLESSLY_QUOTA_BYTES"] != nil { merged.quotaBytes = config.quotaBytes }
         if env["DISKLESSLY_MIN_FREE_BYTES"] != nil { merged.minFreeBytes = config.minFreeBytes }
         if let identity = env["DISKLESSLY_SIGN_IDENTITY"], !identity.isEmpty { merged.signIdentity = identity }
+        if let encryption = env["DISKLESSLY_IMAGE_ENCRYPTION"], !encryption.isEmpty { merged.imageEncryption = encryption }
         if let stateDirOverride { merged.stateDir = stateDirOverride }
         return merged
     }
@@ -234,11 +241,20 @@ public struct DisklesslyEngine {
     public var packUsageOverride: ((String) -> UsageClass)?
     /// Tests: bundle ids counted against the free limit instead of scanning this Mac's stubs.
     public var offloadedOverride: (() throws -> Set<String>)?
+    /// Tests: whether a file (false) or folder (true) is open, instead of asking lsof.
+    public var fileOpenOverride: ((String, Bool) -> Bool)? = nil
+    /// Tests: the last time a scanned item was opened, instead of asking Spotlight.
+    public var lastUsedOverride: ((URL) -> Date?)? = nil
+    /// The home folder that `files` scans and `offload` accepts paths in. Nil uses `DISKLESSLY_HOME`, then the user's home.
+    public var homeOverride: String? = nil
+    public var homeDirectory: String { homeOverride ?? ProcessInfo.processInfo.environment["DISKLESSLY_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory() }
     /// Replaces `SHA256Digest.hexFile` for prefetch. Nil hashes the file.
     public var hasherOverride: ((URL) throws -> String)?
     /// Replaces the disk-image tool and process probe for `detach` and the
     /// orphan mount reaper. Nil uses `MountOps.live`.
     public var mountOpsOverride: MountOps? = nil
+    /// Tests: whether an offloaded app runs, for `caches`. Nil asks the state file and `ps`.
+    public var appRunningOverride: ((ImageManifest) -> Bool)? = nil
     /// Test hook. Called with a point name such as `pack.swapped` or
     /// `unpack.installed.beforeMutation`; a throw there is an ordinary failure,
     /// not a simulated crash. Production leaves it nil.
@@ -253,7 +269,7 @@ public struct DisklesslyEngine {
         let services=services ?? RestoreServices.live(config: config)
         self.services=services
         self.restore=RestoreCoordinator(config: config, services: services, faults: faults)
-        self.secrets = secrets ?? KeychainSecretStore()
+        self.secrets = secrets ?? FileSecretStore.fromEnvironment() ?? KeychainSecretStore()
         self.shareOpener = shareOpener
         self.backendOverride = nil
         self.recommendEnvironment = nil
@@ -472,9 +488,9 @@ public struct DisklesslyEngine {
         }
     }
 
-    public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false, imageFormat requestedFormat: String? = nil) throws -> PublishResult {
+    public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false, imageFormat requestedFormat: String? = nil, encrypt requestedEncrypt: Bool? = nil) throws -> PublishResult {
         #if !os(macOS)
-        _ = requestedFormat
+        _ = (requestedFormat, requestedEncrypt)
         throw DisklesslyError.unsupported("pack requires macOS hdiutil and codesign")
         #else
         let app=URL(fileURLWithPath:appPath).standardizedFileURL, plistURL=app.appendingPathComponent("Contents/Info.plist")
@@ -483,11 +499,15 @@ public struct DisklesslyEngine {
         let selected=mode ?? ((FileManager.default.fileExists(atPath:app.appendingPathComponent("Contents/_MASReceipt/receipt").path) ? .restore : .mount))
         let requested = requestedFormat ?? (selected == .restore ? config.restoreImageFormat : "ULMO")
         let imageFormat = requested.uppercased()
+        let encrypt = try requestedEncrypt ?? imageEncryptionDefault()
+        if encrypt, try ImageKeyStore.current(secrets: secrets) == nil {
+            throw DisklesslyError.usage("image encryption is on but this Mac has no image key; run disklessly images key init")
+        }
         guard imageFormat == "ULMO" || imageFormat == "ULFO" else {
             throw DisklesslyError.usage("invalid --image-format \(requested); expected ULMO or ULFO")
         }
         try PackGuard.refuseStub(app, bundleId: bid)
-        try License.checkPack(state: License.load(stateDir: config.stateDir), offloaded: try offloadedOverride?() ?? offloadedBundleIds(), packing: bid)
+        try License.checkPack(state: License.load(stateDir: config.stateDir), offloaded: try offloadedOverride?() ?? offloadedBundleIds(), packing: bid, files: offloadedFileCount())
         let usage = packUsageOverride?(app.path) ?? ProcessProbe.usage(roots: [app.path])
         if let blocked = PackPreflight.running(usage, name: name) { throw blocked }
         let allocated = AllocatedSize.tree(app)
@@ -536,6 +556,7 @@ public struct DisklesslyEngine {
             (try? backend.stat("trash/images/\(id).dmg")) != nil
         })
         if case .reuse(let existing, let disposition) = decision {
+            try requireImageKey(existing)
             try register(existing, backend: backend, now: Date())
             if EngineInstall.runningExecutable().lastPathComponent == "disklessly" { try installEngine() }
             let forcedKeep = { if case .keep = disposition { return true }; return false }()
@@ -567,7 +588,7 @@ public struct DisklesslyEngine {
         detachedPackMount=true
         let docs = (info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) }
         let urls = (info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) }
-        let request = PublishRequest(name: name, identity: identity, mode: selected, executable: executableName, originalPath: app.path, cdhash: cdhash, postImageTreeHash: treeHash, volumeName: name, appPathInVolume: app.lastPathComponent, documentTypes: docs, urlTypes: urls, imageFormat: imageFormat)
+        let request = PublishRequest(name: name, identity: identity, mode: selected, executable: executableName, originalPath: app.path, cdhash: cdhash, postImageTreeHash: treeHash, volumeName: name, appPathInVolume: app.lastPathComponent, documentTypes: docs, urlTypes: urls, imageFormat: imageFormat, encrypt: encrypt)
         let published = try publish(request, imageFile: dmg)
         if EngineInstall.runningExecutable().lastPathComponent == "disklessly" { try installEngine() }
         let stubWarning = noStub ? nil : try installStub(info: info, manifest: published.manifest, path: app.path, keepOriginal: keepOriginal, cloneFingerprint: cloneFingerprint)
@@ -884,6 +905,15 @@ public struct DisklesslyEngine {
         try superviseRunningMount(appId: appId)
         #endif
     }
+    /// `imageEncryption` from the config: `off` or `aes-gcm`.
+    public func imageEncryptionDefault() throws -> Bool {
+        switch config.imageEncryption {
+        case "off", "": return false
+        case "aes-gcm": return true
+        default: throw DisklesslyError.usage("imageEncryption must be off or aes-gcm, not \(config.imageEncryption)")
+        }
+    }
+
     public func prefetch(_ manifest:ImageManifest) throws -> URL {
         let backend = try repo
         let paths = CachePaths(cacheDir: config.cacheDir, mountRoot: config.mountRoot)
@@ -892,26 +922,36 @@ public struct DisklesslyEngine {
         if FileManager.default.fileExists(atPath: cache.path) {
             let paranoid = ProcessInfo.processInfo.environment["DISKLESSLY_PARANOID_VERIFY"] == "1"
             if !paranoid, let stamp = StateStore(config.stateDir).load().cache[manifest.imageId]?.verified,
-               stamp.sha256 == manifest.image.sha256,
+               stamp.sha256 == manifest.image.plainSha256,
                let finger = try? FileFingerprint.of(url: cache), finger == stamp.fingerprint {
                 _ = try enforceCacheQuota(justUsed: manifest.imageId)
                 return cache
             }
-            if (try? hashCached(cache)) == manifest.image.sha256 {
+            if (try? hashCached(cache)) == manifest.image.plainSha256 {
                 try rememberVerified(manifest.imageId, file: cache)
                 _ = try enforceCacheQuota(justUsed: manifest.imageId)
                 return cache
             }
         }
+        // Look the key up before downloading anything: without it the fetch is wasted.
+        var decryption: ImageDecryption?
+        if let encryption = manifest.image.encryption {
+            guard let key = try ImageKeyStore.load(secrets: secrets, keyId: encryption.keyId) else {
+                throw DisklesslyError.integrity("\(manifest.name) is encrypted with image key \(encryption.keyId), which this Mac's Keychain does not have. Turn on iCloud Keychain on both Macs or run disklessly images key import.")
+            }
+            decryption = ImageDecryption(key: key, keyId: encryption.keyId, plainSha256: encryption.plainSha256, plainSize: encryption.plainSize)
+        }
         try FileManager.default.createDirectory(atPath: config.cacheDir, withIntermediateDirectories: true)
         let free = try VolumeSpace.availableBytes(at: config.cacheDir)
-        guard SpaceFloor.admits(freeBytes: free, incoming: manifest.image.size, floor: config.minFreeBytes) else {
-            throw DisklesslyError.noSpace("free space \(free) bytes would fall below the \(config.minFreeBytes) byte floor after fetching \(manifest.image.size) bytes")
+        // An encrypted image briefly needs the ciphertext and the plaintext side by side.
+        let incoming = manifest.image.size + (manifest.image.encryption == nil ? 0 : manifest.image.plainSize)
+        guard SpaceFloor.admits(freeBytes: free, incoming: incoming, floor: config.minFreeBytes) else {
+            throw DisklesslyError.noSpace("free space \(free) bytes would fall below the \(config.minFreeBytes) byte floor after fetching \(incoming) bytes")
         }
         // Keep the fetched image byte-for-byte identical to the published artifact.
         // The manifest hashes the remote ULMO image; converting it on download both
         // invalidates that identity and relies on hdiutil's output-name conventions.
-        try CacheFetcher.materialize(backend: backend, remote: manifest.image.file, destination: cache, partial: paths.partial(manifest.imageId), expectedSize: manifest.image.size, expectedSHA256: manifest.image.sha256)
+        try CacheFetcher.materialize(backend: backend, remote: manifest.image.file, destination: cache, partial: paths.partial(manifest.imageId), expectedSize: manifest.image.size, expectedSHA256: manifest.image.sha256, decryption: decryption)
         try rememberVerified(manifest.imageId, file: cache)
         _ = try enforceCacheQuota(justUsed: manifest.imageId)
         return cache
