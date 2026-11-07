@@ -17,7 +17,8 @@ public struct DevAssetsReport {
                 ["id": r.id, "title": r.title, "build": r.build, "version": r.version, "platform": r.platformName,
                  "runtimeIdentifier": r.runtimeIdentifier, "bytes": NSNumber(value: r.sizeBytes), "state": r.state,
                  "deletable": r.deletable, "lastUsedAt": r.lastUsedAt ?? "",
-                 "blocked": DevAssetGuard.runtime(r, devices: simulators)?.errorDescription ?? ""]
+                 "blocked": DevAssetGuard.runtime(r, devices: simulators)?.errorDescription ?? "",
+                 "inUseBy": simulators.filter { $0.booted && $0.runtimeIdentifier == r.runtimeIdentifier }.map(\.name)]
             },
             "simulators": simulators.map { d -> [String: Any] in
                 ["udid": d.udid, "name": d.name, "runtimeIdentifier": d.runtimeIdentifier, "bytes": NSNumber(value: d.dataBytes),
@@ -170,6 +171,16 @@ extension DisklesslyEngine {
         let result = try upload(staging, kind: .simulator, title: device.name, details: details)
         _ = try simctl(["delete", device.udid])
         return result
+    }
+
+    /// Shuts a running simulator down so it can be offloaded (and its runtime with it).
+    public func shutdownSimulator(_ udid: String) throws {
+        let devices = try SimDevice.parse(try simctl(["list", "devices", "-j"]))
+        guard let device = devices.first(where: { $0.udid == udid }) else {
+            throw DisklesslyError.usage("No simulator \(udid). See: disklessly dev list")
+        }
+        guard device.booted else { return }
+        _ = try simctl(["shutdown", device.udid])
     }
 
     /// Creates a twin device and moves the saved data into it. The twin has a new udid.

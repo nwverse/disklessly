@@ -579,6 +579,7 @@ public enum UIJobKind: String, CaseIterable {
     case devOffloadRuntime = "dev/offload-runtime", devRestoreRuntime = "dev/restore-runtime"
     case devOffloadSimulator = "dev/offload-simulator", devRestoreSimulator = "dev/restore-simulator"
     case devForget = "dev/forget", devCleanDerivedData = "dev/clean-derived-data"
+    case devShutdownSimulator = "dev/shutdown-simulator"
 
     public var isDev: Bool { rawValue.hasPrefix("dev/") }
 
@@ -774,6 +775,7 @@ public struct ManagementActions {
                 case .devRestoreSimulator: _ = try engine.restoreSimulator(name)
                 case .devForget: _ = try engine.forgetDevAsset(name)
                 case .devCleanDerivedData: _ = try engine.trashDerivedData()
+                case .devShutdownSimulator: try engine.shutdownSimulator(name)
                 default: break
                 }
                 return
@@ -812,7 +814,7 @@ public struct ManagementActions {
             case .unpin:
                 progress.phase("pin")
                 try engine.setPinned(manifest, pinned: false)
-            case .pack, .offloadfile, .devOffloadRuntime, .devRestoreRuntime, .devOffloadSimulator, .devRestoreSimulator, .devForget, .devCleanDerivedData:
+            case .pack, .offloadfile, .devOffloadRuntime, .devRestoreRuntime, .devOffloadSimulator, .devRestoreSimulator, .devForget, .devCleanDerivedData, .devShutdownSimulator:
                 break
             }
         })
