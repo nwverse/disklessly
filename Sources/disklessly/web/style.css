@@ -656,6 +656,10 @@ img.avatar { background: transparent; }
 .u-free { background: var(--track); color: var(--muted); border: 1px dashed var(--line-strong); }
 .u-free.usage-swatch { border-style: dashed; }
 
+.files-head {
+  margin-top: 1.5rem;
+}
+
 /* Apps offloaded on other Macs that share the repo. */
 .elsewhere { border-top: 1px solid var(--line); }
 .elsewhere-head { padding: 14px 20px; cursor: pointer; font-weight: 600; color: var(--muted); }

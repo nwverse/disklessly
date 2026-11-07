@@ -229,6 +229,13 @@ public struct DisklesslyEngine {
     public var packUsageOverride: ((String) -> UsageClass)?
     /// Tests: bundle ids counted against the free limit instead of scanning this Mac's stubs.
     public var offloadedOverride: (() throws -> Set<String>)?
+    /// Tests: whether a file (false) or folder (true) is open, instead of asking lsof.
+    public var fileOpenOverride: ((String, Bool) -> Bool)? = nil
+    /// Tests: the last time a scanned item was opened, instead of asking Spotlight.
+    public var lastUsedOverride: ((URL) -> Date?)? = nil
+    /// The home folder that `files` scans and `offload` accepts paths in. Nil uses `DISKLESSLY_HOME`, then the user's home.
+    public var homeOverride: String? = nil
+    public var homeDirectory: String { homeOverride ?? ProcessInfo.processInfo.environment["DISKLESSLY_HOME"].flatMap { $0.isEmpty ? nil : $0 } ?? NSHomeDirectory() }
     /// Replaces `SHA256Digest.hexFile` for prefetch. Nil hashes the file.
     public var hasherOverride: ((URL) throws -> String)?
     /// Replaces the disk-image tool and process probe for `detach` and the
@@ -488,7 +495,7 @@ public struct DisklesslyEngine {
             throw DisklesslyError.usage("invalid --image-format \(requested); expected ULMO or ULFO")
         }
         try PackGuard.refuseStub(app, bundleId: bid)
-        try License.checkPack(state: License.load(stateDir: config.stateDir), offloaded: try offloadedOverride?() ?? offloadedBundleIds(), packing: bid)
+        try License.checkPack(state: License.load(stateDir: config.stateDir), offloaded: try offloadedOverride?() ?? offloadedBundleIds(), packing: bid, files: offloadedFileCount())
         let usage = packUsageOverride?(app.path) ?? ProcessProbe.usage(roots: [app.path])
         if let blocked = PackPreflight.running(usage, name: name) { throw blocked }
         let allocated = AllocatedSize.tree(app)

@@ -140,7 +140,7 @@ Keychain. See [`docs/backends.md`](docs/backends.md).
 
 ## Free version and license
 
-The free version offloads up to **2 apps at once**. Starting, restoring (`unpack`), evicting and detaching
+The free version offloads up to **2 items at once**: apps, and files or folders offloaded with `disklessly offload`, counted together. Starting, restoring (`unpack`), evicting and detaching
 apps you already offloaded never needs a license; only `pack` checks the limit, and packing an app that is
 already offloaded again does not count as a new one. A license code removes the limit:
 
@@ -196,6 +196,14 @@ configure. Details are in [PRIVACY.md](PRIVACY.md).
 - Each stub records the repo that packed it (`repoId` in `stub.json`), so another
   repo never claims it. `disklessly stub refresh --all` stamps older stubs.
 
+## Large files and folders
+
+Not only apps: `disklessly files` lists large files and folders in your home folder that you have not opened for a while.
+`disklessly offload PATH` moves one into the repo and leaves a small `PATH.disklessly` placeholder.
+`disklessly fetch PLACEHOLDER` brings it back. In Finder, right-click and choose Services → Offload with Disklessly or
+Bring back with Disklessly. Double-clicking a placeholder brings the file back too.
+The dashboard lists the same items under Worth offloading. See [`docs/files.md`](docs/files.md).
+
 ## Coding-agent sessions
 
 `disklessly sessions` (dry run by default; `--apply` to act) moves cold coding-agent
@@ -222,7 +230,7 @@ Environment overrides, useful for isolated test runs: `DISKLESSLY_REPO_PATH`,
 `DISKLESSLY_CACHE_DIR`, `DISKLESSLY_STATE_DIR`, `DISKLESSLY_MOUNT_ROOT`,
 `DISKLESSLY_STUB_DIR`, `DISKLESSLY_CONFIG`, `DISKLESSLY_DETACH_DELAY`,
 `DISKLESSLY_QUOTA_BYTES`, `DISKLESSLY_MIN_FREE_BYTES`, `DISKLESSLY_SIGN_IDENTITY`,
-`DISKLESSLY_DOCTOR_TIMEOUT`, `DISKLESSLY_WEB_ROOT`, `DISKLESSLY_SCAN_ROOTS` (colon-separated
+`DISKLESSLY_DOCTOR_TIMEOUT`, `DISKLESSLY_WEB_ROOT`, `DISKLESSLY_HOME` (the home folder `files` scans and `offload` accepts), `DISKLESSLY_SCAN_ROOTS` (colon-separated
 folders scanned instead of `/Applications` and `~/Applications` by `recommend`
 and backup cleanup).
 

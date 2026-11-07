@@ -154,6 +154,7 @@ const copy = {
     actionpin: "固定",
     actionunpin: "取消固定",
     actionpack: "卸载",
+    actionoffloadfile: "卸载",
     phasepack: "卸载中",
     offloadNow: "立即卸载",
     offloadNowFor: (name) => `立即卸载 ${name}`,
@@ -161,6 +162,8 @@ const copy = {
     confirmPackTitle: (name) => `卸载 ${name}？`,
     confirmPackBody: (size) => `应用会被打包进仓库（约 ${size}），原位置换成一个入口，之后按需下载打开。需要先退出这个应用；可能要几分钟。`,
     confirmPackOk: "卸载",
+    confirmFileTitle: (name) => `卸载 ${name}？`,
+    confirmFileBody: (size) => `它会被移进仓库（约 ${size}），原位置留下一个同名的 .disklessly 占位文件。双击占位文件，或在访达里右键选“用 Disklessly 取回”，就能把它拿回来。需要先在其他 app 里关闭它。`,
     phasequeued: "排队中",
     phaseresolve: "查找镜像",
     phasedownload: "下载中",
@@ -196,16 +199,16 @@ const copy = {
     licenseCode: "授权码",
     licenseActivate: "激活",
     licenseRemove: "移除授权",
-    licenseFree: (used, limit) => `免费版：已卸载 ${used} / ${limit} 个应用`,
-    licenseFreeBody: "启动、还原和取消卸载已卸载的应用永远免费。要卸载更多应用，请输入授权码。",
-    licenseFull: "已授权：卸载应用数量不限",
+    licenseFree: (used, limit) => `免费版：已卸载 ${used} / ${limit} 个应用或文件`,
+    licenseFreeBody: "启动、还原和取消卸载已卸载的应用，以及取回已卸载的文件，永远免费。要卸载更多，请输入授权码。",
+    licenseFull: "已授权：卸载应用和文件数量不限",
     licenseUntil: (date) => `有效期至 ${date}`,
     licenseUpdates: (date) => `${date} 前的更新已包含`,
     licenseExpired: (date) => `授权码已于 ${date} 过期，免费版限额重新生效`,
     licenseInvalid: "已保存的授权码无法使用，免费版限额生效",
     licenseOk: "授权已激活",
     licenseRemoved: "授权已移除",
-    errlicense_required: "免费版的卸载数量已用完。输入授权码可继续卸载更多应用。",
+    errlicense_required: "免费版的卸载数量已用完（应用和文件合计）。输入授权码可继续卸载。",
     sessionTiers: "会话分层",
     coldAfter: (n) => `${n} 天未用转冷`,
     offloadedCount: (n) => `已卸载 ${n} 个`,
@@ -220,6 +223,15 @@ const copy = {
     recommendFailed: "未能加载建议",
     recommendScanning: "正在扫描已安装的应用…",
     recommendSummary: (count, min) => `${count} 个应用 · 只列出不小于 ${min} 的应用`,
+    filesTitle: "大文件和文件夹",
+    filesSummary: (count, min, days) => `${count} 项 · 不小于 ${min}，且 ${days} 天以上没打开过`,
+    filesEmpty: "主文件夹里没有又大又久未打开的文件",
+    filesScanning: "正在扫描主文件夹…",
+    filesPartial: "扫描提前结束，列表可能不完整",
+    filesFolder: "文件夹",
+    filesFile: "文件",
+    filesIdle: (days) => `${days} 天未打开`,
+    filesNever: "从未打开",
     couldFree: "大约可腾出",
     scannedAgo: (iso) => `扫描于${relativeTime(iso, "zh")}`,
     rescan: "重新扫描",
@@ -456,6 +468,7 @@ const copy = {
     actionpin: "pin",
     actionunpin: "unpin",
     actionpack: "offload",
+    actionoffloadfile: "offload",
     phasepack: "Offloading",
     offloadNow: "Offload now",
     offloadNowFor: (name) => `Offload ${name} now`,
@@ -463,6 +476,8 @@ const copy = {
     confirmPackTitle: (name) => `Offload ${name}?`,
     confirmPackBody: (size) => `The app is packed into your repo (about ${size}) and its place gets a launcher that downloads and opens it on demand. Quit the app first. This can take a few minutes.`,
     confirmPackOk: "Offload",
+    confirmFileTitle: (name) => `Offload ${name}?`,
+    confirmFileBody: (size) => `It moves into your repo (about ${size}) and leaves a small .disklessly placeholder with the same name. Double-click the placeholder, or right-click it in Finder and choose Bring back with Disklessly, to get it back. Close it in other apps first.`,
     phasequeued: "Queued",
     phaseresolve: "Finding image",
     phasedownload: "Downloading",
@@ -498,16 +513,16 @@ const copy = {
     licenseCode: "License code",
     licenseActivate: "Activate",
     licenseRemove: "Remove license",
-    licenseFree: (used, limit) => `Free version: ${used} of ${limit} apps offloaded`,
-    licenseFreeBody: "Starting, restoring and unpacking offloaded apps is always free. Enter a license code to offload more.",
-    licenseFull: "Licensed: unlimited offloaded apps",
+    licenseFree: (used, limit) => `Free version: ${used} of ${limit} apps or files offloaded`,
+    licenseFreeBody: "Starting, restoring and unpacking offloaded apps, and bringing back offloaded files, is always free. Enter a license code to offload more.",
+    licenseFull: "Licensed: unlimited offloaded apps and files",
     licenseUntil: (date) => `Valid until ${date}`,
     licenseUpdates: (date) => `Updates included until ${date}`,
     licenseExpired: (date) => `Your code expired on ${date}; the free limit applies again`,
     licenseInvalid: "The saved license code is not usable; the free limit applies",
     licenseOk: "License activated",
     licenseRemoved: "License removed",
-    errlicense_required: "The free limit is used up. Enter a license code to offload more apps.",
+    errlicense_required: "The free limit (apps and files together) is used up. Enter a license code to offload more.",
     sessionTiers: "Session tiers",
     coldAfter: (n) => `Cold after ${n} days`,
     offloadedCount: (n) => `${n} offloaded`,
@@ -522,6 +537,15 @@ const copy = {
     recommendFailed: "Could not load recommendations",
     recommendScanning: "Scanning installed apps…",
     recommendSummary: (count, min) => `${count} ${count === 1 ? "app" : "apps"} · only apps of ${min} or more are listed`,
+    filesTitle: "Large files and folders",
+    filesSummary: (count, min, days) => `${count} ${count === 1 ? "item" : "items"} · ${min} or more, not opened for ${days} days`,
+    filesEmpty: "No large files that have sat unopened in your home folder",
+    filesScanning: "Scanning your home folder…",
+    filesPartial: "The scan stopped early; the list may be incomplete",
+    filesFolder: "folder",
+    filesFile: "file",
+    filesIdle: (days) => `not opened for ${days} days`,
+    filesNever: "never opened",
     couldFree: "Could free about",
     scannedAgo: (iso) => `Scanned ${relativeTime(iso, "en")}`,
     rescan: "Rescan",
@@ -1587,6 +1611,7 @@ function confirmAction(kind, app) {
     evict: { title: ["confirmEvictTitle", app.name], body: ["confirmEvictBody", size], ok: "confirmEvictOk", danger: true },
     restore: { title: ["confirmRestoreTitle", app.name], body: ["confirmRestoreBody"], ok: "confirmRestoreOk", danger: false },
     pack: { title: ["confirmPackTitle", app.name], body: ["confirmPackBody", size], ok: "confirmPackOk", danger: false },
+    offloadfile: { title: ["confirmFileTitle", app.label || app.name], body: ["confirmFileBody", size], ok: "confirmPackOk", danger: false },
     unpack: { title: ["confirmUnpackTitle", app.name, dir], body: ["confirmUnpackBody", app.installPath || `${dir}/${app.name}.app`], ok: "confirmUnpackOk", danger: true },
   }[kind];
   askConfirm(spec, () => startJob(kind, app));
@@ -1627,7 +1652,7 @@ async function startJob(kind, app) {
   rerenderApps();
   try {
     // Evict never forces from the page: a pinned app is refused by the server too.
-    const payload = kind === "evict" ? { app: app.name, force: false } : kind === "pack" ? { app: app.name, path: app.path } : { app: app.name };
+    const payload = kind === "evict" ? { app: app.name, force: false } : kind === "pack" || kind === "offloadfile" ? { app: app.name, path: app.path } : { app: app.name };
     const started = await api(`/api/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     pending.set(app.name, { kind, jobId: started.jobId, phase: started.phase || "queued" });
     rerenderApps();
@@ -1671,6 +1696,7 @@ async function pollJob(name, kind, jobId) {
   pending.delete(name);
   await load();
   if (kind === "pack") loadRecommendations(true);
+  if (kind === "offloadfile") loadFiles();
 }
 
 function adoptServerJobs(status) {
@@ -1683,6 +1709,7 @@ function adoptServerJobs(status) {
 
 function rerenderApps() {
   if (lastRecommend && !recommendLoading) renderRecommend(lastRecommend, null);
+  if (filesData) renderFiles();
   if (lastStatus) renderApps(lastStatus.apps || [], lastStatus.appsError ? { code: appsErrorCode(lastStatus), message: lastStatus.appsError } : null);
 }
 
@@ -2047,6 +2074,97 @@ async function loadRecommendations(rescan) {
   else renderRecommend(null, recommendError);
 }
 
+// ---- large files ----------------------------------------------------------
+
+let filesData = null;
+let filesTimer = null;
+let filesAutoStarted = false;
+
+function fileReason(item, language) {
+  if (item.daysIdle == null) return tl(language, "filesNever");
+  return tl(language, "filesIdle", Number(item.daysIdle));
+}
+
+function renderFiles() {
+  const scanned = document.querySelector("#files-scanned");
+  const button = document.querySelector("#files-scan");
+  const summary = document.querySelector("#files-summary");
+  const list = document.querySelector("#files-list");
+  scanned.replaceChildren();
+  summary.replaceChildren();
+  list.replaceChildren();
+  const data = filesData || {};
+  const scanning = data.state === "scanning";
+  button.disabled = scanning;
+  if (scanning) button.setAttribute("aria-busy", "true");
+  else button.removeAttribute("aria-busy");
+  if (scanning) scanned.append(bi("filesScanning"));
+  else if (data.scannedAt) scanned.append(bi("scannedAgo", data.scannedAt));
+  const items = data.items || [];
+  if (data.state === "ready") {
+    const days = Number(data.minIdleDays || 0);
+    summary.append(one("filesSummary", items.length, bytes(data.minSizeBytes || 0), days));
+    if (data.partial) summary.append(document.createTextNode(" · "), bi("filesPartial"));
+    if (!items.length) {
+      const empty = el("div", "state-note");
+      empty.append(bi("filesEmpty"));
+      list.append(empty);
+    }
+  }
+  for (const item of items) {
+    const row = el("article", "rec-row");
+    const who = el("div", "app-cell");
+    who.append(letterIcon(item.name || "?"));
+    const words = el("div", "app-words");
+    const nameLine = el("div", "rec-name");
+    nameLine.append(el("h3", "app-name", item.name || ""), pill("grey", item.kind === "folder" ? "filesFolder" : "filesFile"));
+    words.append(nameLine, el("div", "app-meta", bytes(item.sizeBytes)), biPair(fileReason(item, primary), null, "rec-reason"), el("div", "mono path", item.path || ""));
+    who.append(words);
+    const actions = el("div", "actions");
+    const job = pending.get(item.path);
+    const busy = Boolean(job && job.kind === "offloadfile");
+    actions.append(actionButton({
+      labelKey: busy ? "offloading" : "offloadNow",
+      name: both("offloadNowFor", item.name),
+      icon: iconTray,
+      className: "primary",
+      busy,
+      disabled: Boolean(job),
+      onClick: () => confirmAction("offloadfile", { name: item.path, label: item.name, path: item.path, cachedBytes: item.sizeBytes }),
+    }));
+    row.append(who, actions);
+    list.append(row);
+  }
+}
+
+async function loadFiles() {
+  clearTimeout(filesTimer);
+  try {
+    filesData = await api("/api/files");
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    return;
+  }
+  // The first view scans once; it only reads sizes and dates.
+  if (filesData.state === "idle" && !filesAutoStarted) {
+    filesAutoStarted = true;
+    return startFilesScan();
+  }
+  renderFiles();
+  if (filesData.state === "scanning" && !expired) filesTimer = setTimeout(loadFiles, 3000);
+}
+
+async function startFilesScan() {
+  try {
+    filesData = await api("/api/files/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    renderFiles();
+    clearTimeout(filesTimer);
+    filesTimer = setTimeout(loadFiles, 2000);
+  } catch (error) {
+    if (error.code !== "unauthorized") toast({ title: bi("filesTitle"), error: { code: error.code, message: error.message }, tone: "error" });
+  }
+}
+
 // ---- Xcode simulators -----------------------------------------------------
 
 let devData = null;
@@ -2084,8 +2202,8 @@ async function devJob(kind, id, label) {
     failure = { code: error.code, message: error.message };
   }
   devBusy.delete(id);
-  if (failure) toast({ title: biPair(tl(primary, "devJobFailed", label), tl(secondary, "devJobFailed", label)), error: failure, tone: "error" });
-  else toast({ title: biPair(tl(primary, "devJobDone", label), tl(secondary, "devJobDone", label)), tone: "ok" });
+  if (failure) toast({ title: biPair(tl(primary, "devJobFailed", label), null), error: failure, tone: "error" });
+  else toast({ title: biPair(tl(primary, "devJobDone", label), null), tone: "ok" });
   await loadDev();
 }
 
@@ -2430,6 +2548,7 @@ async function load() {
   render(status);
   loadLicense();
   loadUsage();
+  if (!filesData || filesData.state !== "scanning") loadFiles();
   loadDev();
 }
 
@@ -2458,6 +2577,7 @@ document.querySelector("#refresh").addEventListener("click", refresh);
 document.querySelector("#retry").addEventListener("click", retryNow);
 document.querySelector("#rescan").addEventListener("click", () => loadRecommendations(true));
 document.querySelector("#usage-scan").addEventListener("click", startUsageScan);
+document.querySelector("#files-scan").addEventListener("click", startFilesScan);
 document.querySelector("#usage-caches-clear").addEventListener("click", clearCaches);
 document.querySelector("#license-form").addEventListener("submit", submitLicense);
 document.querySelector("#license-remove").addEventListener("click", removeLicense);

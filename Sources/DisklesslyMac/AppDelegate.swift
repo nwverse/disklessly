@@ -41,6 +41,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var server: LoopbackUIServer?
     private var window: WebWindowController?
+    private var engine: DisklesslyEngine?
+    /// Set when the app was started to open placeholders; then the dashboard does not pop up.
+    private var openedDocumentsAtLaunch = false
+    private var launched = false
+    /// Placeholders opened before the engine was set up.
+    private var queued: [String] = []
     private var onboarding: OnboardingController?
 
     private var dashboardURL: URL? {
@@ -50,6 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.mainMenu = Self.mainMenu()
+        // Finder's right-click > Services (Quick Actions): "Offload with Disklessly", "Bring back with Disklessly".
+        NSApp.servicesProvider = self
+        NSUpdateDynamicServices()
         installStatusItem()
         do {
             try startServer()
@@ -62,6 +71,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
+        launched = true
+        if !queued.isEmpty { run(.fetch, queued); queued = [] }
+        if openedDocumentsAtLaunch { return }
         // Ask for the privacy permissions first when one is missing; the dashboard opens after.
         let states = PermissionProbe.current()
         if Onboarding.needed(states) {
@@ -99,6 +111,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let env = ProcessInfo.processInfo.environment
         let config = RuntimeConfig.resolved(environment: env, home: NSHomeDirectory(), stateDirOverride: nil, explicitConfig: env["DISKLESSLY_CONFIG"])
         let engine = DisklesslyEngine(config: config)
+        self.engine = engine
         guard let webRoot = WebRootLocator.find(environment: env) else {
             throw DisklesslyError.failure("The web assets are missing from this app (expected Contents/Resources/web). Reinstall Disklessly.")
         }
@@ -139,6 +152,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(withTitle: "Quit Disklessly", action: #selector(quit(_:)), keyEquivalent: "q").target = self
         item.menu = menu
         statusItem = item
+    }
+
+    // MARK: Files
+
+    /// Double-clicking a `.disklessly` placeholder brings its file back.
+    func application(_ application: NSApplication, open urls: [URL]) {
+        if !launched { openedDocumentsAtLaunch = true }
+        let placeholders = urls.filter { $0.pathExtension == FilePlaceholder.fileExtension }
+        run(.fetch, placeholders.map(\.path))
+    }
+
+    /// NSServices handler: `NSMessage` = offloadFiles.
+    @objc func offloadFiles(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        run(.offload, Self.filePaths(pasteboard))
+    }
+
+    /// NSServices handler: `NSMessage` = fetchFiles.
+    @objc func fetchFiles(_ pasteboard: NSPasteboard, userData: String?, error: AutoreleasingUnsafeMutablePointer<NSString?>) {
+        run(.fetch, Self.filePaths(pasteboard).filter { $0.hasSuffix("." + FilePlaceholder.fileExtension) })
+    }
+
+    static func filePaths(_ pasteboard: NSPasteboard) -> [String] {
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        return urls.map(\.path)
+    }
+
+    enum FileAction { case offload, fetch }
+
+    /// Runs off the main thread; one alert at the end lists what failed.
+    private func run(_ action: FileAction, _ paths: [String]) {
+        guard !paths.isEmpty else { return }
+        guard let engine else {
+            if action == .fetch { queued.append(contentsOf: paths) }
+            return
+        }
+        DispatchQueue.global(qos: .userInitiated).async {
+            var failures: [String] = []
+            var notes: [String] = []
+            for path in paths {
+                let name = (path as NSString).lastPathComponent
+                do {
+                    switch action {
+                    case .offload: notes.append(contentsOf: try engine.offloadFile(path).warnings)
+                    case .fetch: try engine.fetchFile(path)
+                    }
+                } catch {
+                    failures.append("\(name): \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")
+                }
+            }
+            guard !failures.isEmpty || !notes.isEmpty else { return }
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = failures.isEmpty ? "Offloaded with notes" : (action == .offload ? "Disklessly could not offload everything" : "Disklessly could not bring everything back")
+                alert.informativeText = (failures + notes).joined(separator: "\n")
+                alert.alertStyle = failures.isEmpty ? .informational : .warning
+                NSApp.activate(ignoringOtherApps: true)
+                alert.runModal()
+            }
+        }
     }
 
     @objc func openDashboard(_ sender: Any?) {

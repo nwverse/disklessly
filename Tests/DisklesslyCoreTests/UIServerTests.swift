@@ -220,9 +220,10 @@ final class UIServerTests: XCTestCase {
         // All text lives in app.js's one string table; the shell carries no Chinese to flash before it runs.
         XCTAssertFalse(html.contains("lang=\"zh"))
         XCTAssertFalse(html.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }, "index.html hard-codes Chinese text")
-        // Bilingual inline labels replace the language toggle; ?lang=en only reorders them.
+        // One language at a time: ?lang=, then the saved switch, then the system language.
         XCTAssertFalse(html.contains("id=\"lang\""))
-        XCTAssertTrue(html.contains("lang === \"en\""))
+        XCTAssertTrue(html.contains("id=\"lang-toggle\""))
+        XCTAssertTrue(html.contains("disklessly_lang="))
         XCTAssertTrue(js.contains("function bi("))
         // Theme follows the system.
         XCTAssertTrue(css.contains("prefers-color-scheme: dark"))

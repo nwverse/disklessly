@@ -14,14 +14,15 @@
 6. [通过替身启动](#通过替身启动)
 7. [缓存：固定、预取、清除](#缓存固定预取清除)
 8. [把应用放回来 `unpack`](#把应用放回来-unpack)
-9. [仓库后端：iCloud、SMB/NFS、WebDAV、OpenList](#仓库后端)
-10. [多台 Mac 共用一个仓库](#多台-mac-共用一个仓库)
-11. [菜单栏应用与仪表盘](#菜单栏应用与仪表盘)
-12. [编程助手会话 `sessions`](#编程助手会话-sessions)
-13. [排查问题 `doctor`](#排查问题-doctor)
-14. [卸载 Disklessly](#卸载-Disklessly)
-15. [隐私](#隐私)
-16. [挂载生命周期与仓库归属](#挂载生命周期与仓库归属)
+9. [卸载大文件和文件夹 `offload`](#卸载大文件和文件夹-offload)
+10. [仓库后端：iCloud、SMB/NFS、WebDAV、OpenList](#仓库后端)
+11. [多台 Mac 共用一个仓库](#多台-mac-共用一个仓库)
+12. [菜单栏应用与仪表盘](#菜单栏应用与仪表盘)
+13. [编程助手会话 `sessions`](#编程助手会话-sessions)
+14. [排查问题 `doctor`](#排查问题-doctor)
+15. [卸载 Disklessly](#卸载-Disklessly)
+16. [隐私](#隐私)
+17. [挂载生命周期与仓库归属](#挂载生命周期与仓库归属)
 
 ## 它做什么
 
@@ -150,6 +151,25 @@ disklessly unpack "Some App" --to ~/Desktop  # 只复制一份出来，替身保
 ```
 
 放回前会校验应用目录树哈希和代码签名。镜像仍保留在仓库中，之后可以再次 `pack`（不需要重新上传）。
+
+## 卸载大文件和文件夹 `offload`
+
+不只是应用，任何大文件或文件夹都可以移进仓库，原位置留一个很小的占位文件 `名字.disklessly`（带访达标签 "Disklessly"）。
+
+```sh
+disklessly files                                   # 列出主文件夹里 ≥500 MiB 且 30 天以上没打开过的文件和文件夹
+disklessly offload ~/Downloads/movie.mov           # 移进仓库，留下 movie.mov.disklessly
+disklessly offload "~/Documents/Old Project"       # 文件夹会打包成 tar + zstd
+disklessly fetch ~/Downloads/movie.mov.disklessly  # 取回
+```
+
+- 仪表盘的“值得卸载”卡片下面有“大文件和文件夹”列表，每项都有“立即卸载”按钮。
+- 在访达里右键 → 服务 →“用 Disklessly 卸载”/“用 Disklessly 取回”；双击占位文件也会取回。
+  这需要 Disklessly.app 在“应用程序”里并且启动过一次；有些系统要先在“系统设置 → 键盘 → 键盘快捷键 → 服务”里勾选。
+- 只有仓库里的副本读回来、SHA-256 校验一致后，才会删除原文件。正在被其他 app 打开的文件会被拒绝（退出码 9）。
+- 不会卸载：主文件夹以外的东西、`~/Library`、应用包及其内部的文件、照片/音乐图库、虚拟机磁盘、符号链接，以及 Disklessly 自己的仓库和缓存。
+- 已卸载的文件和应用**一起**计入免费版的数量限制。取回永远免费。
+- 文件还没有加密，详见 [files.md](files.md)。
 
 ## 仓库后端
 
@@ -281,7 +301,7 @@ disklessly doctor --fix    # 回放本机未完成的 unpack / restore 日志
 
 ## 免费版与授权
 
-免费版**最多同时卸载 2 个应用**。已卸载应用的启动、还原（`unpack`）、清除缓存、卸载镜像永远不需要授权，只有新增 `pack` 时检查数量；重新打包一个已卸载的应用不算新增。输入授权码后不再限制数量：
+免费版**最多同时卸载 2 项**（应用和用 `offload` 卸载的文件、文件夹合计）。取回文件永远免费。已卸载应用的启动、还原（`unpack`）、清除缓存、卸载镜像永远不需要授权，只有新增 `pack` 时检查数量；重新打包一个已卸载的应用不算新增。输入授权码后不再限制数量：
 
 ```sh
 disklessly license                    # 查看当前是免费版还是已授权
@@ -352,6 +372,24 @@ disklessly ui --open                         # dashboard in your browser
 Nothing is replaced until a verified image is in the repo; a missing or
 mismatched image stops `pack` with exit 5 and leaves the app alone.
 
+### Large files and folders
+
+`disklessly files` lists the files and folders in your home folder that are at least 500 MiB and have not been opened
+for 30 days. `disklessly offload PATH` moves one into the repo and leaves `PATH.disklessly`, a small placeholder
+tagged "Disklessly". `disklessly fetch PLACEHOLDER` brings it back. Folders are stored as tar + zstd.
+
+The dashboard lists the same items under Worth offloading, each with an Offload now button. In Finder, right-click
+and choose Services → Offload with Disklessly or Bring back with Disklessly. Double-clicking a placeholder also brings
+its file back.
+
+- **Safety.** The original is deleted only after the repo copy reads back with the same SHA-256. A file that is open
+  in another app is refused with exit 9.
+- **What it will not offload.** Anything outside the home folder, `~/Library`, app bundles and anything inside them,
+  photo libraries, VM disks, and Disklessly's own repo and cache.
+- **Free limit.** Offloaded files count toward the free limit together with apps.
+
+See [files.md](files.md).
+
 ### Backends
 
 `disklessly backend add smb|nfs|webdav|openlist ... --password-stdin`, then
@@ -420,8 +458,8 @@ adds Foundation error details. After an upgrade run `disklessly install-engine` 
 
 ### Free version and license
 
-The free version offloads up to 2 apps at once. Starting, restoring (`unpack`), evicting and detaching apps
-you already offloaded never needs a license; only `pack` checks the limit, and re-packing an offloaded app
+The free version offloads up to 2 items at once: apps and files or folders offloaded with `offload`, counted together. Bringing files back is always free. Starting, restoring (`unpack`), evicting and detaching apps
+you already offloaded never needs a license; only `pack` and `offload` check the limit, and re-packing an offloaded app
 is not a new app. A license code lifts the limit: `disklessly license activate CODE` (also `license`,
 `license deactivate`, and the License card in the dashboard). Codes are verified offline. A buyout code does
 not expire; a promo code has a last day, after which the free limit applies again.
