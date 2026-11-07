@@ -332,6 +332,11 @@ const copy = {
     devForget: "从仓库删除",
     devCleanDerived: "清理 DerivedData",
     devNone: "没有",
+    devShutdown: "关闭模拟器",
+    devRunning: "正在运行，关掉后才能放到云端",
+    devInUseBy: (names) => `${names} 正在用它，关掉后才能放到云端`,
+    devConfirmShutdownTitle: (name) => `关闭模拟器「${name}」？`,
+    devConfirmShutdownBody: "如果有测试或应用正在这台模拟器里跑，会被中断。",
     devUnavailable: "读不到模拟器信息（需要安装 Xcode）",
     devInstalledHere: "这台 Mac 上也有",
     devFrom: (host) => `来自 ${host}`,
@@ -700,6 +705,11 @@ const copy = {
     devForget: "Delete from repo",
     devCleanDerived: "Clean DerivedData",
     devNone: "None",
+    devShutdown: "Shut down",
+    devRunning: "Running. Shut it down to offload it.",
+    devInUseBy: (names) => `In use by ${names}. Shut it down to offload this runtime.`,
+    devConfirmShutdownTitle: (name) => `Shut down simulator “${name}”?`,
+    devConfirmShutdownBody: "Any test or app running in it will be interrupted.",
     devUnavailable: "Could not read simulators (Xcode is needed)",
     devInstalledHere: "Also on this Mac",
     devFrom: (host) => `from ${host}`,
@@ -1051,6 +1061,7 @@ const iconMore = "M6 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm6 0a1.5 1.5 0 1 1
 const iconCopy = "M8 3h10a2 2 0 0 1 2 2v10h-2V5H8V3zM5 7h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zm0 2v10h10V9H5z";
 const iconRefresh = "M12 4a8 8 0 0 1 7.4 5H17v2h6V5h-2v2.3A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8zm8 8a8 8 0 0 1-15.4 3H7v-2H1v6h2v-2.3A10 10 0 0 0 22 12h-2z";
 const iconTray = "M5 4h14l3 9v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6l3-9zm1.4 2-2.3 7H8l1 2h6l1-2h3.9l-2.3-7H6.4z";
+const iconPower = "M11 2h2v10h-2V2zM6.3 5.3l1.4 1.4A7 7 0 1 0 16.3 6.7l1.4-1.4A9 9 0 1 1 6.3 5.3z";
 const iconAlert = "M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16zm-1 3h2v7h-2V7zm0 9h2v2h-2v-2z";
 const iconInfo = "M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16zm-1 6h2v7h-2v-7zm0-3h2v2h-2V7z";
 
@@ -2295,6 +2306,7 @@ const devBusy = new Map(); // item id -> job kind
 const devConfirms = {
   "dev/offload-runtime": (item) => ({ title: ["devConfirmRuntimeTitle", item.title], body: ["devConfirmRuntimeBody", bytes(item.bytes)], ok: "devConfirmOk", danger: false }),
   "dev/offload-simulator": (item) => ({ title: ["devConfirmSimTitle", item.name], body: ["devConfirmSimBody", bytes(item.bytes)], ok: "devConfirmOk", danger: false }),
+  "dev/shutdown-simulator": (item) => ({ title: ["devConfirmShutdownTitle", item.name], body: ["devConfirmShutdownBody"], ok: "devShutdown", danger: true }),
   "dev/forget": (item) => ({ title: ["devConfirmForgetTitle", item.title], body: ["devConfirmForgetBody", bytes(item.bytes)], ok: "devForget", danger: true }),
   "dev/clean-derived-data": () => ({ title: ["devConfirmCleanTitle"], body: ["devConfirmCleanBody"], ok: "devConfirmOk", danger: false }),
 };
@@ -2367,10 +2379,26 @@ function renderDev() {
   }
   const button = (labelKey, icon, kind, id, label, item, blocked, className) =>
     actionButton({ labelKey, icon, className: className || "outline", busy: devBusy.get(id) === kind, disabled: devBusy.has(id), blocked: blocked || undefined, onClick: () => devAction(kind, id, label, item) });
-  const runtimes = (devData.runtimes || []).map((r) =>
-    devRow(r.title, r.runtimeIdentifier.replace("com.apple.CoreSimulator.SimRuntime.", ""), bytes(r.bytes), r.deletable ? [button("devOffload", iconTray, "dev/offload-runtime", r.id, r.title, r, r.blocked)] : []));
-  const simulators = (devData.simulators || []).filter((d) => d.bytes >= 50 * 1024 * 1024).map((d) =>
-    devRow(d.name, d.state === "Booted" ? d.state : "", bytes(d.bytes), [button("devOffload", iconTray, "dev/offload-simulator", d.udid, d.name, d, d.blocked)]));
+  // A blocked row says why in its detail line, not only in the button's tooltip.
+  const withNote = (text, note) => {
+    if (!note) return text;
+    const node = el("span");
+    if (text) node.append(text, " · ");
+    node.append(el("span", "warn-text", note));
+    return node;
+  };
+  const runtimes = (devData.runtimes || []).map((r) => {
+    const inUse = (r.inUseBy || []).join(", ");
+    const note = inUse ? t("devInUseBy", inUse) : r.blocked || "";
+    return devRow(r.title, withNote(r.runtimeIdentifier.replace("com.apple.CoreSimulator.SimRuntime.", ""), note), bytes(r.bytes), r.deletable ? [button("devOffload", iconTray, "dev/offload-runtime", r.id, r.title, r, r.blocked)] : []);
+  });
+  const simulators = (devData.simulators || []).filter((d) => d.bytes >= 50 * 1024 * 1024).map((d) => {
+    const booted = d.state === "Booted";
+    const buttons = booted
+      ? [button("devShutdown", iconPower, "dev/shutdown-simulator", d.udid, d.name, d)]
+      : [button("devOffload", iconTray, "dev/offload-simulator", d.udid, d.name, d, d.blocked)];
+    return devRow(d.name, withNote("", booted ? t("devRunning") : d.blocked), bytes(d.bytes), buttons);
+  });
   const offloaded = (devData.offloaded || []).map((o) => {
     const detail = el("span");
     detail.append(t(o.kind === "runtime" ? "devRuntimes" : "devSimulators"), " · ", t("devFrom", o.host));
