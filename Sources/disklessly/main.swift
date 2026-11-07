@@ -556,7 +556,7 @@ do {
         case .search:
             let hits = try SessionArchive.search(config: config, query: parsed.query ?? "")
             let limited = parsed.limit.map { Array(hits.prefix($0)) } ?? hits
-            emit(limited.map { ["id": $0.id, "tool": $0.tool, "path": $0.path, "preview": $0.preview] })
+            emit(limited.map { ["id": $0.id, "tool": $0.tool, "path": $0.path, "preview": $0.preview, "title": ManagementUI.sessionTitle($0)] })
         case .restore:
             let path = try SessionArchive.restore(config: config, backend: engine.repo, query: parsed.query ?? "", to: parsed.to, secrets: secrets)
             emit(["ok": true, "path": path])

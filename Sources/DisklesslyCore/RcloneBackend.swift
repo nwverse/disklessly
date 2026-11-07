@@ -313,15 +313,45 @@ public struct RcloneBackend: StorageBackend {
     }
 
     public func put(_ path: String, file: URL) throws {
+        let overrides = Self.uploadOverrides(type: Self.remoteType(remote, config: config))
         if let daemon {
             let (fs, inside) = try location(path)
             _ = try rc("operations/copyfile", ["srcFs": file.deletingLastPathComponent().path, "srcRemote": file.lastPathComponent,
-                                                "dstFs": fs, "dstRemote": inside, "_config": ["IgnoreTimes": true]], on: daemon)
+                                                "dstFs": Self.withOverrides(fs, overrides), "dstRemote": inside, "_config": ["IgnoreTimes": true]], on: daemon)
                 ?? { throw DisklesslyError.backend("upload source is missing: \(file.path)") }()
             return
         }
-        let result = try run(["copyto", "--ignore-times", file.path, try target(path)])
+        let result = try run(["copyto", "--ignore-times", file.path, Self.withOverrides(try target(path), overrides)])
         guard result.status == 0 else { throw fail("copyto", result) }
+    }
+
+    /// Backend options for uploads. Google Drive uploads one file as a single stream of chunks,
+    /// waiting for each chunk before sending the next, so rclone's 8 MiB default leaves most of the
+    /// link idle; 64 MiB measured ~60% faster. rclone holds one chunk in memory per transfer.
+    static func uploadOverrides(type: String?) -> [String: String] {
+        type == "drive" ? ["chunk_size": "64M"] : [:]
+    }
+
+    /// `remote:path` with rclone connection-string options: `remote,key=value:path`.
+    static func withOverrides(_ fs: String, _ overrides: [String: String]) -> String {
+        guard !overrides.isEmpty, let colon = fs.firstIndex(of: ":") else { return fs }
+        let options = overrides.keys.sorted().map { ",\($0)=\(overrides[$0]!)" }.joined()
+        return String(fs[..<colon]) + options + String(fs[colon...])
+    }
+
+    /// The `type =` of `[remote]` in an rclone config file.
+    static func remoteType(_ remote: String, config: String) -> String? {
+        guard let text = try? String(contentsOfFile: config, encoding: .utf8) else { return nil }
+        var inSection = false
+        for raw in text.split(separator: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") { inSection = line == "[\(remote)]"; continue }
+            guard inSection, let eq = line.firstIndex(of: "=") else { continue }
+            if line[..<eq].trimmingCharacters(in: .whitespaces) == "type" {
+                return line[line.index(after: eq)...].trimmingCharacters(in: .whitespaces)
+            }
+        }
+        return nil
     }
 
     public func delete(_ path: String) throws {
