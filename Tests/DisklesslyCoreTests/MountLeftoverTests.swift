@@ -17,6 +17,7 @@ final class MountLeftoverTests: XCTestCase {
         XCTAssertTrue(DisklesslyEngine.isActiveMountPoint("/dev"))
 
         #if os(macOS)
+        // LiveMaterialProbe reads iCloud and mount state and exists only on macOS.
         let config = RuntimeConfig(repoPath: root.appendingPathComponent("repo").path, cacheDir: root.appendingPathComponent("cache").path, stateDir: root.appendingPathComponent("state").path, mountRoot: mountRoot.path, stubDir: root.appendingPathComponent("stubs").path)
         let usage = LiveMaterialProbe.usageMap(config: config, now: Date())
         XCTAssertFalse(usage.inUse.contains("app-1.0-abc"))

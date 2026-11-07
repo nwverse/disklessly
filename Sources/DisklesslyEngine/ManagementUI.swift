@@ -12,6 +12,12 @@ public enum ManagementUI {
     }
 
     public static func respond(engine: DisklesslyEngine, webRoot: URL?, request: UIRequest, context: ManagementUIContext) -> UIResponse {
+        var engine = engine
+        // The page can switch the repo; later requests use the saved config.
+        if let config = context.updatedConfig() { engine.config = config }
+        if request.path.hasPrefix("/api/cloud") || request.path.hasPrefix("/api/openlist") {
+            return cloudAPI(engine: engine, request: request, context: context)
+        }
         if request.path.hasPrefix("/api/") { return api(engine: engine, request: request, context: context) }
         return staticFile(webRoot: webRoot, request: request)
     }
@@ -48,6 +54,10 @@ public enum ManagementUI {
         let manifests = loadedApps.1
         appsError = loadedApps.2.message
         appsErrorCode = loadedApps.2.code
+        // The repo is shared by every Mac, so say per row what this Mac actually has.
+        let home = NSHomeDirectory()
+        let localApps = LocalAppIndex(folders: Array(Set([engine.config.stubDir, "/Applications", home + "/Applications"])))
+        let ownImageIds = Set(deviceRows.first { $0.deviceId == listing?.localDeviceId }?.images.map(\.imageId) ?? [])
         for manifest in manifests {
                 let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
                 let exists = FileManager.default.fileExists(atPath: cached.path)
@@ -82,6 +92,7 @@ public enum ManagementUI {
                     "iconPath": AppIcon.existingPath(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: manifest.imageId) ?? "",
                     // Where the stub lives and where a permanent restore puts the app.
                     "installPath": manifest.app.originalPath,
+                    "local": localApps.presence(bundleId: manifest.bundleId, imageId: manifest.imageId, ownImageIds: ownImageIds).jsonObject,
                 ]
                 if let used = record?.lastUsed { row["lastUsed"] = isoFormatter.string(from: used) }
                 apps.append(row)
@@ -278,7 +289,18 @@ public enum ManagementUI {
                 }
                 options.path = valid
             }
-            switch context.jobs.start(kind: kind, app: name, work: { progress in try actions.perform(kind, name, options, progress) }) {
+            if kind == .offloadfile {
+                guard let path = packPath(request) else { return failure(code: "bad_request", message: "path is required", status: 400) }
+                let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
+                if let why = engine.fileOffloadRefusal(standardized) {
+                    return failure(code: "bad_request", message: "\(standardized) \(why)", status: 400)
+                }
+                options.path = standardized
+            }
+            switch context.jobs.start(kind: kind, app: name, work: { progress in
+                try actions.perform(kind, name, options, progress)
+                if kind == .offloadfile, let path = options.path { context.files.forget(path: path) }
+            }) {
             case .started(let job):
                 var object = job.jsonObject()
                 object["ok"] = true
@@ -315,13 +337,45 @@ public enum ManagementUI {
             } catch {
                 return failure(error, status: 400)
             }
+        case ("GET", "/api/files"):
+            return .json(context.files.snapshot())
+        case ("POST", "/api/files/scan"):
+            let started = context.files.start(engine: engine)
+            var object = context.files.snapshot()
+            object["started"] = started
+            return .json(object, status: 202)
+        case ("GET", "/api/dev"):
+            var object = engine.devAssets().jsonObject()
+            object["ok"] = true
+            return .json(object)
         case ("GET", "/api/usage"):
-            return .json(context.usage.snapshot())
+            var object = context.usage.snapshot()
+            object["cleanup"] = context.cleaner.snapshot()
+            return .json(object)
+        case ("POST", "/api/usage/clean"):
+            let id = ((try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any])?["action"] as? String ?? ""
+            guard UsageCleanup.all.contains(id) else { return failure(code: "bad_request", message: "unknown cleanup", status: 400) }
+            // Rescan when it finishes, so the map shows the new sizes.
+            let usage = context.usage
+            let started = context.cleaner.start(id) { _ = usage.start(engine: engine) }
+            guard started else { return failure(code: "busy", message: "a cleanup is already running", status: 409) }
+            return .json(["ok": true, "cleanup": context.cleaner.snapshot()], status: 202)
         case ("POST", "/api/usage/scan"):
             let started = context.usage.start(engine: engine)
             var object = context.usage.snapshot()
             object["started"] = started
             return .json(object, status: 202)
+        case ("GET", "/api/caches"), ("POST", "/api/caches/clear"):
+            // Caches of offloaded apps. GET only measures; POST empties those of apps not running.
+            // Listing an offline backend blocks for the transport timeout, so answer at once.
+            if context.health.current(engine).status == "offline" {
+                return failure(code: "offline", message: "The backend is unreachable.", status: 503)
+            }
+            do {
+                return .json(try engine.clearAppCaches(apply: request.method == "POST", home: context.home).jsonObject())
+            } catch {
+                return failure(error, status: 500)
+            }
         case ("GET", "/api/license"):
             return .json(licenseObject(engine))
         case ("POST", "/api/license/activate"):
@@ -351,10 +405,10 @@ public enum ManagementUI {
         }
     }
 
-    /// License state for the page. `offloaded` is how many apps count against the free limit.
+    /// License state for the page. `offloaded` is how many apps and files count against the free limit.
     static func licenseObject(_ engine: DisklesslyEngine) -> [String: Any] {
         var object: [String: Any] = ["ok": true, "freeLimit": License.freeAppLimit]
-        object["offloaded"] = (try? engine.offloadedBundleIdCount()) ?? 0
+        object["offloaded"] = ((try? engine.offloadedBundleIdCount()) ?? 0) + engine.offloadedFileCount()
         switch License.load(stateDir: engine.config.stateDir) {
         case .free: object["state"] = "free"
         case .licensed(let p):
@@ -403,16 +457,16 @@ public enum ManagementUI {
         return request.path == "/api/recommend" || request.path == "/api/icons/backfill"
     }
 
-    private static func failure(_ error: Error, status: Int) -> UIResponse {
+    static func failure(_ error: Error, status: Int) -> UIResponse {
         let info = errorInfo(error)
         return failure(code: info.code, message: info.message, status: status)
     }
 
-    private static func failure(code: String, message: String, status: Int) -> UIResponse {
+    static func failure(code: String, message: String, status: Int) -> UIResponse {
         .json(failureObject(code: code, message: message), status: status)
     }
 
-    private static func failureObject(code: String, message: String) -> [String: Any] {
+    static func failureObject(code: String, message: String) -> [String: Any] {
         ["ok": false, "error": ["code": code, "message": message]]
     }
 
@@ -513,8 +567,20 @@ public enum ManagementUI {
 /// request returns at once and the page polls `GET /api/jobs/:id`.
 public enum UIJobKind: String, CaseIterable {
     case launch, prefetch, evict, restore, unpack, pin, unpin
+    /// Ejects a mount-mode app's disk image now (`disklessly detach`). Refused while it runs.
+    case detach
     /// Offloads an installed app (`disklessly pack`). The request carries the app's `path`.
     case pack
+    /// Offloads a large file or folder (`disklessly offload`). The request carries its `path`.
+    case offloadfile
+
+    /// Xcode simulators (`disklessly dev`). `app` is the runtime id, the simulator
+    /// udid or the repo record id; clean-derived-data ignores it.
+    case devOffloadRuntime = "dev/offload-runtime", devRestoreRuntime = "dev/restore-runtime"
+    case devOffloadSimulator = "dev/offload-simulator", devRestoreSimulator = "dev/restore-simulator"
+    case devForget = "dev/forget", devCleanDerivedData = "dev/clean-derived-data"
+
+    public var isDev: Bool { rawValue.hasPrefix("dev/") }
 
     public init?(path: String) {
         guard path.hasPrefix("/api/") else { return nil }
@@ -694,6 +760,24 @@ public struct ManagementActions {
                 _ = try engine.pack(path)
                 return
             }
+            if kind == .offloadfile {
+                guard let path = options.path else { throw DisklesslyError.usage("offload needs the file path") }
+                _ = try engine.offloadFile(path) { progress.phase($0) }
+                return
+            }
+            if kind.isDev {
+                progress.phase(String(kind.rawValue.dropFirst("dev/".count)))
+                switch kind {
+                case .devOffloadRuntime: _ = try engine.offloadRuntime(name)
+                case .devRestoreRuntime: _ = try engine.restoreRuntime(name)
+                case .devOffloadSimulator: _ = try engine.offloadSimulator(name)
+                case .devRestoreSimulator: _ = try engine.restoreSimulator(name)
+                case .devForget: _ = try engine.forgetDevAsset(name)
+                case .devCleanDerivedData: _ = try engine.trashDerivedData()
+                default: break
+                }
+                return
+            }
             progress.phase("resolve")
             guard var manifest = engine.manifest(named: name, in: try engine.list()) else { throw UIJobError.unknownApp(name) }
             switch kind {
@@ -715,6 +799,10 @@ public struct ManagementActions {
                 }
                 progress.phase("evict")
                 try engine.evict(manifest, force: options.force)
+            case .detach:
+                if let refusal = engine.detachRefusal(manifest) { throw refusal.error }
+                progress.phase("detach")
+                _ = try engine.detach(manifest, force: false)
             case .unpack:
                 progress.phase("unpack")
                 try engine.unpack(manifest, to: nil)
@@ -724,7 +812,7 @@ public struct ManagementActions {
             case .unpin:
                 progress.phase("pin")
                 try engine.setPinned(manifest, pinned: false)
-            case .pack:
+            case .pack, .offloadfile, .devOffloadRuntime, .devRestoreRuntime, .devOffloadSimulator, .devRestoreSimulator, .devForget, .devCleanDerivedData:
                 break
             }
         })
@@ -781,10 +869,18 @@ public final class ManagementUIContext {
     public let jobs: UIJobStore
     /// The disk usage map scan (`/api/usage`).
     public let usage: UsageScanner
+    public let cleaner = UsageCleaner()
+    /// Large idle files and folders (`/api/files`).
+    public let files: LargeFileScanner
+    /// Home folder whose `Library/Caches` `/api/caches` looks in. Tests point it at a temp folder.
+    public var home: String = NSHomeDirectory()
     /// Backend reachability with latency; bounded by its timeout and shared across requests.
     public let health: BackendHealthProbe
     /// Replaces the engine-backed actions, for tests.
     public let actions: ManagementActions?
+    /// Connecting a cloud drive or installing OpenList (`/api/cloud`).
+    public let cloud = CloudTaskRunner()
+    private var savedConfig: RuntimeConfig?
     private let now: () -> Date
     private let lock = NSLock()
     private let scanLock = NSLock()
@@ -793,13 +889,24 @@ public final class ManagementUIContext {
     /// Linux serves sessions, usage, devices, and license; the app routes answer 501.
     public let platform: HostPlatform
 
-    public init(platform: HostPlatform = .current, jobs: UIJobStore = UIJobStore(), actions: ManagementActions? = nil, health: BackendHealthProbe = BackendHealthProbe(), usage: UsageScanner = UsageScanner(), now: @escaping () -> Date = Date.init) {
+    public init(platform: HostPlatform = .current, jobs: UIJobStore = UIJobStore(), actions: ManagementActions? = nil, health: BackendHealthProbe = BackendHealthProbe(), usage: UsageScanner = UsageScanner(), files: LargeFileScanner = LargeFileScanner(), now: @escaping () -> Date = Date.init) {
         self.jobs = jobs
         self.platform = platform
         self.usage = usage
+        self.files = files
         self.health = health
         self.actions = actions
         self.now = now
+    }
+
+    /// The config the page saved last (after a repo switch or a new backend), if any.
+    public func updatedConfig() -> RuntimeConfig? {
+        lock.lock(); defer { lock.unlock() }
+        return savedConfig
+    }
+
+    public func configChanged(_ config: RuntimeConfig) {
+        lock.lock(); savedConfig = config; lock.unlock()
     }
 
     /// Returns the cached scan for `key` unless `rescan` is set. One scan runs at a time.

@@ -76,21 +76,21 @@ enum CLIText {
         let limit = License.freeAppLimit
         switch state {
         case .licensed(let p):
-            var line = p.edition == "promo" ? "Promo license, valid until \(p.expires ?? "?"). Unlimited offloaded apps." : "Licensed. Unlimited offloaded apps."
+            var line = p.edition == "promo" ? "Promo license, valid until \(p.expires ?? "?"). Unlimited offloaded apps and files." : "Licensed. Unlimited offloaded apps and files."
             if let updates = p.updatesUntil { line += " Updates included until \(updates)." }
             if let email = p.email { line += "\nLicensed to \(email)." }
             return line + "\nOffloaded now: \(offloaded)."
         case .expired(let p):
-            return "Your license code expired on \(p.expires ?? "an earlier date"). The free limit applies: \(offloaded) of \(limit) apps offloaded. Starting, restoring and unpacking keep working."
+            return "Your license code expired on \(p.expires ?? "an earlier date"). The free limit applies: \(offloaded) of \(limit) apps or files offloaded. Starting, restoring and unpacking keep working."
         case .invalid(let reason):
-            return "The saved license code is not usable: \(reason). The free limit applies: \(offloaded) of \(limit) apps offloaded.\nRun `disklessly license deactivate`, then `disklessly license activate CODE`."
+            return "The saved license code is not usable: \(reason). The free limit applies: \(offloaded) of \(limit) apps or files offloaded.\nRun `disklessly license deactivate`, then `disklessly license activate CODE`."
         case .free:
-            return "Free version: \(offloaded) of \(limit) apps offloaded. Starting, restoring and unpacking offloaded apps is always free.\nTo offload more, run `disklessly license activate CODE`."
+            return "Free version: \(offloaded) of \(limit) apps or files offloaded. Starting, restoring and unpacking offloaded apps, and bringing back files, is always free.\nTo offload more, run `disklessly license activate CODE`."
         }
     }
 
     static func licenseActivated(_ p: LicensePayload) -> String {
-        p.edition == "promo" ? "License activated (promo, valid until \(p.expires ?? "?")). You can offload as many apps as you like." : "License activated. You can offload as many apps as you like."
+        p.edition == "promo" ? "License activated (promo, valid until \(p.expires ?? "?")). You can offload as many apps and files as you like." : "License activated. You can offload as many apps and files as you like."
     }
 
     static func licenseDictionary(_ state: LicenseState, offloaded: Int) -> [String: Any] {

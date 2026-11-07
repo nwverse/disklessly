@@ -54,7 +54,10 @@ public struct RestoreJournal: Codable, Equatable {
     public var executable: String
     public var manifestCdhash: String
     public var manifestTreeHash: String
+    /// Hash of the plain disk image, which the cache holds.
     public var imageSha256: String
+    /// Hash of the repo object when it is encrypted. Nil for plain images and older journals.
+    public var imageCipherSha256: String?
     public var createdAt: Date
     public var epoch: Int
     public var postQuitRanForEpoch: Int
@@ -76,7 +79,7 @@ public struct RestoreJournal: Codable, Equatable {
     /// same repo. Nil for a legacy stub and on older journals.
     public var stubRepoId: String?
 
-    public init(txid: String, appId: String, imageId: String, owner: ProcessOwner, dest: String, staging: String, imagePath: String, imageFile: String, appName: String, stubBundleId: String, executable: String, manifestCdhash: String, manifestTreeHash: String, imageSha256: String, createdAt: Date = Date()) {
+    public init(txid: String, appId: String, imageId: String, owner: ProcessOwner, dest: String, staging: String, imagePath: String, imageFile: String, appName: String, stubBundleId: String, executable: String, manifestCdhash: String, manifestTreeHash: String, imageSha256: String, imageCipherSha256: String? = nil, createdAt: Date = Date()) {
         self.schema = "tx/1"
         self.txid = txid
         self.kind = "restore-in"
@@ -96,6 +99,7 @@ public struct RestoreJournal: Codable, Equatable {
         self.manifestCdhash = manifestCdhash
         self.manifestTreeHash = manifestTreeHash
         self.imageSha256 = imageSha256
+        self.imageCipherSha256 = imageCipherSha256
         self.createdAt = createdAt
         self.epoch = 1
         self.postQuitRanForEpoch = 0

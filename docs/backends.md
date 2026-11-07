@@ -38,6 +38,25 @@ disklessly backend add openlist --url http://nas.local:5244 --root /Disklessly -
 
 The password is stored in the Keychain. A successful login stores the token there as well (`openlist-token:…`). A 401 logs in again. `fs/get` returns `raw_url`; the download uses the same ranged GET and sha256 check as WebDAV. The raw URL does not receive the API token. `fs/put` uploads with `File-Path` and `As-Task: false`, then re-reads the object and checks the hash.
 
+### One-click OpenList
+
+`disklessly openlist install` (or the dashboard's Cloud drives card) downloads the pinned OpenList release for this Mac from GitHub, checks its SHA-256, and keeps it under `<stateDir>/openlist/`. It listens on 127.0.0.1 only (S3, FTP and SFTP off), runs as the LaunchAgent `io.github.s546126.disklessly.openlist`, and its admin password is generated once and stored in the Keychain (`disklessly openlist password`). Install stores the backend `openlist-local` without switching the repo; add your drives on its admin page, then `disklessly backend use openlist-local` (or `openlist install --use`). `openlist uninstall [--purge]` removes the LaunchAgent and binary; `--purge` also removes its data.
+
+## rclone (Google Drive, Dropbox, OneDrive, Box, pCloud, ...)
+
+Disklessly.app ships rclone next to the `disklessly` CLI, and the stable engine copy under `<stateDir>/bin` gets a copy beside it. Without the app, rclone is found through `DISKLESSLY_RCLONE`, `PATH`, or Homebrew. Disklessly keeps its own config at `<stateDir>/rclone/rclone.conf` and never reads `~/.config/rclone`.
+
+```bash
+disklessly cloud connect gdrive            # opens the sign-in page; stores backend rclone-gdrive
+disklessly backend use rclone-gdrive       # make it the repo (or: cloud connect gdrive --use)
+disklessly cloud list
+disklessly rclone lsd gdrive:              # any rclone command with Disklessly's config
+disklessly backend add rclone --remote NAME [--root DIR] [--id ID]   # a remote made with `disklessly rclone config`
+disklessly backend use default             # back to iCloud Drive / the local folder
+```
+
+The repo lives in `Disklessly/` on the drive unless `--root` says otherwise. Google Drive is connected with the `drive.file` scope, so Disklessly sees only files it created. Each call runs one rclone command (`lsjson`, `cat --offset --count`, `rcat`, `copyto`, `deletefile`, `mkdir`); nothing runs in the background. A fresh whole-file download uses `--multi-thread-streams 8`; a resumed one appends the rest with `cat --offset`. Switching the repo does not move apps already offloaded: their launchers keep pointing at the old repo until you switch back.
+
 ## iCloud Drive
 
 `icloud` is a file-backed repository, same layout as `local`, with two extra behaviors:

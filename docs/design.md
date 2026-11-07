@@ -327,6 +327,12 @@ estimate of §6.1, replaced by the measured value in local state after the first
 `app.related` (r3, R3-B2) lists the executable paths/launchd labels of helpers the bundle declares (privileged
 helpers, embedded LaunchServices/LaunchDaemons/LaunchAgents/LoginItems); restore-mode probes treat uninspectable
 processes matching it as potential dependents (§5.9 pass 3). Empty for typical mount-mode apps.
+**Encrypted images** (`image.encryption`, optional; `docs/image-encryption.md`). When `pack` encrypts
+(`--encrypt`, config `imageEncryption: "aes-gcm"`), the repo object is a `DKLI` file: AES-256-GCM over 1 MiB segments,
+21-byte header (`DKLI`, version, segment shift, key id, nonce prefix) as additional data, IV = prefix | index | last flag.
+`image.sha256`/`size` then describe that ciphertext, and `image.encryption = { scheme: "dkli-aes256gcm/1", keyId,
+plainSha256, plainSize }` describes the disk image. The cache holds the decrypted image and is verified against
+`plainSha256`. Manifests without the field are plain images, as before. Older builds ignore the field and fail at attach.
 
 ### 3.3 Catalog index (`catalog/manifest.json`)
 ```json
@@ -494,6 +500,10 @@ config `restoreImageFormat` (default `ULMO`, env `DISKLESSLY_RESTORE_IMAGE_FORMA
 `UDZO` and any other value are `EX_USAGE`. `pack --format` is still an unknown option. A manifest is accepted when
 `image.format` is `ULMO` or `ULFO`. The older design note that remote images are always ULMO, and that a local cache is
 converted to ULFO on fetch, is not what this build does: the cached file is the published image.
+
+**Image encryption.** `imageEncryption` is `off` (default) or `aes-gcm` (env `DISKLESSLY_IMAGE_ENCRYPTION`, set with
+`disklessly images encrypt on|off`, overridden per pack by `--encrypt`/`--no-encrypt`). Keys live in the Keychain under
+`io.github.s546126.disklessly.images` (`images key init|status|export|import`), as synchronizable items.
 
 ---
 

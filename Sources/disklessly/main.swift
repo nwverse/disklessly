@@ -15,6 +15,7 @@ Get started
   init [--backend local|icloud] [--root DIR] [--cache-dir DIR]
   recommend [--all] [--min-size SIZE] [--limit N] [--min-idle-days N]
   pack APP.app [--mode mount|restore] [--image-format ULMO|ULFO] [--no-stub] [--keep-original] [--stub-dir DIR]
+                                  [--encrypt|--no-encrypt]
   ui [--open]                     dashboard on 127.0.0.1 (prints its URL; --json prints url, port, token)
 
 Use offloaded apps
@@ -30,14 +31,35 @@ Use offloaded apps
 Bring an app back
   unpack APP [--to DIR]           put the real app back in place of its stub (or copy it to DIR)
 
+Large files and folders
+  files [--min-size SIZE] [--min-idle-days N] [--limit N]   large items in your home folder not opened lately
+  offload PATH...                 move a file or folder into the repo; leaves PATH.disklessly in its place
+  fetch PLACEHOLDER...            bring back the file or folder of a .disklessly placeholder
+
 Keep things tidy
   gc [--dry-run] [--include-legacy]
   evict-local | cleanup-backups | doctor [--fix] | reap [--dry-run]
+  caches [--apply]                list (or with --apply clear) the caches of offloaded apps that are not running
   install-engine | stub refresh --app ID|--all [--adopt] | icons backfill [--app ID]
 
+Xcode simulators
+  dev [list]                      runtimes, simulators and what is offloaded
+  dev offload-runtime ID|BUILD | dev restore-runtime RECORD
+  dev offload-simulator UDID|NAME | dev restore-simulator RECORD (comes back with a new udid)
+  dev forget RECORD               delete an offloaded image from the repo
+  dev clean-derived-data          move Xcode's DerivedData to the Trash
+
 Repos and Macs
-  backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
+  backend add smb|nfs|webdav|openlist|rclone ... | backend list | backend use ID|default
+  cloud [list] | cloud connect gdrive|dropbox|onedrive|box|pcloud [--name N] [--root DIR] [--use]
+  cloud disconnect NAME | rclone ARGS...   (bundled rclone with Disklessly's own config)
+  openlist status|install [--use]|password|start|stop|uninstall [--purge]
   devices [list] | devices rename NAME | devices forget DEVICEID --yes
+
+Encrypted images
+  images key init | images key status   make or show the image key (iCloud Keychain)
+  images key export | images key import  print the key as base64 / read one from stdin
+  images encrypt on|off           encrypt new packs before upload (pack --encrypt overrides)
 
 Coding-agent sessions
   sessions [--apply] [--days N] [--home DIR] [--encrypt] | sessions search QUERY [--limit N]
@@ -50,13 +72,15 @@ Other
 gc replays local journals, applies the repo garbage rules, and enforces the cache quota.
 gc --dry-run prints trash candidates, legacy images, and cache LRU victims and changes nothing.
 doctor --fix replays local unpack and restore journals and reaps orphan mounts.
+caches only empties ~/Library/Caches/<id or name> and a container's Data/Library/Caches;
+  Application Support and other app data are never touched, and a running app is skipped.
 reap detaches idle images left attached under the mount root (e.g. after a watcher crash).
 evict --force only overrides a pin; a mounted or running image is always refused.
 --json is accepted before or after the command. Without it, output is meant for people.
 Environment overrides: DISKLESSLY_REPO_PATH, DISKLESSLY_CACHE_DIR, DISKLESSLY_STATE_DIR,
   DISKLESSLY_MOUNT_ROOT, DISKLESSLY_STUB_DIR, DISKLESSLY_CONFIG, DISKLESSLY_DETACH_DELAY,
   DISKLESSLY_QUOTA_BYTES, DISKLESSLY_MIN_FREE_BYTES, DISKLESSLY_SIGN_IDENTITY,
-  DISKLESSLY_DOCTOR_TIMEOUT, DISKLESSLY_WEB_ROOT, DISKLESSLY_DEBUG
+  DISKLESSLY_DOCTOR_TIMEOUT, DISKLESSLY_WEB_ROOT, DISKLESSLY_HOME, DISKLESSLY_DEBUG, DISKLESSLY_IMAGE_ENCRYPTION
 """
 let linuxHelpText = """
 disklessly: archive coding-agent sessions and see what fills your disk (Linux build).
@@ -286,7 +310,7 @@ do {
     case "pack":
         let parsed = try PackArguments.parse(args)
         if let stubDir = parsed.stubDir { config.stubDir = stubDir; engine = DisklesslyEngine(config: config) }
-        let published=try engine.pack(parsed.app,mode:parsed.mode,keepOriginal:parsed.keepOriginal,noStub:parsed.noStub,imageFormat:parsed.imageFormat); let m=published.manifest
+        let published=try engine.pack(parsed.app,mode:parsed.mode,keepOriginal:parsed.keepOriginal,noStub:parsed.noStub,imageFormat:parsed.imageFormat,encrypt:parsed.encrypt); let m=published.manifest
         let path = parsed.app
         if json { for warning in published.warnings { fputs("disklessly: \(warning)\n", stderr) } }
         for path in published.evicted { fputs("disklessly: evicted local iCloud copy \(path)\n", stderr) }
@@ -294,7 +318,7 @@ do {
             let retained = URL(fileURLWithPath: config.stubDir).appendingPathComponent(URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent + ".256orig.app")
             fputs("disklessly: kept original at \(retained.path): \(kept)\n", stderr)
         }
-        var packed: [String: Any] = ["ok":true,"imageId":m.imageId,"bundleId":m.bundleId,"mode":m.mode.rawValue,"sha256":m.image.sha256,"reused":published.reused,"uploaded":published.uploaded,"warnings":published.warnings,"evicted":published.evicted]
+        var packed: [String: Any] = ["ok":true,"imageId":m.imageId,"bundleId":m.bundleId,"mode":m.mode.rawValue,"sha256":m.image.sha256,"reused":published.reused,"uploaded":published.uploaded,"warnings":published.warnings,"evicted":published.evicted,"encrypted":m.image.encryption != nil]
         if let kept = published.originalKept { packed["originalKept"] = kept }
         say(packed, CLIText.packed(published, appPath: path, stubDir: config.stubDir, noStub: parsed.noStub, keepOriginal: parsed.keepOriginal))
     case "list":
@@ -340,7 +364,7 @@ do {
         switch sub {
         case "status":
             let state = License.load(stateDir: config.stateDir)
-            let offloaded = (try? engine.offloadedBundleIdCount()) ?? 0
+            let offloaded = ((try? engine.offloadedBundleIdCount()) ?? 0) + engine.offloadedFileCount()
             say(CLIText.licenseDictionary(state, offloaded: offloaded), CLIText.licenseStatus(state, offloaded: offloaded))
         case "activate":
             guard args.count == 2 else { throw DisklesslyError.usage("usage: disklessly license activate CODE") }
@@ -381,6 +405,18 @@ do {
         } else {
             printEvict(eviction, files: files)
         }
+    case "caches":
+        var apply = false
+        while let flag = args.first {
+            args.removeFirst()
+            if flag == "--apply" { apply = true }
+            else if flag == "--dry-run" { apply = false }
+            else if flag == "--help" || flag == "-h" { usage() }
+            else { throw DisklesslyError.usage("Unknown option: \(flag)") }
+        }
+        let report = try engine.clearAppCaches(apply: apply)
+        say(report.jsonObject(), report.text)
+        if !report.failed.isEmpty { exit(6) }
     case "cleanup-backups":
         let cleaned = try engine.cleanupBackups()
         for path in cleaned.removed { fputs("disklessly: removed \(path)\n", stderr) }
@@ -444,6 +480,51 @@ do {
         default:
             throw DisklesslyError.usage("Unknown devices command: \(sub)")
         }
+    case "files":
+        var options = LargeFileOptions()
+        while !args.isEmpty {
+            let flag = args.removeFirst()
+            guard !args.isEmpty, ["--min-size", "--min-idle-days", "--limit"].contains(flag) else { throw DisklesslyError.usage("Unknown option: \(flag)") }
+            let value = args.removeFirst()
+            switch flag {
+            case "--min-size": options.minBytes = try RecommendArguments.parseSize(value)
+            case "--min-idle-days": guard let n = Int(value), n >= 0 else { throw DisklesslyError.usage("--min-idle-days takes a number") }; options.minIdleDays = n
+            default: guard let n = Int(value), n > 0 else { throw DisklesslyError.usage("--limit takes a number") }; options.limit = n
+            }
+        }
+        let scan = engine.largeFiles(options: options)
+        let now = Date()
+        if json {
+            emit(["ok": true, "partial": scan.partial, "minSizeBytes": NSNumber(value: options.minBytes), "minIdleDays": options.minIdleDays, "items": scan.items.map { $0.jsonObject(now: now) }] as [String: Any])
+        } else if scan.items.isEmpty {
+            print("No files or folders of \(sizeText(options.minBytes)) or more left unopened for \(options.minIdleDays) days.")
+        } else {
+            for item in scan.items {
+                let idle = item.lastUsed.map { "\(max(0, Int(now.timeIntervalSince($0) / 86_400))) days idle" } ?? "never opened"
+                print("\(sizeText(item.bytes))  \(item.kind == .folder ? "folder" : "file  ")  \(idle)  \(item.path)")
+            }
+            if scan.partial { print("(the scan stopped early; the list may be incomplete)") }
+            print("Offload one with: disklessly offload PATH")
+        }
+    case "offload":
+        guard !args.isEmpty, !args.contains(where: { $0.hasPrefix("--") }) else { throw DisklesslyError.usage("usage: disklessly offload PATH...") }
+        var results: [[String: Any]] = []
+        for path in args {
+            let result = try engine.offloadFile(path)
+            for warning in result.warnings { fputs("disklessly: \(warning)\n", stderr) }
+            results.append(result.jsonObject())
+            if !json { print("Offloaded \(result.placeholder.name) (\(sizeText(result.placeholder.size))) -> \(result.placeholderPath)") }
+        }
+        if json { emit(results.count == 1 ? results[0] : ["ok": true, "items": results] as [String: Any]) }
+    case "fetch":
+        guard !args.isEmpty, !args.contains(where: { $0.hasPrefix("--") }) else { throw DisklesslyError.usage("usage: disklessly fetch PLACEHOLDER...") }
+        var restored: [String] = []
+        for path in args {
+            let target = try engine.fetchFile(path)
+            restored.append(target.path)
+            if !json { print("Brought back \(target.path)") }
+        }
+        if json { emit(["ok": true, "restored": restored] as [String: Any]) }
     case "recommend":
         let parsed = try RecommendArguments.parse(args)
         if parsed.json { json = true }
@@ -510,6 +591,40 @@ do {
             guard let id = try SessionArchive.sessionKeyId(secrets: secrets) else { throw DisklesslyError.usage("no session key; run disklessly sessions key init") }
             emit(["ok": true, "keyId": id])
         }
+    case "images":
+        let secrets = engine.secrets
+        switch Array(args.prefix(2)) {
+        case ["key", "init"]:
+            let id = try ImageKeyStore.create(secrets: secrets)
+            var payload: [String: Any] = ["ok": true, "keyId": id]
+            if let keychain = secrets as? KeychainSecretStore, case .localFallback = keychain.lastSaveOutcome {
+                payload["synced"] = false
+                fputs("disklessly: warning: the image key is on this Mac only. Other Macs cannot open encrypted images until you run disklessly images key export here and images key import there.\n", stderr)
+            }
+            say(payload, "Made image key \(id). Turn on encryption for new packs with disklessly images encrypt on.")
+        case ["key", "status"]:
+            guard let id = try ImageKeyStore.currentKeyId(secrets: secrets) else { throw DisklesslyError.usage("no image key; run disklessly images key init") }
+            let usable = try ImageKeyStore.load(secrets: secrets, keyId: id) != nil
+            let on = try engine.imageEncryptionDefault()
+            say(["ok": true, "keyId": id, "usable": usable, "encryptNewPacks": on], "Image key \(id)\(usable ? "" : " (missing from the Keychain)"); new packs are \(on ? "encrypted" : "not encrypted")")
+        case ["key", "export"]:
+            guard let id = try ImageKeyStore.currentKeyId(secrets: secrets) else { throw DisklesslyError.usage("no image key; run disklessly images key init") }
+            print(try ImageKeyStore.exportKey(secrets: secrets, keyId: id))
+        case ["key", "import"]:
+            let text = String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self)
+            let id = try ImageKeyStore.importKey(base64: text, secrets: secrets)
+            say(["ok": true, "keyId": id], "Imported image key \(id)")
+        case ["encrypt", "on"], ["encrypt", "off"]:
+            guard args.count == 2 else { throw DisklesslyError.usage("images encrypt takes on or off") }
+            let on = args[1] == "on"
+            if on, try ImageKeyStore.current(secrets: secrets) == nil { throw DisklesslyError.usage("no image key; run disklessly images key init first") }
+            config.imageEncryption = on ? "aes-gcm" : "off"
+            engine.config = config
+            try engine.saveConfig()
+            say(["ok": true, "imageEncryption": config.imageEncryption], on ? "New packs will be encrypted" : "New packs will not be encrypted")
+        default:
+            throw DisklesslyError.usage("images takes key init|status|export|import or encrypt on|off")
+        }
     case "backend":
         guard let sub = args.first else { throw DisklesslyError.usage("backend requires add, list, or use") }
         args.removeFirst()
@@ -518,12 +633,18 @@ do {
             emit(config.backends.map { endpoint in
                 ["id": endpoint.id, "type": endpoint.type, "mountPoint": endpoint.mountPoint ?? "", "url": endpoint.url ?? "", "user": endpoint.user ?? ""]
             })
+        case "use" where args.first == "default":
+            config.useDefaultRepo()
+            engine.config = config
+            try engine.saveConfig()
+            emit(["ok": true, "active": config.backend, "repoPath": config.repoPath])
         case "use":
-            guard let id = args.first, config.backends.contains(where: { $0.id == id }) else { throw DisklesslyError.usage("backend use requires a known id") }
+            guard let id = args.first, config.backends.contains(where: { $0.id == id }) else { throw DisklesslyError.usage("backend use requires a known id (or default)") }
             guard let endpoint = config.backends.first(where: { $0.id == id }) else { throw DisklesslyError.usage("Unknown backend: \(id)") }
             config.remember(endpoint)
             engine.config = config
             try engine.saveConfig()
+            try engine.prepareRepo()
             emit(["ok": true, "active": id])
         case "add":
             var draft = try BackendCommands.parseAdd(args)
@@ -533,13 +654,114 @@ do {
                 guard !password.isEmpty else { throw DisklesslyError.usage("password from stdin was empty") }
                 draft.password = password
             }
+            if draft.type == "rclone" { draft.configPath = RcloneTool.configPath(stateDir: config.stateDir) }
             let endpoint = try BackendCatalog.store(draft, secrets: engine.secrets)
             config.remember(endpoint)
             engine.config = config
             try engine.saveConfig()
+            try engine.prepareRepo()
             emit(["ok": true, "id": endpoint.id, "type": endpoint.type])
         default:
             throw DisklesslyError.usage("Unknown backend command: \(sub)")
+        }
+    case "cloud":
+        let drives = CloudDrives(stateDir: config.stateDir)
+        let sub = args.first ?? "list"
+        if !args.isEmpty { args.removeFirst() }
+        switch sub {
+        case "list", "status":
+            let listing = drives.listing(config: config)
+            var lines = ["rclone: \(listing["version"] as? String ?? "not found")"]
+            for row in listing["remotes"] as? [[String: Any]] ?? [] {
+                let id = row["backendId"] as? String
+                lines.append("\(row["name"] ?? "")  \(row["type"] ?? "")  \(id.map { "backend \($0)\((row["active"] as? Bool) == true ? " (active repo)" : "")" } ?? "not a backend")")
+            }
+            if (listing["remotes"] as? [Any])?.isEmpty ?? true { lines.append("no cloud drives; connect one with disklessly cloud connect \(RcloneTool.providers.map(\.id).joined(separator: "|"))") }
+            say(listing, lines.joined(separator: "\n"))
+        case "connect":
+            guard let provider = args.first, !provider.hasPrefix("-") else {
+                throw DisklesslyError.usage("cloud connect requires \(RcloneTool.providers.map(\.id).joined(separator: "|")) [--name NAME] [--root DIR] [--use]")
+            }
+            args.removeFirst()
+            var name: String?, root: String?, use = false
+            while let flag = args.first {
+                args.removeFirst()
+                switch flag {
+                case "--use": use = true
+                case "--name", "--root":
+                    guard let value = args.first else { throw DisklesslyError.usage("\(flag) requires a value") }
+                    args.removeFirst()
+                    if flag == "--name" { name = value } else { root = value }
+                default: throw DisklesslyError.usage("Unknown option: \(flag)")
+                }
+            }
+            if !json { fputs("disklessly: finish signing in in the browser window rclone opens\n", stderr) }
+            let endpoint = try drives.connect(provider: provider, name: name, root: root)
+            if use { config.remember(endpoint) } else { config.store(endpoint) }
+            engine.config = config
+            try engine.saveConfig()
+            if use { try engine.prepareRepo() }
+            say(["ok": true, "id": endpoint.id, "remote": endpoint.remote ?? "", "active": use],
+                use ? "Connected \(endpoint.remote ?? "") and made it the repo" : "Connected \(endpoint.remote ?? "") as backend \(endpoint.id); disklessly backend use \(endpoint.id) makes it the repo")
+        case "disconnect":
+            guard let remote = args.first else { throw DisklesslyError.usage("cloud disconnect requires NAME") }
+            let ids = config.backends.filter { $0.type == "rclone" && $0.remote == remote }.map(\.id)
+            if let active = config.activeBackendId, ids.contains(active) {
+                throw DisklesslyError.usage("\(remote) is the active repo; switch first with disklessly backend use default")
+            }
+            try drives.disconnect(remote)
+            config.backends.removeAll { ids.contains($0.id) }
+            engine.config = config
+            try engine.saveConfig()
+            say(["ok": true, "removed": ids], "Disconnected \(remote); its files on the drive are untouched")
+        default:
+            throw DisklesslyError.usage("cloud requires list, connect, or disconnect")
+        }
+    case "rclone":
+        // Runs the bundled rclone with Disklessly's own config, e.g. `disklessly rclone lsd gdrive:`.
+        let binary = try RcloneTool.require()
+        let process = Process()
+        process.executableURL = binary
+        process.arguments = ["--config", RcloneTool.configPath(stateDir: config.stateDir)] + args
+        try process.run()
+        process.waitUntilExit()
+        exit(process.terminationStatus)
+    case "openlist":
+        let service = OpenListService(stateDir: config.stateDir, secrets: engine.secrets)
+        let sub = args.first ?? "status"
+        if !args.isEmpty { args.removeFirst() }
+        switch sub {
+        case "status":
+            let status = service.status()
+            let text = (status["installed"] as? Bool) == true
+                ? "OpenList \(OpenListService.version) at \(service.url): \((status["running"] as? Bool) == true ? "running" : "stopped")"
+                : "OpenList is not installed; disklessly openlist install sets it up"
+            say(status, text)
+        case "install":
+            let use = args.contains("--use")
+            let endpoint = try service.install { phase in if !json { fputs("disklessly: openlist \(phase)\n", stderr) } }
+            if use { config.remember(endpoint) } else { config.store(endpoint) }
+            engine.config = config
+            try engine.saveConfig()
+            if use { try engine.prepareRepo() }
+            say(["ok": true, "url": service.url, "user": "admin", "backendId": endpoint.id, "active": use],
+                "OpenList is running at \(service.url) (user admin; disklessly openlist password prints the password). Add your drives there, then disklessly backend use \(endpoint.id)")
+        case "password":
+            guard let password = service.password() else { throw DisklesslyError.usage("OpenList is not installed") }
+            say(["ok": true, "user": "admin", "password": password], password)
+        case "start": try service.start(); say(["ok": true], "OpenList started at \(service.url)")
+        case "stop": try service.stop(); say(["ok": true], "OpenList stopped")
+        case "uninstall":
+            if config.activeBackendId == OpenListService.backendId {
+                throw DisklesslyError.usage("OpenList is the active repo; switch first with disklessly backend use default")
+            }
+            try service.uninstall(purge: args.contains("--purge"))
+            config.backends.removeAll { $0.id == OpenListService.backendId }
+            engine.config = config
+            try engine.saveConfig()
+            say(["ok": true], "OpenList removed")
+        default:
+            throw DisklesslyError.usage("openlist requires status, install [--use], password, start, stop, or uninstall [--purge]")
         }
     case "icons":
         if args.contains("--help") || args.contains("-h") { usage() }
@@ -572,6 +794,43 @@ do {
         } else { throw DisklesslyError.usage("stub requires refresh --app ID") }
     // Placeholder kept for old scripts. Hidden from help.
     case "hooks": emit(["ok":true,"hooks":[] as [String]])
+    case "dev":
+        let sub = args.first ?? "list"
+        if !args.isEmpty { args.removeFirst() }
+        func target() throws -> String {
+            guard let id = args.first else { throw DisklesslyError.usage("dev \(sub) requires an id") }
+            return id
+        }
+        func done(_ result: DevAssetResult, _ verb: String) {
+            var line = "\(verb) \(result.record.title) (\(sizeText(result.record.size)), record \(result.record.id))"
+            if let udid = result.udid { line += ", new udid \(udid)" }
+            say(result.jsonObject(), line)
+            if let warning = result.warning { fputs("disklessly: \(warning)\n", stderr) }
+        }
+        switch sub {
+        case "list":
+            let report = engine.devAssets()
+            if json { emit(report.jsonObject()); break }
+            if let unavailable = report.unavailable { print("simctl unavailable: \(unavailable)") }
+            print("Runtimes")
+            for r in report.runtimes { print("  \(r.title)  \(sizeText(r.sizeBytes))  \(r.id)\(r.deletable ? "" : "  (not deletable)")") }
+            print("Simulators")
+            for d in report.simulators { print("  \(d.name)  \(sizeText(d.dataBytes))  \(d.state)  \(d.udid)") }
+            print("Offloaded")
+            if report.offloaded.isEmpty { print("  none") }
+            for o in report.offloaded { print("  \(o.kind.rawValue)  \(o.title)  \(sizeText(o.size))  \(o.id)\(o.present(in: report.runtimes) ? "  (also installed here)" : "")") }
+        case "offload-runtime": done(try engine.offloadRuntime(try target()), "Offloaded")
+        case "restore-runtime": done(try engine.restoreRuntime(try target()), "Restored")
+        case "offload-simulator": done(try engine.offloadSimulator(try target()), "Offloaded")
+        case "restore-simulator": done(try engine.restoreSimulator(try target()), "Restored")
+        case "forget":
+            let record = try engine.forgetDevAsset(try target())
+            say(["ok": true, "id": record.id], "Deleted \(record.title) from the repo")
+        case "clean-derived-data":
+            let cleaned = try engine.trashDerivedData()
+            say(["ok": true, "items": cleaned.items, "bytes": NSNumber(value: cleaned.bytes)], "Moved \(cleaned.items) DerivedData folders (\(sizeText(cleaned.bytes))) to the Trash")
+        default: throw DisklesslyError.usage("Unknown dev command: \(sub)")
+        }
     case "ui":
         var openBrowser = false
         while let flag = args.first {

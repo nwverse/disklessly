@@ -212,16 +212,21 @@ final class UIServerTests: XCTestCase {
         XCTAssertTrue(js.contains("if (pct >= 95) return \"hot\""))
         XCTAssertTrue(js.contains("if (pct >= 80) return \"warn\""))
         XCTAssertFalse(js.contains("innerHTML"))
+        // The usage tips link out to tools the user opens in their own browser;
+        // the page itself still loads nothing remote.
+        XCTAssertTrue(js.contains("url: \"https://github.com/omlahore/RemoveMacAI\""))
         let remote = js.replacingOccurrences(of: "http://www.w3.org/2000/svg", with: "")
+            .replacingOccurrences(of: "https://github.com/omlahore/RemoveMacAI", with: "")
         XCTAssertFalse(remote.contains("http://"))
         XCTAssertFalse(remote.contains("https://"))
 
         // All text lives in app.js's one string table; the shell carries no Chinese to flash before it runs.
         XCTAssertFalse(html.contains("lang=\"zh"))
         XCTAssertFalse(html.unicodeScalars.contains { (0x4E00...0x9FFF).contains($0.value) }, "index.html hard-codes Chinese text")
-        // Bilingual inline labels replace the language toggle; ?lang=en only reorders them.
+        // One language at a time: ?lang=, then the saved switch, then the system language.
         XCTAssertFalse(html.contains("id=\"lang\""))
-        XCTAssertTrue(html.contains("lang === \"en\""))
+        XCTAssertTrue(html.contains("id=\"lang-toggle\""))
+        XCTAssertTrue(html.contains("disklessly_lang="))
         XCTAssertTrue(js.contains("function bi("))
         // Theme follows the system.
         XCTAssertTrue(css.contains("prefers-color-scheme: dark"))
