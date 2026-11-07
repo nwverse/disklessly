@@ -33,6 +33,7 @@ Bring an app back
 Keep things tidy
   gc [--dry-run] [--include-legacy]
   evict-local | cleanup-backups | doctor [--fix] | reap [--dry-run]
+  caches [--apply]                list (or with --apply clear) the caches of offloaded apps that are not running
   install-engine | stub refresh --app ID|--all [--adopt] | icons backfill [--app ID]
 
 Xcode simulators
@@ -57,6 +58,8 @@ Other
 gc replays local journals, applies the repo garbage rules, and enforces the cache quota.
 gc --dry-run prints trash candidates, legacy images, and cache LRU victims and changes nothing.
 doctor --fix replays local unpack and restore journals and reaps orphan mounts.
+caches only empties ~/Library/Caches/<id or name> and a container's Data/Library/Caches;
+  Application Support and other app data are never touched, and a running app is skipped.
 reap detaches idle images left attached under the mount root (e.g. after a watcher crash).
 evict --force only overrides a pin; a mounted or running image is always refused.
 --json is accepted before or after the command. Without it, output is meant for people.
@@ -347,6 +350,18 @@ do {
         } else {
             printEvict(eviction, files: files)
         }
+    case "caches":
+        var apply = false
+        while let flag = args.first {
+            args.removeFirst()
+            if flag == "--apply" { apply = true }
+            else if flag == "--dry-run" { apply = false }
+            else if flag == "--help" || flag == "-h" { usage() }
+            else { throw DisklesslyError.usage("Unknown option: \(flag)") }
+        }
+        let report = try engine.clearAppCaches(apply: apply)
+        say(report.jsonObject(), report.text)
+        if !report.failed.isEmpty { exit(6) }
     case "cleanup-backups":
         let cleaned = try engine.cleanupBackups()
         for path in cleaned.removed { fputs("disklessly: removed \(path)\n", stderr) }

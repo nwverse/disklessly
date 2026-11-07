@@ -247,6 +247,14 @@ const copy = {
     usage_files: "散落文件",
     usage_rest: (n) => `其余 ${n} 项`,
     usage_other: "其他",
+    cachesLine: (size, n) => `已卸载的 ${n} 个应用还留着 ${size} 缓存，可以清掉。`,
+    cachesNone: "已卸载的应用没有留下缓存。",
+    cachesRunning: (names) => `运行中的应用会跳过：${names}`,
+    cachesClear: "清理应用缓存",
+    cachesConfirmTitle: (size) => `清理已卸载应用的缓存（${size}）？`,
+    cachesConfirmBody: "只清空 ~/Library/Caches 里这些应用的缓存文件夹，以及沙盒容器里的 Data/Library/Caches。Application Support 和其他数据不会动；正在运行的应用会跳过。应用下次打开时会重新生成缓存。",
+    cachesDone: (size) => `已清理 ${size} 缓存`,
+    cachesFailed: "无法清理缓存",
     usageTips: "可以腾出空间的地方",
     dev: "Xcode 模拟器",
     devIntro: "模拟器运行时和模拟器设备可以放到云端，用的时候再取回。运行时取回后和原来一样；模拟器取回后会换一个新的 UDID。",
@@ -541,6 +549,14 @@ const copy = {
     usage_files: "Loose files",
     usage_rest: (n) => `${n} more`,
     usage_other: "Other",
+    cachesLine: (size, n) => `${n} offloaded ${n === 1 ? "app still leaves" : "apps still leave"} ${size} of caches you can clear.`,
+    cachesNone: "Offloaded apps left no caches behind.",
+    cachesRunning: (names) => `Running apps are skipped: ${names}`,
+    cachesClear: "Clear app caches",
+    cachesConfirmTitle: (size) => `Clear the caches of offloaded apps (${size})?`,
+    cachesConfirmBody: "Only these apps' folders in ~/Library/Caches and a sandbox container's Data/Library/Caches are emptied. Application Support and other data stay; running apps are skipped. Apps rebuild their caches the next time they open.",
+    cachesDone: (size) => `Cleared ${size} of caches`,
+    cachesFailed: "Could not clear caches",
     usageTips: "Where to free up space",
     dev: "Xcode simulators",
     devIntro: "Simulator runtimes and devices can live in the repo until you need them. A runtime comes back as it was; a simulator comes back with a new UDID.",
@@ -2277,6 +2293,57 @@ function renderUsage() {
   }
 }
 
+// Caches of offloaded apps, measured after a usage scan and cleared on request.
+let cachesData = null;
+let cachesScannedAt = null;
+
+function renderCaches() {
+  const line = document.querySelector("#usage-caches");
+  const text = document.querySelector("#usage-caches-text");
+  const button = document.querySelector("#usage-caches-clear");
+  if (!cachesData) { line.hidden = true; return; }
+  const apps = (cachesData.apps || []).filter((a) => a.bytes > 0);
+  const clearable = apps.filter((a) => !a.refused);
+  const running = apps.filter((a) => a.refused).map((a) => a.name);
+  line.hidden = false;
+  text.replaceChildren(clearable.length ? one("cachesLine", bytes(cachesData.freedBytes), clearable.length) : bi("cachesNone"));
+  if (running.length) text.append(el("br"), one("cachesRunning", running.join(", ")));
+  button.hidden = !clearable.length;
+}
+
+async function loadCaches() {
+  try {
+    cachesData = await api("/api/caches");
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    cachesData = null;
+  }
+  renderCaches();
+}
+
+function clearCaches() {
+  if (!cachesData || !cachesData.freedBytes) return;
+  const size = bytes(cachesData.freedBytes);
+  askConfirm({ title: ["cachesConfirmTitle", size], body: ["cachesConfirmBody"], ok: "cachesClear", danger: true }, async () => {
+    const button = document.querySelector("#usage-caches-clear");
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    try {
+      const report = await api("/api/caches/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+      cachesData = report;
+      const failed = report.failed || [];
+      if (failed.length) toast({ title: bi("cachesFailed"), error: { code: "failed", message: failed.join("; ") }, tone: "error" });
+      else toast({ title: one("cachesDone", bytes(report.freedBytes)) });
+      await loadCaches();
+    } catch (error) {
+      if (error.code !== "unauthorized") toast({ title: bi("cachesFailed"), error: { code: error.code, message: error.message }, tone: "error" });
+    } finally {
+      button.disabled = false;
+      button.removeAttribute("aria-busy");
+    }
+  });
+}
+
 /// Tools outside Disklessly that free space Disklessly can't, shown for the
 /// whole disk and for the part of it they act on.
 const USAGE_TIPS = [
@@ -2327,6 +2394,8 @@ async function loadUsage() {
   }
   renderUsage();
   if (usageData.state === "scanning" && !expired) usageTimer = setTimeout(loadUsage, 2000);
+  // Measured once a scan finished, and again after the next one.
+  else if (usageData.tree && usageData.scannedAt !== cachesScannedAt) { cachesScannedAt = usageData.scannedAt; loadCaches(); }
 }
 
 async function startUsageScan() {
@@ -2389,6 +2458,7 @@ document.querySelector("#refresh").addEventListener("click", refresh);
 document.querySelector("#retry").addEventListener("click", retryNow);
 document.querySelector("#rescan").addEventListener("click", () => loadRecommendations(true));
 document.querySelector("#usage-scan").addEventListener("click", startUsageScan);
+document.querySelector("#usage-caches-clear").addEventListener("click", clearCaches);
 document.querySelector("#license-form").addEventListener("submit", submitLicense);
 document.querySelector("#license-remove").addEventListener("click", removeLicense);
 document.querySelector("#icon-backfill").addEventListener("click", async (event) => {

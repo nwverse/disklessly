@@ -327,6 +327,17 @@ public enum ManagementUI {
             var object = context.usage.snapshot()
             object["started"] = started
             return .json(object, status: 202)
+        case ("GET", "/api/caches"), ("POST", "/api/caches/clear"):
+            // Caches of offloaded apps. GET only measures; POST empties those of apps not running.
+            // Listing an offline backend blocks for the transport timeout, so answer at once.
+            if context.health.current(engine).status == "offline" {
+                return failure(code: "offline", message: "The backend is unreachable.", status: 503)
+            }
+            do {
+                return .json(try engine.clearAppCaches(apply: request.method == "POST", home: context.home).jsonObject())
+            } catch {
+                return failure(error, status: 500)
+            }
         case ("GET", "/api/license"):
             return .json(licenseObject(engine))
         case ("POST", "/api/license/activate"):
@@ -806,6 +817,8 @@ public final class ManagementUIContext {
     public let jobs: UIJobStore
     /// The disk usage map scan (`/api/usage`).
     public let usage: UsageScanner
+    /// Home folder whose `Library/Caches` `/api/caches` looks in. Tests point it at a temp folder.
+    public var home: String = NSHomeDirectory()
     /// Backend reachability with latency; bounded by its timeout and shared across requests.
     public let health: BackendHealthProbe
     /// Replaces the engine-backed actions, for tests.
