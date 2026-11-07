@@ -66,9 +66,12 @@ jobs:
     permissions:
       contents: write
     env:
-      KEYCHAIN: ${{ runner.temp }}/disklessly-release.keychain-db
       NOTARY_PROFILE: disklessly-release
     steps:
+      # `runner` is not available in job-level env (that made this whole file
+      # invalid, so tag pushes never started a release), so set it in a step.
+      - name: Set temporary keychain path
+        run: echo "KEYCHAIN=$RUNNER_TEMP/disklessly-release.keychain-db" >>"$GITHUB_ENV"
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.tag || github.ref }}

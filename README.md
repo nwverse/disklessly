@@ -211,6 +211,13 @@ transcripts into write-once zstd segments in the repo, optionally encrypted
 (`sessions key init`, `--encrypt`), and keeps a local search index
 (`sessions search`, `sessions restore`). See [`docs/sessions.md`](docs/sessions.md).
 
+## Encrypted images
+
+`disklessly images key init` then `disklessly images encrypt on` (or `pack --encrypt`)
+encrypts new app images before they are uploaded, so the repo holds only ciphertext.
+The key lives in iCloud Keychain; the local cache stays a plain disk image.
+See [`docs/image-encryption.md`](docs/image-encryption.md).
+
 ## Command reference
 
 `disklessly help` prints every command grouped by task. Exit codes: 0 ok, 1 failure,

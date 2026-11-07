@@ -134,7 +134,11 @@ disklessly prefetch APP         # 提前下载，比如上飞机前
 disklessly evict APP            # 删除本机缓存的镜像，仓库中的副本不受影响
 disklessly gc [--dry-run]       # 整理：补完中断的操作、清理无引用镜像（进仓库回收站，保留 7 天）、按配额修剪缓存
 disklessly evict-local          # 删除已确认上传完成的 iCloud 本地副本
+disklessly caches [--apply]     # 已卸载应用留在 ~/Library/Caches 的缓存：默认只列出，--apply 才清空
 ```
+
+`caches` 只清空 `~/Library/Caches/<bundleId>`、`~/Library/Caches/<应用名>` 和沙盒容器里的 `Data/Library/Caches`；
+Application Support 和其他应用数据不会动，正在运行的应用会跳过。仪表盘“磁盘占用”卡片分析完后也有“清理应用缓存”按钮。
 
 缓存超过配额时按最近最少使用（LRU）清理；已固定、正在挂载或正在使用的镜像不会被清理。
 下载会在磁盘剩余空间低于下限（默认 15 GiB）时拒绝执行（退出码 8）。
@@ -241,6 +245,20 @@ disklessly sessions restore ID      # 把会话写回原来的位置
 
 加密的会话段只能用钥匙串里的那把密钥解开，丢失密钥就无法恢复。详见 [sessions.md](sessions.md)。
 
+## 加密 App 镜像 `images`
+
+开启后，新打包的镜像在上传前先加密（AES-256-GCM，按 1 MiB 分段），仓库里只有密文；本机缓存仍是解密后的普通磁盘镜像。
+
+```sh
+disklessly images key init          # 创建镜像密钥（存在钥匙串，可经 iCloud 钥匙串同步到其他 Mac）
+disklessly images encrypt on        # 之后的 pack 都加密；pack --encrypt / --no-encrypt 只管这一次
+disklessly images key status        # 查看密钥 id、是否可用、新打包是否加密
+disklessly images key export        # 导出密钥（base64），在另一台 Mac 上用 images key import 导入
+```
+
+没有这把密钥的 Mac 打不开加密镜像：取镜像时直接报错，打包同一个 App 时拒绝复用并保留原 App。
+旧版 Disklessly 挂载不了加密镜像，开启前请先升级所有共用仓库的 Mac。详见 [image-encryption.md](image-encryption.md)。
+
 ## 排查问题 `doctor`
 
 ```sh
@@ -345,6 +363,7 @@ disklessly launch App [--doc FILE] [--url URL]
 disklessly list | status [APP]
 disklessly pin APP | unpin APP | prefetch APP | evict APP
 disklessly gc [--dry-run]
+disklessly caches [--apply]                  # caches offloaded apps left in ~/Library/Caches (dry run without --apply)
 disklessly unpack App [--to DIR]             # put the real app back (or copy it out)
 disklessly doctor [--fix]
 disklessly ui --open                         # dashboard in your browser
@@ -401,6 +420,13 @@ sessions live only in the repo. `sessions key init` plus `--encrypt` encrypts
 segments with a Keychain key; without that key they cannot be read.
 `disklessly sessions search QUERY` finds them and `disklessly sessions restore ID`
 writes one back. See [sessions.md](sessions.md).
+
+### Encrypted images
+
+`disklessly images key init` makes an image key in the Keychain (synchronizable
+through iCloud Keychain). `disklessly images encrypt on` or `pack --encrypt` then
+encrypts new images before upload; the cache keeps the decrypted image. A Mac
+without the key cannot fetch them. See [image-encryption.md](image-encryption.md).
 
 ### Troubleshooting
 

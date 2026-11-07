@@ -18,8 +18,10 @@ public struct PublishRequest: Equatable {
     public var documentTypes: [[String: AnyCodable]]
     public var urlTypes: [[String: AnyCodable]]
     public var imageFormat: String
+    /// Seal the image with the current image key before upload (`ImageCrypto`).
+    public var encrypt: Bool
 
-    public init(name: String, identity: ImageIdentity, mode: ImageManifest.Mode, executable: String, originalPath: String, cdhash: String? = nil, postImageTreeHash: String? = nil, volumeName: String, appPathInVolume: String, documentTypes: [[String: AnyCodable]] = [], urlTypes: [[String: AnyCodable]] = [], imageFormat: String = "ULMO") {
+    public init(name: String, identity: ImageIdentity, mode: ImageManifest.Mode, executable: String, originalPath: String, cdhash: String? = nil, postImageTreeHash: String? = nil, volumeName: String, appPathInVolume: String, documentTypes: [[String: AnyCodable]] = [], urlTypes: [[String: AnyCodable]] = [], imageFormat: String = "ULMO", encrypt: Bool = false) {
         self.name = name
         self.identity = identity
         self.mode = mode
@@ -32,6 +34,7 @@ public struct PublishRequest: Equatable {
         self.documentTypes = documentTypes
         self.urlTypes = urlTypes
         self.imageFormat = imageFormat
+        self.encrypt = encrypt
     }
 }
 
@@ -216,6 +219,7 @@ extension DisklesslyEngine {
         try ensureDevice(now: now)
         switch decision {
         case .reuse(let manifest, let disposition):
+            try requireImageKey(manifest)
             try register(manifest, backend: backend, now: now, installPath: request.originalPath)
             try rewriteCatalog(backend, now: now)
             let kept: String?
@@ -225,11 +229,30 @@ extension DisklesslyEngine {
             if code == 4 { throw DisklesslyError.backend(message) }
             throw DisklesslyError.integrity(message)
         case .create(let imageId):
-            guard let imageFile else { throw DisklesslyError.usage("publishing \(imageId) needs an image file") }
-            let sha = try SHA256Digest.hexFile(imageFile)
-            let size = try ChunkedIO.byteCount(imageFile)
-            guard size > 0 else { throw DisklesslyError.integrity("image file is empty") }
-            let image = ImageManifest.Image(file: "images/\(imageId).dmg", format: request.imageFormat, sha256: sha, size: size, volumeName: request.volumeName, appPathInVolume: request.appPathInVolume)
+            guard let plainFile = imageFile else { throw DisklesslyError.usage("publishing \(imageId) needs an image file") }
+            guard try ChunkedIO.byteCount(plainFile) > 0 else { throw DisklesslyError.integrity("image file is empty") }
+            // An encrypted image is sealed next to the plain one; the repo, the
+            // manifest's sha256/size and the write-once checks all see ciphertext.
+            var imageFile = plainFile
+            var encryption: ImageManifest.Encryption?
+            var staged: URL?
+            defer { if let staged { try? FileManager.default.removeItem(at: staged) } }
+            let sha: String, size: UInt64
+            if request.encrypt {
+                guard let current = try ImageKeyStore.current(secrets: secrets) else {
+                    throw DisklesslyError.usage("image encryption is on but this Mac has no image key; run disklessly images key init")
+                }
+                imageFile = plainFile.appendingPathExtension("dkli")
+                staged = imageFile
+                let sealed = try ImageCrypto.seal(plainFile, to: imageFile, key: current.key)
+                encryption = ImageManifest.Encryption(scheme: ImageCrypto.scheme, keyId: current.id, plainSha256: sealed.plainSha256, plainSize: sealed.plainSize)
+                sha = sealed.sha256
+                size = sealed.size
+            } else {
+                sha = try SHA256Digest.hexFile(plainFile)
+                size = try ChunkedIO.byteCount(plainFile)
+            }
+            let image = ImageManifest.Image(file: "images/\(imageId).dmg", format: request.imageFormat, sha256: sha, size: size, volumeName: request.volumeName, appPathInVolume: request.appPathInVolume, encryption: encryption)
             let app = ImageManifest.App(originalPath: request.originalPath, executable: request.executable, documentTypes: request.documentTypes, urlTypes: request.urlTypes, cdhash: request.cdhash, treeHash: request.postImageTreeHash ?? request.identity.treeHash)
             var manifest = ImageManifest(bundleId: request.identity.bundleId, name: request.name, version: request.identity.version, image: image, app: app, mode: request.mode, createdAt: now, build: request.identity.build, architectures: request.identity.architectures, contentTreeHash: request.identity.treeHash, imageId: imageId)
             try manifest.validate()
@@ -259,6 +282,14 @@ extension DisklesslyEngine {
             try rewriteCatalog(backend, now: now)
             return PublishResult(manifest: manifest, reused: imageResult == .reused, uploaded: imageResult == .written)
         }
+    }
+
+    /// Refuses to adopt an encrypted image this Mac cannot open, so the caller
+    /// keeps the original app instead of swapping in a stub that cannot launch.
+    func requireImageKey(_ manifest: ImageManifest) throws {
+        guard let encryption = manifest.image.encryption else { return }
+        guard try ImageKeyStore.load(secrets: secrets, keyId: encryption.keyId) == nil else { return }
+        throw DisklesslyError.integrity("image \(manifest.imageId) is encrypted with image key \(encryption.keyId), which this Mac's Keychain does not have. The original app was not changed. Turn on iCloud Keychain on both Macs or run disklessly images key import.")
     }
 
     public func deviceListing(createLocal: Bool = true, now: Date = Date()) throws -> DeviceListing {

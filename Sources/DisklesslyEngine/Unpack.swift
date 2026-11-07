@@ -269,10 +269,10 @@ extension DisklesslyEngine {
         try assertUnpackStub(manifest, dest: dest)
         let parent = dest.deletingLastPathComponent().path
         let free = try VolumeSpace.availableBytes(at: parent)
-        let estimate = manifest.image.size * 3
+        let estimate = manifest.image.plainSize * 3
         let need = estimate + config.minFreeBytes
         guard free >= need else {
-            throw DisklesslyError.noSpace("free space \(free) bytes on \(parent) is below \(need) (unpacked estimate \(estimate) = 3 x \(manifest.image.size), minFree \(config.minFreeBytes))")
+            throw DisklesslyError.noSpace("free space \(free) bytes on \(parent) is below \(need) (unpacked estimate \(estimate) = 3 x \(manifest.image.plainSize), minFree \(config.minFreeBytes))")
         }
     }
 

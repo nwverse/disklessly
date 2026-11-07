@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Isolated macOS integration test. This intentionally tests the public CLI/stub path.
+# E2E_ENCRYPT_IMAGES=1 runs every pack with image encryption on; keys go to a
+# throwaway file store (DISKLESSLY_TEST_SECRETS_DIR), never the login keychain.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -210,6 +212,12 @@ LIC_DIR="$TMP/license"
 export DISKLESSLY_LICENSE_PUBLIC_KEY="$("$ROOT/.build/debug/disklessly-license" keygen --dir "$LIC_DIR" | sed -n 's/^public key: *//p')"
 LIC_CODE="$("$ROOT/.build/debug/disklessly-license" issue --dir "$LIC_DIR" --edition pro)"
 run_cli init --backend local
+if [[ "${E2E_ENCRYPT_IMAGES:-0}" == 1 ]]; then
+  export DISKLESSLY_TEST_SECRETS_DIR="$TMP/secrets"
+  export DISKLESSLY_IMAGE_ENCRYPTION=aes-gcm
+  run_cli images key init || fail 'make a throwaway image key'
+  pass 'image encryption on with a throwaway key'
+fi
 run_cli license activate "$LIC_CODE" || fail 'activate the throwaway license'
 pass 'isolated local-folder repository initialized'
 
@@ -298,7 +306,19 @@ wait_for 60 'pre-launch fetched image to isolated cache' test -f "$CACHE_IMAGE"
 assert_file "$CACHE_IMAGE" 'pre-launch fetched image to isolated cache'
 REMOTE_SHA="$(shasum -a 256 "$REMOTE_IMAGE" | awk '{print $1}')"
 CACHE_SHA="$(shasum -a 256 "$CACHE_IMAGE" | awk '{print $1}')"
-[[ "$REMOTE_SHA" == "$CACHE_SHA" ]] || fail 'cached image sha256 matches remote manifest image'
+MANIFEST_SHA="$(/usr/bin/plutil -extract image.sha256 raw -o - "$MANIFEST" 2>/dev/null || true)"
+[[ "$REMOTE_SHA" == "$MANIFEST_SHA" ]] || fail 'remote image sha256 matches the manifest'
+if [[ "${E2E_ENCRYPT_IMAGES:-0}" == 1 ]]; then
+  [[ "$(head -c 4 "$REMOTE_IMAGE")" == DKLI ]] || fail 'remote image is a DKLI encrypted file'
+  PLAIN_SHA="$(/usr/bin/plutil -extract image.encryption.plainSha256 raw -o - "$MANIFEST" 2>/dev/null || true)"
+  [[ -n "$PLAIN_SHA" && "$CACHE_SHA" == "$PLAIN_SHA" ]] || fail 'cached image sha256 matches the manifest plain sha256'
+  [[ "$REMOTE_SHA" != "$CACHE_SHA" ]] || fail 'cache holds the decrypted image, not the ciphertext'
+  /usr/bin/hdiutil imageinfo "$CACHE_IMAGE" >>"$LOG" 2>&1 || fail 'decrypted cache image is a disk image'
+  pass 'remote image encrypted; cache holds the verified plain image'
+else
+  /usr/bin/plutil -extract image.encryption json -o - "$MANIFEST" >/dev/null 2>&1 && fail 'plain pack wrote encryption metadata'
+  [[ "$REMOTE_SHA" == "$CACHE_SHA" ]] || fail 'cached image sha256 matches remote manifest image'
+fi
 pass 'cached image sha256 verified'
 MOUNT="$MOUNT_ROOT/$IMAGE_ID"
 wait_for 60 'image attached at expected mount point' is_attached
