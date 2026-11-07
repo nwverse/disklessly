@@ -48,8 +48,18 @@ public struct ImageManifest: Equatable {
     public var createdAt: Date
     public enum Mode: String, Codable { case mount, restore }
     public struct Image: Codable, Equatable {
+        /// `sha256` and `size` describe the repo object, so ciphertext when `encryption` is set.
         public var file: String; public var format: String; public var sha256: String; public var size: UInt64; public var volumeName: String; public var appPathInVolume: String
-        public init(file: String, format: String, sha256: String, size: UInt64, volumeName: String, appPathInVolume: String) { self.file=file; self.format=format; self.sha256=sha256; self.size=size; self.volumeName=volumeName; self.appPathInVolume=appPathInVolume }
+        /// Set when the repo object is a `DKLI` file (`ImageCrypto`). Nil on plain images and older manifests.
+        public var encryption: Encryption?
+        public init(file: String, format: String, sha256: String, size: UInt64, volumeName: String, appPathInVolume: String, encryption: Encryption? = nil) { self.file=file; self.format=format; self.sha256=sha256; self.size=size; self.volumeName=volumeName; self.appPathInVolume=appPathInVolume; self.encryption=encryption }
+        /// Hash of the disk image itself: what the cache holds and hdiutil attaches.
+        public var plainSha256: String { encryption?.plainSha256 ?? sha256 }
+        public var plainSize: UInt64 { encryption?.plainSize ?? size }
+    }
+    public struct Encryption: Codable, Equatable {
+        public var scheme: String; public var keyId: String; public var plainSha256: String; public var plainSize: UInt64
+        public init(scheme: String, keyId: String, plainSha256: String, plainSize: UInt64) { self.scheme=scheme; self.keyId=keyId; self.plainSha256=plainSha256; self.plainSize=plainSize }
     }
     public struct App: Codable, Equatable {
         public var originalPath: String
@@ -88,6 +98,10 @@ public struct ImageManifest: Equatable {
     public func validate() throws {
         guard schema == "image/1" else { throw DisklesslyError.failure("Unsupported manifest schema: \(schema)") }
         guard ["ULMO", "ULFO"].contains(image.format), image.sha256.count == 64, image.size > 0 else { throw DisklesslyError.integrity("Invalid image metadata") }
+        if let encryption = image.encryption {
+            guard encryption.scheme == ImageCrypto.scheme else { throw DisklesslyError.unsupported("image \(imageId) uses encryption scheme \(encryption.scheme); update Disklessly to open it") }
+            guard encryption.keyId.count == ImageCrypto.keyIdBytes, encryption.plainSha256.count == 64, encryption.plainSize > 0 else { throw DisklesslyError.integrity("Invalid image encryption metadata") }
+        }
     }
     public func encode() throws -> Data { let e = JSONEncoder(); e.outputFormatting = [.sortedKeys, .prettyPrinted]; e.dateEncodingStrategy = .iso8601; return try e.encode(self) }
     public static func decode(_ data: Data) throws -> Self { let d = JSONDecoder(); d.dateDecodingStrategy = .iso8601; let m = try d.decode(Self.self, from: data); try m.validate(); return m }

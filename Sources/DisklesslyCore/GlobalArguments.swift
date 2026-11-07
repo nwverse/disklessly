@@ -47,14 +47,17 @@ public struct PackArguments: Equatable {
     public var keepOriginal: Bool
     public var noStub: Bool
     public var stubDir: String?
+    /// `--encrypt` / `--no-encrypt`; nil leaves it to `imageEncryption` in the config.
+    public var encrypt: Bool?
 
-    public init(app: String, mode: ImageManifest.Mode?, imageFormat: String?, keepOriginal: Bool, noStub: Bool, stubDir: String?) {
+    public init(app: String, mode: ImageManifest.Mode?, imageFormat: String?, keepOriginal: Bool, noStub: Bool, stubDir: String?, encrypt: Bool? = nil) {
         self.app = app
         self.mode = mode
         self.imageFormat = imageFormat
         self.keepOriginal = keepOriginal
         self.noStub = noStub
         self.stubDir = stubDir
+        self.encrypt = encrypt
     }
 
     public static func parse(_ args: [String]) throws -> PackArguments {
@@ -64,6 +67,7 @@ public struct PackArguments: Equatable {
         var keepOriginal = false
         var noStub = false
         var stubDir: String?
+        var encrypt: Bool?
         var rest = Array(args.dropFirst())
         while let flag = rest.first {
             rest.removeFirst()
@@ -87,6 +91,10 @@ public struct PackArguments: Equatable {
                 keepOriginal = true
             case "--no-stub":
                 noStub = true
+            case "--encrypt":
+                encrypt = true
+            case "--no-encrypt":
+                encrypt = false
             case "--stub-dir":
                 guard let value = rest.first else { throw DisklesslyError.usage("invalid --stub-dir; expected a directory") }
                 rest.removeFirst()
@@ -95,7 +103,7 @@ public struct PackArguments: Equatable {
                 throw DisklesslyError.usage("unknown pack option \(flag)")
             }
         }
-        return PackArguments(app: app, mode: mode, imageFormat: imageFormat, keepOriginal: keepOriginal, noStub: noStub, stubDir: stubDir)
+        return PackArguments(app: app, mode: mode, imageFormat: imageFormat, keepOriginal: keepOriginal, noStub: noStub, stubDir: stubDir, encrypt: encrypt)
     }
 }
 

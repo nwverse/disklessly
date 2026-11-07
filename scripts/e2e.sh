@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # Isolated macOS integration test. This intentionally tests the public CLI/stub path.
+# E2E_ENCRYPT_IMAGES=1 runs every pack with image encryption on; keys go to a
+# throwaway file store (DISKLESSLY_TEST_SECRETS_DIR), never the login keychain.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -210,6 +212,12 @@ LIC_DIR="$TMP/license"
 export DISKLESSLY_LICENSE_PUBLIC_KEY="$("$ROOT/.build/debug/disklessly-license" keygen --dir "$LIC_DIR" | sed -n 's/^public key: *//p')"
 LIC_CODE="$("$ROOT/.build/debug/disklessly-license" issue --dir "$LIC_DIR" --edition pro)"
 run_cli init --backend local
+if [[ "${E2E_ENCRYPT_IMAGES:-0}" == 1 ]]; then
+  export DISKLESSLY_TEST_SECRETS_DIR="$TMP/secrets"
+  export DISKLESSLY_IMAGE_ENCRYPTION=aes-gcm
+  run_cli images key init || fail 'make a throwaway image key'
+  pass 'image encryption on with a throwaway key'
+fi
 run_cli license activate "$LIC_CODE" || fail 'activate the throwaway license'
 pass 'isolated local-folder repository initialized'
 
@@ -298,7 +306,19 @@ wait_for 60 'pre-launch fetched image to isolated cache' test -f "$CACHE_IMAGE"
 assert_file "$CACHE_IMAGE" 'pre-launch fetched image to isolated cache'
 REMOTE_SHA="$(shasum -a 256 "$REMOTE_IMAGE" | awk '{print $1}')"
 CACHE_SHA="$(shasum -a 256 "$CACHE_IMAGE" | awk '{print $1}')"
-[[ "$REMOTE_SHA" == "$CACHE_SHA" ]] || fail 'cached image sha256 matches remote manifest image'
+MANIFEST_SHA="$(/usr/bin/plutil -extract image.sha256 raw -o - "$MANIFEST" 2>/dev/null || true)"
+[[ "$REMOTE_SHA" == "$MANIFEST_SHA" ]] || fail 'remote image sha256 matches the manifest'
+if [[ "${E2E_ENCRYPT_IMAGES:-0}" == 1 ]]; then
+  [[ "$(head -c 4 "$REMOTE_IMAGE")" == DKLI ]] || fail 'remote image is a DKLI encrypted file'
+  PLAIN_SHA="$(/usr/bin/plutil -extract image.encryption.plainSha256 raw -o - "$MANIFEST" 2>/dev/null || true)"
+  [[ -n "$PLAIN_SHA" && "$CACHE_SHA" == "$PLAIN_SHA" ]] || fail 'cached image sha256 matches the manifest plain sha256'
+  [[ "$REMOTE_SHA" != "$CACHE_SHA" ]] || fail 'cache holds the decrypted image, not the ciphertext'
+  /usr/bin/hdiutil imageinfo "$CACHE_IMAGE" >>"$LOG" 2>&1 || fail 'decrypted cache image is a disk image'
+  pass 'remote image encrypted; cache holds the verified plain image'
+else
+  /usr/bin/plutil -extract image.encryption json -o - "$MANIFEST" >/dev/null 2>&1 && fail 'plain pack wrote encryption metadata'
+  [[ "$REMOTE_SHA" == "$CACHE_SHA" ]] || fail 'cached image sha256 matches remote manifest image'
+fi
 pass 'cached image sha256 verified'
 MOUNT="$MOUNT_ROOT/$IMAGE_ID"
 wait_for 60 'image attached at expected mount point' is_attached
@@ -565,5 +585,42 @@ wait "$RUN_PID" 2>/dev/null || true
 [[ "$RUN_CODE" -eq 9 ]] || fail "pack of a running app exited $RUN_CODE, expected 9"
 [[ -d "$TMP/running/Running.app" ]] || fail 'pack of a running app removed it'
 pass 'pack of a running app exits 9'
+
+# Large files: offload a file and a folder, then bring both back through the placeholders.
+FILES_HOME="$TMP/files-home"
+mkdir -p "$FILES_HOME/Downloads/Old Project/sub"
+head -c 20000000 /dev/urandom > "$FILES_HOME/Downloads/movie.mov"
+printf 'notes\n' > "$FILES_HOME/Downloads/Old Project/notes.txt"
+head -c 300000 /dev/urandom > "$FILES_HOME/Downloads/Old Project/sub/data.bin"
+FILE_SHA="$(shasum -a 256 "$FILES_HOME/Downloads/movie.mov" | cut -d' ' -f1)"
+TREE_BEFORE="$(cd "$FILES_HOME/Downloads/Old Project" && find . -type f -exec shasum -a 256 {} + | sort)"
+export DISKLESSLY_HOME="$FILES_HOME"
+DISKLESSLY_MIN_FREE_BYTES=0 run_cli offload "$FILES_HOME/Downloads/movie.mov" "$FILES_HOME/Downloads/Old Project" || fail 'offload a file and a folder'
+[[ ! -e "$FILES_HOME/Downloads/movie.mov" && ! -e "$FILES_HOME/Downloads/Old Project" ]] || fail 'offload left the originals in place'
+assert_file "$FILES_HOME/Downloads/movie.mov.disklessly" 'offload leaves a file placeholder'
+assert_file "$FILES_HOME/Downloads/Old Project.disklessly" 'offload leaves a folder placeholder'
+xattr -p com.apple.metadata:_kMDItemUserTags "$FILES_HOME/Downloads/movie.mov.disklessly" >/dev/null 2>&1 || fail 'placeholder has no Finder tag'
+ls "$DISKLESSLY_REPO_PATH/files/objects/$FILE_SHA.bin" >/dev/null || fail 'file object is not in the repo under its sha256'
+set +e
+DISKLESSLY_MIN_FREE_BYTES=0 "$ROOT/.build/debug/disklessly" offload "$FILES_HOME/Downloads/movie.mov.disklessly" >>"$LOG" 2>&1
+REOFFLOAD=$?
+set -e
+[[ "$REOFFLOAD" -eq 2 ]] || fail "offloading a placeholder exited $REOFFLOAD, expected 2"
+DISKLESSLY_MIN_FREE_BYTES=0 run_cli fetch "$FILES_HOME/Downloads/movie.mov.disklessly" "$FILES_HOME/Downloads/Old Project.disklessly" || fail 'fetch a file and a folder'
+[[ "$(shasum -a 256 "$FILES_HOME/Downloads/movie.mov" | cut -d' ' -f1)" == "$FILE_SHA" ]] || fail 'fetched file differs'
+[[ "$(cd "$FILES_HOME/Downloads/Old Project" && find . -type f -exec shasum -a 256 {} + | sort)" == "$TREE_BEFORE" ]] || fail 'fetched folder differs'
+[[ ! -e "$FILES_HOME/Downloads/movie.mov.disklessly" && ! -e "$FILES_HOME/Downloads/Old Project.disklessly" ]] || fail 'fetch left the placeholders'
+tail -f /dev/null < "$FILES_HOME/Downloads/movie.mov" &
+HOLD_PID=$!
+sleep 0.3
+set +e
+DISKLESSLY_MIN_FREE_BYTES=0 "$ROOT/.build/debug/disklessly" offload "$FILES_HOME/Downloads/movie.mov" >>"$LOG" 2>&1
+OPEN_CODE=$?
+set -e
+kill "$HOLD_PID" 2>/dev/null || true
+wait "$HOLD_PID" 2>/dev/null || true
+[[ "$OPEN_CODE" -eq 9 && -f "$FILES_HOME/Downloads/movie.mov" ]] || fail "offload of an open file exited $OPEN_CODE, expected 9 and the file kept"
+unset DISKLESSLY_HOME
+pass 'offload and fetch of a file and a folder round-trip; open files are refused'
 
 printf 'PASS: all macOS end-to-end assertions completed\n' | tee -a "$LOG"

@@ -158,8 +158,11 @@ public enum UsageMap {
 // MARK: - Measuring
 
 public enum UsageScan {
-    /// `du -k -d 1`: allocated kilobytes for each direct child of `path`, plus the folder itself under its own path.
+    /// `du -k -x -d 1`: allocated kilobytes for each direct child of `path`, plus the folder itself under its own path.
     /// A timeout keeps what finished, because du prints a child as soon as its subtree is done.
+    /// `-x` stays on this volume: CoreDevice mounts a running simulator's whole
+    /// system at ~/Library/Developer/CoreDevice/DeviceFS, and mounted images
+    /// would otherwise count again on top of where they really live.
     static func sizes(of path: String, timeout: TimeInterval) -> (sizes: [String: UInt64], complete: Bool) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/du")
@@ -210,7 +213,7 @@ public enum UsageScan {
         let library = home + "/Library"
         let jobs: [(String, String)] = [
             ("apps", "/Applications"), ("userApps", home + "/Applications"), ("home", home), ("library", library),
-            ("caches", library + "/Caches"), ("support", library + "/Application Support"), ("containers", library + "/Containers"),
+            ("caches", library + "/Caches"), ("support", library + "/Application Support"), ("containers", library + "/Containers"), ("developer", library + "/Developer"),
             ("cacheDir", engine.config.cacheDir), ("repo", engine.config.repoPath),
             // Parts of "System & other".
             ("sysLibrary", "/Library"), ("simRuntimes", "/Library/Developer/CoreSimulator"), ("homebrew", "/opt/homebrew"),
@@ -298,6 +301,7 @@ public enum UsageScan {
             "Caches": unclaimed(caches, used: usedCache),
             "Application Support": unclaimed(support, used: usedSupport),
             "Containers": unclaimed(containers, used: usedContainers),
+            "Developer": children("developer").map { .init(name: $0.0, bytes: $0.1, kind: .other) },
         ]
         input.library = entries.map { .init(name: $0.key, bytes: $0.value, kind: $0.key == "Caches" ? .cache : .library, children: inside[$0.key] ?? []) }
         // ~/Library/Developer: simulator devices and Xcode's DerivedData get their own boxes and cleanups.
