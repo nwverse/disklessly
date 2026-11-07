@@ -258,6 +258,23 @@ const copy = {
     recommendScanning: "正在扫描已安装的应用…",
     recommendSummary: (count, min) => `${count} 个应用 · 只列出不小于 ${min} 的应用`,
     filesTitle: "大文件和文件夹",
+    bigTitle: "其他大头",
+    bigScanning: "正在测量模拟器、缓存和应用数据…",
+    bigSummary: (n, size) => `${n} 项，共 ${size}。应用以外的空间大多在这里。`,
+    bigNone: "没有超过 1 GB 的模拟器、缓存或应用数据。",
+    bigGoDev: "去模拟器",
+    bigClean: "清理",
+    bigCleaning: "正在清理…",
+    bigShowUsage: "看占用",
+    bigReason_unusedRuntime: "没有模拟器在用这个运行时，可以放到云端，要用时再取回",
+    bigReason_runtime: "模拟器运行时，可以放到云端，要用时再取回",
+    bigReason_idleSimulator: "模拟器数据，可以放到云端，取回后换新 UDID",
+    bigReason_running: "模拟器正在运行，关掉后才能放到云端",
+    bigReason_rebuildable: "工具会自动重新下载或生成，清理后挪到废纸篓",
+    bigReason_appData: "应用数据。可在「大文件和文件夹」里放到云端，或在应用里清理",
+    bigReason_personal: "个人文件夹。可在「大文件和文件夹」里把不常用的放到云端",
+    bigConfirmTitle: (name) => `清理「${name}」？`,
+    bigConfirmBody: (size) => `大约释放 ${size}。内容挪到废纸篓（Homebrew 用 brew cleanup），对应的工具下次用到时会重新下载或生成。`,
     filesSummary: (count, min, days) => `${count} 项 · 不小于 ${min}，且 ${days} 天以上没打开过`,
     filesEmpty: "主文件夹里没有又大又久未打开的文件",
     filesScanning: "正在扫描主文件夹…",
@@ -631,6 +648,23 @@ const copy = {
     recommendScanning: "Scanning installed apps…",
     recommendSummary: (count, min) => `${count} ${count === 1 ? "app" : "apps"} · only apps of ${min} or more are listed`,
     filesTitle: "Large files and folders",
+    bigTitle: "Other big items",
+    bigScanning: "Measuring simulators, caches, and app data…",
+    bigSummary: (n, size) => `${n} items, ${size} in all. Most space outside apps is here.`,
+    bigNone: "No simulator, cache, or app data over 1 GB.",
+    bigGoDev: "Go to simulators",
+    bigClean: "Clean",
+    bigCleaning: "Cleaning…",
+    bigShowUsage: "Usage map",
+    bigReason_unusedRuntime: "No simulator uses this runtime. Offload it and bring it back when needed",
+    bigReason_runtime: "Simulator runtime. Offload it and bring it back when needed",
+    bigReason_idleSimulator: "Simulator data. Offload it; it comes back with a new UDID",
+    bigReason_running: "Simulator is running. Shut it down to offload it",
+    bigReason_rebuildable: "Its tool downloads or builds it again. Cleaning moves it to the Trash",
+    bigReason_appData: "App data. Offload it under Large files and folders, or clean it up in the app",
+    bigReason_personal: "Personal folder. Offload what you rarely use under Large files and folders",
+    bigConfirmTitle: (name) => `Clean “${name}”?`,
+    bigConfirmBody: (size) => `Frees about ${size}. The contents go to the Trash (Homebrew uses brew cleanup); the tool fetches or rebuilds them when it next needs them.`,
     filesSummary: (count, min, days) => `${count} ${count === 1 ? "item" : "items"} · ${min} or more, not opened for ${days} days`,
     filesEmpty: "No large files that have sat unopened in your home folder",
     filesScanning: "Scanning your home folder…",
@@ -2760,6 +2794,7 @@ async function load() {
   loadUsage();
   if (!filesData || filesData.state !== "scanning") loadFiles();
   loadDev();
+  if (appsSupported() && (!bigData || bigData.state !== "scanning")) loadBig();
 }
 
 function refresh() {
@@ -2920,6 +2955,72 @@ async function showOpenListPassword(event) {
   }
 }
 
+// ---- other big items --------------------------------------------------------
+
+let bigData = null;
+let bigTimer = null;
+
+function renderBig() {
+  const list = document.querySelector("#big-list");
+  const summary = document.querySelector("#big-summary");
+  const scanned = document.querySelector("#big-scanned");
+  if (!list) return;
+  list.replaceChildren();
+  if (!bigData || bigData.state === "scanning" && !bigData.items) {
+    summary.textContent = t("bigScanning");
+    scanned.textContent = "";
+    return;
+  }
+  const items = bigData.items || [];
+  summary.textContent = items.length ? t("bigSummary", items.length, bytes(bigData.bytes || 0)) : t("bigNone");
+  scanned.textContent = bigData.state === "scanning" ? t("bigScanning") : "";
+  const cleanup = bigData.cleanup || {};
+  for (const item of items) {
+    const buttons = [];
+    if (item.action === "dev-offload") {
+      buttons.push(actionButton({ labelKey: "bigGoDev", icon: iconTray, className: "outline", onClick: () => document.querySelector("#dev-section").scrollIntoView({ behavior: "smooth" }) }));
+    } else if (item.action === "clean") {
+      const running = cleanup.state === "running" && cleanup.action === item.target;
+      buttons.push(actionButton({ labelKey: running ? "bigCleaning" : "bigClean", icon: iconTrash, className: "outline", busy: running, disabled: cleanup.state === "running",
+        onClick: () => askConfirm({ title: ["bigConfirmTitle", item.title], body: ["bigConfirmBody", bytes(item.bytes)], ok: "bigClean", danger: true }, () => runBigCleanup(item)) }));
+    } else {
+      buttons.push(actionButton({ labelKey: "bigShowUsage", icon: iconMore, className: "quiet", onClick: () => document.querySelector("#usage-section").scrollIntoView({ behavior: "smooth" }) }));
+    }
+    const detail = el("span");
+    detail.append(t("bigReason_" + item.reason), el("br"), el("span", "mono small", item.path));
+    list.append(devRow(item.title, detail, bytes(item.bytes), buttons));
+  }
+}
+
+async function loadBig() {
+  clearTimeout(bigTimer);
+  try {
+    bigData = await api("/api/bigitems");
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    bigData = { state: "ready", items: [] };
+  }
+  renderBig();
+  const cleaning = bigData.cleanup && bigData.cleanup.state === "running";
+  if (bigData.state === "scanning" || cleaning) bigTimer = setTimeout(loadBig, 2000);
+}
+
+async function runBigCleanup(item) {
+  try {
+    await api("/api/usage/clean", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: item.target }) });
+  } catch (error) {
+    if (error.code !== "unauthorized") toast({ title: bi("cleanFailed", item.title), error: { code: error.code, message: error.message }, tone: "error" });
+  }
+  loadBig();
+}
+
+async function rescanBig() {
+  try { await api("/api/bigitems/scan", { method: "POST" }); } catch (error) { if (error.code === "unauthorized") return; }
+  bigData = Object.assign({}, bigData, { state: "scanning" });
+  renderBig();
+  bigTimer = setTimeout(loadBig, 2000);
+}
+
 // ---- wiring ---------------------------------------------------------------
 
 document.querySelector("#refresh").addEventListener("click", refresh);
@@ -2927,6 +3028,7 @@ document.querySelector("#retry").addEventListener("click", retryNow);
 document.querySelector("#rescan").addEventListener("click", () => loadRecommendations(true));
 document.querySelector("#usage-scan").addEventListener("click", startUsageScan);
 document.querySelector("#files-scan").addEventListener("click", startFilesScan);
+document.querySelector("#big-scan").addEventListener("click", rescanBig);
 document.querySelector("#usage-caches-clear").addEventListener("click", clearCaches);
 document.querySelector("#license-form").addEventListener("submit", submitLicense);
 document.querySelector("#license-remove").addEventListener("click", removeLicense);

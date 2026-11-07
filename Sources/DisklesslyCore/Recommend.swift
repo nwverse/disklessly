@@ -330,6 +330,9 @@ public enum RecommendRanking {
             let days = RecommendScore.daysIdle(lastUsed: app.lastUsed, now: options.now)
             let score = RecommendScore.value(sizeBytes: app.sizeBytes, daysIdle: days, neverUsed: neverUsed, neverUsedIdleDays: options.neverUsedIdleDays, neverUsedBonusDays: options.neverUsedBonusDays)
             let presence = RepoPresence.match(bundleId: app.bundleId, version: app.version, build: app.build, architectures: app.architectures, images: options.repoImages)
+            // An app that is already offloaded and only restored here is managed in the app
+            // list; it is not something "not to offload".
+            if codes == ["alreadyPacked"] { continue }
             let poor = !codes.isEmpty
             if poor {
                 let largeEnough = app.sizeIncomplete || app.sizeBytes >= options.minSizeBytes

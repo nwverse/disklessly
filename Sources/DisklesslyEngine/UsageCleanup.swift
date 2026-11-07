@@ -16,6 +16,11 @@ public enum UsageCleanup {
 
     public static let all = [homebrew, simulatorRuntimes, simulatorDevices, derivedData]
 
+    /// Every id `run` accepts: the four above and the rebuildable caches of `BigItems`.
+    public static func known(_ id: String) -> Bool {
+        all.contains(id) || RebuildableCache.all.contains { $0.id == id }
+    }
+
     static func brew() -> String? {
         ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first { FileManager.default.isExecutableFile(atPath: $0) }
     }
@@ -38,6 +43,10 @@ public enum UsageCleanup {
             for item in items { try FileManager.default.removeItem(at: item) }
             return "Removed \(items.count) item(s) from \(folder.path)"
         default:
+            if RebuildableCache.all.contains(where: { $0.id == id }) {
+                let done = try BigItems.clean(id, home: home)
+                return "Moved \(done.items) item(s) to the Trash"
+            }
             throw DisklesslyError.usage("unknown cleanup: \(id)")
         }
     }
