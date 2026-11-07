@@ -20,6 +20,12 @@ enum SessionTierV2 {
         let key = try encryptionKey(secrets: store, enabled: wantsEncryption)
         var extraSkipped = skipped
         let drafts = try snapshot(cold: cold, config: config, skipped: &extraSkipped)
+        // Digests come from the snapshot bytes, before anything is written to the
+        // repo, so a slow or failing digest cannot leave an unindexed segment.
+        var digests: [String: String] = [:]
+        for draft in drafts {
+            digests[draft.member.path] = SessionDigest.digest(tool: draft.tool, path: draft.member.path, data: draft.member.bytes)
+        }
         let groups = pack(drafts, deviceId: device.deviceId, config: config)
         var segments: [String] = []
         for group in groups {
@@ -31,10 +37,9 @@ enum SessionTierV2 {
             try verifyMembers(relative: built.relativePath, members: group.members, backend: backend, config: config, secrets: store)
             let created = SegmentWriter.createdAt(now)
             let row = SessionSegmentRow(id: built.sha256, path: built.relativePath, deviceId: device.deviceId, tool: group.tool, createdAt: created, bytes: Int64(built.stored.count), codec: built.codec, encrypted: key != nil, keyId: built.keyId)
-            // Digest from the snapshot bytes already in memory. The transcript
-            // itself is what was packed; the digest only goes into the index.
+            // The transcript itself is what was packed; the digest only goes into the index.
             let entries = group.members.map { member in
-                SessionEntryRow(id: member.entryId, segmentId: built.sha256, legacyArchive: nil, member: "m/\(member.entryId).jsonl", deviceId: device.deviceId, tool: member.tool, path: member.path, sha256: member.sha256, size: member.size, mtimeNs: member.mtimeNs, ino: member.ino, preview: member.preview, archivedAt: created, state: "pendingDelete", digest: SessionDigest.digest(tool: member.tool, path: member.path, data: member.bytes))
+                SessionEntryRow(id: member.entryId, segmentId: built.sha256, legacyArchive: nil, member: "m/\(member.entryId).jsonl", deviceId: device.deviceId, tool: member.tool, path: member.path, sha256: member.sha256, size: member.size, mtimeNs: member.mtimeNs, ino: member.ino, preview: member.preview, archivedAt: created, state: "pendingDelete", digest: digests[member.path] ?? "")
             }
             try database.commit(segment: row, entries: entries)
             for entry in entries {

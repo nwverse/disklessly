@@ -29,7 +29,11 @@ public enum SessionDigest {
     /// Digest body (Markdown) for a transcript, at most `cap` UTF-8 bytes.
     public static func digest(tool: String, path: String, data: Data, cap: Int = defaultCap) -> String {
         let format = detect(tool: tool, path: path, data: data)
-        let turns = reduceTurns(messages(format: format, data: data))
+        var found = messages(format: format, data: data)
+        // A format that drifted, or a tool mapped to the wrong extractor, still
+        // gets whatever user/assistant text the generic reader can find.
+        if found.isEmpty && format != .generic { found = generic(data) }
+        let turns = reduceTurns(found)
         let body = turns.map { message -> String in
             let label = message.role == "user" ? "User" : message.role == "assistant" ? "Assistant" : message.role.capitalized
             return "**\(label):** \(message.text)"
@@ -70,8 +74,12 @@ public enum SessionDigest {
         if path.hasSuffix(".json"), let object = try? JSONSerialization.jsonObject(with: data), (object as? [String: Any])?["messages"] is [Any] {
             return .gemini
         }
-        for line in lines(data).prefix(40) {
-            guard let object = line else { continue }
+        // Only the head is sniffed, so a large transcript is not parsed twice.
+        var sniffed: [[String: Any]] = []
+        forEachLine(data.prefix(64 * 1024)) { object in
+            if sniffed.count < 40 { sniffed.append(object) }
+        }
+        for object in sniffed {
             if object["payload"] is [String: Any], let type = object["type"] as? String, ["response_item", "event_msg", "session_meta", "turn_context"].contains(type) {
                 return .codex
             }
@@ -99,12 +107,12 @@ public enum SessionDigest {
     /// User records holding only `tool_result` blocks are not prompts.
     static func claude(_ data: Data) -> [Message] {
         var out: [Message] = []
-        for line in lines(data) {
-            guard let object = line, let type = object["type"] as? String, type == "user" || type == "assistant" else { continue }
-            if object["isMeta"] as? Bool == true || object["isCompactSummary"] as? Bool == true { continue }
-            guard let message = object["message"] as? [String: Any] else { continue }
+        forEachLine(data) { object in
+            guard let type = object["type"] as? String, type == "user" || type == "assistant" else { return }
+            if object["isMeta"] as? Bool == true || object["isCompactSummary"] as? Bool == true { return }
+            guard let message = object["message"] as? [String: Any] else { return }
             let role = (message["role"] as? String) ?? type
-            guard role == "user" || role == "assistant" else { continue }
+            guard role == "user" || role == "assistant" else { return }
             if let text = clean(texts(message["content"], blockTypes: ["text"])) {
                 out.append(Message(role: role, text: text))
             }
@@ -118,8 +126,7 @@ public enum SessionDigest {
     static func codex(_ data: Data) -> [Message] {
         var items: [Message] = []
         var events: [Message] = []
-        for line in lines(data) {
-            guard let object = line else { continue }
+        forEachLine(data) { object in
             let payload = (object["payload"] as? [String: Any]) ?? object
             let payloadType = payload["type"] as? String
             if payloadType == "message", let role = payload["role"] as? String, role == "user" || role == "assistant" {
@@ -141,9 +148,9 @@ public enum SessionDigest {
     /// `toolResult`, `toolCall`, and `thinking` content is dropped.
     static func pi(_ data: Data) -> [Message] {
         var out: [Message] = []
-        for line in lines(data) {
-            guard let object = line, object["type"] as? String == "message", let message = object["message"] as? [String: Any] else { continue }
-            guard let role = message["role"] as? String, role == "user" || role == "assistant" else { continue }
+        forEachLine(data) { object in
+            guard object["type"] as? String == "message", let message = object["message"] as? [String: Any] else { return }
+            guard let role = message["role"] as? String, role == "user" || role == "assistant" else { return }
             if let text = clean(texts(message["content"], blockTypes: ["text"])) {
                 out.append(Message(role: role, text: text))
             }
@@ -154,29 +161,28 @@ public enum SessionDigest {
     /// Gemini CLI (and Qwen legacy) JSON: `{messages: [{type: user|gemini, content}]}`.
     /// A JSONL file of the same records is read line by line.
     static func gemini(_ data: Data) -> [Message] {
-        var records: [[String: Any]] = []
-        if let object = try? JSONSerialization.jsonObject(with: data) {
-            if let dict = object as? [String: Any], let list = dict["messages"] as? [[String: Any]] {
-                records = list
-            } else if let list = object as? [[String: Any]] {
-                records = list
-            }
-        } else {
-            records = lines(data).compactMap { $0 }
-        }
         var out: [Message] = []
-        for record in records {
+        func take(_ record: [String: Any]) {
             let kind = ((record["type"] as? String) ?? (record["role"] as? String) ?? "").lowercased()
             let role: String
             switch kind {
             case "user": role = "user"
             case "gemini", "model", "assistant", "qwen": role = "assistant"
-            default: continue
+            default: return
             }
             let content = record["content"] ?? record["parts"]
             if let text = clean(texts(content, blockTypes: ["text"])) {
                 out.append(Message(role: role, text: text))
             }
+        }
+        if let object = wholeJSON(data) {
+            if let dict = object as? [String: Any], let list = dict["messages"] as? [[String: Any]] {
+                list.forEach(take)
+            } else if let list = object as? [[String: Any]] {
+                list.forEach(take)
+            }
+        } else {
+            forEachLine(data, take)
         }
         return out
     }
@@ -184,32 +190,31 @@ public enum SessionDigest {
     /// Any other JSON or JSONL: strings under `text`/`content`, with a role taken
     /// from `role`, `message.role`, or `type` when it says user or assistant.
     static func generic(_ data: Data) -> [Message] {
-        var records: [[String: Any]] = []
-        if let object = try? JSONSerialization.jsonObject(with: data) {
-            if let dict = object as? [String: Any] {
-                let list = ["messages", "history", "conversation", "items", "events"].lazy.compactMap { dict[$0] as? [[String: Any]] }.first
-                records = list ?? [dict]
-            } else if let list = object as? [[String: Any]] {
-                records = list
-            }
-        } else {
-            records = lines(data).compactMap { $0 }
-        }
         var out: [Message] = []
-        for record in records {
-            if skippable(record) { continue }
+        func take(_ record: [String: Any]) {
+            if skippable(record) { return }
             let message = record["message"] as? [String: Any]
             let rawRole = ((record["role"] as? String) ?? (message?["role"] as? String) ?? (record["type"] as? String) ?? "").lowercased()
             let role: String
             if ["user", "human", "prompt", "user_message", "user.message"].contains(rawRole) { role = "user" }
             else if ["assistant", "model", "ai", "agent", "bot", "gemini", "agent_message", "assistant.message"].contains(rawRole) { role = "assistant" }
             else if rawRole.isEmpty { role = "text" }
-            else { continue }
+            else { return }
             var collected: [String] = []
             walk(record, into: &collected)
             if let text = clean(collected.joined(separator: "\n")) {
                 out.append(Message(role: role, text: text))
             }
+        }
+        if let object = wholeJSON(data) {
+            if let dict = object as? [String: Any] {
+                let list = ["messages", "history", "conversation", "items", "events"].lazy.compactMap { dict[$0] as? [[String: Any]] }.first
+                (list ?? [dict]).forEach(take)
+            } else if let list = object as? [[String: Any]] {
+                list.forEach(take)
+            }
+        } else {
+            forEachLine(data, take)
         }
         return out
     }
@@ -274,11 +279,41 @@ public enum SessionDigest {
 
     // MARK: helpers
 
-    /// One parsed object per JSONL line; nil for a line that is not an object.
-    static func lines(_ data: Data) -> [[String: Any]?] {
-        data.split(separator: 0x0A, omittingEmptySubsequences: true).map { slice in
-            (try? JSONSerialization.jsonObject(with: Data(slice))) as? [String: Any]
+    /// Calls `body` with each JSONL line that is an object, one at a time, so a
+    /// large transcript is never held as parsed objects all at once.
+    static func forEachLine(_ data: Data, _ body: ([String: Any]) -> Void) {
+        let bytes = data
+        var start = bytes.startIndex
+        while start < bytes.endIndex {
+            let end = bytes[start...].firstIndex(of: 0x0A) ?? bytes.endIndex
+            if end > start {
+                autoreleasepoolIfAvailable {
+                    if let object = (try? JSONSerialization.jsonObject(with: bytes[start..<end])) as? [String: Any] {
+                        body(object)
+                    }
+                }
+            }
+            start = end < bytes.endIndex ? bytes.index(after: end) : end
         }
+    }
+
+    /// A whole-file JSON document, or nil for JSONL. A file starting with `{`
+    /// whose first line is a complete object is JSONL and is not parsed whole.
+    static func wholeJSON(_ data: Data) -> Any? {
+        guard let first = data.first(where: { $0 != 0x20 && $0 != 0x0A && $0 != 0x0D && $0 != 0x09 }) else { return nil }
+        if first == UInt8(ascii: "{"), let newline = data.firstIndex(of: 0x0A), newline < data.endIndex - 1,
+           (try? JSONSerialization.jsonObject(with: data[data.startIndex..<newline])) != nil {
+            return nil
+        }
+        return try? JSONSerialization.jsonObject(with: data)
+    }
+
+    private static func autoreleasepoolIfAvailable(_ body: () -> Void) {
+        #if canImport(ObjectiveC)
+        autoreleasepool { body() }
+        #else
+        body()
+        #endif
     }
 
     /// Text of a `content` value: a string, or the blocks whose `type` is in

@@ -310,6 +310,17 @@ final class SessionScanTests: XCTestCase {
         XCTAssertEqual(digest, "**User:** cursor prompt\n\n**Assistant:** cursor answer\n\n**User:** [binary] look")
     }
 
+    func testDigestFallsBackToGenericWhenTheMappedFormatFindsNothing() {
+        // Claude-shaped records under a tool mapped to the pi extractor.
+        let lines = [
+            #"{"type":"user","message":{"role":"user","content":"droid prompt"}}"#,
+            #"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"droid answer"}]}}"#,
+        ]
+        let data = Data(lines.joined(separator: "\n").utf8)
+        XCTAssertTrue(SessionDigest.messages(format: .pi, data: data).isEmpty)
+        XCTAssertEqual(SessionDigest.digest(tool: "factory", path: "/f.jsonl", data: data), "**User:** droid prompt\n\n**Assistant:** droid answer")
+    }
+
     func testDigestCapKeepsHeadAndTailOnScalarBoundaries() {
         var lines: [String] = []
         for index in 0..<400 {

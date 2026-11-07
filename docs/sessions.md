@@ -153,7 +153,7 @@ A crash after the index commit is finished by the next `sessions --apply`: pendi
 
 ## Index
 
-`stateDir/sessions/index.sqlite` is schema user_version 3 (`PRAGMA journal_mode=WAL`, `synchronous=FULL`, 5 s busy timeout). A database newer than version 3 is refused. Opening a version 2 index migrates it in one transaction: `entries` gets `digest TEXT NOT NULL DEFAULT ''`, and `entries_fts` is rebuilt as `(id, path, preview, digest)` from `entries` (FTS5 cannot add a column). Rows archived before that keep an empty digest. Search uses FTS5 when the SQLite library has it, and `LIKE` over path, preview, and digest otherwise.
+`stateDir/sessions/index.sqlite` is schema user_version 3 (`PRAGMA journal_mode=WAL`, `synchronous=FULL`, 5 s busy timeout). A database newer than version 3 is refused. Opening a version 2 index migrates it in one transaction: `entries` gets `digest TEXT NOT NULL DEFAULT ''`, and `entries_fts` is rebuilt as `(id, path, preview, digest)` from `entries` (FTS5 cannot add a column). Rows archived before that keep an empty digest. Any open does this, including the dashboard's read of the archived list. Search uses FTS5 when the SQLite library has it, and `LIKE` over path, preview, and digest otherwise.
 
 `sessions search` omits rows whose state is `restored`. `sessions restore` writes the JSONL back to its canonical path. Another Mac's row requires `--to PATH` (exit 2 without it). An existing destination with different bytes is exit 9. pi and Codex keep the stored mtime; Claude's mtime is set to now. After a successful restore the row stays, with state `restored`.
 
