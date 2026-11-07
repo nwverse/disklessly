@@ -163,7 +163,9 @@ extension DisklesslyEngine {
         }
         // App data: whole folders the user can look at (or offload in the files section).
         // Caches and Developer are covered above; Disklessly's own folders are not listed.
-        let ownNames: Set<String> = ["Disklessly"]
+        // CloudDocs is iCloud Drive's own store (it holds the iCloud repo's local copies); the
+        // user can't act on it here, and offloading from it would fight iCloud.
+        let ownNames: Set<String> = ["Disklessly", "CloudDocs", "256isenough", "com.apple.bird"]
         for parent in ["Library/Containers", "Library/Group Containers", "Library/Application Support"] {
             for (url, size) in BigItems.largeChildren(of: homeURL.appendingPathComponent(parent), minimum: BigItems.reviewMinBytes, deadline: deadline)
             where !ownNames.contains(url.lastPathComponent) {
