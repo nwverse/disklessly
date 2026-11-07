@@ -32,11 +32,31 @@ public enum PermissionState: String {
 public enum PermissionProbe {
     /// Full Disk Access: the user's TCC database is readable only with it. Reading it changes nothing
     /// and shows no prompt, so this can run often.
+    ///
+    /// Several protected files are tried in turn, because a given one may not exist: macOS 27 has
+    /// no per-user TCC.db at the old path. The first file that exists decides.
     public static func fullDiskAccess(home: String = NSHomeDirectory()) -> PermissionState {
-        let path = home + "/Library/Application Support/com.apple.TCC/TCC.db"
-        let fd = open(path, O_RDONLY)
-        if fd >= 0 { close(fd); return .granted }
-        return errno == ENOENT ? .unknown : .denied
+        fullDiskAccess(candidates: fullDiskAccessCandidates(home: home))
+    }
+
+    static func fullDiskAccessCandidates(home: String) -> [String] {
+        [
+            home + "/Library/Application Support/com.apple.TCC/TCC.db",
+            "/Library/Application Support/com.apple.TCC/TCC.db",
+            home + "/Library/Safari/Bookmarks.plist",
+            home + "/Library/Messages/chat.db",
+            "/Library/Preferences/com.apple.TimeMachine.plist",
+        ]
+    }
+
+    static func fullDiskAccess(candidates: [String]) -> PermissionState {
+        for path in candidates {
+            let fd = open(path, O_RDONLY | O_NONBLOCK)
+            let code = errno
+            if fd >= 0 { close(fd); return .granted }
+            if code == EPERM || code == EACCES { probeLog("fullDiskAccess denied at \(path)"); return .denied }
+        }
+        return .unknown
     }
 
     /// App Management: opening a file inside another developer's app for writing is refused with
