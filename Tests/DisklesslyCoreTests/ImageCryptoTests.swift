@@ -233,7 +233,7 @@ final class ImageCryptoTests: XCTestCase {
         XCTAssertEqual(try JSONDecoder().decode(RuntimeConfig.self, from: JSONEncoder().encode(config)).imageEncryption, "off")
         config.imageEncryption = "aes-gcm"
         XCTAssertEqual(try JSONDecoder().decode(RuntimeConfig.self, from: JSONEncoder().encode(config)).imageEncryption, "aes-gcm")
-        XCTAssertEqual(RuntimeConfig.environment(["DISKLESSLY_IMAGE_ENCRYPTION": "aes-gcm"], home: root.path).imageEncryption, "aes-gcm")
+        XCTAssertEqual(RuntimeConfig.environment(["DISKLESSLY_IMAGE_ENCRYPTION": "aes-gcm"], home: root.path, platform: .macOS).imageEncryption, "aes-gcm")
         // A saved config.json does not hide the environment override.
         let state = root.appendingPathComponent("state-env")
         try FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
