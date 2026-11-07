@@ -75,7 +75,7 @@ final class RecommendTests: XCTestCase {
         XCTAssertEqual(report.recommendations.map(\.bundleId), ["com.apple.Pages"])
         XCTAssertEqual(report.recommendations[0].suggestedMode, "restore")
         XCTAssertTrue(report.recommendations[0].reason.contains("Mac App Store receipt, restore mode"))
-        XCTAssertEqual(report.warnings.map(\.name), ["Xcode", "Driver", "Dropbox", "HelperHost", "Packed", "Pinned", "VPN", "Partial"])
+        XCTAssertEqual(report.warnings.map(\.name), ["Xcode", "Driver", "Dropbox", "HelperHost", "Pinned", "VPN", "Partial"])
         XCTAssertEqual(report.warnings[0].warnings, ["toolchain"])
         XCTAssertEqual(report.warnings[0].suggestedMode, "unsupported")
         XCTAssertEqual(report.warnings[0].reason, "toolchain used by the engine")
@@ -271,8 +271,7 @@ final class RecommendTests: XCTestCase {
         XCTAssertEqual(found.map(\.path), [visiblePath])
         let ranked = RecommendRanking.rank(found, options: RecommendOptions(minSizeBytes: 1, now: now))
         XCTAssertTrue(ranked.recommendations.isEmpty)
-        XCTAssertEqual(ranked.warnings.map(\.path), [visiblePath])
-        XCTAssertEqual(ranked.warnings.first?.warnings, ["alreadyPacked"])
+        XCTAssertTrue(ranked.warnings.isEmpty, "an app that is only already packed is not a warning")
 
         let leftovers = RecommendDiscovery.leftovers(environment: environment)
         XCTAssertEqual(Set(leftovers.map(\.path)), Set([

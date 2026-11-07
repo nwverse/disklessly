@@ -258,6 +258,23 @@ const copy = {
     recommendScanning: "正在扫描已安装的应用…",
     recommendSummary: (count, min) => `${count} 个应用 · 只列出不小于 ${min} 的应用`,
     filesTitle: "大文件和文件夹",
+    bigTitle: "其他大头",
+    bigScanning: "正在测量模拟器、缓存和应用数据…",
+    bigSummary: (n, size) => `${n} 项，共 ${size}。应用以外的空间大多在这里。`,
+    bigNone: "没有超过 1 GB 的模拟器、缓存或应用数据。",
+    bigGoDev: "去模拟器",
+    bigClean: "清理",
+    bigCleaning: "正在清理…",
+    bigShowUsage: "看占用",
+    bigReason_unusedRuntime: "没有模拟器在用这个运行时，可以放到云端，要用时再取回",
+    bigReason_runtime: "模拟器运行时，可以放到云端，要用时再取回",
+    bigReason_idleSimulator: "模拟器数据，可以放到云端，取回后换新 UDID",
+    bigReason_running: "模拟器正在运行，关掉后才能放到云端",
+    bigReason_rebuildable: "工具会自动重新下载或生成，清理后挪到废纸篓",
+    bigReason_appData: "应用数据。可在「大文件和文件夹」里放到云端，或在应用里清理",
+    bigReason_personal: "个人文件夹。可在「大文件和文件夹」里把不常用的放到云端",
+    bigConfirmTitle: (name) => `清理「${name}」？`,
+    bigConfirmBody: (size) => `大约释放 ${size}。内容挪到废纸篓（Homebrew 用 brew cleanup），对应的工具下次用到时会重新下载或生成。`,
     filesSummary: (count, min, days) => `${count} 项 · 不小于 ${min}，且 ${days} 天以上没打开过`,
     filesEmpty: "主文件夹里没有又大又久未打开的文件",
     filesScanning: "正在扫描主文件夹…",
@@ -332,6 +349,11 @@ const copy = {
     devForget: "从仓库删除",
     devCleanDerived: "清理 DerivedData",
     devNone: "没有",
+    devShutdown: "关闭模拟器",
+    devRunning: "正在运行，关掉后才能放到云端",
+    devInUseBy: (names) => `${names} 正在用它，关掉后才能放到云端`,
+    devConfirmShutdownTitle: (name) => `关闭模拟器「${name}」？`,
+    devConfirmShutdownBody: "如果有测试或应用正在这台模拟器里跑，会被中断。",
     devUnavailable: "读不到模拟器信息（需要安装 Xcode）",
     devInstalledHere: "这台 Mac 上也有",
     devFrom: (host) => `来自 ${host}`,
@@ -626,6 +648,23 @@ const copy = {
     recommendScanning: "Scanning installed apps…",
     recommendSummary: (count, min) => `${count} ${count === 1 ? "app" : "apps"} · only apps of ${min} or more are listed`,
     filesTitle: "Large files and folders",
+    bigTitle: "Other big items",
+    bigScanning: "Measuring simulators, caches, and app data…",
+    bigSummary: (n, size) => `${n} items, ${size} in all. Most space outside apps is here.`,
+    bigNone: "No simulator, cache, or app data over 1 GB.",
+    bigGoDev: "Go to simulators",
+    bigClean: "Clean",
+    bigCleaning: "Cleaning…",
+    bigShowUsage: "Usage map",
+    bigReason_unusedRuntime: "No simulator uses this runtime. Offload it and bring it back when needed",
+    bigReason_runtime: "Simulator runtime. Offload it and bring it back when needed",
+    bigReason_idleSimulator: "Simulator data. Offload it; it comes back with a new UDID",
+    bigReason_running: "Simulator is running. Shut it down to offload it",
+    bigReason_rebuildable: "Its tool downloads or builds it again. Cleaning moves it to the Trash",
+    bigReason_appData: "App data. Offload it under Large files and folders, or clean it up in the app",
+    bigReason_personal: "Personal folder. Offload what you rarely use under Large files and folders",
+    bigConfirmTitle: (name) => `Clean “${name}”?`,
+    bigConfirmBody: (size) => `Frees about ${size}. The contents go to the Trash (Homebrew uses brew cleanup); the tool fetches or rebuilds them when it next needs them.`,
     filesSummary: (count, min, days) => `${count} ${count === 1 ? "item" : "items"} · ${min} or more, not opened for ${days} days`,
     filesEmpty: "No large files that have sat unopened in your home folder",
     filesScanning: "Scanning your home folder…",
@@ -700,6 +739,11 @@ const copy = {
     devForget: "Delete from repo",
     devCleanDerived: "Clean DerivedData",
     devNone: "None",
+    devShutdown: "Shut down",
+    devRunning: "Running. Shut it down to offload it.",
+    devInUseBy: (names) => `In use by ${names}. Shut it down to offload this runtime.`,
+    devConfirmShutdownTitle: (name) => `Shut down simulator “${name}”?`,
+    devConfirmShutdownBody: "Any test or app running in it will be interrupted.",
     devUnavailable: "Could not read simulators (Xcode is needed)",
     devInstalledHere: "Also on this Mac",
     devFrom: (host) => `from ${host}`,
@@ -1051,6 +1095,7 @@ const iconMore = "M6 10.5a1.5 1.5 0 1 1 0 3 1.5 1.5 0 0 1 0-3zm6 0a1.5 1.5 0 1 1
 const iconCopy = "M8 3h10a2 2 0 0 1 2 2v10h-2V5H8V3zM5 7h10a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V9a2 2 0 0 1 2-2zm0 2v10h10V9H5z";
 const iconRefresh = "M12 4a8 8 0 0 1 7.4 5H17v2h6V5h-2v2.3A10 10 0 0 0 2 12h2a8 8 0 0 1 8-8zm8 8a8 8 0 0 1-15.4 3H7v-2H1v6h2v-2.3A10 10 0 0 0 22 12h-2z";
 const iconTray = "M5 4h14l3 9v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6l3-9zm1.4 2-2.3 7H8l1 2h6l1-2h3.9l-2.3-7H6.4z";
+const iconPower = "M11 2h2v10h-2V2zM6.3 5.3l1.4 1.4A7 7 0 1 0 16.3 6.7l1.4-1.4A9 9 0 1 1 6.3 5.3z";
 const iconAlert = "M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16zm-1 3h2v7h-2V7zm0 9h2v2h-2v-2z";
 const iconInfo = "M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20zm0 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16zm-1 6h2v7h-2v-7zm0-3h2v2h-2V7z";
 
@@ -2295,6 +2340,7 @@ const devBusy = new Map(); // item id -> job kind
 const devConfirms = {
   "dev/offload-runtime": (item) => ({ title: ["devConfirmRuntimeTitle", item.title], body: ["devConfirmRuntimeBody", bytes(item.bytes)], ok: "devConfirmOk", danger: false }),
   "dev/offload-simulator": (item) => ({ title: ["devConfirmSimTitle", item.name], body: ["devConfirmSimBody", bytes(item.bytes)], ok: "devConfirmOk", danger: false }),
+  "dev/shutdown-simulator": (item) => ({ title: ["devConfirmShutdownTitle", item.name], body: ["devConfirmShutdownBody"], ok: "devShutdown", danger: true }),
   "dev/forget": (item) => ({ title: ["devConfirmForgetTitle", item.title], body: ["devConfirmForgetBody", bytes(item.bytes)], ok: "devForget", danger: true }),
   "dev/clean-derived-data": () => ({ title: ["devConfirmCleanTitle"], body: ["devConfirmCleanBody"], ok: "devConfirmOk", danger: false }),
 };
@@ -2367,10 +2413,26 @@ function renderDev() {
   }
   const button = (labelKey, icon, kind, id, label, item, blocked, className) =>
     actionButton({ labelKey, icon, className: className || "outline", busy: devBusy.get(id) === kind, disabled: devBusy.has(id), blocked: blocked || undefined, onClick: () => devAction(kind, id, label, item) });
-  const runtimes = (devData.runtimes || []).map((r) =>
-    devRow(r.title, r.runtimeIdentifier.replace("com.apple.CoreSimulator.SimRuntime.", ""), bytes(r.bytes), r.deletable ? [button("devOffload", iconTray, "dev/offload-runtime", r.id, r.title, r, r.blocked)] : []));
-  const simulators = (devData.simulators || []).filter((d) => d.bytes >= 50 * 1024 * 1024).map((d) =>
-    devRow(d.name, d.state === "Booted" ? d.state : "", bytes(d.bytes), [button("devOffload", iconTray, "dev/offload-simulator", d.udid, d.name, d, d.blocked)]));
+  // A blocked row says why in its detail line, not only in the button's tooltip.
+  const withNote = (text, note) => {
+    if (!note) return text;
+    const node = el("span");
+    if (text) node.append(text, " · ");
+    node.append(el("span", "warn-text", note));
+    return node;
+  };
+  const runtimes = (devData.runtimes || []).map((r) => {
+    const inUse = (r.inUseBy || []).join(", ");
+    const note = inUse ? t("devInUseBy", inUse) : r.blocked || "";
+    return devRow(r.title, withNote(r.runtimeIdentifier.replace("com.apple.CoreSimulator.SimRuntime.", ""), note), bytes(r.bytes), r.deletable ? [button("devOffload", iconTray, "dev/offload-runtime", r.id, r.title, r, r.blocked)] : []);
+  });
+  const simulators = (devData.simulators || []).filter((d) => d.bytes >= 50 * 1024 * 1024).map((d) => {
+    const booted = d.state === "Booted";
+    const buttons = booted
+      ? [button("devShutdown", iconPower, "dev/shutdown-simulator", d.udid, d.name, d)]
+      : [button("devOffload", iconTray, "dev/offload-simulator", d.udid, d.name, d, d.blocked)];
+    return devRow(d.name, withNote("", booted ? t("devRunning") : d.blocked), bytes(d.bytes), buttons);
+  });
   const offloaded = (devData.offloaded || []).map((o) => {
     const detail = el("span");
     detail.append(t(o.kind === "runtime" ? "devRuntimes" : "devSimulators"), " · ", t("devFrom", o.host));
@@ -2732,6 +2794,7 @@ async function load() {
   loadUsage();
   if (!filesData || filesData.state !== "scanning") loadFiles();
   loadDev();
+  if (appsSupported() && (!bigData || bigData.state !== "scanning")) loadBig();
 }
 
 function refresh() {
@@ -2892,6 +2955,72 @@ async function showOpenListPassword(event) {
   }
 }
 
+// ---- other big items --------------------------------------------------------
+
+let bigData = null;
+let bigTimer = null;
+
+function renderBig() {
+  const list = document.querySelector("#big-list");
+  const summary = document.querySelector("#big-summary");
+  const scanned = document.querySelector("#big-scanned");
+  if (!list) return;
+  list.replaceChildren();
+  if (!bigData || bigData.state === "scanning" && !bigData.items) {
+    summary.textContent = t("bigScanning");
+    scanned.textContent = "";
+    return;
+  }
+  const items = bigData.items || [];
+  summary.textContent = items.length ? t("bigSummary", items.length, bytes(bigData.bytes || 0)) : t("bigNone");
+  scanned.textContent = bigData.state === "scanning" ? t("bigScanning") : "";
+  const cleanup = bigData.cleanup || {};
+  for (const item of items) {
+    const buttons = [];
+    if (item.action === "dev-offload") {
+      buttons.push(actionButton({ labelKey: "bigGoDev", icon: iconTray, className: "outline", onClick: () => document.querySelector("#dev-section").scrollIntoView({ behavior: "smooth" }) }));
+    } else if (item.action === "clean") {
+      const running = cleanup.state === "running" && cleanup.action === item.target;
+      buttons.push(actionButton({ labelKey: running ? "bigCleaning" : "bigClean", icon: iconTrash, className: "outline", busy: running, disabled: cleanup.state === "running",
+        onClick: () => askConfirm({ title: ["bigConfirmTitle", item.title], body: ["bigConfirmBody", bytes(item.bytes)], ok: "bigClean", danger: true }, () => runBigCleanup(item)) }));
+    } else {
+      buttons.push(actionButton({ labelKey: "bigShowUsage", icon: iconMore, className: "quiet", onClick: () => document.querySelector("#usage-section").scrollIntoView({ behavior: "smooth" }) }));
+    }
+    const detail = el("span");
+    detail.append(t("bigReason_" + item.reason), el("br"), el("span", "mono small", item.path));
+    list.append(devRow(item.title, detail, bytes(item.bytes), buttons));
+  }
+}
+
+async function loadBig() {
+  clearTimeout(bigTimer);
+  try {
+    bigData = await api("/api/bigitems");
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    bigData = { state: "ready", items: [] };
+  }
+  renderBig();
+  const cleaning = bigData.cleanup && bigData.cleanup.state === "running";
+  if (bigData.state === "scanning" || cleaning) bigTimer = setTimeout(loadBig, 2000);
+}
+
+async function runBigCleanup(item) {
+  try {
+    await api("/api/usage/clean", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: item.target }) });
+  } catch (error) {
+    if (error.code !== "unauthorized") toast({ title: bi("cleanFailed", item.title), error: { code: error.code, message: error.message }, tone: "error" });
+  }
+  loadBig();
+}
+
+async function rescanBig() {
+  try { await api("/api/bigitems/scan", { method: "POST" }); } catch (error) { if (error.code === "unauthorized") return; }
+  bigData = Object.assign({}, bigData, { state: "scanning" });
+  renderBig();
+  bigTimer = setTimeout(loadBig, 2000);
+}
+
 // ---- wiring ---------------------------------------------------------------
 
 document.querySelector("#refresh").addEventListener("click", refresh);
@@ -2899,6 +3028,7 @@ document.querySelector("#retry").addEventListener("click", retryNow);
 document.querySelector("#rescan").addEventListener("click", () => loadRecommendations(true));
 document.querySelector("#usage-scan").addEventListener("click", startUsageScan);
 document.querySelector("#files-scan").addEventListener("click", startFilesScan);
+document.querySelector("#big-scan").addEventListener("click", rescanBig);
 document.querySelector("#usage-caches-clear").addEventListener("click", clearCaches);
 document.querySelector("#license-form").addEventListener("submit", submitLicense);
 document.querySelector("#license-remove").addEventListener("click", removeLicense);
