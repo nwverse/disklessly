@@ -8,6 +8,15 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Optional encryption of app images in the repo. `disklessly images key init` makes a 256-bit image key in the
+  Keychain (synchronizable, so iCloud Keychain gives it to your other Macs; `images key export|import` copies it by
+  hand). `disklessly images encrypt on` (config `imageEncryption`, env `DISKLESSLY_IMAGE_ENCRYPTION`) or
+  `pack --encrypt` seals new images before upload: AES-256-GCM over 1 MiB segments (`DKLI`, ported from open-lark's
+  olk-file), streamed file to file. The manifest's `sha256`/`size` describe the ciphertext and a new
+  `image.encryption` carries the scheme, key id and plain sha256. Fetching verifies the ciphertext, decrypts it into
+  the cache and checks the plain hash; the cache and mounts are unchanged. Plain images keep working. A Mac without
+  the key refuses to adopt an encrypted image and keeps the original app. Older Disklessly versions cannot attach
+  encrypted images. See `docs/image-encryption.md`.
 - Permission onboarding in the menu-bar app. At launch it checks App Management (required to swap apps in
   /Applications) and Full Disk Access (recommended), opens the matching System Settings pane, and floats a small
   panel with the app icon to drag into the list there. Also under Permissions… in the menu.
