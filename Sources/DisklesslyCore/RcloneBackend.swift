@@ -239,6 +239,25 @@ public struct RcloneBackend: StorageBackend {
         return entries.map(\.Name).sorted()
     }
 
+    public func entries(_ path: String) throws -> [BackendEntry] {
+        if let daemon {
+            let (fs, inside) = try location(path)
+            guard let reply = try rc("operations/list", ["fs": fs, "remote": inside, "opt": ["noModTime": true, "noMimeType": true]], on: daemon) else { return [] }
+            return ((reply["list"] as? [[String: Any]]) ?? []).compactMap { item -> BackendEntry? in
+                guard let name = item["Name"] as? String else { return nil }
+                let isDir = item["IsDir"] as? Bool ?? false
+                let size = (item["Size"] as? NSNumber)?.int64Value ?? -1
+                return BackendEntry(name: name, isDirectory: isDir, size: isDir || size < 0 ? nil : UInt64(size))
+            }.sorted { $0.name < $1.name }
+        }
+        let result = try run(["lsjson", "--no-mimetype", "--no-modtime", try target(path)])
+        if Self.isMissing(result) { return [] }
+        guard result.status == 0 else { throw fail("lsjson", result) }
+        let entries = try JSONDecoder().decode([Entry].self, from: result.stdout)
+        return entries.map { BackendEntry(name: $0.Name, isDirectory: $0.IsDir, size: $0.IsDir || $0.Size < 0 ? nil : UInt64($0.Size)) }
+            .sorted { $0.name < $1.name }
+    }
+
     public func stat(_ path: String) throws -> BackendStat? {
         if let daemon {
             let (fs, inside) = try location(path)

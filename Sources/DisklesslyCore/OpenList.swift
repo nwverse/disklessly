@@ -44,6 +44,17 @@ public struct OpenListBackend: StorageBackend {
         return content.compactMap { $0["name"] as? String }.sorted()
     }
 
+    public func entries(_ path: String) throws -> [BackendEntry] {
+        let payload = try rpc(path: "/api/fs/list", body: ["path": try remotePath(path), "refresh": false])
+        let data = payload["data"] as? [String: Any] ?? [:]
+        let content = data["content"] as? [[String: Any]] ?? []
+        return content.compactMap { item -> BackendEntry? in
+            guard let name = item["name"] as? String else { return nil }
+            let isDir = item["is_dir"] as? Bool ?? false
+            return BackendEntry(name: name, isDirectory: isDir, size: isDir ? nil : (item["size"] as? NSNumber)?.uint64Value)
+        }.sorted { $0.name < $1.name }
+    }
+
     public func stat(_ path: String) throws -> BackendStat? {
         let response = try call(path: "/api/fs/get", body: ["path": try remotePath(path)], allowMissing: true)
         guard response.code == 200 else { return nil }

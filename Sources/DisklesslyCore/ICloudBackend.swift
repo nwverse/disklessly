@@ -227,6 +227,7 @@ public struct ICloudFolderBackend: StorageBackend {
     }
 
     public func list(_ path: String) throws -> [String] { try folder.list(path) }
+    public func entries(_ path: String) throws -> [BackendEntry] { try folder.entries(path) }
     public func stat(_ path: String) throws -> BackendStat? { try folder.stat(path) }
     public func get(_ path: String, range: Range<UInt64>?) throws -> Data { try folder.get(path, range: range) }
     public func put(_ path: String, data: Data) throws { try folder.put(path, data: data) }

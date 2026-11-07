@@ -222,8 +222,19 @@ const copy = {
     cloudDisconnect: "断开",
     cloudBackDefault: (kind) => kind === "icloud" ? "切回 iCloud 云盘" : "切回本机文件夹",
     cloudUseConfirm: (target, n) => n
-      ? `把仓库切换到 ${target}？\n\n这台 Mac 有 ${n} 个应用卸载在当前仓库里。切换后，在你切回来之前，它们的启动器找不到镜像。新仓库开始时是空的。`
-      : `把仓库切换到 ${target}？新仓库开始时是空的。`,
+      ? `把仓库切换到 ${target}？\n\n会先把当前仓库搬过去：${n} 个应用的镜像和其他数据逐个复制、校验，全部成功后才切换，已卸载的应用照常打开。旧仓库保留为备份，新仓库读不到时自动从备份读。`
+      : `把仓库切换到 ${target}？\n\n当前仓库里的数据会先复制过去并校验，完成后才切换；旧仓库保留为备份。`,
+    cloudTaskmigrate: (phase, p) => `正在搬家（${({ scan: "清点", copy: "复制", verify: "校验", switch: "切换", done: "完成" })[phase] || "准备"}）${p}`,
+    "cloudTaskmirror-sync": (phase, p) => `正在同步备份（${({ scan: "清点", copy: "复制", verify: "校验", done: "完成" })[phase] || "准备"}）${p}`,
+    cloudProgress: (files, total, done, size) => `：${files}/${total} 个文件，${done} / ${size}`,
+    cloudMirror: "备份",
+    cloudMirrorAdd: "设为备份",
+    cloudMirrorRemove: "取消备份",
+    cloudMirrorSync: "立即同步备份",
+    cloudMirrorsLine: (n) => `另有 ${n} 个备份仓库，主仓库读不到时自动从备份读。`,
+    cloudMirrorLast: (when, ok) => ok ? `上次同步 ${when}` : `上次同步失败（${when}）`,
+    cloudMirrorNever: "还没同步过",
+    cloudMigrated: (target, n) => `已搬到 ${target}（复制 ${n} 个文件）`,
     cloudDisconnectConfirm: (name) => `断开 ${name}？网盘上的文件不会被删除。`,
     cloudTaskconnect: "正在等待你在浏览器里登录…",
     cloudTaskopenlist: (phase) => `正在安装 OpenList（${({ download: "下载中", verify: "校验中", configure: "配置中", start: "启动中" })[phase] || "准备中"}）…`,
@@ -627,8 +638,19 @@ const copy = {
     cloudDisconnect: "Disconnect",
     cloudBackDefault: (kind) => kind === "icloud" ? "Back to iCloud Drive" : "Back to the local folder",
     cloudUseConfirm: (target, n) => n
-      ? `Switch the repo to ${target}?\n\n${n} app${n === 1 ? " is" : "s are"} offloaded from this Mac to the current repo. Until you switch back, their launchers cannot find their images. The new repo starts empty.`
-      : `Switch the repo to ${target}? The new repo starts empty.`,
+      ? `Switch the repo to ${target}?\n\nThe current repo moves first: the images of ${n} app${n === 1 ? "" : "s"} and everything else are copied and checked, and only then does the switch happen, so offloaded apps keep opening. The old repo stays as a backup; reads fall back to it when the new repo can't be reached.`
+      : `Switch the repo to ${target}?\n\nWhat is in the current repo is copied and checked first; the old repo stays as a backup.`,
+    cloudTaskmigrate: (phase, p) => `Moving the repo (${({ scan: "counting", copy: "copying", verify: "checking", switch: "switching", done: "done" })[phase] || "preparing"})${p}`,
+    "cloudTaskmirror-sync": (phase, p) => `Syncing backups (${({ scan: "counting", copy: "copying", verify: "checking", done: "done" })[phase] || "preparing"})${p}`,
+    cloudProgress: (files, total, done, size) => `: ${files}/${total} files, ${done} / ${size}`,
+    cloudMirror: "Backup",
+    cloudMirrorAdd: "Use as backup",
+    cloudMirrorRemove: "Stop backup",
+    cloudMirrorSync: "Sync backups now",
+    cloudMirrorsLine: (n) => `${n} backup repo${n === 1 ? "" : "s"}; reads fall back to them when the main repo can't be reached.`,
+    cloudMirrorLast: (when, ok) => ok ? `Last synced ${when}` : `Last sync failed (${when})`,
+    cloudMirrorNever: "Not synced yet",
+    cloudMigrated: (target, n) => `Moved to ${target} (${n} files copied)`,
     cloudDisconnectConfirm: (name) => `Disconnect ${name}? Files on the drive are not deleted.`,
     cloudTaskconnect: "Waiting for you to sign in in the browser…",
     cloudTaskopenlist: (phase) => `Installing OpenList (${({ download: "downloading", verify: "verifying", configure: "configuring", start: "starting" })[phase] || "preparing"})…`,
@@ -2996,16 +3018,30 @@ function renderCloud(info) {
   if (!info) { [summary, repo, list, connect, openlist].forEach((n) => n.replaceChildren()); task.hidden = true; return; }
   const remotes = info.remotes || [];
   const active = info.activeBackendId || "";
+  const mirrors = info.mirrors || [];
+  const mirrorIds = new Set(mirrors.map((m) => m.id));
   summary.textContent = t("cloudSummary", remotes.length);
   repo.replaceChildren(document.createTextNode(active ? t("cloudRepoBackend", active) : t("cloudRepoDefault", info.defaultKind)));
   if (active) {
     repo.append(" ", cloudButton("cloudBackDefault", [info.defaultKind], () => useRepo({ id: "default" }, t("cloudDefaultName", info.defaultKind)), "quiet"));
   }
   const running = info.task && info.task.state === "running";
+  if (mirrors.length) {
+    const line = el("p", "muted");
+    const last = mirrors.map((m) => m.lastSync).filter(Boolean).sort((a, b) => String(b.lastSyncAt).localeCompare(String(a.lastSyncAt)))[0];
+    line.append(t("cloudMirrorsLine", mirrors.length), " ",
+      last ? t("cloudMirrorLast", new Date(last.lastSyncAt).toLocaleString(), last.ok) : t("cloudMirrorNever"), " ");
+    const sync = cloudButton("cloudMirrorSync", [], () => cloudPost("/api/cloud/mirrors/sync"), "quiet");
+    sync.disabled = running;
+    line.append(sync);
+    repo.append(line);
+  }
   if (info.task && info.task.state) {
     task.hidden = false;
     task.dataset.state = info.task.state;
-    task.textContent = info.task.state === "running" ? t(`cloudTask${info.task.action}`, info.task.phase)
+    const p = info.task.progress;
+    const progress = p && p.filesTotal ? t("cloudProgress", p.filesDone || 0, p.filesTotal, bytes(p.bytesDone || 0), bytes(p.bytesTotal || 0)) : "";
+    task.textContent = info.task.state === "running" ? t(`cloudTask${info.task.action}`, info.task.phase, progress)
       : info.task.state === "failed" ? t("cloudTaskFailed", info.task.message || "") : t("cloudTaskDone");
   } else {
     task.hidden = true;
@@ -3015,10 +3051,19 @@ function renderCloud(info) {
     const name = el("span", "grow", `${remote.name}`);
     if (remote.type) name.append(el("span", "muted", `  ${remote.type}`));
     row.append(name);
+    const mirrored = remote.backendId && mirrorIds.has(remote.backendId);
+    if (mirrored) row.append(el("span", "pill grey", t("cloudMirror")));
     if (remote.active) {
       row.append(el("span", "pill green", t("cloudActive")));
     } else {
-      row.append(cloudButton("cloudUse", [], () => useRepo(remote.backendId ? { id: remote.backendId } : { remote: remote.name }, remote.name), "tint"));
+      const use = cloudButton("cloudUse", [], () => useRepo(remote.backendId ? { id: remote.backendId } : { remote: remote.name }, remote.name), "tint");
+      use.disabled = running;
+      row.append(use);
+      if (remote.backendId) {
+        const mirror = cloudButton(mirrored ? "cloudMirrorRemove" : "cloudMirrorAdd", [], () => cloudPost("/api/cloud/mirrors", { action: mirrored ? "remove" : "add", id: remote.backendId }), "quiet");
+        mirror.disabled = running;
+        row.append(mirror);
+      }
       row.append(cloudButton("cloudDisconnect", [], () => disconnectRemote(remote.name), "quiet"));
     }
     return row;
@@ -3064,7 +3109,12 @@ async function loadCloud() {
     const info = await api("/api/cloud");
     renderCloud(info);
     if (wasRunning && info.task && info.task.state === "failed") toast({ title: t("cloudTitle"), error: { code: "failed", message: info.task.message || "" }, tone: "error" });
-    else if (wasRunning && info.task && info.task.state === "done") toast({ title: t("cloudTaskDone"), tone: "ok" });
+    else if (wasRunning && info.task && info.task.state === "done" && info.task.action === "migrate") {
+      toast({ title: info.task.migrated ? t("cloudMigrated", migratingTo || info.task.backendId || "", info.task.copied || 0) : t("cloudSwitched", migratingTo || info.task.backendId || ""), tone: "ok" });
+      migratingTo = null;
+      refresh();
+    } else if (wasRunning && info.task && info.task.state === "done") toast({ title: t("cloudTaskDone"), tone: "ok" });
+    if (wasRunning && info.task && info.task.state !== "running") migratingTo = null;
   } catch (error) {
     if (error.code !== "unauthorized") renderCloud(null);
   }
@@ -3092,12 +3142,16 @@ async function disconnectRemote(name) {
 
 async function useRepo(target, label) {
   if (!confirm(t("cloudUseConfirm", label, (cloudState && cloudState.appsHere) || 0))) return;
-  const result = await cloudPost("/api/cloud/use", target);
-  if (result) {
-    toast({ title: t("cloudSwitched", label), tone: "ok" });
-    refresh();
-  }
+  // Always move the repo's contents first; the server switches only after every copy checks out,
+  // and keeps the old repo as a backup.
+  migratingTo = label;
+  const result = await cloudPost("/api/cloud/use", Object.assign({}, target, { migrate: true, keepOldAsMirror: true }));
+  if (!result) { migratingTo = null; return; }
+  clearTimeout(cloudPoll);
+  cloudPoll = setTimeout(loadCloud, 1000);
 }
+
+let migratingTo = null;
 
 async function showOpenListPassword(event) {
   const button = event.currentTarget;

@@ -812,11 +812,13 @@ public struct ManagementActions {
                 guard let path = options.path else { throw DisklesslyError.usage("pack needs the app path") }
                 progress.phase("pack")
                 _ = try engine.pack(path)
+                MirrorAutoSync.kick(engine)
                 return
             }
             if kind == .offloadfile {
                 guard let path = options.path else { throw DisklesslyError.usage("offload needs the file path") }
                 _ = try engine.offloadFile(path) { progress.phase($0) }
+                MirrorAutoSync.kick(engine)
                 return
             }
             if kind.isDev {

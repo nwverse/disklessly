@@ -173,6 +173,8 @@ final class BackendTests: XCTestCase {
         let restart = try backend.getResumable("images/a.dmg", offset: 4)
         XCTAssertTrue(restart.restart)
         XCTAssertEqual(restart.data, bytes)
+        script.steps = [("PROPFIND", HTTPResponse(status: 207, body: listXML))]
+        XCTAssertEqual(try backend.entries("images"), [BackendEntry(name: "a.dmg", isDirectory: false, size: 26)])
         XCTAssertThrowsError(try backend.delete("")) { error in XCTAssertEqual((error as? DisklesslyError)?.exitCode, 2) }
         let offline = WebDAVBackend(baseURL: URL(string: "http://127.0.0.1:9/dav/")!, user: nil, password: nil, transport: OfflineHTTP())
         XCTAssertThrowsError(try offline.stat("images/a.dmg")) { error in XCTAssertEqual((error as? DisklesslyError)?.exitCode, 4) }

@@ -221,6 +221,17 @@ public protocol StorageBackend {
     /// Local directory for file-backed backends. Nil for HTTP backends.
     func localRoot() -> URL?
     func ensureCollection(_ path: String) throws
+    /// Children of `path` with their kind (file or folder) and, when cheap, size.
+    /// `list` gives only names; repo copies (`RepoCopier`) need to know what to descend into.
+    func entries(_ path: String) throws -> [BackendEntry]
+}
+
+/// One child of a backend folder. `size` is nil when the listing does not carry it.
+public struct BackendEntry: Equatable {
+    public var name: String
+    public var isDirectory: Bool
+    public var size: UInt64?
+    public init(name: String, isDirectory: Bool, size: UInt64? = nil) { self.name = name; self.isDirectory = isDirectory; self.size = size }
 }
 
 extension StorageBackend {
@@ -253,6 +264,19 @@ extension StorageBackend {
     public func localRoot() -> URL? { nil }
     public func ensureCollection(_ path: String) throws {
         throw DisklesslyError.unsupported("this backend has no local directory")
+    }
+    /// Fallback for backends without typed listings: a child that lists children of
+    /// its own is a folder; one that cannot be listed, or lists only itself, is a file.
+    public func entries(_ path: String) throws -> [BackendEntry] {
+        let prefix = path.isEmpty ? "" : path.hasSuffix("/") ? path : path + "/"
+        return try list(path).map { name in
+            let child = prefix + name
+            if let inner = try? list(child), !inner.isEmpty, inner != [name] {
+                return BackendEntry(name: name, isDirectory: true)
+            }
+            if let info = try? stat(child) { return BackendEntry(name: name, isDirectory: false, size: info.size) }
+            return BackendEntry(name: name, isDirectory: true)
+        }
     }
 }
 public struct FileLock {
@@ -371,6 +395,18 @@ public struct LocalFolderBackend: StorageBackend {
             }
         }
         return try Self.names(in: directory, coordinated: false)
+    }
+
+    public func entries(_ path: String) throws -> [BackendEntry] {
+        let directory = try url(path)
+        return try list(path).map { name in
+            let child = directory.appendingPathComponent(name)
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(atPath: child.path, isDirectory: &isDirectory)
+            if exists && isDirectory.boolValue { return BackendEntry(name: name, isDirectory: true) }
+            let size = (try? FileManager.default.attributesOfItem(atPath: child.path)[.size] as? NSNumber)?.uint64Value
+            return BackendEntry(name: name, isDirectory: false, size: size)
+        }
     }
 
     public func stat(_ path: String) throws -> BackendStat? {

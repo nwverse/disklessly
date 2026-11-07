@@ -33,13 +33,49 @@ extension ManagementUI {
                 try drives.disconnect(remote)
                 var updated = engine
                 updated.config.backends.removeAll { ids.contains($0.id) }
+                updated.config.mirrorBackendIds.removeAll { ids.contains($0) }
                 try updated.saveConfig()
                 context.configChanged(updated.config)
                 return .json(["ok": true, "cloud": cloudObject(updated, drives: drives, openlist: openlist, context: context)])
             } catch {
                 return failure(error, status: 400)
             }
+        case ("POST", "/api/cloud/use") where body["migrate"] as? Bool == true:
+            return migrateRepo(engine: engine, body: body, drives: drives, openlist: openlist, context: context)
+        case ("POST", "/api/cloud/mirrors"):
+            let id = body["id"] as? String ?? ""
+            var updated = engine
+            do {
+                switch body["action"] as? String ?? "add" {
+                case "add": try updated.addMirror(id)
+                case "remove": try updated.removeMirror(id)
+                default: return failure(code: "usage", message: "action must be add or remove", status: 400)
+                }
+            } catch {
+                return failure(error, status: 400)
+            }
+            context.configChanged(updated.config)
+            return .json(["ok": true, "cloud": cloudObject(updated, drives: drives, openlist: openlist, context: context)])
+        case ("POST", "/api/cloud/mirrors/sync"):
+            guard !engine.config.mirrorBackendIds.isEmpty else { return failure(code: "usage", message: "no mirrors to sync", status: 400) }
+            let started = context.cloud.startDetailed("mirror-sync") { report in
+                var current = engine
+                if let latest = context.updatedConfig() { current.config = latest }
+                let results = try current.syncMirrors { report($0.dictionary) }
+                let rows: [[String: Any]] = results.keys.sorted().map { id in
+                    var row = results[id]!.dictionary
+                    row["id"] = id
+                    return row
+                }
+                return ["mirrors": rows, "allOk": results.values.allSatisfy(\.ok)]
+            }
+            return started ? .json(["ok": true, "cloud": cloudObject(engine, drives: drives, openlist: openlist, context: context)], status: 202)
+                : failure(code: "busy", message: "another cloud task is running", status: 409)
         case ("POST", "/api/cloud/use"):
+            let task = context.cloud.snapshot()
+            if task["action"] as? String == "migrate", task["state"] as? String == "running" {
+                return failure(code: "busy", message: "the repo is being moved; wait for it to finish", status: 409)
+            }
             let id = body["id"] as? String ?? ""
             var updated = engine
             if let remote = body["remote"] as? String {
@@ -103,6 +139,40 @@ extension ManagementUI {
         object["defaultKind"] = ICloudFolderBackend.looksLikeICloud(URL(fileURLWithPath: engine.config.repoPath)) ? "icloud" : "local"
         object["backends"] = engine.config.backends.map { ["id": $0.id, "type": $0.type, "url": $0.url ?? ""] }
         object["appsHere"] = engine.appsOnActiveRepo().count
+        object["activeId"] = engine.config.activeRepoId
+        object["mirrors"] = engine.mirrorListing()
         return object
+    }
+
+    /// `POST /api/cloud/use` with `migrate: true`: copy the current repo onto the new one
+    /// as a cloud task, then switch. The config stays on the old repo if anything fails.
+    static func migrateRepo(engine: DisklesslyEngine, body: [String: Any], drives: CloudDrives, openlist: OpenListService, context: ManagementUIContext) -> UIResponse {
+        var target = body["id"] as? String ?? ""
+        if let remote = body["remote"] as? String {
+            guard (try? drives.remotes())?.contains(remote) == true else { return failure(code: "usage", message: "unknown remote: \(remote)", status: 400) }
+            do {
+                let endpoint = try drives.endpoint(remote: remote)
+                try store(endpoint, engine: engine, context: context)
+                target = endpoint.id
+            } catch {
+                return failure(error, status: 400)
+            }
+        }
+        var current = engine
+        if let latest = context.updatedConfig() { current.config = latest }
+        guard current.config.knowsRepo(target) else { return failure(code: "usage", message: "unknown backend: \(target)", status: 400) }
+        guard target != current.config.activeRepoId else { return failure(code: "usage", message: "\(target) is already the active repo", status: 400) }
+        let keep = body["keepOldAsMirror"] as? Bool ?? false
+        let started = context.cloud.startDetailed("migrate") { report in
+            var engine = current
+            let result = try engine.switchRepo(to: target, migrate: true, keepOldAsMirror: keep, latest: { context.updatedConfig() }) { state in
+                report(state.dictionary)
+            }
+            context.configChanged(engine.config)
+            _ = context.health.current(engine, fresh: true)
+            return result.dictionary
+        }
+        return started ? .json(["ok": true, "taskId": context.cloud.taskId ?? "", "cloud": cloudObject(current, drives: drives, openlist: openlist, context: context)], status: 202)
+            : failure(code: "busy", message: "another cloud task is running", status: 409)
     }
 }
