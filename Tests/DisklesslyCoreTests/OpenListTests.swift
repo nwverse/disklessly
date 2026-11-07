@@ -60,6 +60,8 @@ final class OpenListTests: XCTestCase {
         try backend.put("images/a.dmg", data: bytes)
         XCTAssertEqual(try backend.list("images"), ["a.dmg"])
         XCTAssertEqual(try backend.stat("images/a.dmg")?.size, 26)
+        XCTAssertEqual(try backend.entries(""), [BackendEntry(name: "images", isDirectory: true)])
+        XCTAssertEqual(try backend.entries("images"), [BackendEntry(name: "a.dmg", isDirectory: false, size: 26)])
         XCTAssertEqual(try store.load(service: BackendCatalog.keychainService, account: "openlist-token:openlist:ol"), "openlist-token-fixture")
         XCTAssertFalse(String(decoding: try JSONEncoder().encode(BackendEndpoint(id: "ol", type: "openlist", user: "alice", url: "http://127.0.0.1:\(port)/", root: "/repo")), as: UTF8.self).contains(secret))
         let destination = cache.appendingPathComponent("images/a.dmg")

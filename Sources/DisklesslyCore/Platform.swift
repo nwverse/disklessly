@@ -23,7 +23,7 @@ public enum PlatformCommands {
     /// Commands a Linux build runs. `hooks` is the hidden placeholder kept for old scripts.
     public static let linux: Set<String> = [
         "help", "--help", "-h", "version", "init", "list", "status",
-        "sessions", "ui", "backend", "devices", "license", "hooks",
+        "sessions", "ui", "backend", "repo", "devices", "license", "hooks",
     ]
 
     /// Commands that exist but only on macOS. Anything else is an unknown command.
@@ -36,6 +36,6 @@ public enum PlatformCommands {
     /// The refusal for `command` on `platform`, or nil when it may run (or is unknown).
     public static func refusal(_ command: String, on platform: HostPlatform) -> DisklesslyError? {
         guard platform != .macOS, macOSOnly.contains(command) else { return nil }
-        return .unsupported("\(command) is macOS only. On Linux disklessly offers sessions, ui, backend, devices, license, init, list, status, and version; see docs/linux.md")
+        return .unsupported("\(command) is macOS only. On Linux disklessly offers sessions, ui, backend, repo, devices, license, init, list, status, and version; see docs/linux.md")
     }
 }

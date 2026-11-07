@@ -158,6 +158,7 @@ public struct MountedShareBackend: StorageBackend {
     }
 
     public func list(_ path: String) throws -> [String] { try online(); return try folder.list(path) }
+    public func entries(_ path: String) throws -> [BackendEntry] { try online(); return try folder.entries(path) }
     public func stat(_ path: String) throws -> BackendStat? { try online(); return try folder.stat(path) }
     public func get(_ path: String, range: Range<UInt64>?) throws -> Data { try online(); return try folder.get(path, range: range) }
     public func put(_ path: String, data: Data) throws { try online(); try folder.put(path, data: data) }

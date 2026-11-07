@@ -22,6 +22,9 @@ public struct RuntimeConfig: Codable {
     public var restoreImageFormat: String = "ULMO"
     public var backends: [BackendEndpoint] = []
     public var activeBackendId: String?
+    /// Extra copies of the repo (`backends` ids, or `default` for the folder at `repoPath`).
+    /// Reads fail over to them; `repo mirror sync` fills them. Never holds the active repo.
+    public var mirrorBackendIds: [String] = []
     /// codesign identity. `-` is ad-hoc. `DISKLESSLY_SIGN_IDENTITY` overrides this at pack time.
     public var signIdentity: String = "-"
     /// Files untouched for this many days are cold-tier candidates. The 24 hour guard still applies.
@@ -41,7 +44,7 @@ public struct RuntimeConfig: Codable {
     public init(repoPath: String, cacheDir: String, stateDir: String, mountRoot: String, stubDir: String) { self.repoPath=repoPath; self.cacheDir=cacheDir; self.stateDir=stateDir; self.mountRoot=mountRoot; self.stubDir=stubDir }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, restoreImageFormat, backends, activeBackendId, signIdentity, sessionColdDays, sessionRoots, sessionHome, sessionSegmentMaxBytes, sessionSoloBytes, sessionMaxFileBytes, sessionEncryption, imageEncryption
+        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, restoreImageFormat, backends, activeBackendId, mirrorBackendIds, signIdentity, sessionColdDays, sessionRoots, sessionHome, sessionSegmentMaxBytes, sessionSoloBytes, sessionMaxFileBytes, sessionEncryption, imageEncryption
     }
 
     public init(from decoder: Decoder) throws {
@@ -59,6 +62,7 @@ public struct RuntimeConfig: Codable {
         restoreImageFormat = try container.decodeIfPresent(String.self, forKey: .restoreImageFormat) ?? "ULMO"
         backends = try container.decodeIfPresent([BackendEndpoint].self, forKey: .backends) ?? []
         activeBackendId = try container.decodeIfPresent(String.self, forKey: .activeBackendId)
+        mirrorBackendIds = try container.decodeIfPresent([String].self, forKey: .mirrorBackendIds) ?? []
         signIdentity = try container.decodeIfPresent(String.self, forKey: .signIdentity) ?? "-"
         sessionColdDays = try container.decodeIfPresent(Int.self, forKey: .sessionColdDays) ?? 14
         sessionRoots = try container.decodeIfPresent([SessionRoot].self, forKey: .sessionRoots) ?? []
@@ -85,6 +89,7 @@ public struct RuntimeConfig: Codable {
         try container.encode(restoreImageFormat, forKey: .restoreImageFormat)
         try container.encode(backends, forKey: .backends)
         try container.encodeIfPresent(activeBackendId, forKey: .activeBackendId)
+        if !mirrorBackendIds.isEmpty { try container.encode(mirrorBackendIds, forKey: .mirrorBackendIds) }
         try container.encode(signIdentity, forKey: .signIdentity)
         try container.encode(sessionColdDays, forKey: .sessionColdDays)
         try container.encode(sessionRoots, forKey: .sessionRoots)
@@ -179,6 +184,15 @@ public struct RuntimeConfig: Codable {
     public mutating func store(_ endpoint: BackendEndpoint) {
         backends.removeAll { $0.id == endpoint.id }
         backends.append(endpoint)
+    }
+
+    /// Id that names the folder at `repoPath` (the repo when `activeBackendId` is nil).
+    public static let defaultRepoId = "default"
+
+    /// `activeBackendId` when it names a known backend, else `default`.
+    public var activeRepoId: String {
+        if let id = activeBackendId, backends.contains(where: { $0.id == id }) { return id }
+        return Self.defaultRepoId
     }
 
     /// Back to the repo at `repoPath` (iCloud Drive or a local folder).
@@ -301,9 +315,27 @@ public struct DisklesslyEngine {
         self.packUsageOverride = nil
         self.hasherOverride = nil
     }
+    /// The active repo. With mirrors configured, reads fail over to them (`FailoverBackend`).
     public func openBackend() throws -> any StorageBackend {
+        let primary = try openPrimaryBackend()
+        let mirrors = config.mirrorBackendIds.filter { $0 != config.activeRepoId }
+        guard !mirrors.isEmpty else { return primary }
+        let engine = self
+        return FailoverBackend(primary: primary, mirrors: mirrors.map { id in (id: id, open: { try engine.openRepo(id: id) }) })
+    }
+
+    /// The active repo alone, without mirror failover. Copies and migrations use this.
+    public func openPrimaryBackend() throws -> any StorageBackend {
         if let backendOverride { return backendOverride }
-        if let id = config.activeBackendId, let endpoint = config.backends.first(where: { $0.id == id }) {
+        return try openRepo(id: config.activeRepoId)
+    }
+
+    /// A repo by id: a `backends` entry, or `default` for the folder at `repoPath`.
+    public func openRepo(id: String) throws -> any StorageBackend {
+        if id != RuntimeConfig.defaultRepoId {
+            guard let endpoint = config.backends.first(where: { $0.id == id }) else {
+                throw DisklesslyError.usage("unknown backend: \(id)")
+            }
             return try BackendFactory.open(endpoint, secrets: secrets, opener: shareOpener)
         }
         let root = URL(fileURLWithPath: config.repoPath)

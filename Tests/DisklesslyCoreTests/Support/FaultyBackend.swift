@@ -44,6 +44,12 @@ public final class FaultyBackend: StorageBackend {
         return try inner.list(path)
     }
 
+    public func entries(_ path: String) throws -> [BackendEntry] {
+        note("list", path)
+        try reject(failList, path)
+        return try inner.entries(path)
+    }
+
     public func stat(_ path: String) throws -> BackendStat? {
         note("stat", path)
         try reject(failStat, path)

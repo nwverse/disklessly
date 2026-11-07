@@ -224,6 +224,20 @@ public struct WebDAVBackend: StorageBackend {
         return names(in: response.body, requested: url)
     }
 
+    public func entries(_ path: String) throws -> [BackendEntry] {
+        let url = try itemURL(path)
+        let response = try call(method: "PROPFIND", url: url, headers: ["Depth": "1", "Content-Type": "application/xml"], body: propfindBody)
+        if response.status == 404 { return [] }
+        try expect(response, ok: [207, 200])
+        return WebDAVXML.responses(response.body).compactMap { item -> BackendEntry? in
+            if isSelf(item.href, requested: url) { return nil }
+            let href = item.href.removingPercentEncoding ?? item.href
+            let name = (href as NSString).lastPathComponent
+            if name.isEmpty || name == "/" { return nil }
+            return BackendEntry(name: name, isDirectory: item.isCollection, size: item.isCollection ? nil : item.size)
+        }.sorted { $0.name < $1.name }
+    }
+
     public func stat(_ path: String) throws -> BackendStat? {
         let url = try itemURL(path)
         let response = try call(method: "PROPFIND", url: url, headers: ["Depth": "0", "Content-Type": "application/xml"], body: propfindBody)

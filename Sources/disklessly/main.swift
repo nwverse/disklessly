@@ -51,6 +51,8 @@ Xcode simulators
 
 Repos and Macs
   backend add smb|nfs|webdav|openlist|rclone ... | backend list | backend use ID|default
+  repo migrate --to ID|default [--keep-old-as-mirror]   copy this repo there, then switch
+  repo mirror [list] | repo mirror add ID | repo mirror remove ID | repo mirror sync
   cloud [list] | cloud connect gdrive|dropbox|onedrive|box|pcloud [--name N] [--root DIR] [--use]
   cloud disconnect NAME | rclone ARGS...   (bundled rclone with Disklessly's own config)
   openlist status|install [--use]|password|start|stop|uninstall [--purge]
@@ -97,6 +99,7 @@ Dashboard
 Repos and machines
   init [--root DIR] [--cache-dir DIR]
   backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
+  repo migrate --to ID|default [--keep-old-as-mirror] | repo mirror [list]|add ID|remove ID|sync
   devices [list] | devices rename NAME | devices forget DEVICEID --yes
   list | status                   images in the repo (offloaded from Macs)
   license [status] | license activate CODE | deactivate
@@ -664,6 +667,66 @@ do {
         default:
             throw DisklesslyError.usage("Unknown backend command: \(sub)")
         }
+    case "repo":
+        let sub = args.first ?? ""
+        if !args.isEmpty { args.removeFirst() }
+        func report(_ state: RepoCopyProgress) {
+            guard !json else { return }
+            let mib = { (bytes: UInt64) in String(format: "%.1f", Double(bytes) / 1_048_576) }
+            let label = state.target.map { "\($0): " } ?? ""
+            fputs("disklessly: \(label)\(state.phase) \(state.filesDone)/\(state.filesTotal) files, \(mib(state.bytesDone))/\(mib(state.bytesTotal)) MiB \(state.currentPath ?? "")\n", stderr)
+        }
+        switch sub {
+        case "migrate":
+            var target: String?, keep = false, migrate = true
+            while let flag = args.first {
+                args.removeFirst()
+                switch flag {
+                case "--to":
+                    guard let value = args.first else { throw DisklesslyError.usage("--to requires a backend id or default") }
+                    args.removeFirst()
+                    target = value
+                case "--keep-old-as-mirror": keep = true
+                case "--no-copy": migrate = false
+                default: throw DisklesslyError.usage("Unknown option: \(flag)")
+                }
+            }
+            guard let target else { throw DisklesslyError.usage("repo migrate requires --to ID|default") }
+            let result = try engine.switchRepo(to: target, migrate: migrate, keepOldAsMirror: keep, progress: report)
+            config = engine.config
+            say(result.dictionary, result.migrated
+                ? "Copied \(result.sync.copied.count) object(s) (\(result.sync.skipped.count) already there) and switched to \(target)\(result.keptAsMirror.map { "; \($0) is kept as a mirror" } ?? "")"
+                : "Switched to \(target); the old repo had nothing to copy")
+        case "mirror", "mirrors":
+            let action = args.first ?? "list"
+            if !args.isEmpty { args.removeFirst() }
+            switch action {
+            case "list":
+                let rows = engine.mirrorListing()
+                say(["ok": true, "active": config.activeRepoId, "mirrors": rows],
+                    rows.isEmpty ? "no mirrors; add one with disklessly repo mirror add ID" : rows.map { row in
+                        let last = row["lastSync"] as? [String: Any]
+                        let when = last.map { "last sync \($0["lastSyncAt"] ?? "") \(($0["ok"] as? Bool) == true ? "ok" : "failed")" } ?? "never synced"
+                        return "\(row["id"] ?? "")  \(row["type"] ?? "")  \(row["url"] ?? "")  \(when)"
+                    }.joined(separator: "\n"))
+            case "add", "remove":
+                guard let id = args.first else { throw DisklesslyError.usage("repo mirror \(action) requires a backend id (or default)") }
+                if action == "add" { try engine.addMirror(id) } else { try engine.removeMirror(id) }
+                config = engine.config
+                say(["ok": true, "mirrors": config.mirrorBackendIds], action == "add" ? "\(id) is now a mirror; disklessly repo mirror sync copies the repo onto it" : "\(id) is no longer a mirror; its files are untouched")
+            case "sync":
+                let results = try engine.syncMirrors(progress: report)
+                let rows: [[String: Any]] = results.keys.sorted().map { id in var row = results[id]!.dictionary; row["id"] = id; return row }
+                say(["ok": results.values.allSatisfy(\.ok), "mirrors": rows], rows.map { row in
+                    "\(row["id"] ?? ""): \((row["ok"] as? Bool) == true ? "ok" : "failed") copied \(row["copied"] ?? 0), unchanged \(row["skipped"] ?? 0)\((row["message"] as? String).map { " - \($0)" } ?? "")"
+                }.joined(separator: "\n"))
+                if !results.values.allSatisfy(\.ok) { throw DisklesslyError.backend("one or more mirrors did not sync") }
+            default:
+                throw DisklesslyError.usage("repo mirror takes list, add ID, remove ID, or sync")
+            }
+        default:
+            throw DisklesslyError.usage("repo takes migrate --to ID or mirror list|add|remove|sync")
+        }
     case "cloud":
         let drives = CloudDrives(stateDir: config.stateDir)
         let sub = args.first ?? "list"
@@ -711,6 +774,7 @@ do {
             }
             try drives.disconnect(remote)
             config.backends.removeAll { ids.contains($0.id) }
+            config.mirrorBackendIds.removeAll { ids.contains($0) }
             engine.config = config
             try engine.saveConfig()
             say(["ok": true, "removed": ids], "Disconnected \(remote); its files on the drive are untouched")

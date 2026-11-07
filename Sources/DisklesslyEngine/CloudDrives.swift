@@ -144,15 +144,29 @@ public final class CloudTaskRunner {
 
     /// False when a task is already running.
     public func start(_ action: String, work: @escaping (_ progress: @escaping (String) -> Void) throws -> [String: Any]) -> Bool {
+        startDetailed(action) { report in
+            try work { phase in report(["phase": phase]) }
+        }
+    }
+
+    /// Like `start`, but `report` takes fields: `phase` sets the task's phase and the
+    /// rest replace its `progress` object (bytes and files done, current path).
+    /// Each task gets an `id`, which the snapshot keeps after the task ends.
+    public func startDetailed(_ action: String, work: @escaping (_ report: @escaping ([String: Any]) -> Void) throws -> [String: Any]) -> Bool {
         lock.lock()
         if current["state"] as? String == "running" { lock.unlock(); return false }
-        current = ["action": action, "state": "running"]
+        let id = UUID().uuidString
+        current = ["action": action, "state": "running", "id": id]
         lock.unlock()
         Thread.detachNewThread { [weak self] in
-            var result: [String: Any] = ["action": action]
+            var result: [String: Any] = ["action": action, "id": id]
             do {
-                let extra = try work { phase in
-                    self?.lock.lock(); self?.current["phase"] = phase; self?.lock.unlock()
+                let extra = try work { fields in
+                    self?.lock.lock()
+                    if let phase = fields["phase"] { self?.current["phase"] = phase }
+                    let rest = fields.filter { $0.key != "phase" }
+                    if !rest.isEmpty { self?.current["progress"] = rest }
+                    self?.lock.unlock()
                 }
                 result.merge(extra) { $1 }
                 result["state"] = "done"
@@ -163,6 +177,12 @@ public final class CloudTaskRunner {
             self?.lock.lock(); self?.current = result; self?.lock.unlock()
         }
         return true
+    }
+
+    /// Id of the running or last task.
+    public var taskId: String? {
+        lock.lock(); defer { lock.unlock() }
+        return current["id"] as? String
     }
 
     public func snapshot() -> [String: Any] {

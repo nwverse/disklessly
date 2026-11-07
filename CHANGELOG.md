@@ -8,6 +8,14 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Moving to another repo takes the offloaded apps along: `disklessly repo migrate --to ID|default
+  [--keep-old-as-mirror]` (and `POST /api/cloud/use` with `"migrate": true`, run as a cloud task) copies every
+  object, including `repo.json` so the `repoId` and existing stubs stay valid, verifies the copy, and only then
+  switches. A failed or interrupted move leaves the config on the old repo; running it again resumes.
+- Repo mirrors: `mirrorBackendIds` in the config, `disklessly repo mirror add|remove|list|sync`, and
+  `POST /api/cloud/mirrors` / `/api/cloud/mirrors/sync`. Reads fail over to a mirror when the active repo is down
+  or lacks an object; writes go to the active repo only. The last sync of each mirror is kept in
+  `<stateDir>/mirrors.json` and listed in `GET /api/cloud` as `mirrors`.
 - Linux build of the CLI (`scripts/release-linux.sh` makes `disklessly-<ver>-linux-<arch>.tar.gz`). It runs
   `sessions` (with `--encrypt`), `ui` (sessions, disk usage, devices, license), `backend`, `devices`, `license`,
   `init`, `list`, `status`, and `version`; app commands exit 3 with "… is macOS only". XDG folders, secrets in the
