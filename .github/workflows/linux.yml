@@ -1,17 +1,27 @@
 name: Linux
 
+# Minutes budget: push runs only on main; branches are covered by their PR run,
+# so a branch with an open PR is no longer built twice. Docs-only changes skip CI.
 on:
   push:
+    branches: [main]
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   pull_request:
+    paths-ignore: ["**.md", "docs/**", "LICENSE"]
   workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push to the same PR or branch cancels the older run.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   linux-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 20
     strategy:
       matrix:
         swift: ["5.10", "6.1"]

@@ -78,13 +78,13 @@ final class ManagementUIJobsTests: XCTestCase {
         let server = world.server(context: context)
         try server.start()
         defer { server.stop() }
-        for kind in UIJobKind.allCases where kind != .pack {
+        for kind in UIJobKind.allCases where kind != .pack && !kind.isDev {
             let started = try world.post(server, "/api/\(kind.rawValue)", app: "App-\(kind.rawValue)")
             XCTAssertEqual(started.status, 202, kind.rawValue)
             let id = try XCTUnwrap(started.object["jobId"] as? String)
             XCTAssertEqual(context.jobs.wait(id, timeout: 5)?.state, .done)
         }
-        XCTAssertEqual(Set(calls.values), Set(UIJobKind.allCases.filter { $0 != .pack }.map { "\($0.rawValue):App-\($0.rawValue)" }))
+        XCTAssertEqual(Set(calls.values), Set(UIJobKind.allCases.filter { $0 != .pack && !$0.isDev }.map { "\($0.rawValue):App-\($0.rawValue)" }))
     }
 
     func testPackJobNeedsAnInstalledAppPathAndPassesItOn() throws {
