@@ -16,6 +16,17 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `POST /api/cloud/mirrors` / `/api/cloud/mirrors/sync`. Reads fail over to a mirror when the active repo is down
   or lacks an object; writes go to the active repo only. The last sync of each mirror is kept in
   `<stateDir>/mirrors.json` and listed in `GET /api/cloud` as `mirrors`.
+- Session tiering finds more agents: Codex `archived_sessions`, Oh My Pi, Gemini CLI and Qwen chats (`.json`),
+  Factory, Kimi, Copilot CLI, Goose (JSONL era), Grok, Mistral Vibe, Kiro, OpenClaw, Prime, and Cursor agent
+  transcripts, plus Claude Code's XDG folder on Linux. Roots take extra `suffixes` and a `requireComponent`
+  folder; credential, token, settings, state, and SQLite names are never tiered. Claude desktop's session
+  folders hold rewritten state JSON, not transcripts, and are left alone.
+- `DisklesslyEngine.sessionPlan(days:)`: a read-only per-agent dry run (files, bytes, cold files and bytes,
+  open, too large, oldest and newest), and `sessionApply(tools:)` to archive only the agents a user picked.
+- Archived sessions get a deterministic short digest (user prompts and final answers, at most 8 KiB) in the
+  index and in `stateDir/sessions/digests/<id>.md`; `sessions search` matches it. The archived transcript
+  is unchanged. The session index moves to schema 3 and migrates version 2 in place.
+
 - Linux build of the CLI (`scripts/release-linux.sh` makes `disklessly-<ver>-linux-<arch>.tar.gz`). It runs
   `sessions` (with `--encrypt`), `ui` (sessions, disk usage, devices, license), `backend`, `devices`, `license`,
   `init`, `list`, `status`, and `version`; app commands exit 3 with "… is macOS only". XDG folders, secrets in the

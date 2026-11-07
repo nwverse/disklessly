@@ -8,19 +8,81 @@ import Darwin
 public struct SessionRoot: Codable, Equatable {
     public var tool: String
     public var directory: String
+    /// Primary file suffix. Kept for configs written before `suffixes` existed.
     public var suffix: String
-    public init(tool: String, directory: String, suffix: String = ".jsonl") {
+    /// Extra suffixes, e.g. `[".jsonl", ".json"]`. Nil means `[suffix]`.
+    public var suffixes: [String]?
+    /// A directory name that must appear between `directory` and the file, e.g.
+    /// `chats` for `~/.gemini/tmp/<hash>/chats/session-*.json`. Nil accepts any depth.
+    public var requireComponent: String?
+    public init(tool: String, directory: String, suffix: String = ".jsonl", suffixes: [String]? = nil, requireComponent: String? = nil) {
         self.tool = tool
         self.directory = directory
         self.suffix = suffix
+        self.suffixes = suffixes
+        self.requireComponent = requireComponent
     }
 
-    public static func defaults(home: String) -> [SessionRoot] {
-        [
+    /// Every suffix this root accepts.
+    public var allSuffixes: [String] {
+        var out = [suffix]
+        for extra in suffixes ?? [] where !out.contains(extra) { out.append(extra) }
+        return out
+    }
+
+    /// Whether `path` (canonical, inside `canonicalDirectory`) is a transcript of this root.
+    public func accepts(_ path: String, canonicalDirectory: String) -> Bool {
+        guard allSuffixes.contains(where: { path.hasSuffix($0) }) else { return false }
+        guard let component = requireComponent, !component.isEmpty else { return true }
+        let relative = path.hasPrefix(canonicalDirectory + "/") ? String(path.dropFirst(canonicalDirectory.count + 1)) : path
+        let parts = relative.split(separator: "/").dropLast()
+        return parts.contains { $0 == component }
+    }
+
+    /// Built-in roots for the coding agents Disklessly knows. Only append-only,
+    /// file-per-session transcripts are listed. Agents that keep sessions only in
+    /// SQLite (Crush, Hermes, Devin, Shelley, Goose 1.20+, OpenCode 1.2+), one file
+    /// per message (OpenCode `storage/`), or mutable state JSON (Claude desktop's
+    /// `claude-code-sessions` and `local-agent-mode-sessions`) are not tiered.
+    public static func defaults(home: String, platform: HostPlatform = .current) -> [SessionRoot] {
+        var roots: [SessionRoot] = [
             SessionRoot(tool: "pi", directory: "\(home)/.pi/agent/sessions"),
             SessionRoot(tool: "claude", directory: "\(home)/.claude/projects"),
             SessionRoot(tool: "codex", directory: "\(home)/.codex/sessions"),
+            SessionRoot(tool: "codex", directory: "\(home)/.codex/archived_sessions"),
+            SessionRoot(tool: "omp", directory: "\(home)/.omp/agent/sessions"),
+            SessionRoot(tool: "gemini", directory: "\(home)/.gemini/tmp", suffix: ".json", suffixes: [".jsonl"], requireComponent: "chats"),
+            SessionRoot(tool: "factory", directory: "\(home)/.factory/sessions"),
+            SessionRoot(tool: "qwen", directory: "\(home)/.qwen/projects"),
+            SessionRoot(tool: "qwen", directory: "\(home)/.qwen/tmp", suffix: ".json", requireComponent: "chats"),
+            SessionRoot(tool: "kimi", directory: "\(home)/.kimi/sessions"),
+            SessionRoot(tool: "kimi", directory: "\(home)/.kimi-code/sessions"),
+            SessionRoot(tool: "copilot", directory: "\(home)/.copilot/session-state"),
+            SessionRoot(tool: "goose", directory: "\(home)/.local/share/goose/sessions"),
+            SessionRoot(tool: "goose", directory: "\(home)/.goose/sessions"),
+            SessionRoot(tool: "grok", directory: "\(home)/.grok/sessions"),
+            SessionRoot(tool: "vibe", directory: "\(home)/.vibe/logs/session"),
+            SessionRoot(tool: "kiro", directory: "\(home)/.kiro/sessions/cli"),
+            SessionRoot(tool: "openclaw", directory: "\(home)/.openclaw/agents", requireComponent: "sessions"),
+            SessionRoot(tool: "prime", directory: "\(home)/.prime/agent/sessions"),
+            SessionRoot(tool: "cursor", directory: "\(home)/.cursor/projects", requireComponent: "agent-transcripts"),
         ]
+        if platform == .linux {
+            // Claude Code honours XDG_CONFIG_HOME; its default spelling is listed too.
+            roots.append(SessionRoot(tool: "claude", directory: "\(home)/.config/claude-code/projects"))
+        }
+        return roots
+    }
+
+    /// Human label for a tool id. Unknown ids are returned as they are.
+    public static func label(tool: String) -> String {
+        let labels = [
+            "pi": "pi", "claude": "Claude Code", "codex": "Codex", "omp": "Oh My Pi", "gemini": "Gemini CLI",
+            "factory": "Factory Droid", "qwen": "Qwen Code", "kimi": "Kimi Code", "copilot": "Copilot CLI",
+            "goose": "Goose", "grok": "Grok", "vibe": "Mistral Vibe", "kiro": "Kiro CLI", "openclaw": "OpenClaw",
+            "prime": "Prime", "cursor": "Cursor agent",
+        ]
+        return labels[tool] ?? tool
     }
 }
 
@@ -172,11 +234,20 @@ public enum OpenFileProbe {
 public enum SessionTiering {
     public static let protectSeconds: TimeInterval = 24 * 60 * 60
 
+    /// True for anything that is not a session transcript: names other than
+    /// `.jsonl`/`.json`, credentials and tokens, sidecar settings, temp files,
+    /// and SQLite files. Such a file is never tiered, whatever the root says.
     public static func forbidden(_ path: String) -> Bool {
         let name = (path as NSString).lastPathComponent
-        if !name.hasSuffix(".jsonl") { return true }
-        let blocked = [".credentials.json", "auth.json", "config.toml", ".claude.json"]
+        if !name.hasSuffix(".jsonl") && !name.hasSuffix(".json") { return true }
+        let blocked = [".credentials.json", "auth.json", "config.toml", ".claude.json", "settings.json", "config.json", "state.json", "manifest.json", "sessions.json", "models.json"]
         if blocked.contains(name) { return true }
+        let lowerName = name.lowercased()
+        for word in ["auth", "token", "credential", "secret", "password", "apikey", "api_key", "api-key"] where lowerName.contains(word) {
+            return true
+        }
+        if lowerName.hasSuffix(".settings.json") || lowerName.hasSuffix(".meta.json") { return true }
+        if lowerName.hasPrefix(".") { return true }
         let lower = path.lowercased()
         if lower.contains(".sqlite") || lower.hasSuffix(".db") || lower.contains("state.vscdb") || lower.hasSuffix("-wal") || lower.hasSuffix("-shm") {
             return true
@@ -184,11 +255,11 @@ public enum SessionTiering {
         return false
     }
 
-    /// Cold when the file is a session JSONL, closed, unmodified for 24 hours, and
+    /// Cold when the file is a session transcript, closed, unmodified for 24 hours, and
     /// unmodified for `coldDays` (default 14). An open file or a secret path is never cold.
     public static func decide(_ candidate: SessionCandidate, now: Date, coldDays: Int) -> SessionDecision {
         if forbidden(candidate.path) {
-            return SessionDecision(candidate: candidate, cold: false, reason: "not a session jsonl")
+            return SessionDecision(candidate: candidate, cold: false, reason: "not a session transcript")
         }
         if candidate.open {
             return SessionDecision(candidate: candidate, cold: false, reason: "open")
@@ -235,7 +306,9 @@ public struct SessionIndexEntry: Codable, Equatable {
     public var archive: String
     public var member: String
     public var preview: String
-    public init(id: String, tool: String, path: String, sha256: String, size: UInt64, modified: Date, archive: String, member: String, preview: String) {
+    /// Short text digest (schema 3 index rows only).
+    public var digest: String?
+    public init(id: String, tool: String, path: String, sha256: String, size: UInt64, modified: Date, archive: String, member: String, preview: String, digest: String? = nil) {
         self.id = id
         self.tool = tool
         self.path = path
@@ -245,6 +318,7 @@ public struct SessionIndexEntry: Codable, Equatable {
         self.archive = archive
         self.member = member
         self.preview = preview
+        self.digest = digest
     }
 }
 
@@ -260,7 +334,7 @@ public struct SessionIndex: Codable, Equatable {
         let needle = query.lowercased()
         let canonicalQuery = query.hasPrefix("/") ? SessionPaths.canonical(query) : nil
         return entries.filter { entry in
-            if entry.id.lowercased().contains(needle) || entry.preview.lowercased().contains(needle) || entry.tool.lowercased().contains(needle) {
+            if entry.id.lowercased().contains(needle) || entry.preview.lowercased().contains(needle) || entry.tool.lowercased().contains(needle) || (entry.digest?.lowercased().contains(needle) ?? false) {
                 return true
             }
             if entry.path.lowercased().contains(needle) { return true }

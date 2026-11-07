@@ -258,6 +258,21 @@ const copy = {
     coldAfter: (n) => `${n} 天未用转冷`,
     offloadedCount: (n) => `已卸载 ${n} 个`,
     emptySessions: "还没有归档的会话",
+    sessionIntro: "扫描各个 AI 编程助手的会话记录。勾选后，久未打开的会话会把完整快照上传到仓库，本机只留一份短文本摘要，随时可以还原原文件。",
+    sessionPlanLine: (files, size, cold, coldSize) => `${files} 个会话，${size}；${cold} 个可转移（${coldSize}）`,
+    sessionPlanNone: "没找到 AI 编程助手的会话记录。",
+    sessionPlanAbsent: "这台 Mac 上没有",
+    sessionApply: "转移选中的冷会话",
+    sessionApplying: "正在转移…",
+    sessionConfirmTitle: (n, size) => `转移 ${n} 个冷会话（${size}）？`,
+    sessionConfirmBody: (agents) => `${agents}：完整会话文件打包上传到仓库，读回校验无误后才删除本机文件；本机保留短文本摘要，可以搜索和查看。需要时点「还原」把原文件放回原处。最近 24 小时改过或正在打开的会话不会动。`,
+    sessionApplied: (n, size) => `已转移 ${n} 个会话，腾出 ${size}`,
+    sessionFailed: "会话转移失败",
+    sessionDigest: "摘要",
+    sessionDigestHide: "收起",
+    sessionRestore: "还原",
+    sessionRestored: (path) => `已还原到 ${path}`,
+    sessionRestoreFailed: "还原失败",
     tiercold: "冷",
     daysAgo: (n) => (n <= 0 ? "今天" : `${n} 天前`),
     recommend: "值得卸载",
@@ -659,6 +674,21 @@ const copy = {
     coldAfter: (n) => `Cold after ${n} days`,
     offloadedCount: (n) => `${n} offloaded`,
     emptySessions: "No archived sessions",
+    sessionIntro: "Scans the session logs of AI coding agents. For the agents you tick, sessions not opened for a while go to the repo as a full snapshot, and this Mac keeps a short text digest. You can restore the original file any time.",
+    sessionPlanLine: (files, size, cold, coldSize) => `${files} sessions, ${size}; ${cold} can move (${coldSize})`,
+    sessionPlanNone: "No AI coding agent sessions found.",
+    sessionPlanAbsent: "Not on this Mac",
+    sessionApply: "Move selected cold sessions",
+    sessionApplying: "Moving…",
+    sessionConfirmTitle: (n, size) => `Move ${n} cold sessions (${size})?`,
+    sessionConfirmBody: (agents) => `${agents}: the full session files are packed and uploaded to the repo, read back and checked, and only then deleted here. This Mac keeps a short digest you can search and read. Restore puts the original file back. Sessions changed in the last 24 hours or open now are left alone.`,
+    sessionApplied: (n, size) => `Moved ${n} sessions, freed ${size}`,
+    sessionFailed: "Moving sessions failed",
+    sessionDigest: "Digest",
+    sessionDigestHide: "Hide",
+    sessionRestore: "Restore",
+    sessionRestored: (path) => `Restored to ${path}`,
+    sessionRestoreFailed: "Restore failed",
     tiercold: "Cold",
     daysAgo: (n) => (n <= 0 ? "today" : n === 1 ? "1 day ago" : `${n} days ago`),
     recommend: "Worth offloading",
@@ -1923,8 +1953,132 @@ function renderSessions(sessions) {
     const age = entry.ageDays != null ? Number(entry.ageDays) : Math.max(0, Math.floor((Date.now() - (Date.parse(entry.modified || "") || Date.now())) / 86400000));
     const ageNode = el("span", "session-age", t("daysAgo", age));
     item.append(ageNode);
+    const actions = el("span", "session-actions");
+    if (entry.hasDigest) {
+      const open = sessionDigestOpen.has(entry.id);
+      const toggle = el("button", "btn quiet", t(open ? "sessionDigestHide" : "sessionDigest"));
+      toggle.type = "button";
+      toggle.addEventListener("click", () => toggleSessionDigest(entry.id, sessions));
+      actions.append(toggle);
+    }
+    const restore = el("button", "btn outline", t("sessionRestore"));
+    restore.type = "button";
+    restore.disabled = sessionBusy();
+    restore.addEventListener("click", () => restoreSession(entry));
+    actions.append(restore);
+    item.append(actions);
+    if (sessionDigestOpen.has(entry.id)) item.append(el("pre", "session-digest", sessionDigestOpen.get(entry.id) || "…"));
     list.append(item);
   }
+}
+
+// Agent session plan: what each agent has, and what could move to the repo.
+let sessionPlan = null;
+let sessionPick = null; // Set of tool ids the user ticked; null until the plan first loads
+let sessionTimer = null;
+let sessionApplyBytes = 0;
+const sessionDigestOpen = new Map(); // entry id -> digest text
+
+function sessionBusy() {
+  return !!(sessionPlan && sessionPlan.task && sessionPlan.task.state === "running");
+}
+
+function renderSessionPlan() {
+  const box = document.querySelector("#sessions-plan");
+  if (!box) return;
+  box.removeAttribute("aria-busy");
+  box.replaceChildren();
+  if (!sessionPlan) return;
+  const tools = (sessionPlan.tools || []).filter((tool) => tool.present && tool.files > 0);
+  if (!tools.length) { box.append(el("p", "muted", t("sessionPlanNone"))); return; }
+  if (!sessionPick) sessionPick = new Set(tools.filter((tool) => tool.coldFiles > 0).map((tool) => tool.tool));
+  const busy = sessionBusy();
+  for (const tool of tools) {
+    const row = el("label", "session-plan-row");
+    const box2 = document.createElement("input");
+    box2.type = "checkbox";
+    box2.checked = sessionPick.has(tool.tool) && tool.coldFiles > 0;
+    box2.disabled = busy || tool.coldFiles === 0;
+    box2.addEventListener("change", () => { if (box2.checked) sessionPick.add(tool.tool); else sessionPick.delete(tool.tool); renderSessionPlan(); });
+    row.append(box2, el("strong", null, tool.label || tool.tool), el("span", "muted", t("sessionPlanLine", tool.files, bytes(tool.bytes), tool.coldFiles, bytes(tool.coldBytes))));
+    box.append(row);
+  }
+  const picked = tools.filter((tool) => sessionPick.has(tool.tool) && tool.coldFiles > 0);
+  const count = picked.reduce((n, tool) => n + tool.coldFiles, 0);
+  const size = picked.reduce((n, tool) => n + tool.coldBytes, 0);
+  const actions = el("div", "session-plan-actions");
+  const apply = el("button", "btn tint", t(busy ? "sessionApplying" : "sessionApply"));
+  apply.type = "button";
+  apply.disabled = busy || !count;
+  if (busy) apply.setAttribute("aria-busy", "true");
+  apply.addEventListener("click", () => askConfirm(
+    { title: ["sessionConfirmTitle", count, bytes(size)], body: ["sessionConfirmBody", picked.map((tool) => tool.label || tool.tool).join("、")], ok: "sessionApply", danger: true },
+    () => { sessionApplyBytes = size; applySessions(picked.map((tool) => tool.tool)); }));
+  actions.append(apply);
+  box.append(actions);
+}
+
+async function loadSessionPlan() {
+  clearTimeout(sessionTimer);
+  const before = sessionPlan && sessionPlan.task && sessionPlan.task.state;
+  try {
+    sessionPlan = await api("/api/sessions/plan");
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    sessionPlan = null;
+  }
+  renderSessionPlan();
+  const task = (sessionPlan && sessionPlan.task) || {};
+  if (task.state === "running") { sessionTimer = setTimeout(loadSessionPlan, 2000); return; }
+  if (before === "running") sessionTaskFinished(task);
+}
+
+function sessionTaskFinished(task) {
+  if (task.state === "failed") {
+    toast({ title: bi(task.action === "sessions-restore" ? "sessionRestoreFailed" : "sessionFailed"), error: { code: "failed", message: task.message || "" }, tone: "error" });
+  } else if (task.action === "sessions-restore") {
+    toast({ title: bi("sessionRestored", task.path || ""), tone: "ok" });
+  } else {
+    const moved = Math.max(0, (task.cold || []).length - (task.keptLocal || []).length);
+    toast({ title: bi("sessionApplied", moved, bytes(sessionApplyBytes)), tone: "ok" });
+  }
+  refresh();
+}
+
+async function applySessions(tools) {
+  try {
+    const started = await api("/api/sessions/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tools }) });
+    sessionPlan = Object.assign({}, sessionPlan, { task: started.task });
+    renderSessionPlan();
+    sessionTimer = setTimeout(loadSessionPlan, 1500);
+  } catch (error) {
+    if (error.code !== "unauthorized") toast({ title: bi("sessionFailed"), error: { code: error.code, message: error.message }, tone: "error" });
+  }
+}
+
+async function restoreSession(entry) {
+  try {
+    const started = await api("/api/sessions/restore", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id: entry.id }) });
+    sessionPlan = Object.assign({}, sessionPlan, { task: started.task });
+    renderSessionPlan();
+    sessionTimer = setTimeout(loadSessionPlan, 1500);
+  } catch (error) {
+    if (error.code !== "unauthorized") toast({ title: bi("sessionRestoreFailed"), error: { code: error.code, message: error.message }, tone: "error" });
+  }
+}
+
+async function toggleSessionDigest(id, sessions) {
+  if (sessionDigestOpen.has(id)) { sessionDigestOpen.delete(id); renderSessions(sessions); return; }
+  sessionDigestOpen.set(id, "");
+  renderSessions(sessions);
+  try {
+    const result = await api(`/api/sessions/digest?id=${encodeURIComponent(id)}`);
+    sessionDigestOpen.set(id, result.digest || "");
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    sessionDigestOpen.set(id, error.message || "");
+  }
+  renderSessions(sessions);
 }
 
 // ---- recommendations ------------------------------------------------------
@@ -2816,6 +2970,7 @@ async function load() {
   loadUsage();
   if (!filesData || filesData.state !== "scanning") loadFiles();
   loadDev();
+  if (!sessionBusy()) loadSessionPlan();
   if (appsSupported() && (!bigData || bigData.state !== "scanning")) loadBig();
 }
 
