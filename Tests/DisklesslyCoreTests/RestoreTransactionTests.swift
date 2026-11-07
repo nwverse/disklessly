@@ -49,6 +49,8 @@ final class RestoreWorld {
             stubDir: root.appendingPathComponent("Applications").path
         )
         config.detachDelaySeconds = 0
+        // CI runners and this Mac can have less free disk than the 15 GiB default floor.
+        config.minFreeBytes = 0
         let image = ImageManifest.Image(file: "", format: "ULMO", sha256: sha, size: UInt64(imageBytes.count), volumeName: "Foo", appPathInVolume: "Foo.app")
         manifest = ImageManifest(
             bundleId: bundleID,

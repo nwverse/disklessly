@@ -276,7 +276,19 @@ extension DisklesslyEngine {
 /// Is a file open, or anything inside a folder?
 enum OpenFiles {
     static func isOpen(_ path: String, folder: Bool) -> Bool {
-        guard let lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return false }
+        guard let lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            #if os(Linux)
+            // No lsof: the `/proc/<pid>/fd` links. When `/proc` is unreadable, treat it as open so nothing is moved.
+            guard let held = OpenFileProbe.procOpenPaths() else { return true }
+            let root = SessionPaths.canonical(path)
+            return held.contains { target in
+                let open = SessionPaths.canonical(target)
+                return open == root || (folder && open.hasPrefix(root + "/"))
+            }
+            #else
+            return false
+            #endif
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: lsof)
         process.arguments = folder ? ["-Fn", "+D", path] : ["-Fn", "--", path]

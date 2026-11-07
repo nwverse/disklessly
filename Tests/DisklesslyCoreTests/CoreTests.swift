@@ -39,7 +39,8 @@ final class CoreTests: XCTestCase {
         let root=FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer{try? FileManager.default.removeItem(at:root)}
         let repo=root.appendingPathComponent("repo"), cache=root.appendingPathComponent("cache")
-        let config=RuntimeConfig(repoPath:repo.path,cacheDir:cache.path,stateDir:root.appendingPathComponent("state").path,mountRoot:root.appendingPathComponent("mounts").path,stubDir:root.appendingPathComponent("apps").path)
+        var config=RuntimeConfig(repoPath:repo.path,cacheDir:cache.path,stateDir:root.appendingPathComponent("state").path,mountRoot:root.appendingPathComponent("mounts").path,stubDir:root.appendingPathComponent("apps").path)
+        config.minFreeBytes = 0
         let engine=DisklesslyEngine(config:config)
         try engine.initialize()
         let bytes=Data("published disk image bytes".utf8)
@@ -428,7 +429,8 @@ final class CoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let repo = root.appendingPathComponent("repo")
         let cache = root.appendingPathComponent("cache")
-        let config = RuntimeConfig(repoPath: repo.path, cacheDir: cache.path, stateDir: root.appendingPathComponent("state").path, mountRoot: root.appendingPathComponent("mounts").path, stubDir: root.appendingPathComponent("apps").path)
+        var config = RuntimeConfig(repoPath: repo.path, cacheDir: cache.path, stateDir: root.appendingPathComponent("state").path, mountRoot: root.appendingPathComponent("mounts").path, stubDir: root.appendingPathComponent("apps").path)
+        config.minFreeBytes = 0
         let engine = DisklesslyEngine(config: config)
         try engine.initialize()
         let bytes = Data("published disk image bytes".utf8)
@@ -454,7 +456,8 @@ final class CoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let repo = root.appendingPathComponent("repo")
         let cache = root.appendingPathComponent("cache")
-        let config = RuntimeConfig(repoPath: repo.path, cacheDir: cache.path, stateDir: root.appendingPathComponent("state").path, mountRoot: root.appendingPathComponent("mounts").path, stubDir: root.appendingPathComponent("apps").path)
+        var config = RuntimeConfig(repoPath: repo.path, cacheDir: cache.path, stateDir: root.appendingPathComponent("state").path, mountRoot: root.appendingPathComponent("mounts").path, stubDir: root.appendingPathComponent("apps").path)
+        config.minFreeBytes = 0
         let engine = DisklesslyEngine(config: config)
         try engine.initialize()
         let bytes = Data("published disk image bytes".utf8)
