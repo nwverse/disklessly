@@ -25,7 +25,7 @@ final class LegacyNameTests: XCTestCase {
         let fm = FileManager.default
         let home = fm.temporaryDirectory.appendingPathComponent("legacy-\(UUID().uuidString)").path
         defer { try? fm.removeItem(atPath: home) }
-        let fresh = RuntimeConfig.environment([:], home: home)
+        let fresh = RuntimeConfig.environment([:], home: home, platform: .macOS)
         XCTAssertEqual(fresh.stateDir, "\(home)/Library/Application Support/Disklessly")
         XCTAssertEqual(fresh.cacheDir, "\(home)/Library/Caches/Disklessly")
         XCTAssertEqual(fresh.mountRoot, "\(home)/Library/Caches/Disklessly/mnt")
@@ -33,14 +33,14 @@ final class LegacyNameTests: XCTestCase {
         for parent in ["Library/Application Support", "Library/Caches"] {
             try fm.createDirectory(atPath: "\(home)/\(parent)/256isenough", withIntermediateDirectories: true)
         }
-        let old = RuntimeConfig.environment([:], home: home)
+        let old = RuntimeConfig.environment([:], home: home, platform: .macOS)
         XCTAssertEqual(old.stateDir, "\(home)/Library/Application Support/256isenough")
         XCTAssertEqual(old.cacheDir, "\(home)/Library/Caches/256isenough")
         XCTAssertEqual(old.mountRoot, "\(home)/Library/Caches/256isenough/mnt")
 
         // Once the new folder exists it wins, and an explicit override always wins.
         try fm.createDirectory(atPath: "\(home)/Library/Application Support/Disklessly", withIntermediateDirectories: true)
-        XCTAssertEqual(RuntimeConfig.environment([:], home: home).stateDir, "\(home)/Library/Application Support/Disklessly")
-        XCTAssertEqual(RuntimeConfig.environment(["DISKLESSLY_STATE_DIR": "/tmp/x"], home: home).stateDir, "/tmp/x")
+        XCTAssertEqual(RuntimeConfig.environment([:], home: home, platform: .macOS).stateDir, "\(home)/Library/Application Support/Disklessly")
+        XCTAssertEqual(RuntimeConfig.environment(["DISKLESSLY_STATE_DIR": "/tmp/x"], home: home, platform: .macOS).stateDir, "/tmp/x")
     }
 }

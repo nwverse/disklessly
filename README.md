@@ -238,10 +238,36 @@ and backup cleanup).
 After upgrading, run `disklessly install-engine` and `disklessly stub refresh --app ID`
 for each packed app so existing stubs use the new engine.
 
+## Linux
+
+A Linux build of the CLI covers the parts that do not need macOS: coding-agent
+session archiving (`sessions`, including `--encrypt`), the disk usage map and
+dashboard (`ui`), `backend`, `devices`, `license`, `init`, `list`, `status`, and
+`version`. Offloading apps (`pack`, `launch`, `unpack`, `recommend`, stubs, `gc`,
+`doctor`, ...) is macOS only and exits 3 with "… is macOS only".
+
+```sh
+tar -xzf disklessly-<version>-linux-x86_64.tar.gz     # or -linux-aarch64
+sudo cp -R disklessly-<version>-linux-*/{bin,share} /usr/local/
+disklessly init && disklessly sessions                 # dry run: what would be archived
+disklessly ui --open
+```
+
+Keep `bin/` and `share/disklessly/web` side by side. The binary needs glibc 2.34 or
+later plus libsqlite3, libcurl, and libxml2, which servers and desktops already have
+(RHEL/Oracle/Rocky 9, Debian 12, Ubuntu 22.04 and newer).
+State lives in `~/.local/share/disklessly`, the cache in `~/.cache/disklessly`.
+Secrets go to the Secret Service via `secret-tool` when a desktop session is up,
+otherwise to `~/.config/disklessly/secrets.json` (mode 0600); back that file up if
+you use `sessions --encrypt`. SMB and NFS shares must already be mounted. Details,
+and the plan for offloading AppImage files, are in [`docs/linux.md`](docs/linux.md).
+
 ## Building from source
 
 ```sh
 swift build && swift test       # Swift 5.9+; on Linux install libsqlite3-dev and g++ first
+scripts/linux-test.sh           # Linux build, tests, and CLI smoke run in a swift:6.0 container
+scripts/release-linux.sh        # dist/disklessly-<ver>-linux-<arch>.tar.gz (Docker or Apple's container)
 scripts/build-app.sh            # universal build/Disklessly.app (see gui/README.md)
 scripts/make-icon.sh            # redraw Resources/AppIcon.icns (committed; build-app.sh copies it)
 scripts/release-sign.sh         # sign, notarize, DMG, tarball; a dry run without DISKLESSLY_SIGN_IDENTITY

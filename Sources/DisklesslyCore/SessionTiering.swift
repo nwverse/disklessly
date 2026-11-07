@@ -149,6 +149,24 @@ public enum OpenFileProbe {
             return SessionPaths.canonical(String(line.dropFirst())) == needle
         }
     }
+
+    /// Linux without lsof: every path some process holds open, read from the
+    /// `/proc/<pid>/fd` links. Only processes this user may inspect are listed,
+    /// which covers the coding agents the user runs. Nil when `/proc` is unreadable.
+    public static func procOpenPaths(procRoot: String = "/proc", fileManager: FileManager = .default) -> Set<String>? {
+        guard let pids = try? fileManager.contentsOfDirectory(atPath: procRoot) else { return nil }
+        var open: Set<String> = []
+        for pid in pids where !pid.isEmpty && pid.allSatisfy(\.isNumber) {
+            let fdDir = "\(procRoot)/\(pid)/fd"
+            guard let fds = try? fileManager.contentsOfDirectory(atPath: fdDir) else { continue }
+            for fd in fds {
+                guard let target = try? fileManager.destinationOfSymbolicLink(atPath: "\(fdDir)/\(fd)"), target.hasPrefix("/") else { continue }
+                // The kernel already prints the resolved path.
+                open.insert(target)
+            }
+        }
+        return open
+    }
 }
 
 public enum SessionTiering {

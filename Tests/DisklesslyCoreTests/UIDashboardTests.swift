@@ -48,7 +48,7 @@ final class UIDashboardTests: XCTestCase {
     func testLicenseEndpointsReportFreeAndRefuseBadCodes() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
-        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { _, _, _ in })
         let free = try fixture.get("/api/license", context: context)
         XCTAssertEqual(free["state"] as? String, "free")
         XCTAssertEqual(free["freeLimit"] as? Int, License.freeAppLimit)
@@ -68,7 +68,7 @@ final class UIDashboardTests: XCTestCase {
             BackendEndpoint(id: "usb", type: "local", root: "/Volumes/Archive"),
         ], activeId: "nas")
         defer { fixture.cleanup() }
-        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { _, _, _ in })
         let status = try fixture.get("/api/status", context: context)
 
         let backend = try XCTUnwrap(status["backend"] as? [String: Any])
@@ -99,7 +99,7 @@ final class UIDashboardTests: XCTestCase {
     func testPlainFolderRepoListsOneActiveLocalEndpoint() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
-        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { _, _, _ in })
         let backend = try XCTUnwrap(try fixture.get("/api/status", context: context)["backend"] as? [String: Any])
         XCTAssertEqual(backend["location"] as? String, "local")
         let endpoints = try XCTUnwrap(backend["endpoints"] as? [[String: Any]])
@@ -183,7 +183,7 @@ final class UIDashboardTests: XCTestCase {
         XCTAssertFalse(offline.timedOut)
         XCTAssertTrue(offline.detail.contains("share is not mounted"))
 
-        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in }, health: probe)
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { _, _, _ in }, health: probe)
         let health = try fixture.get("/api/health", context: context)
         XCTAssertEqual(health["ok"] as? Bool, true)
         XCTAssertEqual(health["health"] as? String, "offline")
@@ -222,7 +222,7 @@ final class UIDashboardTests: XCTestCase {
             SessionIndexEntry(id: "c", tool: "pi", path: "/tmp/cold.jsonl", sha256: "b", size: 1, modified: Date().addingTimeInterval(-30 * 86_400), archive: "a.tar", member: "c", preview: ""),
         ]
         try SessionArchive.saveIndex(SessionIndex(entries: entries), stateDir: fixture.config.stateDir)
-        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { _, _, _ in })
         let sessions = try XCTUnwrap(try fixture.get("/api/status", context: context)["sessions"] as? [String: Any])
         let rows = try XCTUnwrap(sessions["offloaded"] as? [[String: Any]])
         XCTAssertEqual(Set(rows.compactMap { $0["tier"] as? String }), ["cold"])
@@ -234,7 +234,7 @@ final class UIDashboardTests: XCTestCase {
     func testSessionsComeFromTheSQLiteIndex() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
-        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { _, _, _ in })
         let sqlite = URL(fileURLWithPath: fixture.config.stateDir).appendingPathComponent("sessions/index.sqlite")
         let empty = try XCTUnwrap(try fixture.get("/api/status", context: context)["sessions"] as? [String: Any])
         XCTAssertEqual((empty["offloaded"] as? [Any])?.count, 0)
@@ -258,7 +258,7 @@ final class UIDashboardTests: XCTestCase {
         defer { fixture.cleanup() }
         struct Down: Error {}
         let probe = BackendHealthProbe(timeout: 0.3, maxAge: 60) { _ in throw Down() }
-        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in }, health: probe)
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { _, _, _ in }, health: probe)
         let status = try fixture.get("/api/status", context: context)
         XCTAssertEqual(status["appsErrorCode"] as? String, "offline")
         XCTAssertFalse((status["appsError"] as? String ?? "").isEmpty)
@@ -280,7 +280,7 @@ final class UIDashboardTests: XCTestCase {
     func testAppsErrorCarriesTheServerErrorCode() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
-        let context = ManagementUIContext(actions: ManagementActions { _, _, _ in })
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions { _, _, _ in })
         let healthy = try fixture.get("/api/status", context: context)
         XCTAssertEqual(healthy["appsError"] as? String, "")
         XCTAssertEqual(healthy["appsErrorCode"] as? String, "")
@@ -308,7 +308,7 @@ final class UIDashboardTests: XCTestCase {
             item.pinned = true
             state.apps[fixture.manifest.bundleId] = item
         }
-        let context = ManagementUIContext()
+        let context = ManagementUIContext(platform: .macOS)
         let refused = try fixture.post("/api/evict", body: ["app": "Test", "force": false], context: context)
         XCTAssertEqual(refused.status, 202)
         let job = try XCTUnwrap(context.jobs.wait(try XCTUnwrap(refused.object["jobId"] as? String), timeout: 10))
@@ -325,7 +325,7 @@ final class UIDashboardTests: XCTestCase {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
         let seen = Answers([])
-        let context = ManagementUIContext(actions: ManagementActions(perform: { kind, app, options, _ in
+        let context = ManagementUIContext(platform: .macOS, actions: ManagementActions(perform: { kind, app, options, _ in
             seen.record("\(kind.rawValue):\(app):\(options.force)")
         }))
         let plain = try fixture.post("/api/evict", body: ["app": "Test"], context: context)

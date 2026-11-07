@@ -8,6 +8,12 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Linux build of the CLI (`scripts/release-linux.sh` makes `disklessly-<ver>-linux-<arch>.tar.gz`). It runs
+  `sessions` (with `--encrypt`), `ui` (sessions, disk usage, devices, license), `backend`, `devices`, `license`,
+  `init`, `list`, `status`, and `version`; app commands exit 3 with "… is macOS only". XDG folders, secrets in the
+  Secret Service via `secret-tool` or a 0600 `~/.config/disklessly/secrets.json`, open sessions detected through
+  `/proc` when lsof is missing, and a usage map of `/opt`, Flatpak, and Snap apps. See `docs/linux.md`, which also
+  sketches offloading AppImage files.
 - Cloud drives through a bundled rclone (v1.75.2, `Contents/MacOS/rclone`). `disklessly cloud connect
   gdrive|dropbox|onedrive|box|pcloud` signs in in the browser and stores an `rclone` backend without switching
   the repo; `cloud list`, `cloud disconnect NAME`, `backend add rclone --remote NAME`, `backend use default`, and

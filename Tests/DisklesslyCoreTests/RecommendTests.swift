@@ -3,6 +3,9 @@ import Foundation
 import DisklesslyCore
 @testable import DisklesslyEngine
 
+/// These tests cover the macOS dashboard, also when they run on Linux.
+private let macContext = ManagementUIContext(platform: .macOS)
+
 final class RecommendTests: XCTestCase {
     private let now = Date(timeIntervalSince1970: 1_700_000_000)
     private var mebi: UInt64 { 1024 * 1024 }
@@ -293,7 +296,7 @@ final class RecommendTests: XCTestCase {
         XCTAssertTrue(report.text().contains(".disklessly-staging"))
         XCTAssertFalse(report.text().contains(".Hidden.app"))
         XCTAssertFalse(report.text().contains(".DS_Store"))
-        let response = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/recommend", query: ["minSize": "1"], headers: [:], body: Data()))
+        let response = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/recommend", query: ["minSize": "1"], headers: [:], body: Data()), context: macContext)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
         XCTAssertEqual((object["leftoverBackups"] as? [[String: Any]])?.count, 3)
         XCTAssertEqual((object["warnings"] as? [[String: Any]])?.count, 0)
@@ -333,11 +336,11 @@ final class RecommendTests: XCTestCase {
         XCTAssertEqual(warned.warnings, ["pinned", "alreadyPacked"])
         XCTAssertTrue(warned.pinned)
         XCTAssertTrue(warned.packed)
-        let response = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/recommend", query: ["limit": "1", "minSize": "1"], headers: [:], body: Data()))
+        let response = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/recommend", query: ["limit": "1", "minSize": "1"], headers: [:], body: Data()), context: macContext)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
         XCTAssertEqual(object["ok"] as? Bool, true)
         XCTAssertEqual((object["recommendations"] as? [[String: Any]])?.count, 1)
-        let bad = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/recommend", query: ["limit": "-3"], headers: [:], body: Data()))
+        let bad = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/recommend", query: ["limit": "-3"], headers: [:], body: Data()), context: macContext)
         XCTAssertEqual(bad.status, 400)
     }
 

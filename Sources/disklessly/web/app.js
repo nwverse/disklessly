@@ -283,6 +283,7 @@ const copy = {
     usage_disklessly: "Disklessly",
     usage_personal: "个人文件",
     usage_library: "资源库",
+    usage_appdata: "应用数据（~ 下的隐藏目录）",
     usage_system: "系统及其他",
     usage_macos: "macOS 系统",
     usage_vm: "虚拟内存",
@@ -650,6 +651,7 @@ const copy = {
     usage_disklessly: "Disklessly",
     usage_personal: "Personal files",
     usage_library: "Library",
+    usage_appdata: "App data (dot folders in ~)",
     usage_system: "System & other",
     usage_macos: "macOS",
     usage_vm: "Virtual memory",
@@ -2082,6 +2084,18 @@ function renderOnboarding(status) {
 
 // ---- load -----------------------------------------------------------------
 
+/// A Linux build cannot offload apps: hide the app list, onboarding, and recommendations.
+function appsSupported() {
+  return !lastStatus || lastStatus.platform !== "linux";
+}
+
+function applyPlatform() {
+  const off = !appsSupported();
+  for (const id of ["#apps", "#recommend-section", "#cache-card"]) document.querySelector(id).hidden = off;
+  if (off) document.querySelector("#onboarding").hidden = true;
+  document.querySelector("#skip").setAttribute("href", off ? "#sessions-section" : "#apps");
+}
+
 function render(status) {
   lastStatus = status;
   applyChrome();
@@ -2092,6 +2106,7 @@ function render(status) {
   rerenderApps();
   renderDevices(status);
   renderSessions(status.sessions || null);
+  applyPlatform();
 }
 
 function renderFailure() {
@@ -2102,6 +2117,7 @@ function renderFailure() {
   renderApps([], loadError || { code: "offline", message: "" });
   renderDevices(null);
   renderSessions(null);
+  applyPlatform();
 }
 
 // ---- license --------------------------------------------------------------
@@ -2512,7 +2528,9 @@ function renderUsage() {
   legend.replaceChildren();
   for (const kind of USAGE_LEGEND) {
     const item = el("li", "usage-legend-item");
-    item.append(el("span", `usage-swatch u-${kind}`), bi(usageKindText[kind]));
+    // Linux names the "library" box App data (the dot folders under ~).
+    const text = kind === "library" && !appsSupported() ? "usage_appdata" : usageKindText[kind];
+    item.append(el("span", `usage-swatch u-${kind}`), bi(text));
     legend.append(item);
   }
   renderCleanups(root);
@@ -2721,7 +2739,9 @@ function refresh() {
   if (!refreshing) {
     const button = document.querySelector("#refresh");
     button.setAttribute("aria-busy", "true");
-    refreshing = Promise.all([load(), loadRecommendations(false)]).finally(() => {
+    // The first status says whether this build offloads apps; after that both load together.
+    const recommend = () => (appsSupported() ? loadRecommendations(false) : null);
+    refreshing = Promise.all(lastStatus ? [load(), recommend()] : [load().then(recommend)]).finally(() => {
       refreshing = null;
       button.removeAttribute("aria-busy");
     });

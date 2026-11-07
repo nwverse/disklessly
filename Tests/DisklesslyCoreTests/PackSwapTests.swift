@@ -1,3 +1,5 @@
+// pack needs hdiutil, codesign, and app bundles: macOS only (see docs/linux.md).
+#if os(macOS)
 import XCTest
 @testable import DisklesslyCore
 @testable import DisklesslyEngine
@@ -265,3 +267,4 @@ final class PackSwapTests: XCTestCase {
         XCTAssertEqual(world.kind(world.source), .stub)
     }
 }
+#endif

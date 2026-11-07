@@ -7,8 +7,16 @@ import DisklesslyEngine
 enum CLIText {
     static func size(_ bytes: UInt64) -> String { RecommendFormatting.byteText(bytes) }
 
-    static func initialized(_ config: RuntimeConfig) -> String {
-        """
+    static func initialized(_ config: RuntimeConfig, platform: HostPlatform = .current) -> String {
+        if platform == .linux {
+            return """
+            Initialized Disklessly.
+              repo:   \(config.repoPath) (\(config.backend))
+              state:  \(config.stateDir)
+            Next: disklessly sessions
+            """
+        }
+        return """
         Initialized Disklessly.
           repo:   \(config.repoPath) (\(config.backend))
           cache:  \(config.cacheDir), quota \(size(config.quotaBytes))

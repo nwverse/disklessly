@@ -76,6 +76,9 @@ final class StubRebuilderTests: XCTestCase {
     }
 
     func testRebuildEmbedsLocalManifestWithoutReadingRepo() throws {
+        #if !os(macOS)
+        throw XCTSkip("stubs are macOS app bundles; the Linux build writes none")
+        #endif
         let world = try RestoreWorld()
         defer { world.cleanup() }
         let journal = try world.strandWithoutParkedStub()
