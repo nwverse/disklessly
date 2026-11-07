@@ -51,15 +51,15 @@ final class LinuxSupportTests: XCTestCase {
     }
 
     func testFileSecretStoreIsPrivateAndRoundTrips() throws {
-        let url = FileSecretStore.defaultURL(environment: ["XDG_CONFIG_HOME": root.path], home: "/unused")
+        let url = JSONFileSecretStore.defaultURL(environment: ["XDG_CONFIG_HOME": root.path], home: "/unused")
         XCTAssertEqual(url.path, root.appendingPathComponent("disklessly/secrets.json").path)
-        let store = FileSecretStore(url: url)
+        let store = JSONFileSecretStore(url: url)
         XCTAssertNil(try store.load(service: "s", account: "a"))
         try store.save(service: "s", account: "a", secret: "one")
         try store.save(service: "s", account: "b", secret: "two")
         try store.save(service: "s", account: "a", secret: "three")
         XCTAssertEqual(try store.load(service: "s", account: "a"), "three")
-        XCTAssertEqual(try FileSecretStore(url: url).load(service: "s", account: "b"), "two")
+        XCTAssertEqual(try JSONFileSecretStore(url: url).load(service: "s", account: "b"), "two")
         let fileMode = try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber
         let dirMode = try FileManager.default.attributesOfItem(atPath: url.deletingLastPathComponent().path)[.posixPermissions] as? NSNumber
         XCTAssertEqual(fileMode?.intValue, 0o600)
@@ -97,7 +97,7 @@ final class LinuxSupportTests: XCTestCase {
         let bin = try fakeSecretTool()
         let env = ["PATH": bin.path, "DBUS_SESSION_BUS_ADDRESS": "unix:path=/x", "WAYLAND_DISPLAY": "wayland-0", "XDG_CONFIG_HOME": root.path]
         // A secret saved to the file before the keyring was used is still found.
-        try FileSecretStore(url: FileSecretStore.defaultURL(environment: env, home: "/unused")).save(service: "svc", account: "old", secret: "from-file")
+        try JSONFileSecretStore(url: JSONFileSecretStore.defaultURL(environment: env, home: "/unused")).save(service: "svc", account: "old", secret: "from-file")
         let store = LinuxSecretStore(environment: env, home: "/unused")
         XCTAssertEqual(try store.load(service: "svc", account: "old"), "from-file")
         try store.save(service: "svc", account: "new", secret: "pa ss\nword")

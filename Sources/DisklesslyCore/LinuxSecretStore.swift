@@ -18,7 +18,7 @@ public enum PlatformSecrets {
 
 /// Secrets in a JSON file only the user can read: the folder is 0700 and the file 0600.
 /// Linux falls back to this when the Secret Service is not reachable.
-public final class FileSecretStore: SecretStore {
+public final class JSONFileSecretStore: SecretStore {
     public let url: URL
 
     public init(url: URL) { self.url = url }
@@ -87,7 +87,7 @@ public final class FileSecretStore: SecretStore {
 }
 
 /// The freedesktop Secret Service (GNOME Keyring, KWallet) through `secret-tool`, with
-/// `FileSecretStore` as the fallback. Secrets go to `secret-tool` on stdin, never in argv.
+/// `JSONFileSecretStore` as the fallback. Secrets go to `secret-tool` on stdin, never in argv.
 ///
 /// `DISKLESSLY_SECRET_STORE=file` forces the file; `secret-tool` forces the Secret
 /// Service. The default uses the Secret Service only in a desktop session (D-Bus and
@@ -96,14 +96,14 @@ public final class FileSecretStore: SecretStore {
 public final class LinuxSecretStore: SecretStore {
     public enum Mode: String { case auto, file, secretTool = "secret-tool" }
 
-    public let file: FileSecretStore
+    public let file: JSONFileSecretStore
     let mode: Mode
     private(set) var tool: String?
     /// Seconds before an unanswered `secret-tool` (an unlock prompt) is given up on.
     let timeout: TimeInterval
 
     public init(environment: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory(), timeout: TimeInterval = 15) {
-        file = FileSecretStore(url: FileSecretStore.defaultURL(environment: environment, home: home))
+        file = JSONFileSecretStore(url: JSONFileSecretStore.defaultURL(environment: environment, home: home))
         mode = Mode(rawValue: environment["DISKLESSLY_SECRET_STORE"] ?? "auto") ?? .auto
         self.timeout = timeout
         let candidates = (environment["PATH"] ?? "/usr/bin:/bin").split(separator: ":").map { "\($0)/secret-tool" }
