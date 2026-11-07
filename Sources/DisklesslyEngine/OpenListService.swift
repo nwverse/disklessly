@@ -131,7 +131,11 @@ public struct OpenListService {
     }
 
     static func portIsFree(_ port: Int) -> Bool {
+        #if os(Linux)
+        let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        #else
         let fd = socket(AF_INET, SOCK_STREAM, 0)
+        #endif
         guard fd >= 0 else { return false }
         defer { close(fd) }
         var addr = sockaddr_in()
