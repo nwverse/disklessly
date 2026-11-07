@@ -41,6 +41,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var server: LoopbackUIServer?
     private var window: WebWindowController?
+    private var onboarding: OnboardingController?
 
     private var dashboardURL: URL? {
         guard let server, server.isRunning else { return nil }
@@ -61,7 +62,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.terminate(nil)
             return
         }
-        openDashboard(nil)
+        // Ask for the privacy permissions first when one is missing; the dashboard opens after.
+        let states = PermissionProbe.current()
+        if Onboarding.needed(states) {
+            showPermissions(states: states)
+        } else {
+            openDashboard(nil)
+        }
+    }
+
+    private func showPermissions(states: [MacPermission: PermissionState]) {
+        let controller = onboarding ?? OnboardingController(initial: states)
+        onboarding = controller
+        controller.show { [weak self] in
+            self?.onboarding = nil
+            self?.openDashboard(nil)
+        }
+    }
+
+    @objc func openPermissions(_ sender: Any?) {
+        showPermissions(states: PermissionProbe.current())
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -110,6 +130,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let menu = NSMenu()
         menu.addItem(withTitle: "Open Dashboard", action: #selector(openDashboard(_:)), keyEquivalent: "o").target = self
         menu.addItem(withTitle: "Copy Dashboard URL", action: #selector(copyDashboardURL(_:)), keyEquivalent: "").target = self
+        menu.addItem(withTitle: "Permissions…", action: #selector(openPermissions(_:)), keyEquivalent: "").target = self
         menu.addItem(.separator())
         let version = NSMenuItem(title: "Version \(EngineInstall.version) (\(EngineInstall.commit))", action: nil, keyEquivalent: "")
         version.isEnabled = false

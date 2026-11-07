@@ -8,6 +8,9 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Permission onboarding in the menu-bar app. At launch it checks App Management (required to swap apps in
+  /Applications) and Full Disk Access (recommended), opens the matching System Settings pane, and floats a small
+  panel with the app icon to drag into the list there. Also under Permissions… in the menu.
 - `disklessly caches [--apply]` and a "Clear app caches" button in the Disk usage card: empties
   `~/Library/Caches/<bundleId>`, `~/Library/Caches/<app name>` and a sandbox container's `Data/Library/Caches` for
   offloaded apps. Dry run by default. An app that runs, has an open restore journal or is mid-detach is skipped;
