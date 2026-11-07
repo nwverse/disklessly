@@ -281,3 +281,30 @@ extension DisklesslyEngine {
         }
     }
 }
+
+/// Runs at most one background mirror sync at a time, so offloading several apps in a row
+/// does not start a copy per app. A sync that is asked for while one runs runs once more after it.
+public enum MirrorAutoSync {
+    private static let lock = NSLock()
+    private static var running = false
+    private static var again = false
+
+    /// After a write to the repo (pack, file offload): copy it onto the mirrors, off this thread.
+    public static func kick(_ engine: DisklesslyEngine) {
+        guard !engine.config.mirrorBackendIds.filter({ $0 != engine.config.activeRepoId }).isEmpty else { return }
+        lock.lock()
+        if running { again = true; lock.unlock(); return }
+        running = true
+        lock.unlock()
+        Thread.detachNewThread {
+            while true {
+                _ = try? engine.syncMirrors()
+                lock.lock()
+                if again { again = false; lock.unlock(); continue }
+                running = false
+                lock.unlock()
+                return
+            }
+        }
+    }
+}
