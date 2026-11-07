@@ -118,6 +118,9 @@ const copy = {
     unpin: "取消固定",
     evict: "清除缓存",
     evictMounted: "应用正在使用，退出后再清除",
+    detach: "推出",
+    detachFor: (name) => `推出 ${name} 的磁盘镜像`,
+    detachHint: "推出磁盘镜像，释放挂载。应用在运行时无法推出，退出后约 2 分钟也会自动推出",
     evictPinned: "已固定的应用不能清除，先取消固定",
     more: "更多",
     moreFor: (name) => `${name} 的更多操作`,
@@ -145,6 +148,7 @@ const copy = {
     actionlaunch: "打开",
     actionprefetch: "预取",
     actionevict: "清除缓存",
+    actiondetach: "推出",
     actionrestore: "临时还原",
     actionunpack: "永久还原",
     actionpin: "固定",
@@ -163,6 +167,7 @@ const copy = {
     phaseopen: "正在打开",
     phaserunning: "已打开",
     phaseevict: "清除中",
+    phasedetach: "推出中",
     phaseunpack: "复制中",
     phasepin: "更新中",
     errunknown_app: "仓库里找不到这个应用。",
@@ -407,6 +412,9 @@ const copy = {
     unpin: "Unpin",
     evict: "Evict",
     evictMounted: "The app is in use; quit it first",
+    detach: "Eject",
+    detachFor: (name) => `Eject ${name}'s disk image`,
+    detachHint: "Ejects the disk image. Refused while the app runs; it also ejects about 2 minutes after you quit",
     evictPinned: "Pinned apps can't be evicted; unpin first",
     more: "More",
     moreFor: (name) => `More actions for ${name}`,
@@ -434,6 +442,7 @@ const copy = {
     actionlaunch: "open",
     actionprefetch: "prefetch",
     actionevict: "evict",
+    actiondetach: "eject",
     actionrestore: "restore",
     actionunpack: "permanent restore",
     actionpin: "pin",
@@ -452,6 +461,7 @@ const copy = {
     phaseopen: "Opening",
     phaserunning: "Open",
     phaseevict: "Evicting",
+    phasedetach: "Ejecting",
     phaseunpack: "Copying",
     phasepin: "Updating",
     errunknown_app: "The repo has no app by that name.",
@@ -879,6 +889,7 @@ function toast({ title, error, tone }) {
 // The SVG namespace is not fetched. The pieces stay split so the page source has no URL.
 const svgNS = "http" + "://www.w3.org/2000/svg";
 const iconOpen = "M8 5v14l11-7z";
+const iconEject = "M12 5l7 8H5zM5 15h14v3H5z";
 const iconDownload = "M11 4h2v8.2l3.3-3.3 1.4 1.4L12 16l-5.7-5.7 1.4-1.4 3.3 3.3V4zM5 18h14v2H5z";
 const iconPin = "M14.5 2.6 21.4 9.5l-1.4 1.4-1.1-.4-3.6 3.6.4 3.9-1.4 1.4-3.6-3.6-4.8 4.8-1.4-1.4 4.8-4.8-3.6-3.6L7.1 9.4l3.9.4 3.6-3.6-.4-1.1z";
 const iconTrash = "M9 3h6l1 2h4v2H4V5h4l1-2zM6 9h12l-1 11a2 2 0 0 1-2 2H9a2 2 0 0 1-2-2L6 9zm4 2v8h1.6v-8H10zm2.4 0v8H14v-8h-1.6z";
@@ -1537,7 +1548,12 @@ function appRow(app, quota) {
     const pinButton = actionButton({ labelKey: pinKind, icon: iconPin, className: "tint", busy: isBusy("pin") || isBusy("unpin"), disabled: busy, onClick: () => startJob(pinKind, app) });
     pinButton.setAttribute("aria-pressed", String(Boolean(app.pinned)));
     let second;
-    if (app.cached) {
+    if (app.mounted) {
+      // A mounted image cannot be evicted; offer to eject it instead.
+      second = actionButton({ labelKey: "detach", name: both("detachFor", app.name), icon: iconEject, className: "outline", busy: isBusy("detach"), disabled: busy, onClick: () => startJob("detach", app) });
+      second.title = t("detachHint");
+      second.dataset.key = `${app.name}:detach`;
+    } else if (app.cached) {
       const blocked = app.pinned ? both("evictPinned") : app.mounted ? both("evictMounted") : "";
       second = actionButton({ labelKey: "evict", icon: iconTrash, className: "danger-outline", busy: isBusy("evict"), disabled: busy, blocked, onClick: () => confirmAction("evict", app) });
       second.dataset.key = `${app.name}:evict`;

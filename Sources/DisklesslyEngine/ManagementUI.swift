@@ -512,6 +512,8 @@ public enum ManagementUI {
 /// request returns at once and the page polls `GET /api/jobs/:id`.
 public enum UIJobKind: String, CaseIterable {
     case launch, prefetch, evict, restore, unpack, pin, unpin
+    /// Ejects a mount-mode app's disk image now (`disklessly detach`). Refused while it runs.
+    case detach
     /// Offloads an installed app (`disklessly pack`). The request carries the app's `path`.
     case pack
     /// Xcode simulators (`disklessly dev`). `app` is the runtime id, the simulator
@@ -734,6 +736,10 @@ public struct ManagementActions {
                 }
                 progress.phase("evict")
                 try engine.evict(manifest, force: options.force)
+            case .detach:
+                if let refusal = engine.detachRefusal(manifest) { throw refusal.error }
+                progress.phase("detach")
+                _ = try engine.detach(manifest, force: false)
             case .unpack:
                 progress.phase("unpack")
                 try engine.unpack(manifest, to: nil)
