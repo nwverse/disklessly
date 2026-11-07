@@ -38,12 +38,19 @@ final class PermissionProbeTests: XCTestCase {
         XCTAssertEqual(PermissionProbe.appManagement(applications: [dir], ownTeamId: nil), .unknown)
     }
 
-    func testFullDiskAccessReadsTheTCCDatabase() throws {
-        XCTAssertEqual(PermissionProbe.fullDiskAccess(home: dir), .unknown, "no database to test")
-        let tcc = dir + "/Library/Application Support/com.apple.TCC"
-        try FileManager.default.createDirectory(atPath: tcc, withIntermediateDirectories: true)
-        try Data().write(to: URL(fileURLWithPath: tcc + "/TCC.db"))
-        XCTAssertEqual(PermissionProbe.fullDiskAccess(home: dir), .granted)
+    func testFullDiskAccessTriesEachProtectedFileInTurn() throws {
+        let missing = dir + "/missing.db", readable = dir + "/readable.db", locked = dir + "/locked"
+        XCTAssertEqual(PermissionProbe.fullDiskAccess(candidates: [missing]), .unknown, "nothing to test")
+        try Data().write(to: URL(fileURLWithPath: readable))
+        XCTAssertEqual(PermissionProbe.fullDiskAccess(candidates: [missing, readable]), .granted, "a missing file is skipped")
+        try FileManager.default.createDirectory(atPath: locked, withIntermediateDirectories: true)
+        try Data().write(to: URL(fileURLWithPath: locked + "/f"))
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked + "/f")
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: locked + "/f") }
+        if getuid() != 0 {
+            XCTAssertEqual(PermissionProbe.fullDiskAccess(candidates: [missing, locked + "/f", readable]), .denied, "the first file that exists decides")
+        }
+        XCTAssertTrue(PermissionProbe.fullDiskAccessCandidates(home: dir).contains("/Library/Application Support/com.apple.TCC/TCC.db"))
     }
 
     func testSettingsLinksPointAtTheRightPanes() {
