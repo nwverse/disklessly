@@ -94,11 +94,15 @@ for exe in "$APP/Contents/MacOS/"*; do
   fi
 done
 
-# Inside-out ad-hoc signature. The release identity replaces it later.
+# Inside-out signature: ad-hoc by default, release-sign.sh replaces it later. With
+# DISKLESSLY_LOCAL_SIGN_IDENTITY (for example a Developer ID) a local build keeps the same
+# signing identity across rebuilds, so macOS keeps its App Management and Full Disk Access
+# grants. An ad-hoc app is known to TCC by its code hash, which changes with every build.
+LOCAL_IDENTITY="${DISKLESSLY_LOCAL_SIGN_IDENTITY:--}"
 for exe in "${HELPERS[@]}"; do
-  /usr/bin/codesign --force --sign - "$APP/Contents/MacOS/$exe"
+  /usr/bin/codesign --force --sign "$LOCAL_IDENTITY" "$APP/Contents/MacOS/$exe"
 done
-/usr/bin/codesign --force --sign - "$APP"
+/usr/bin/codesign --force --sign "$LOCAL_IDENTITY" "$APP"
 /usr/bin/codesign --verify --strict "$APP"
 
 status=0
