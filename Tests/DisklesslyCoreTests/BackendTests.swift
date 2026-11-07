@@ -226,6 +226,7 @@ final class BackendTests: XCTestCase {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         var config = RuntimeConfig(repoPath: root.appendingPathComponent("repo").path, cacheDir: root.appendingPathComponent("cache").path, stateDir: root.appendingPathComponent("state").path, mountRoot: root.appendingPathComponent("mounts").path, stubDir: root.appendingPathComponent("apps").path)
+        config.minFreeBytes = 0
         let engine = DisklesslyEngine(config: config)
         try engine.initialize()
         let bytes = Data("published disk image bytes".utf8)

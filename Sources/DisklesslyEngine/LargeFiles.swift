@@ -96,7 +96,7 @@ public enum LargeFileScan {
                         }
                     }
                 } else if values.isRegularFile == true {
-                    let bytes = UInt64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+                    let bytes = allocatedBytes(child, values)
                     // The newest of every signal: a file a tool rewrote yesterday is not idle, whatever Spotlight says.
                     let modified = max(values.contentModificationDate ?? .distantPast, values.contentAccessDate ?? .distantPast)
                     summary.bytes += bytes
@@ -127,6 +127,19 @@ public enum LargeFileScan {
         return (Array(items.prefix(options.limit)), partial)
     }
 
+    /// Allocated bytes of a regular file. swift-corelibs-foundation's `fileAllocatedSize`
+    /// overstates small files on Linux (a 32 KiB file counted as 64 KiB or more), so Linux
+    /// reads `st_blocks * 512` from `lstat`, as `UsageMap` does.
+    static func allocatedBytes(_ url: URL, _ values: URLResourceValues) -> UInt64 {
+        #if os(Linux)
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_blocks > 0 else { return 0 }
+        return UInt64(info.st_blocks) * 512
+        #else
+        return UInt64(values.totalFileAllocatedSize ?? values.fileAllocatedSize ?? 0)
+        #endif
+    }
+
     /// Spotlight's `kMDItemLastUsedDate`: the last time the item was opened. Nil off macOS or when unindexed.
     public static func spotlightLastUsed(_ url: URL) -> Date? {
         #if os(macOS)
@@ -139,7 +152,17 @@ public enum LargeFileScan {
 
     /// The subset of `paths` some process has open, from one `lsof` call.
     public static func openFiles(_ paths: [String]) -> Set<String> {
-        guard !paths.isEmpty, let lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return [] }
+        guard !paths.isEmpty else { return [] }
+        guard let lsof = ["/usr/sbin/lsof", "/usr/bin/lsof"].first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else {
+            #if os(Linux)
+            // No lsof: the `/proc/<pid>/fd` links. When `/proc` is unreadable every path counts as open.
+            guard let held = OpenFileProbe.procOpenPaths() else { return Set(paths) }
+            let heldCanonical = Set(held.map { SessionPaths.canonical($0) })
+            return Set(paths.filter { heldCanonical.contains(SessionPaths.canonical($0)) })
+            #else
+            return []
+            #endif
+        }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: lsof)
         process.arguments = ["-Fn", "--"] + paths

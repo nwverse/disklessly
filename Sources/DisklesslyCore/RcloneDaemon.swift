@@ -82,7 +82,11 @@ final class RcloneDaemon {
     }
 
     private static func freePort() throws -> Int {
+        #if os(Linux)
+        let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+        #else
         let fd = socket(AF_INET, SOCK_STREAM, 0)
+        #endif
         guard fd >= 0 else { throw DisklesslyError.backend("socket() failed") }
         defer { close(fd) }
         var address = sockaddr_in()
