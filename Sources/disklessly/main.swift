@@ -36,6 +36,13 @@ Keep things tidy
   caches [--apply]                list (or with --apply clear) the caches of offloaded apps that are not running
   install-engine | stub refresh --app ID|--all [--adopt] | icons backfill [--app ID]
 
+Xcode simulators
+  dev [list]                      runtimes, simulators and what is offloaded
+  dev offload-runtime ID|BUILD | dev restore-runtime RECORD
+  dev offload-simulator UDID|NAME | dev restore-simulator RECORD (comes back with a new udid)
+  dev forget RECORD               delete an offloaded image from the repo
+  dev clean-derived-data          move Xcode's DerivedData to the Trash
+
 Repos and Macs
   backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
   devices [list] | devices rename NAME | devices forget DEVICEID --yes
@@ -546,6 +553,43 @@ do {
         } else { throw DisklesslyError.usage("stub requires refresh --app ID") }
     // Placeholder kept for old scripts. Hidden from help.
     case "hooks": emit(["ok":true,"hooks":[] as [String]])
+    case "dev":
+        let sub = args.first ?? "list"
+        if !args.isEmpty { args.removeFirst() }
+        func target() throws -> String {
+            guard let id = args.first else { throw DisklesslyError.usage("dev \(sub) requires an id") }
+            return id
+        }
+        func done(_ result: DevAssetResult, _ verb: String) {
+            var line = "\(verb) \(result.record.title) (\(sizeText(result.record.size)), record \(result.record.id))"
+            if let udid = result.udid { line += ", new udid \(udid)" }
+            say(result.jsonObject(), line)
+            if let warning = result.warning { fputs("disklessly: \(warning)\n", stderr) }
+        }
+        switch sub {
+        case "list":
+            let report = engine.devAssets()
+            if json { emit(report.jsonObject()); break }
+            if let unavailable = report.unavailable { print("simctl unavailable: \(unavailable)") }
+            print("Runtimes")
+            for r in report.runtimes { print("  \(r.title)  \(sizeText(r.sizeBytes))  \(r.id)\(r.deletable ? "" : "  (not deletable)")") }
+            print("Simulators")
+            for d in report.simulators { print("  \(d.name)  \(sizeText(d.dataBytes))  \(d.state)  \(d.udid)") }
+            print("Offloaded")
+            if report.offloaded.isEmpty { print("  none") }
+            for o in report.offloaded { print("  \(o.kind.rawValue)  \(o.title)  \(sizeText(o.size))  \(o.id)\(o.present(in: report.runtimes) ? "  (also installed here)" : "")") }
+        case "offload-runtime": done(try engine.offloadRuntime(try target()), "Offloaded")
+        case "restore-runtime": done(try engine.restoreRuntime(try target()), "Restored")
+        case "offload-simulator": done(try engine.offloadSimulator(try target()), "Offloaded")
+        case "restore-simulator": done(try engine.restoreSimulator(try target()), "Restored")
+        case "forget":
+            let record = try engine.forgetDevAsset(try target())
+            say(["ok": true, "id": record.id], "Deleted \(record.title) from the repo")
+        case "clean-derived-data":
+            let cleaned = try engine.trashDerivedData()
+            say(["ok": true, "items": cleaned.items, "bytes": NSNumber(value: cleaned.bytes)], "Moved \(cleaned.items) DerivedData folders (\(sizeText(cleaned.bytes))) to the Trash")
+        default: throw DisklesslyError.usage("Unknown dev command: \(sub)")
+        }
     case "ui":
         var openBrowser = false
         while let flag = args.first {
