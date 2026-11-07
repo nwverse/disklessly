@@ -354,12 +354,23 @@ public enum ManagementUI {
             return .json(object)
         case ("POST", "/api/usage/clean"):
             let id = ((try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any])?["action"] as? String ?? ""
-            guard UsageCleanup.all.contains(id) else { return failure(code: "bad_request", message: "unknown cleanup", status: 400) }
+            guard UsageCleanup.known(id) else { return failure(code: "bad_request", message: "unknown cleanup", status: 400) }
             // Rescan when it finishes, so the map shows the new sizes.
             let usage = context.usage
-            let started = context.cleaner.start(id) { _ = usage.start(engine: engine) }
+            let big = context.bigItems
+            let started = context.cleaner.start(id) { _ = usage.start(engine: engine); _ = big.start(engine: engine) }
             guard started else { return failure(code: "busy", message: "a cleanup is already running", status: 409) }
             return .json(["ok": true, "cleanup": context.cleaner.snapshot()], status: 202)
+        case ("GET", "/api/bigitems"):
+            var object = context.bigItems.snapshot()
+            if object["state"] as? String == "idle" { context.bigItems.start(engine: engine); object["state"] = "scanning" }
+            object["cleanup"] = context.cleaner.snapshot()
+            return .json(object)
+        case ("POST", "/api/bigitems/scan"):
+            let started = context.bigItems.start(engine: engine)
+            var object = context.bigItems.snapshot()
+            object["started"] = started
+            return .json(object, status: 202)
         case ("POST", "/api/usage/scan"):
             let started = context.usage.start(engine: engine)
             var object = context.usage.snapshot()
@@ -872,6 +883,8 @@ public final class ManagementUIContext {
     /// The disk usage map scan (`/api/usage`).
     public let usage: UsageScanner
     public let cleaner = UsageCleaner()
+    /// Simulators, DerivedData, rebuildable caches, big app data (`/api/bigitems`).
+    public let bigItems = BigItemsScanner()
     /// Large idle files and folders (`/api/files`).
     public let files: LargeFileScanner
     /// Home folder whose `Library/Caches` `/api/caches` looks in. Tests point it at a temp folder.
