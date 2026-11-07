@@ -209,7 +209,11 @@ final class UIServerTests: XCTestCase {
         XCTAssertTrue(js.contains("if (pct >= 95) return \"hot\""))
         XCTAssertTrue(js.contains("if (pct >= 80) return \"warn\""))
         XCTAssertFalse(js.contains("innerHTML"))
+        // The usage tips link out to tools the user opens in their own browser;
+        // the page itself still loads nothing remote.
+        XCTAssertTrue(js.contains("url: \"https://github.com/omlahore/RemoveMacAI\""))
         let remote = js.replacingOccurrences(of: "http://www.w3.org/2000/svg", with: "")
+            .replacingOccurrences(of: "https://github.com/omlahore/RemoveMacAI", with: "")
         XCTAssertFalse(remote.contains("http://"))
         XCTAssertFalse(remote.contains("https://"))
 

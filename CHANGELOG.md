@@ -8,6 +8,7 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- The dashboard lists apps offloaded on another Mac in their own group and says what this Mac has (not installed, or the full app). The repo is shared by every Mac, so these used to look like apps that vanished from this Mac. Open, restore and unpack are hidden when the full app is installed here.
 - Disk usage card in the dashboard: a flame chart of what fills the disk. Boxes zoom in; each app splits into
   bundle, cache and data, Disklessly's own cache and repo get their own box, and the rest is System & other.
   The scan only reads sizes (`du`), runs in the background on request (`POST /api/usage/scan`), and a timeout

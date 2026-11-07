@@ -103,6 +103,13 @@ const copy = {
     toDownload: "需下载",
     lastUsedAt: (iso) => `${relativeTime(iso, "zh")}使用`,
     onDevices: (names) => `也在 ${names}`,
+    packedOn: (names) => `在 ${names} 上卸载`,
+    notInstalledHere: "这台 Mac 没有安装",
+    launcherMissing: "这台 Mac 上的入口不见了",
+    fullAppHere: (version) => `这台 Mac 已装完整版 ${version}`.trim(),
+    elsewhereTitle: (n) => `其他 Mac 上卸载的应用（${n}）`,
+    elsewhereNote: "仓库在 iCloud 里由你的各台 Mac 共用，所以能看到它们。这些不是这台 Mac 卸载的，这台 Mac 上的应用没有被动过。",
+    nothingHere: "这台 Mac 还没有卸载过应用。",
     open: "打开",
     openFor: (name) => `打开 ${name}`,
     prefetch: "预取",
@@ -235,6 +242,37 @@ const copy = {
     usage_files: "散落文件",
     usage_rest: (n) => `其余 ${n} 项`,
     usage_other: "其他",
+    usageTips: "可以腾出空间的地方",
+    dev: "Xcode 模拟器",
+    devIntro: "模拟器运行时和模拟器设备可以放到云端，用的时候再取回。运行时取回后和原来一样；模拟器取回后会换一个新的 UDID。",
+    devRuntimes: "运行时",
+    devSimulators: "模拟器",
+    devOffloaded: "已放到云端",
+    devOffload: "放到云端",
+    devRestore: "取回",
+    devForget: "从仓库删除",
+    devCleanDerived: "清理 DerivedData",
+    devNone: "没有",
+    devUnavailable: "读不到模拟器信息（需要安装 Xcode）",
+    devInstalledHere: "这台 Mac 上也有",
+    devFrom: (host) => `来自 ${host}`,
+    devConfirmRuntimeTitle: (name) => `把 ${name} 放到云端？`,
+    devConfirmRuntimeBody: (size) => `上传 ${size} 到仓库，校验后用 simctl 从这台 Mac 删除。需要时可以原样取回。`,
+    devConfirmSimTitle: (name) => `把模拟器 ${name} 放到云端？`,
+    devConfirmSimBody: (size) => `把模拟器的数据（${size}）打包上传，校验后删除这台模拟器。取回时会新建同型号的模拟器并放回数据，UDID 会变。`,
+    devConfirmForgetTitle: (name) => `从仓库删除 ${name}？`,
+    devConfirmForgetBody: (size) => `删除仓库里的 ${size}，之后就不能再取回了。`,
+    devConfirmCleanTitle: "清理 DerivedData？",
+    devConfirmCleanBody: "把 Xcode 的编译缓存移到废纸篓，Xcode 下次编译时会重新生成。",
+    devConfirmOk: "继续",
+    devJobDone: (name) => `${name}：完成`,
+    devJobFailed: (name) => `${name}：失败`,
+    tipRemoveMacAITitle: "Apple Intelligence 模型",
+    tipRemoveMacAIBody: "“系统及其他”里有 Apple Intelligence 下载的模型，往往有好几 GB。开源工具 RemoveMacAI 可以关掉 Apple Intelligence、删掉这些模型并阻止重新下载，随时能撤销。",
+    tipRemoveMacAILink: "打开 RemoveMacAI",
+    tipDevOffloadTitle: "Xcode 模拟器",
+    tipDevOffloadBody: "“资源库 › Developer”和“系统及其他”里的模拟器运行时和模拟器设备，可以放到云端，用时再取回。",
+    tipDevOffloadLink: "去放到云端",
     copyCommand: "复制命令",
     copyCommandFor: (name) => `复制命令：打包 ${name}`,
     copied: (name) => `已复制 ${name} 的打包命令`,
@@ -354,6 +392,13 @@ const copy = {
     toDownload: "to download",
     lastUsedAt: (iso) => `used ${relativeTime(iso, "en")}`,
     onDevices: (names) => `Also on ${names}`,
+    packedOn: (names) => `Offloaded on ${names}`,
+    notInstalledHere: "Not installed on this Mac",
+    launcherMissing: "This Mac's launcher is missing",
+    fullAppHere: (version) => `Full app ${version} is installed on this Mac`.replace("  ", " "),
+    elsewhereTitle: (n) => `Offloaded on other Macs (${n})`,
+    elsewhereNote: "Your Macs share one repo in iCloud, so their apps show up here. They were not offloaded from this Mac, and nothing on this Mac was touched.",
+    nothingHere: "No apps offloaded on this Mac yet.",
     open: "Open",
     openFor: (name) => `Open ${name}`,
     prefetch: "Prefetch",
@@ -486,6 +531,37 @@ const copy = {
     usage_files: "Loose files",
     usage_rest: (n) => `${n} more`,
     usage_other: "Other",
+    usageTips: "Where to free up space",
+    dev: "Xcode simulators",
+    devIntro: "Simulator runtimes and devices can live in the repo until you need them. A runtime comes back as it was; a simulator comes back with a new UDID.",
+    devRuntimes: "Runtimes",
+    devSimulators: "Simulators",
+    devOffloaded: "In the repo",
+    devOffload: "Offload",
+    devRestore: "Bring back",
+    devForget: "Delete from repo",
+    devCleanDerived: "Clean DerivedData",
+    devNone: "None",
+    devUnavailable: "Could not read simulators (Xcode is needed)",
+    devInstalledHere: "Also on this Mac",
+    devFrom: (host) => `from ${host}`,
+    devConfirmRuntimeTitle: (name) => `Offload ${name}?`,
+    devConfirmRuntimeBody: (size) => `Uploads ${size} to the repo, checks it, then simctl deletes it from this Mac. It can come back unchanged.`,
+    devConfirmSimTitle: (name) => `Offload the simulator ${name}?`,
+    devConfirmSimBody: (size) => `Packs the simulator's data (${size}), uploads and checks it, then deletes this simulator. Bringing it back creates the same model and puts the data in; the UDID changes.`,
+    devConfirmForgetTitle: (name) => `Delete ${name} from the repo?`,
+    devConfirmForgetBody: (size) => `Deletes ${size} from the repo. It can't be brought back afterwards.`,
+    devConfirmCleanTitle: "Clean DerivedData?",
+    devConfirmCleanBody: "Moves Xcode's build cache to the Trash. Xcode rebuilds it the next time you build.",
+    devConfirmOk: "Continue",
+    devJobDone: (name) => `${name}: done`,
+    devJobFailed: (name) => `${name}: failed`,
+    tipRemoveMacAITitle: "Apple Intelligence models",
+    tipRemoveMacAIBody: "\"System & other\" includes the models Apple Intelligence downloads, often several GB. The open-source RemoveMacAI turns Apple Intelligence off, deletes those models and stops them downloading again. Every change can be undone.",
+    tipRemoveMacAILink: "Open RemoveMacAI",
+    tipDevOffloadTitle: "Xcode simulators",
+    tipDevOffloadBody: "Simulator runtimes and devices in \"Library › Developer\" and \"System & other\" can wait in the repo until you need them.",
+    tipDevOffloadLink: "Offload them",
     copyCommand: "Copy command",
     copyCommandFor: (name) => `Copy command to pack ${name}`,
     copied: (name) => `Copied the pack command for ${name}`,
@@ -1206,7 +1282,8 @@ function overflowMenu(app, busy) {
   menu.setAttribute("role", "menu");
   menu.hidden = true;
   const dir = installDir(app);
-  const items = [
+  // With the full app already installed here, restore and unpack would collide with it.
+  const items = fullAppHere(app) ? [] : [
     [bi("restore"), both("restore"), () => confirmAction("restore", app)],
     [bi("unpack", dir), both("unpack", dir), () => confirmAction("unpack", app)],
   ];
@@ -1347,10 +1424,11 @@ function renderAppsSummary(apps) {
     node.replaceChildren();
     return;
   }
+  const mine = apps.filter(isOnThisMac);
   const cached = apps.filter((app) => app.cached);
   const size = bytes(cached.reduce((sum, app) => sum + Number(app.cachedBytes || 0), 0));
   const pinned = apps.filter((app) => app.pinned).length;
-  node.replaceChildren(one("appsSummary", apps.length, cached.length, size, pinned));
+  node.replaceChildren(one("appsSummary", mine.length, cached.length, size, pinned));
 }
 
 function renderApps(list, failure) {
@@ -1378,7 +1456,50 @@ function renderApps(list, failure) {
     return;
   }
   const quota = Number((lastStatus && lastStatus.cache && lastStatus.cache.quotaBytes) || 0);
-  for (const app of shown) {
+  // The repo is shared by every Mac on the account. Apps offloaded on another Mac are listed
+  // apart, so they do not look like apps that vanished from this one.
+  const here = shown.filter(isOnThisMac);
+  const elsewhere = shown.filter((app) => !isOnThisMac(app));
+  for (const app of here) rootNode.append(appRow(app, quota));
+  if (!here.length) rootNode.append(el("div", "state-note", both("nothingHere")));
+  if (elsewhere.length) {
+    const group = el("details", "elsewhere");
+    group.open = elsewhereOpen;
+    group.addEventListener("toggle", () => { elsewhereOpen = group.open; });
+    const summary = el("summary", "elsewhere-head");
+    summary.append(bi("elsewhereTitle", elsewhere.length));
+    group.append(summary, el("p", "elsewhere-note", both("elsewhereNote")));
+    for (const app of elsewhere) group.append(appRow(app, quota));
+    rootNode.append(group);
+  }
+  if (focusedKey) {
+    const again = rootNode.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`);
+    if (again && !again.disabled) again.focus();
+  }
+}
+
+let elsewhereOpen = false;
+
+/// Rows from servers without `local` count as this Mac's, as before.
+function isOnThisMac(app) {
+  const local = app.local;
+  return !local || local.kind === "stub" || local.mine === true;
+}
+
+/// The full app is installed here: launching or restoring the image would fight with it.
+function fullAppHere(app) {
+  return Boolean(app.local && app.local.kind === "installed");
+}
+
+function localNote(app) {
+  const local = app.local;
+  if (!local) return "";
+  if (local.kind === "installed") return t("fullAppHere", local.version ? `v${String(local.version).replace(/^v/, "")}` : "");
+  if (local.kind === "absent") return t(local.mine ? "launcherMissing" : "notInstalledHere");
+  return "";
+}
+
+function appRow(app, quota) {
     const job = pending.get(app.name);
     const busy = Boolean(job);
     const row = el("article", "app-row");
@@ -1396,7 +1517,8 @@ function renderApps(list, failure) {
     meta.append(has(modeKey) ? bi(modeKey) : document.createTextNode(String(app.mode || "")));
     words.append(meta);
     const holders = (app.devices || []).filter(Boolean);
-    const extra = [app.lastUsed ? t("lastUsedAt", app.lastUsed) : "", holders.length ? t("onDevices", holders.join(", ")) : ""].filter(Boolean);
+    const fromKey = isOnThisMac(app) ? "onDevices" : "packedOn";
+    const extra = [localNote(app), app.lastUsed ? t("lastUsedAt", app.lastUsed) : "", holders.length ? t(fromKey, holders.join(", ")) : ""].filter(Boolean);
     if (extra.length) words.append(el("div", "app-extra", extra.join(" · ")));
     if (job) {
       const line = el("div", "job-line");
@@ -1425,21 +1547,16 @@ function renderApps(list, failure) {
     }
     open.dataset.key = `${app.name}:launch`;
     pinButton.dataset.key = `${app.name}:pin`;
-    actions.append(open, pinButton, second, overflowMenu(app, busy));
+    if (fullAppHere(app)) actions.append(pinButton, second, overflowMenu(app, busy));
+    else actions.append(open, pinButton, second, overflowMenu(app, busy));
 
     row.append(who, status, cacheCell(app, quota), actions);
-    rootNode.append(row);
-  }
-  if (focusedKey) {
-    const again = rootNode.querySelector(`[data-key="${CSS.escape(focusedKey)}"]`);
-    if (again && !again.disabled) again.focus();
-  }
+    return row;
 }
 
 // ---- jobs -----------------------------------------------------------------
 
 function confirmAction(kind, app) {
-  const dialog = document.querySelector("#confirm");
   const dir = installDir(app);
   const size = bytes(app.cachedBytes || app.imageBytes);
   const spec = {
@@ -1448,6 +1565,12 @@ function confirmAction(kind, app) {
     pack: { title: ["confirmPackTitle", app.name], body: ["confirmPackBody", size], ok: "confirmPackOk", danger: false },
     unpack: { title: ["confirmUnpackTitle", app.name, dir], body: ["confirmUnpackBody", app.installPath || `${dir}/${app.name}.app`], ok: "confirmUnpackOk", danger: true },
   }[kind];
+  askConfirm(spec, () => startJob(kind, app));
+}
+
+/// The shared confirm dialog. `spec` holds [key, ...args] for title and body.
+function askConfirm(spec, onOk) {
+  const dialog = document.querySelector("#confirm");
   const title = document.querySelector("#confirm-title");
   title.replaceChildren(document.createTextNode(t(...spec.title)));
   const titleSecond = el("span", "dialog-second", tl(secondary, ...spec.title));
@@ -1465,14 +1588,14 @@ function confirmAction(kind, app) {
   dialog.returnValue = "";
   dialog.onclose = () => {
     dialog.onclose = null;
-    if (dialog.returnValue === "ok") startJob(kind, app);
+    if (dialog.returnValue === "ok") onOk();
     else if (opener && opener.isConnected) opener.focus();
   };
   if (typeof dialog.showModal === "function") {
     dialog.showModal();
     document.querySelector("#confirm-cancel").focus();
   } else if (window.confirm(`${title.textContent}\n\n${body.textContent}`)) {
-    startJob(kind, app);
+    onOk();
   }
 }
 
@@ -1907,6 +2030,117 @@ async function loadRecommendations(rescan) {
   else renderRecommend(null, recommendError);
 }
 
+// ---- Xcode simulators -----------------------------------------------------
+
+let devData = null;
+const devBusy = new Map(); // item id -> job kind
+
+const devConfirms = {
+  "dev/offload-runtime": (item) => ({ title: ["devConfirmRuntimeTitle", item.title], body: ["devConfirmRuntimeBody", bytes(item.bytes)], ok: "devConfirmOk", danger: false }),
+  "dev/offload-simulator": (item) => ({ title: ["devConfirmSimTitle", item.name], body: ["devConfirmSimBody", bytes(item.bytes)], ok: "devConfirmOk", danger: false }),
+  "dev/forget": (item) => ({ title: ["devConfirmForgetTitle", item.title], body: ["devConfirmForgetBody", bytes(item.bytes)], ok: "devForget", danger: true }),
+  "dev/clean-derived-data": () => ({ title: ["devConfirmCleanTitle"], body: ["devConfirmCleanBody"], ok: "devConfirmOk", danger: false }),
+};
+
+function devAction(kind, id, label, item) {
+  const confirm = devConfirms[kind];
+  if (confirm) askConfirm(confirm(item), () => devJob(kind, id, label));
+  else devJob(kind, id, label);
+}
+
+async function devJob(kind, id, label) {
+  if (devBusy.has(id)) return;
+  devBusy.set(id, kind);
+  renderDev();
+  let failure = null;
+  try {
+    const started = await api(`/api/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ app: id }) });
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, JOB_POLL_MS));
+      const job = await api(`/api/jobs/${encodeURIComponent(started.jobId)}`);
+      if (job.state === "running") continue;
+      if (job.state !== "done") failure = job.error || { code: "failed", message: "" };
+      break;
+    }
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    failure = { code: error.code, message: error.message };
+  }
+  devBusy.delete(id);
+  if (failure) toast({ title: biPair(tl(primary, "devJobFailed", label), tl(secondary, "devJobFailed", label)), error: failure, tone: "error" });
+  else toast({ title: biPair(tl(primary, "devJobDone", label), tl(secondary, "devJobDone", label)), tone: "ok" });
+  await loadDev();
+}
+
+function devRow(name, detail, size, buttons) {
+  const row = el("div", "rec-row");
+  const who = el("div");
+  const title = el("div", "rec-name");
+  title.append(el("strong", null, name));
+  who.append(title);
+  if (detail) {
+    const reason = el("span", "rec-reason");
+    reason.append(detail);
+    who.append(reason);
+  }
+  const actions = el("div", "actions");
+  actions.append(el("span", "muted small", size), ...buttons);
+  row.append(who, actions);
+  return row;
+}
+
+function devGroup(titleKey, rows) {
+  const box = el("div", "dev-group");
+  const head = el("h3", "dev-group-title");
+  head.append(bi(titleKey));
+  box.append(head);
+  if (rows.length) box.append(...rows);
+  else box.append(el("p", "muted small", t("devNone")));
+  return box;
+}
+
+function renderDev() {
+  const list = document.querySelector("#dev-list");
+  if (!list) return;
+  list.removeAttribute("aria-busy");
+  list.replaceChildren();
+  if (!devData) return;
+  if (devData.unavailable) {
+    list.append(el("p", "muted", t("devUnavailable")));
+  }
+  const button = (labelKey, icon, kind, id, label, item, blocked, className) =>
+    actionButton({ labelKey, icon, className: className || "outline", busy: devBusy.get(id) === kind, disabled: devBusy.has(id), blocked: blocked || undefined, onClick: () => devAction(kind, id, label, item) });
+  const runtimes = (devData.runtimes || []).map((r) =>
+    devRow(r.title, r.runtimeIdentifier.replace("com.apple.CoreSimulator.SimRuntime.", ""), bytes(r.bytes), r.deletable ? [button("devOffload", iconTray, "dev/offload-runtime", r.id, r.title, r, r.blocked)] : []));
+  const simulators = (devData.simulators || []).filter((d) => d.bytes >= 50 * 1024 * 1024).map((d) =>
+    devRow(d.name, d.state === "Booted" ? d.state : "", bytes(d.bytes), [button("devOffload", iconTray, "dev/offload-simulator", d.udid, d.name, d, d.blocked)]));
+  const offloaded = (devData.offloaded || []).map((o) => {
+    const detail = el("span");
+    detail.append(t(o.kind === "runtime" ? "devRuntimes" : "devSimulators"), " · ", t("devFrom", o.host));
+    if (o.present) detail.append(" · ", t("devInstalledHere"));
+    const restoreKind = o.kind === "runtime" ? "dev/restore-runtime" : "dev/restore-simulator";
+    const buttons = [];
+    if (!o.present) buttons.push(button("devRestore", iconDownload, restoreKind, o.id, o.title, o));
+    buttons.push(button("devForget", iconTrash, "dev/forget", o.id, o.title, o, null, "danger-outline"));
+    return devRow(o.title, detail, bytes(o.bytes), buttons);
+  });
+  list.append(devGroup("devRuntimes", runtimes), devGroup("devSimulators", simulators), devGroup("devOffloaded", offloaded));
+  const clean = el("p", "dev-clean");
+  clean.append(button("devCleanDerived", iconTrash, "dev/clean-derived-data", "derived-data", "DerivedData", {}, null, "quiet"));
+  list.append(clean);
+}
+
+async function loadDev() {
+  try {
+    devData = await api("/api/dev");
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    document.querySelector("#dev-list").replaceChildren(errorBlock(error.code, error.message));
+    return;
+  }
+  renderDev();
+}
+
 // ---- disk usage -----------------------------------------------------------
 
 let usageData = null;
@@ -1961,7 +2195,7 @@ function renderUsage() {
   button.firstElementChild.replaceChildren(bi(usageData && usageData.tree ? "usageRescan" : "usageScan"));
   if (scanning) button.setAttribute("aria-busy", "true"); else button.removeAttribute("aria-busy");
   if (!usageData || !usageData.tree) {
-    chart.hidden = crumbs.hidden = legend.hidden = tip.hidden = true;
+    chart.hidden = crumbs.hidden = legend.hidden = tip.hidden = document.querySelector("#usage-tips").hidden = true;
     summary.append(bi(scanning ? "usageScanning" : "usageIntro"));
     return;
   }
@@ -2031,12 +2265,48 @@ function renderUsage() {
   const rootBox = chart.firstElementChild;
   if (rootBox) rootBox.classList.remove("zoomable");
 
+  renderUsageTips(focus, trail.length === 1);
+
   legend.hidden = false;
   legend.replaceChildren();
   for (const kind of USAGE_LEGEND) {
     const item = el("li", "usage-legend-item");
     item.append(el("span", `usage-swatch u-${kind}`), bi(usageKindText[kind]));
     legend.append(item);
+  }
+}
+
+/// Tools outside Disklessly that free space Disklessly can't, shown for the
+/// whole disk and for the part of it they act on.
+const USAGE_TIPS = [
+  { id: "RemoveMacAI", kind: "system", url: "https://github.com/omlahore/RemoveMacAI" },
+  { id: "DevOffload", kind: "library", url: "#dev-section" },
+];
+
+function renderUsageTips(focus, atRoot) {
+  const list = document.querySelector("#usage-tips");
+  const tips = USAGE_TIPS.filter((tip) => atRoot || focus.kind === tip.kind || focus.key === tip.kind);
+  list.hidden = !tips.length;
+  list.replaceChildren();
+  if (!tips.length) return;
+  list.append(el("h3", "usage-tips-title"));
+  list.firstChild.append(bi("usageTips"));
+  for (const tip of tips) {
+    const item = el("div", `usage-tip-item`);
+    const title = el("div", "usage-tip-head");
+    title.append(el("span", `usage-swatch u-${tip.kind}`), bi(`tip${tip.id}Title`));
+    const body = el("p", "muted small");
+    body.append(bi(`tip${tip.id}Body`));
+    const link = el("a", "link");
+    link.href = tip.url;
+    if (!tip.url.startsWith("#")) {
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+    }
+    link.append(bi(`tip${tip.id}Link`));
+    if (!tip.url.startsWith("#")) link.append(document.createTextNode(" ↗"));
+    item.append(title, body, link);
+    list.append(item);
   }
 }
 
@@ -2090,6 +2360,7 @@ async function load() {
   render(status);
   loadLicense();
   loadUsage();
+  loadDev();
 }
 
 function refresh() {

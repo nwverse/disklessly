@@ -48,6 +48,10 @@ public enum ManagementUI {
         let manifests = loadedApps.1
         appsError = loadedApps.2.message
         appsErrorCode = loadedApps.2.code
+        // The repo is shared by every Mac, so say per row what this Mac actually has.
+        let home = NSHomeDirectory()
+        let localApps = LocalAppIndex(folders: Array(Set([engine.config.stubDir, "/Applications", home + "/Applications"])))
+        let ownImageIds = Set(deviceRows.first { $0.deviceId == listing?.localDeviceId }?.images.map(\.imageId) ?? [])
         for manifest in manifests {
                 let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
                 let exists = FileManager.default.fileExists(atPath: cached.path)
@@ -82,6 +86,7 @@ public enum ManagementUI {
                     "iconPath": AppIcon.existingPath(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: manifest.imageId) ?? "",
                     // Where the stub lives and where a permanent restore puts the app.
                     "installPath": manifest.app.originalPath,
+                    "local": localApps.presence(bundleId: manifest.bundleId, imageId: manifest.imageId, ownImageIds: ownImageIds).jsonObject,
                 ]
                 if let used = record?.lastUsed { row["lastUsed"] = isoFormatter.string(from: used) }
                 apps.append(row)
@@ -311,6 +316,10 @@ public enum ManagementUI {
             } catch {
                 return failure(error, status: 400)
             }
+        case ("GET", "/api/dev"):
+            var object = engine.devAssets().jsonObject()
+            object["ok"] = true
+            return .json(object)
         case ("GET", "/api/usage"):
             return .json(context.usage.snapshot())
         case ("POST", "/api/usage/scan"):
@@ -505,6 +514,13 @@ public enum UIJobKind: String, CaseIterable {
     case launch, prefetch, evict, restore, unpack, pin, unpin
     /// Offloads an installed app (`disklessly pack`). The request carries the app's `path`.
     case pack
+    /// Xcode simulators (`disklessly dev`). `app` is the runtime id, the simulator
+    /// udid or the repo record id; clean-derived-data ignores it.
+    case devOffloadRuntime = "dev/offload-runtime", devRestoreRuntime = "dev/restore-runtime"
+    case devOffloadSimulator = "dev/offload-simulator", devRestoreSimulator = "dev/restore-simulator"
+    case devForget = "dev/forget", devCleanDerivedData = "dev/clean-derived-data"
+
+    public var isDev: Bool { rawValue.hasPrefix("dev/") }
 
     public init?(path: String) {
         guard path.hasPrefix("/api/") else { return nil }
@@ -684,6 +700,19 @@ public struct ManagementActions {
                 _ = try engine.pack(path)
                 return
             }
+            if kind.isDev {
+                progress.phase(String(kind.rawValue.dropFirst("dev/".count)))
+                switch kind {
+                case .devOffloadRuntime: _ = try engine.offloadRuntime(name)
+                case .devRestoreRuntime: _ = try engine.restoreRuntime(name)
+                case .devOffloadSimulator: _ = try engine.offloadSimulator(name)
+                case .devRestoreSimulator: _ = try engine.restoreSimulator(name)
+                case .devForget: _ = try engine.forgetDevAsset(name)
+                case .devCleanDerivedData: _ = try engine.trashDerivedData()
+                default: break
+                }
+                return
+            }
             progress.phase("resolve")
             guard var manifest = engine.manifest(named: name, in: try engine.list()) else { throw UIJobError.unknownApp(name) }
             switch kind {
@@ -714,7 +743,7 @@ public struct ManagementActions {
             case .unpin:
                 progress.phase("pin")
                 try engine.setPinned(manifest, pinned: false)
-            case .pack:
+            case .pack, .devOffloadRuntime, .devRestoreRuntime, .devOffloadSimulator, .devRestoreSimulator, .devForget, .devCleanDerivedData:
                 break
             }
         })
