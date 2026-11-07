@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import DisklesslyCore
 
 /// One-click OpenList for drives rclone does not cover (阿里云盘, 百度网盘, 夸克, 115, ...).
