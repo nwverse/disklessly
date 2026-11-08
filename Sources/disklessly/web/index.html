@@ -75,30 +75,60 @@
         </li>
       </ol>
     </section>
-    <div class="grid">
-      <article class="card backend-card" id="backend-card" data-level="unknown" aria-labelledby="backend-title">
-        <div class="card-head">
-          <h2 id="backend-title" data-t="backend"></h2>
-          <span id="backend-pill" class="pill-slot"></span>
-        </div>
-        <div id="backend-body" aria-busy="true">
-          <div class="sk-line wide"></div>
-          <div class="sk-line"></div>
-          <div class="sk-line short"></div>
-        </div>
-      </article>
-      <article class="card cache-card" id="cache-card" data-level="ok" aria-labelledby="cache-title">
-        <div class="card-head">
-          <h2 id="cache-title" data-t="cache"></h2>
-          <span id="cache-pill" class="pill-slot"></span>
-        </div>
-        <div id="cache-body" aria-busy="true">
-          <div class="sk-line wide tall"></div>
-          <div class="sk-line"></div>
-          <div class="sk-line short"></div>
-        </div>
-      </article>
-    </div>
+    <section class="card" id="usage-section" aria-labelledby="usage-title">
+      <div class="card-head">
+        <h2 id="usage-title" data-t="usage"></h2>
+        <p class="scan-line">
+          <span id="usage-scanned" class="muted"></span>
+          <button id="usage-scan" type="button" class="btn quiet"><span data-t="usageScan"></span></button>
+        </p>
+      </div>
+      <p id="usage-summary" class="muted"></p>
+      <nav id="usage-crumbs" class="usage-crumbs" aria-label="path" hidden></nav>
+      <div id="usage-chart" class="usage-chart" hidden></div>
+      <p id="usage-tip" class="usage-tip muted" aria-live="polite" hidden></p>
+      <ul id="usage-legend" class="usage-legend" hidden></ul>
+      <div id="usage-clean" class="usage-clean" hidden></div>
+      <p id="usage-caches" class="usage-caches muted" hidden>
+        <span id="usage-caches-text"></span>
+        <button id="usage-caches-clear" type="button" class="btn quiet" hidden><span data-t="cachesClear"></span></button>
+      </p>
+      <div id="usage-tips" class="usage-tips" hidden></div>
+    </section>
+    <section class="card" id="recommend-section" aria-labelledby="recommend-title">
+      <div class="card-head">
+        <h2 id="recommend-title" data-t="recommend"></h2>
+        <p class="scan-line">
+          <span id="recommend-scanned" class="muted"></span>
+          <button id="rescan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
+        </p>
+      </div>
+      <p id="recommend-total" class="total" hidden></p>
+      <p id="recommend-summary" class="muted"></p>
+      <div id="recommend-list" class="rec-list" aria-busy="true"></div>
+      <h3 id="recommend-warn-title" class="warn-title" hidden data-t="recommendWarn"></h3>
+      <ul id="recommend-warnings" class="plain-list"></ul>
+      <p id="recommend-leftovers" class="muted" hidden></p>
+      <ul id="recommend-leftover-paths" class="plain-list" hidden></ul>
+      <div class="card-head files-head">
+        <h3 id="big-title" data-t="bigTitle"></h3>
+        <p class="scan-line">
+          <span id="big-scanned" class="muted"></span>
+          <button id="big-scan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
+        </p>
+      </div>
+      <p id="big-summary" class="muted"></p>
+      <div id="big-list" class="rec-list"></div>
+      <div class="card-head files-head">
+        <h3 id="files-title" data-t="filesTitle"></h3>
+        <p class="scan-line">
+          <span id="files-scanned" class="muted"></span>
+          <button id="files-scan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
+        </p>
+      </div>
+      <p id="files-summary" class="muted"></p>
+      <div id="files-list" class="rec-list"></div>
+    </section>
     <section id="apps" class="section" aria-labelledby="apps-title">
       <div class="section-head">
         <h2 id="apps-title" data-t="apps"></h2>
@@ -139,20 +169,34 @@
         <p class="table-foot"><span class="foot-icon" aria-hidden="true">i</span><span data-t="evictNote"></span></p>
       </div>
     </section>
-    <section class="card" id="license-section" aria-labelledby="license-title">
+    <section class="card" id="ctr-section" aria-labelledby="ctr-title">
       <div class="card-head">
-        <h2 id="license-title" data-t="license"></h2>
-        <p id="license-summary" class="section-summary"></p>
+        <h2 id="ctr-title" data-t="ctrTitle"></h2>
+        <p class="scan-line">
+          <button id="ctr-scan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
+        </p>
       </div>
-      <p id="license-detail" class="muted"></p>
-      <form id="license-form" class="license-form" autocomplete="off">
-        <label class="field grow">
-          <span data-t="licenseCode"></span>
-          <input id="license-code" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="DSL1.…">
-        </label>
-        <button id="license-activate" type="submit" class="btn primary"><span data-t="licenseActivate"></span></button>
-        <button id="license-remove" type="button" class="btn quiet" hidden><span data-t="licenseRemove"></span></button>
-      </form>
+      <p id="ctr-summary" class="muted"></p>
+      <div id="ctr-list" class="rec-list"></div>
+    </section>
+    <section class="card" id="devices-section" aria-labelledby="devices-title">
+      <div class="card-head"><h2 id="devices-title" data-t="devices"></h2><span id="devices-count" class="count"></span></div>
+      <p id="devices-summary" class="muted"></p>
+      <ul id="devices" class="plain-list"></ul>
+    </section>
+    <section class="card" id="dev-section" aria-labelledby="dev-title">
+      <div class="card-head"><h2 id="dev-title" data-t="dev"></h2></div>
+      <p class="muted" data-t="devIntro"></p>
+      <div id="dev-list" class="rec-list" aria-busy="true"></div>
+    </section>
+    <section class="card" id="sessions-section" aria-labelledby="sessions-title">
+      <div class="card-head">
+        <h2 id="sessions-title" data-t="sessionTiers"></h2>
+        <p id="sessions-summary" class="section-summary"></p>
+      </div>
+      <p class="muted" data-t="sessionIntro"></p>
+      <div id="sessions-plan" class="session-plan" aria-busy="true"></div>
+      <ul id="sessions" class="session-list"></ul>
     </section>
     <section class="card" id="cloud-section" aria-labelledby="cloud-title">
       <div class="card-head">
@@ -169,87 +213,45 @@
       <p class="muted" data-t="openlistNote"></p>
       <div id="cloud-openlist" class="cloud-openlist"></div>
     </section>
-    <section class="card" id="sessions-section" aria-labelledby="sessions-title">
+    <div class="grid">
+      <article class="card backend-card" id="backend-card" data-level="unknown" aria-labelledby="backend-title">
+        <div class="card-head">
+          <h2 id="backend-title" data-t="backend"></h2>
+          <span id="backend-pill" class="pill-slot"></span>
+        </div>
+        <div id="backend-body" aria-busy="true">
+          <div class="sk-line wide"></div>
+          <div class="sk-line"></div>
+          <div class="sk-line short"></div>
+        </div>
+      </article>
+      <article class="card cache-card" id="cache-card" data-level="ok" aria-labelledby="cache-title">
+        <div class="card-head">
+          <h2 id="cache-title" data-t="cache"></h2>
+          <span id="cache-pill" class="pill-slot"></span>
+        </div>
+        <div id="cache-body" aria-busy="true">
+          <div class="sk-line wide tall"></div>
+          <div class="sk-line"></div>
+          <div class="sk-line short"></div>
+        </div>
+      </article>
+    </div>
+    <section class="card" id="license-section" hidden aria-labelledby="license-title">
       <div class="card-head">
-        <h2 id="sessions-title" data-t="sessionTiers"></h2>
-        <p id="sessions-summary" class="section-summary"></p>
+        <h2 id="license-title" data-t="license"></h2>
+        <p id="license-summary" class="section-summary"></p>
       </div>
-      <p class="muted" data-t="sessionIntro"></p>
-      <div id="sessions-plan" class="session-plan" aria-busy="true"></div>
-      <ul id="sessions" class="session-list"></ul>
+      <p id="license-detail" class="muted"></p>
+      <form id="license-form" class="license-form" autocomplete="off">
+        <label class="field grow">
+          <span data-t="licenseCode"></span>
+          <input id="license-code" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="DSL1.…">
+        </label>
+        <button id="license-activate" type="submit" class="btn primary"><span data-t="licenseActivate"></span></button>
+        <button id="license-remove" type="button" class="btn quiet" hidden><span data-t="licenseRemove"></span></button>
+      </form>
     </section>
-    <section class="card" id="recommend-section" aria-labelledby="recommend-title">
-      <div class="card-head">
-        <h2 id="recommend-title" data-t="recommend"></h2>
-        <p class="scan-line">
-          <span id="recommend-scanned" class="muted"></span>
-          <button id="rescan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
-        </p>
-      </div>
-      <p id="recommend-total" class="total" hidden></p>
-      <p id="recommend-summary" class="muted"></p>
-      <div id="recommend-list" class="rec-list" aria-busy="true"></div>
-      <h3 id="recommend-warn-title" class="warn-title" hidden data-t="recommendWarn"></h3>
-      <ul id="recommend-warnings" class="plain-list"></ul>
-      <p id="recommend-leftovers" class="muted" hidden></p>
-      <ul id="recommend-leftover-paths" class="plain-list" hidden></ul>
-      <div class="card-head files-head">
-        <h3 id="big-title" data-t="bigTitle"></h3>
-        <p class="scan-line">
-          <span id="big-scanned" class="muted"></span>
-          <button id="big-scan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
-        </p>
-      </div>
-      <p id="big-summary" class="muted"></p>
-      <div id="big-list" class="rec-list"></div>
-      <div class="card-head files-head" id="ctr-section">
-        <h3 id="ctr-title" data-t="ctrTitle"></h3>
-        <p class="scan-line">
-          <button id="ctr-scan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
-        </p>
-      </div>
-      <p id="ctr-summary" class="muted"></p>
-      <div id="ctr-list" class="rec-list"></div>
-      <div class="card-head files-head">
-        <h3 id="files-title" data-t="filesTitle"></h3>
-        <p class="scan-line">
-          <span id="files-scanned" class="muted"></span>
-          <button id="files-scan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
-        </p>
-      </div>
-      <p id="files-summary" class="muted"></p>
-      <div id="files-list" class="rec-list"></div>
-    </section>
-    <section class="card" id="usage-section" aria-labelledby="usage-title">
-      <div class="card-head">
-        <h2 id="usage-title" data-t="usage"></h2>
-        <p class="scan-line">
-          <span id="usage-scanned" class="muted"></span>
-          <button id="usage-scan" type="button" class="btn quiet"><span data-t="usageScan"></span></button>
-        </p>
-      </div>
-      <p id="usage-summary" class="muted"></p>
-      <nav id="usage-crumbs" class="usage-crumbs" aria-label="path" hidden></nav>
-      <div id="usage-chart" class="usage-chart" hidden></div>
-      <p id="usage-tip" class="usage-tip muted" aria-live="polite" hidden></p>
-      <ul id="usage-legend" class="usage-legend" hidden></ul>
-      <div id="usage-clean" class="usage-clean" hidden></div>
-      <p id="usage-caches" class="usage-caches muted" hidden>
-        <span id="usage-caches-text"></span>
-        <button id="usage-caches-clear" type="button" class="btn quiet" hidden><span data-t="cachesClear"></span></button>
-      </p>
-      <div id="usage-tips" class="usage-tips" hidden></div>
-    </section>
-    <section class="card" id="dev-section" aria-labelledby="dev-title">
-      <div class="card-head"><h2 id="dev-title" data-t="dev"></h2></div>
-      <p class="muted" data-t="devIntro"></p>
-      <div id="dev-list" class="rec-list" aria-busy="true"></div>
-    </section>
-    <details class="card fold" id="devices-section">
-      <summary><h2 id="devices-title" data-t="devices"></h2><span id="devices-count" class="count"></span></summary>
-      <p id="devices-summary" class="muted"></p>
-      <ul id="devices" class="plain-list"></ul>
-    </details>
   </main>
 </div>
 <div id="toasts" class="toasts" role="status" aria-live="polite" aria-atomic="false"></div>

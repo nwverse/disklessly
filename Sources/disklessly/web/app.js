@@ -156,6 +156,11 @@ const copy = {
     actionpack: "卸载",
     actionoffloadfile: "卸载",
     phasepack: "卸载中",
+    phasestop: "正在停止",
+    stopAndOffload: "停止并卸载",
+    stopAndOffloadFor: (name) => `停止 ${name} 并卸载`,
+    loginItemsSettings: "登录项设置",
+    confirmStopPackBody: (size) => `会先退出这个应用在后台运行的辅助进程，再把它打包进仓库（约 ${size}），原位置换成一个入口，之后按需下载打开。可能要几分钟。`,
     offloadNow: "立即卸载",
     offloadNowFor: (name) => `立即卸载 ${name}`,
     offloading: "卸载中…",
@@ -619,6 +624,11 @@ const copy = {
     actionpack: "offload",
     actionoffloadfile: "offload",
     phasepack: "Offloading",
+    phasestop: "Stopping",
+    stopAndOffload: "Stop and offload",
+    stopAndOffloadFor: (name) => `Stop ${name} and offload it`,
+    loginItemsSettings: "Login items",
+    confirmStopPackBody: (size) => `Its background helpers are quit first, then the app is packed into your repo (about ${size}) and its place gets a launcher that downloads and opens it on demand. This can take a few minutes.`,
     offloadNow: "Offload now",
     offloadNowFor: (name) => `Offload ${name} now`,
     offloading: "Offloading…",
@@ -1909,7 +1919,7 @@ function confirmAction(kind, app) {
   const spec = {
     evict: { title: ["confirmEvictTitle", app.name], body: ["confirmEvictBody", size], ok: "confirmEvictOk", danger: true },
     restore: { title: ["confirmRestoreTitle", app.name], body: ["confirmRestoreBody"], ok: "confirmRestoreOk", danger: false },
-    pack: { title: ["confirmPackTitle", app.name], body: ["confirmPackBody", size], ok: "confirmPackOk", danger: false },
+    pack: { title: ["confirmPackTitle", app.name], body: [app.stopFirst ? "confirmStopPackBody" : "confirmPackBody", size], ok: app.stopFirst ? "stopAndOffload" : "confirmPackOk", danger: false },
     offloadfile: { title: ["confirmFileTitle", app.label || app.name], body: ["confirmFileBody", size], ok: "confirmPackOk", danger: false },
     unpack: { title: ["confirmUnpackTitle", app.name, dir], body: ["confirmUnpackBody", app.installPath || `${dir}/${app.name}.app`], ok: "confirmUnpackOk", danger: true },
   }[kind];
@@ -1951,7 +1961,7 @@ async function startJob(kind, app) {
   rerenderApps();
   try {
     // Evict never forces from the page: a pinned app is refused by the server too.
-    const payload = kind === "evict" ? { app: app.name, force: false } : kind === "pack" || kind === "offloadfile" ? { app: app.name, path: app.path } : { app: app.name };
+    const payload = kind === "evict" ? { app: app.name, force: false } : kind === "pack" ? { app: app.name, path: app.path, stopFirst: Boolean(app.stopFirst) } : kind === "offloadfile" ? { app: app.name, path: app.path } : { app: app.name };
     const started = await api(`/api/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     pending.set(app.name, { kind, jobId: started.jobId, phase: started.phase || "queued" });
     rerenderApps();
@@ -2284,10 +2294,45 @@ async function toggleSessionDigest(id, sessions) {
 
 // ---- recommendations ------------------------------------------------------
 
+// Warnings that are only said, not a reason to hold an app back (see RecommendRanking.noteOnlyWarnings).
+const NOTE_ONLY_WARNINGS = new Set(["loginItem", "menuBarAgent"]);
+
+/// The offload button for a recommendation row. An app whose helper is running gets
+/// "Stop and offload": the pack job quits the app's own processes first.
+function recommendActions(app) {
+  const actions = el("div", "actions");
+  const job = pending.get(app.name);
+  const packing = Boolean(job && job.kind === "pack");
+  const stop = (app.warnings || []).includes("backgroundHelper");
+  actions.append(actionButton({
+    labelKey: packing ? "offloading" : stop ? "stopAndOffload" : "offloadNow",
+    name: both(stop ? "stopAndOffloadFor" : "offloadNowFor", app.name),
+    icon: iconTray,
+    className: "primary",
+    busy: packing,
+    disabled: Boolean(job),
+    onClick: () => confirmAction("pack", { name: app.name, path: app.path, cachedBytes: app.sizeBytes, stopFirst: stop }),
+  }));
+  if ((app.warnings || []).includes("loginItem")) {
+    actions.append(actionButton({
+      labelKey: "loginItemsSettings",
+      name: both("loginItemsSettings"),
+      icon: iconOpen,
+      className: "outline",
+      onClick: async () => {
+        try { await api("/api/loginitems/open", { method: "POST" }); }
+        catch (error) { toast({ title: bi("loginItemsSettings"), error, tone: "error" }); }
+      },
+    }));
+  }
+  return actions;
+}
+
 function recommendReason(app, language) {
   const say = (key, ...args) => tl(language || primary, key, ...args);
   const warnings = app.warnings || [];
-  if (warnings.length) return warnings.map((code) => (has("warn" + code) ? say("warn" + code) : code)).join("; ");
+  const warnText = (code) => (has("warn" + code) ? say("warn" + code) : code);
+  if (warnings.some((code) => !NOTE_ONLY_WARNINGS.has(code))) return warnings.map(warnText).join("; ");
   const parts = [];
   if (app.neverUsed) parts.push(say("neverUsed"));
   else if (app.daysIdle != null) parts.push(say("idleDays", Number(app.daysIdle)));
@@ -2297,6 +2342,7 @@ function recommendReason(app, language) {
     const devices = app.otherDevices || [];
     parts.push(say("alreadyInRepo") + (devices.length ? ` (${devices.join(", ")})` : ""));
   }
+  for (const code of warnings) parts.push(warnText(code));
   return parts.join("; ");
 }
 
@@ -2407,18 +2453,7 @@ function renderRecommend(report, failure) {
     const command = packCommand(app.path);
     words.append(el("code", "inline-command", command));
     who.append(words);
-    const actions = el("div", "actions");
-    const job = pending.get(app.name);
-    const packing = Boolean(job && job.kind === "pack");
-    actions.append(actionButton({
-      labelKey: packing ? "offloading" : "offloadNow",
-      name: both("offloadNowFor", app.name),
-      icon: iconTray,
-      className: "primary",
-      busy: packing,
-      disabled: Boolean(job),
-      onClick: () => confirmAction("pack", { name: app.name, path: app.path, cachedBytes: app.sizeBytes }),
-    }));
+    const actions = recommendActions(app);
     actions.append(actionButton({
       labelKey: "copyCommand",
       name: both("copyCommandFor", app.name),
@@ -2438,7 +2473,15 @@ function renderRecommend(report, failure) {
     const item = el("li", "poor-row");
     const top = el("div", "rec-name");
     top.append(el("span", "app-name", app.name || ""), pill("grey", modeKeyFor(app.suggestedMode)));
-    item.append(top, el("div", "mono path", app.path || ""), biPair(recommendReason(app, primary), "", "rec-reason"));
+    const words = el("div", "app-words");
+    words.append(top, el("div", "mono path", app.path || ""), biPair(recommendReason(app, primary), "", "rec-reason"));
+    item.append(words);
+    // Only what cannot work is held back: the toolchain, extensions, and apps already packed.
+    const blocked = app.suggestedMode === "unsupported" || (app.warnings || []).includes("alreadyPacked");
+    if (!blocked) {
+      item.classList.add("poor-row-actionable");
+      item.append(recommendActions(app));
+    }
     warnings.append(item);
   }
   renderLeftovers(report);

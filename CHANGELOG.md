@@ -6,6 +6,12 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- Login items and menu bar agents are no longer held back from offloading: they are recommended with a note, and a login item gets a "Login items" button that opens System Settings → Login Items (`POST /api/loginitems/open`).
+- Apps listed under "Poor candidates" get an offload button too, except the toolchain, apps with system or kernel extensions, and apps already packed. An app whose background helper is running gets "Stop and offload": the pack job (`POST /api/pack` with `"stopFirst": true`) quits the processes inside the bundle (SIGTERM, then SIGKILL after 8 s) and packs, retrying once if launchd starts a helper again.
+- Dashboard order follows the flow: disk usage first, then what to offload, offloaded apps, container images, Macs sharing the repo (now an open card instead of a fold at the bottom), simulators, sessions, cloud drives, and repo and cache last. The license card is hidden for now.
+
 ## [0.2.0] - 2026-11-07
 
 ### Added
