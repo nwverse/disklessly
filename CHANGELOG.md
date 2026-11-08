@@ -15,6 +15,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   pulled or run in the last 30 days, and falls back to the disk size when an engine is stopped or has no CLI.
   Offload saves the image to `containers/images/<id>.tar` write-once, checks the repo copy's sha256, and only then
   removes it; restore downloads, checks and `load`s it. Images a container uses are refused; volumes are only listed.
+- Archived agent sessions show a title (the agent's own title, or the first prompt) and can be filtered by title, agent or path before restoring.
+
 - Moving to another repo takes the offloaded apps along: `disklessly repo migrate --to ID|default
   [--keep-old-as-mirror]` (and `POST /api/cloud/use` with `"migrate": true`, run as a cloud task) copies every
   object, including `repo.json` so the `repoId` and existing stubs stay valid, verifies the copy, and only then
@@ -101,6 +103,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   issues codes; it is not part of any release artifact.
 
 ### Changed
+
+- Google Drive uploads use 64 MiB chunks instead of rclone's 8 MiB default (about 60% faster per image in testing).
 
 - The free limit counts offloaded files and folders together with apps (2 items at once).
 

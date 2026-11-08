@@ -108,6 +108,7 @@ public enum ManagementUI {
                 "path": entry.path,
                 "displayPath": homeRelative(entry.path),
                 "preview": entry.preview,
+                "title": sessionTitle(entry),
                 "archive": entry.archive,
                 "hasDigest": FileManager.default.fileExists(atPath: SessionArchive.digestURL(config: engine.config, id: entry.id).path),
                 "tier": "cold",
@@ -255,6 +256,14 @@ public enum ManagementUI {
             return "~" + path.dropFirst(candidate.count)
         }
         return path
+    }
+
+    /// What an archived session was about. Newer rows store the title as their preview; older
+    /// rows kept the first raw bytes of the file there, so fall back to the digest's first prompt.
+    public static func sessionTitle(_ entry: SessionIndexEntry) -> String {
+        let preview = entry.preview.trimmingCharacters(in: .whitespaces)
+        if !preview.isEmpty, !preview.hasPrefix("{"), !preview.hasPrefix("[") { return preview }
+        return SessionDigest.title(fromDigest: entry.digest ?? "")
     }
 
     public static func sessionAgeDays(modified: Date, now: Date) -> Int {

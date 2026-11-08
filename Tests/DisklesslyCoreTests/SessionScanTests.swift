@@ -1,6 +1,6 @@
 import XCTest
 import Foundation
-import DisklesslyCore
+@testable import DisklesslyCore
 @testable import DisklesslyEngine
 @testable import DisklesslySessions
 
@@ -379,5 +379,31 @@ final class SessionScanTests: XCTestCase {
         let reopened = try SessionIndexDB(stateDir: stateDir.path)
         XCTAssertEqual(try reopened.userVersion(), 3)
         XCTAssertEqual(try reopened.allEntries().count, 2)
+    }
+
+    func testSessionTitlePrefersAgentTitleThenFirstPrompt() throws {
+        let claude = """
+        {"type":"user","message":{"role":"user","content":"fix the   login\\nbug please"}}
+        {"type":"ai-title","aiTitle":"Generated title"}
+        {"type":"custom-title","customTitle":"修复登录"}
+        """
+        XCTAssertEqual(SessionDigest.title(tool: "claude", path: "/h/.claude/projects/p/a.jsonl", data: Data(claude.utf8), home: "/nonexistent"), "修复登录")
+        let plain = """
+        {"type":"user","message":{"role":"user","content":"fix the   login\\nbug please"}}
+        {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}
+        """
+        XCTAssertEqual(SessionDigest.title(tool: "claude", path: "/h/.claude/projects/p/a.jsonl", data: Data(plain.utf8), home: "/nonexistent"), "fix the login")
+        XCTAssertEqual(SessionDigest.oneLine(String(repeating: "x", count: 200)).count, SessionDigest.titleCap)
+
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("dkl-title-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: home) }
+        try FileManager.default.createDirectory(at: home.appendingPathComponent(".codex"), withIntermediateDirectories: true)
+        let id = "01a14db0-8f58-7943-ba71-58247a41625e"
+        try "{\"id\":\"\(id)\",\"thread_name\":\"安装 Homebrew\"}\n".write(to: home.appendingPathComponent(".codex/session_index.jsonl"), atomically: true, encoding: .utf8)
+        XCTAssertEqual(SessionDigest.title(tool: "codex", path: "\(home.path)/.codex/sessions/2026/10/18/rollout-2026-10-18T06-26-24-\(id).jsonl", data: Data("{}".utf8), home: home.path), "安装 Homebrew")
+
+        let digest = "**User:** 第一个问题\n第二行\n\n**Assistant:** answer"
+        XCTAssertEqual(SessionDigest.title(fromDigest: digest), "第一个问题")
+        XCTAssertEqual(SessionDigest.title(fromDigest: ""), "")
     }
 }

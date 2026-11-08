@@ -201,4 +201,17 @@ final class RcloneTests: XCTestCase {
         XCTAssertEqual(RcloneTool.createArguments(provider: "gdrive", googleClient: nil), ["scope", "drive.file"])
         XCTAssertEqual(RcloneTool.createArguments(provider: "dropbox", googleClient: ("i", "s")), [])
     }
+
+    func testDriveUploadsUseLargerChunks() throws {
+        let config = root.appendingPathComponent("rclone.conf")
+        try "[box]\ntype = dropbox\n\n[gdrive]\ntype = drive\nscope = drive.file\n".write(to: config, atomically: true, encoding: .utf8)
+        XCTAssertEqual(RcloneBackend.remoteType("gdrive", config: config.path), "drive")
+        XCTAssertEqual(RcloneBackend.remoteType("box", config: config.path), "dropbox")
+        XCTAssertNil(RcloneBackend.remoteType("missing", config: config.path))
+        XCTAssertEqual(RcloneBackend.uploadOverrides(type: "dropbox"), [:])
+        let drive = RcloneBackend.uploadOverrides(type: "drive")
+        XCTAssertEqual(RcloneBackend.withOverrides("gdrive:Disklessly/repo", drive), "gdrive,chunk_size=64M:Disklessly/repo")
+        XCTAssertEqual(RcloneBackend.withOverrides("gdrive:", drive), "gdrive,chunk_size=64M:")
+        XCTAssertEqual(RcloneBackend.withOverrides("box:x", [:]), "box:x")
+    }
 }

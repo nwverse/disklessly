@@ -509,7 +509,10 @@ img.avatar { background: transparent; }
 }
 .session-row .pill { justify-self: start; }
 .session-tool { font-weight: 500; }
-.session-path { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-main { display: flex; flex-direction: column; min-width: 0; gap: 2px; }
+.session-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-path { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.session-filter { width: 100%; box-sizing: border-box; margin: 8px 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: 6px; background: transparent; color: inherit; font: inherit; }
 .session-age { color: var(--muted); font-size: 12px; white-space: nowrap; }
 .session-actions { display: flex; gap: 6px; }
 .session-digest { grid-column: 1 / -1; margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto; white-space: pre-wrap;
@@ -617,7 +620,8 @@ img.avatar { background: transparent; }
   .session-row { grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: "tier tool age" "path path path"; gap: 4px 10px; }
   .session-row .pill { grid-area: tier; }
   .session-tool { grid-area: tool; }
-  .session-path { grid-area: path; white-space: normal; overflow-wrap: anywhere; }
+  .session-main { grid-area: path; }
+  .session-path { white-space: normal; overflow-wrap: anywhere; }
   .session-age { grid-area: age; }
   .rec-row { flex-direction: column; align-items: stretch; }
   .menu { right: auto; left: 0; }
