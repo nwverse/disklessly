@@ -228,6 +228,29 @@ final class SessionScanTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: URL(fileURLWithPath: restored), encoding: .utf8), claudeBody)
     }
 
+    func testPlanListsColdSessionsAndApplyTakesOnlyPickedOnes() throws {
+        let old = now.addingTimeInterval(-(60 * 24 * 60 * 60))
+        let first = try put(".claude/projects/p/a.jsonl", "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"first topic\"}}\n", modified: old)
+        let second = try put(".claude/projects/p/b.jsonl", "{\"type\":\"custom-title\",\"customTitle\":\"Second\"}\n")
+        let config = makeConfig()
+        let plan = try SessionArchive.plan(config: config, now: now, openAmong: { _ in [] })
+        let claude = try XCTUnwrap(plan.tool("claude"))
+        XCTAssertEqual(claude.coldItems.map(\.path), [second, first], "newest first")
+        XCTAssertEqual(claude.coldItems.map(\.title), ["Second", "first topic"])
+        XCTAssertEqual(SessionDigest.workingDirectory(Data("{\"type\":\"summary\"}\n{\"cwd\":\"/w/app\"}\n".utf8)), "/w/app")
+        XCTAssertEqual(SessionDigest.workingDirectory(Data("{\"type\":\"session_meta\",\"payload\":{\"cwd\":\"/w/codex\"}}\n".utf8)), "/w/codex")
+        XCTAssertNil(SessionDigest.workingDirectory(Data("{}\n".utf8)))
+        let row = try XCTUnwrap((plan.jsonObject()["tools"] as? [[String: Any]])?.first { $0["tool"] as? String == "claude" })
+        XCTAssertEqual((row["sessions"] as? [[String: Any]])?.count, 2)
+
+        let backend = try LocalFolderBackend(root: URL(fileURLWithPath: config.repoPath))
+        let report = try SessionArchive.tier(config: config, backend: backend, now: now, apply: true, tools: ["claude"], only: [first])
+        XCTAssertEqual(report.cold, [first])
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: second), "an unticked session stays local")
+        XCTAssertEqual(ManagementUI.sessionTitle(try XCTUnwrap(SessionArchive.archivedEntries(config: config).first)), "first topic")
+    }
+
     // MARK: digest
 
     func testClaudeDigestKeepsPromptsAndFinalAnswers() {
@@ -394,6 +417,9 @@ final class SessionScanTests: XCTestCase {
         """
         XCTAssertEqual(SessionDigest.title(tool: "claude", path: "/h/.claude/projects/p/a.jsonl", data: Data(plain.utf8), home: "/nonexistent"), "fix the login")
         XCTAssertEqual(SessionDigest.oneLine(String(repeating: "x", count: 200)).count, SessionDigest.titleCap)
+        XCTAssertEqual(SessionDigest.stripLeadingTags("<timestamp>Sunday</timestamp>\n<user_query>\nfix it\n</user_query>"), "fix it\n")
+        XCTAssertEqual(SessionDigest.stripLeadingTags("<timestamp>Sunday</timestamp>\nfix the build"), "fix the build")
+        XCTAssertEqual(SessionDigest.stripLeadingTags("<b>only a tag</b>"), "only a tag")
 
         let home = FileManager.default.temporaryDirectory.appendingPathComponent("dkl-title-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: home) }

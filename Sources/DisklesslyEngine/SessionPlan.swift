@@ -24,6 +24,8 @@ public struct SessionToolPlan: Equatable {
     public var excludedFiles: Int = 0
     public var oldest: Date?
     public var newest: Date?
+    /// The cold sessions themselves, newest first, so the user can pick single ones.
+    public var coldItems: [SessionPlanItem] = []
 
     public func jsonObject() -> [String: Any] {
         let iso = ISO8601DateFormatter()
@@ -48,8 +50,22 @@ public struct SessionToolPlan: Equatable {
         ]
         if let oldest { object["oldest"] = iso.string(from: oldest) }
         if let newest { object["newest"] = iso.string(from: newest) }
+        object["sessions"] = coldItems.map { item -> [String: Any] in
+            ["path": item.path, "bytes": NSNumber(value: item.size), "modified": iso.string(from: item.modified), "title": item.title,
+             "project": item.project ?? ""]
+        }
         return object
     }
+}
+
+/// One cold session in a plan: what it is about, how big, when it was last touched.
+public struct SessionPlanItem: Equatable {
+    public var path: String
+    public var size: UInt64
+    public var modified: Date
+    public var title: String
+    /// The working directory it ran in, when the transcript records one.
+    public var project: String?
 }
 
 /// Per-agent dry run of session tiering. Building it reads only the agents'
@@ -138,7 +154,12 @@ extension SessionArchive {
             }
             plan.coldFiles += 1
             plan.coldBytes += candidate.size
+            let data = (try? Data(contentsOf: URL(fileURLWithPath: candidate.path), options: .mappedIfSafe)) ?? Data()
+            plan.coldItems.append(SessionPlanItem(path: candidate.path, size: candidate.size, modified: candidate.modified,
+                                                  title: SessionDigest.title(tool: candidate.tool, path: candidate.path, data: data, home: home ?? NSHomeDirectory()),
+                                                  project: SessionDigest.workingDirectory(data)))
         }
+        for tool in plans.keys { plans[tool]?.coldItems.sort { $0.modified > $1.modified } }
         return SessionPlanReport(days: days, generatedAt: now, tools: order.compactMap { plans[$0] })
     }
 
@@ -227,7 +248,9 @@ extension DisklesslyEngine {
 
     /// Archive the cold sessions of the selected agents. `tools` nil means all
     /// configured agents; an empty set or an unknown id is a usage error (exit 2).
-    public func sessionApply(tools: Set<String>?, days: Int? = nil, home: String? = nil, encrypt: Bool = false, now: Date = Date()) throws -> SessionReport {
-        try SessionArchive.tier(config: config, backend: repo, now: now, apply: true, coldDays: days, home: home, tools: tools, isOpen: sessionOpenProbe, secrets: secrets, encrypt: encrypt)
+    /// `paths`, when given, narrows it to those files (the sessions the user ticked); any other
+    /// cold session is left local.
+    public func sessionApply(tools: Set<String>?, paths: Set<String>? = nil, days: Int? = nil, home: String? = nil, encrypt: Bool = false, now: Date = Date()) throws -> SessionReport {
+        try SessionArchive.tier(config: config, backend: repo, now: now, apply: true, coldDays: days, home: home, tools: tools, only: paths, isOpen: sessionOpenProbe, secrets: secrets, encrypt: encrypt)
     }
 }

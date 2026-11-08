@@ -51,7 +51,41 @@ public enum SessionDigest {
         let format = detect(tool: tool, path: path, data: data)
         var found = messages(format: format, data: data)
         if found.isEmpty && format != .generic { found = generic(data) }
-        return oneLine(found.first { $0.role == "user" }?.text ?? "")
+        return oneLine(stripLeadingTags(found.first { $0.role == "user" }?.text ?? ""))
+    }
+
+    /// The working directory a session ran in, from the first record that names one
+    /// (Claude Code `cwd`, Codex `session_meta.payload.cwd`, pi's header `cwd`).
+    public static func workingDirectory(_ data: Data) -> String? {
+        var found: String?
+        var seen = 0
+        let bytes = data
+        var start = bytes.startIndex
+        while found == nil, seen < 64, start < bytes.endIndex {
+            let end = bytes[start...].firstIndex(of: 0x0A) ?? bytes.endIndex
+            seen += 1
+            if end > start, let object = (try? JSONSerialization.jsonObject(with: bytes[start..<end])) as? [String: Any] {
+                let payload = object["payload"] as? [String: Any]
+                if let cwd = (object["cwd"] as? String) ?? (payload?["cwd"] as? String), !cwd.isEmpty { found = cwd }
+            }
+            start = end < bytes.endIndex ? bytes.index(after: end) : end
+        }
+        return found
+    }
+
+    /// Drops wrapper blocks some agents put before the prompt, e.g. Cursor's
+    /// `<timestamp>…</timestamp>`, so the title starts at what the user typed.
+    static func stripLeadingTags(_ text: String) -> String {
+        var rest = Substring(text).drop { $0.isWhitespace }
+        while rest.hasPrefix("<"), let close = rest.firstIndex(of: ">") {
+            let name = rest[rest.index(after: rest.startIndex)..<close]
+            guard !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }),
+                  let end = rest.range(of: "</\(name)>") else { break }
+            let after = rest[end.upperBound...].drop { $0.isWhitespace }
+            // A block that is the whole prompt (Cursor's `<user_query>`) is unwrapped instead.
+            rest = after.isEmpty ? rest[rest.index(after: close)..<end.lowerBound].drop { $0.isWhitespace } : after
+        }
+        return String(rest)
     }
 
     /// The first user prompt in a digest made by `digest(tool:path:data:)`, for index rows

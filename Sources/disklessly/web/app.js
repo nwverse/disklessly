@@ -272,6 +272,11 @@ const copy = {
     sessionDigestHide: "收起",
     sessionRestore: "还原",
     sessionUntitled: "（无标题）",
+    sessionShowList: (n) => `查看 ${n} 个`,
+    sessionHideList: () => "收起",
+    sessionPickAll: "全选",
+    sessionPickNone: "全不选",
+    sessionPicked: (n, size) => `已选 ${n} 个，${size}`,
     sessionFilter: "按标题、工具或路径筛选",
     sessionFilterNone: "没有匹配的会话",
     sessionRestored: (path) => `已还原到 ${path}`,
@@ -730,6 +735,11 @@ const copy = {
     sessionDigestHide: "Hide",
     sessionRestore: "Restore",
     sessionUntitled: "(untitled)",
+    sessionShowList: (n) => `Show ${n}`,
+    sessionHideList: () => "Hide",
+    sessionPickAll: "Select all",
+    sessionPickNone: "Select none",
+    sessionPicked: (n, size) => `${n} selected, ${size}`,
     sessionFilter: "Filter by title, agent or path",
     sessionFilterNone: "No matching sessions",
     sessionRestored: (path) => `Restored to ${path}`,
@@ -2085,6 +2095,8 @@ function renderSessions(sessions) {
 // Agent session plan: what each agent has, and what could move to the repo.
 let sessionPlan = null;
 let sessionPick = null; // Set of tool ids the user ticked; null until the plan first loads
+const sessionExcluded = new Set(); // paths of cold sessions the user unticked
+const sessionExpanded = new Set(); // agents whose session list is open
 let sessionTimer = null;
 let sessionApplyBytes = 0;
 const sessionDigestOpen = new Map(); // entry id -> digest text
@@ -2093,6 +2105,10 @@ let lastSessions = null;
 
 function sessionBusy() {
   return !!(sessionPlan && sessionPlan.task && sessionPlan.task.state === "running");
+}
+
+function sessionPickedItems(tool) {
+  return (tool.sessions || []).filter((item) => !sessionExcluded.has(item.path));
 }
 
 function renderSessionPlan() {
@@ -2106,18 +2122,42 @@ function renderSessionPlan() {
   if (!sessionPick) sessionPick = new Set(tools.filter((tool) => tool.coldFiles > 0).map((tool) => tool.tool));
   const busy = sessionBusy();
   for (const tool of tools) {
-    const row = el("label", "session-plan-row");
+    const row = el("div", "session-plan-row");
+    const label = el("label", "session-plan-tool");
     const box2 = document.createElement("input");
     box2.type = "checkbox";
-    box2.checked = sessionPick.has(tool.tool) && tool.coldFiles > 0;
+    const chosen = sessionPickedItems(tool).length;
+    box2.checked = sessionPick.has(tool.tool) && tool.coldFiles > 0 && chosen > 0;
+    box2.indeterminate = box2.checked && chosen < (tool.sessions || []).length;
     box2.disabled = busy || tool.coldFiles === 0;
-    box2.addEventListener("change", () => { if (box2.checked) sessionPick.add(tool.tool); else sessionPick.delete(tool.tool); renderSessionPlan(); });
-    row.append(box2, el("strong", null, tool.label || tool.tool), el("span", "muted", t("sessionPlanLine", tool.files, bytes(tool.bytes), tool.coldFiles, bytes(tool.coldBytes))));
+    box2.addEventListener("change", () => {
+      if (box2.checked) {
+        sessionPick.add(tool.tool);
+        for (const item of tool.sessions || []) sessionExcluded.delete(item.path);
+      } else sessionPick.delete(tool.tool);
+      renderSessionPlan();
+    });
+    label.append(box2, el("strong", null, tool.label || tool.tool));
+    row.append(label, el("span", "muted", t("sessionPlanLine", tool.files, bytes(tool.bytes), tool.coldFiles, bytes(tool.coldBytes))));
+    if ((tool.sessions || []).length) {
+      const open = sessionExpanded.has(tool.tool);
+      const toggle = el("button", "btn quiet", t(open ? "sessionHideList" : "sessionShowList", tool.sessions.length));
+      toggle.type = "button";
+      toggle.setAttribute("aria-expanded", String(open));
+      toggle.addEventListener("click", () => {
+        if (sessionExpanded.has(tool.tool)) sessionExpanded.delete(tool.tool); else sessionExpanded.add(tool.tool);
+        renderSessionPlan();
+      });
+      row.append(toggle);
+    }
     box.append(row);
+    if (sessionExpanded.has(tool.tool)) box.append(sessionPlanList(tool, busy));
   }
   const picked = tools.filter((tool) => sessionPick.has(tool.tool) && tool.coldFiles > 0);
-  const count = picked.reduce((n, tool) => n + tool.coldFiles, 0);
-  const size = picked.reduce((n, tool) => n + tool.coldBytes, 0);
+  const items = picked.flatMap((tool) => sessionPickedItems(tool));
+  const narrowed = picked.some((tool) => sessionPickedItems(tool).length < (tool.sessions || []).length);
+  const count = items.length;
+  const size = items.reduce((n, item) => n + Number(item.bytes || 0), 0);
   const actions = el("div", "session-plan-actions");
   const apply = el("button", "btn tint", t(busy ? "sessionApplying" : "sessionApply"));
   apply.type = "button";
@@ -2125,9 +2165,57 @@ function renderSessionPlan() {
   if (busy) apply.setAttribute("aria-busy", "true");
   apply.addEventListener("click", () => askConfirm(
     { title: ["sessionConfirmTitle", count, bytes(size)], body: ["sessionConfirmBody", picked.map((tool) => tool.label || tool.tool).join("、")], ok: "sessionApply", danger: true },
-    () => { sessionApplyBytes = size; applySessions(picked.map((tool) => tool.tool)); }));
+    () => { sessionApplyBytes = size; applySessions(picked.map((tool) => tool.tool), narrowed ? items.map((item) => item.path) : null); }));
   actions.append(apply);
+  if (count) actions.append(el("span", "muted", t("sessionPicked", count, bytes(size))));
   box.append(actions);
+}
+
+// Where a session ran, home-relative.
+function sessionProject(item) {
+  return (item.project || "").replace(/^\/(?:Users|home)\/[^/]+(?=\/|$)/, "~");
+}
+
+// The cold sessions of one agent, each with its own tick box.
+function sessionPlanList(tool, busy) {
+  const list = el("ul", "session-plan-list");
+  const all = tool.sessions || [];
+  const head = el("li", "session-plan-item session-plan-bulk");
+  for (const [key, include] of [["sessionPickAll", true], ["sessionPickNone", false]]) {
+    const button = el("button", "btn quiet", t(key));
+    button.type = "button";
+    button.disabled = busy;
+    button.addEventListener("click", () => {
+      for (const item of all) { if (include) sessionExcluded.delete(item.path); else sessionExcluded.add(item.path); }
+      if (include) sessionPick.add(tool.tool);
+      renderSessionPlan();
+    });
+    head.append(button);
+  }
+  list.append(head);
+  for (const item of all) {
+    const row = el("li", "session-plan-item");
+    const label = el("label");
+    const tick = document.createElement("input");
+    tick.type = "checkbox";
+    tick.checked = sessionPick.has(tool.tool) && !sessionExcluded.has(item.path);
+    tick.disabled = busy;
+    tick.addEventListener("change", () => {
+      if (tick.checked) { sessionExcluded.delete(item.path); sessionPick.add(tool.tool); } else sessionExcluded.add(item.path);
+      renderSessionPlan();
+    });
+    const text = el("span", "session-main");
+    const title = el("span", "session-title", item.title || t("sessionUntitled"));
+    title.title = item.path || "";
+    text.append(title);
+    const project = sessionProject(item);
+    if (project) text.append(el("span", "session-path mono", project));
+    label.append(tick, text);
+    const age = Math.max(0, Math.floor((Date.now() - (Date.parse(item.modified || "") || Date.now())) / 86400000));
+    row.append(label, el("span", "muted", bytes(Number(item.bytes || 0))), el("span", "session-age", t("daysAgo", age)));
+    list.append(row);
+  }
+  return list;
 }
 
 async function loadSessionPlan() {
@@ -2157,9 +2245,10 @@ function sessionTaskFinished(task) {
   refresh();
 }
 
-async function applySessions(tools) {
+async function applySessions(tools, paths) {
   try {
-    const started = await api("/api/sessions/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tools }) });
+    const payload = paths ? { tools, paths } : { tools };
+    const started = await api("/api/sessions/apply", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
     sessionPlan = Object.assign({}, sessionPlan, { task: started.task });
     renderSessionPlan();
     sessionTimer = setTimeout(loadSessionPlan, 1500);

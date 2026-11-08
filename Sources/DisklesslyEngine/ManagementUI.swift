@@ -386,10 +386,12 @@ public enum ManagementUI {
             // (full snapshot to the repo, short digest kept here), then delete the local files.
             let body = ((try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any]) ?? [:]
             let tools = Set((body["tools"] as? [String]) ?? [])
+            let paths = (body["paths"] as? [String]).map(Set.init)
             guard !tools.isEmpty else { return failure(code: "usage", message: "pick at least one agent", status: 400) }
+            if let paths, paths.isEmpty { return failure(code: "usage", message: "pick at least one session", status: 400) }
             let started = context.sessionTask.start("sessions-apply") { progress in
                 progress("archive")
-                return try engine.sessionApply(tools: tools).jsonObject()
+                return try engine.sessionApply(tools: tools, paths: paths).jsonObject()
             }
             guard started else { return failure(code: "busy", message: "sessions are already being archived", status: 409) }
             return .json(["ok": true, "task": context.sessionTask.snapshot()], status: 202)
