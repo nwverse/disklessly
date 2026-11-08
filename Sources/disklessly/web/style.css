@@ -518,7 +518,12 @@ img.avatar { background: transparent; }
 .session-digest { grid-column: 1 / -1; margin: 0; padding: 10px 12px; max-height: 320px; overflow: auto; white-space: pre-wrap;
   font-size: 12px; background: var(--panel-2, rgba(127,127,127,.08)); border-radius: 8px; }
 .session-plan { margin: 4px 0 14px; }
-.session-plan-row { display: grid; grid-template-columns: auto minmax(110px, 180px) minmax(0, 1fr); gap: 10px; align-items: center; padding: 6px 0; }
+.session-plan-row { display: grid; grid-template-columns: minmax(130px, 200px) minmax(0, 1fr) auto; gap: 10px; align-items: center; padding: 6px 0; }
+.session-plan-tool { display: flex; gap: 10px; align-items: center; }
+.session-plan-list { list-style: none; margin: 0 0 8px 26px; padding: 0; max-height: 360px; overflow: auto; border-left: 2px solid var(--line); }
+.session-plan-item { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 12px; align-items: center; padding: 4px 0 4px 10px; font-size: 13px; }
+.session-plan-item label { display: flex; gap: 8px; align-items: center; min-width: 0; }
+.session-plan-bulk { display: flex; gap: 6px; }
 .session-plan-actions { display: flex; gap: 10px; align-items: center; margin-top: 8px; }
 
 /* ---- recommendations, devices ---- */

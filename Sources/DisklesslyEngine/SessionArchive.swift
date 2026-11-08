@@ -128,7 +128,7 @@ public enum SessionArchive {
     /// `tools` limits the run to those tool ids (the agents a user ticked). Nil
     /// means every configured root. An empty set or an id with no root is a usage
     /// error. Pending rows from earlier runs are settled whatever the filter.
-    public static func tier(config: RuntimeConfig, backend: any StorageBackend, now: Date = Date(), apply: Bool = false, coldDays: Int? = nil, home: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment, tools: Set<String>? = nil, isOpen: (String) -> Bool = { _ in false }, secrets: (any SecretStore)? = nil, encrypt: Bool = false, beforeDelete: ((String) -> Void)? = nil, afterIndexCommit: (() throws -> Void)? = nil) throws -> SessionReport {
+    public static func tier(config: RuntimeConfig, backend: any StorageBackend, now: Date = Date(), apply: Bool = false, coldDays: Int? = nil, home: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment, tools: Set<String>? = nil, only: Set<String>? = nil, isOpen: (String) -> Bool = { _ in false }, secrets: (any SecretStore)? = nil, encrypt: Bool = false, beforeDelete: ((String) -> Void)? = nil, afterIndexCommit: (() throws -> Void)? = nil) throws -> SessionReport {
         let days = coldDays ?? config.sessionColdDays
         let roots = try restrict(configuredRoots(config: config, home: home, environment: environment), to: tools)
         // Ask the open-file probe only about files that are cold by name and age;
@@ -140,8 +140,10 @@ public enum SessionArchive {
             return probed
         }
         let decisions = candidates.map { SessionTiering.decide($0, now: now, coldDays: days) }
-        let cold = decisions.filter(\.cold).map(\.candidate)
+        let picked = { (path: String) in only.map { $0.contains(path) } ?? true }
+        let cold = decisions.filter { $0.cold && picked($0.candidate.path) }.map(\.candidate)
         let skipped = decisions.filter { !$0.cold }.map { ($0.candidate.path, $0.reason) }
+            + decisions.filter { $0.cold && !picked($0.candidate.path) }.map { ($0.candidate.path, "not selected") }
         guard apply else { return SessionReport(cold: cold.map(\.path), skipped: skipped, applied: false) }
         let outside = pathsOutsideRoots(candidates.map(\.path), roots: roots)
         if !outside.isEmpty {

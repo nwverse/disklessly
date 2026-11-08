@@ -8,6 +8,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Session tiering lists each cold session (title, project folder, size, age) under its agent and can move only the ones you tick (`POST /api/sessions/apply` takes `paths`).
+
 - `disklessly repo merge --from ID|default` and `POST /api/cloud/merge`: merge another repo into the active one. Migrating onto a backend that already is another repo now merges into it, keeping its `repoId` and rebuilding its catalog, instead of being refused.
 
 - Container images: `disklessly containers [list|offload|restore|clean|forget]`, `GET /api/containers`,
