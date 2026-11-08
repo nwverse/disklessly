@@ -303,6 +303,45 @@ const copy = {
     bigReason_appData: "应用数据。可在「大文件和文件夹」里放到云端，或在应用里清理",
     bigReason_personal: "个人文件夹。可在「大文件和文件夹」里把不常用的放到云端",
     bigConfirmTitle: (name) => `清理「${name}」？`,
+    ctrTitle: "容器镜像",
+    ctrScanning: "正在读取容器镜像…",
+    ctrNone: "这台 Mac 上没有 Apple container、Docker Desktop、OrbStack、Colima 或 Dory。",
+    ctrSummary: (n, size, free) => `${n} 个镜像，共 ${size}；没在用的 ${free} 可以放到云端或清理。`,
+    ctrEngine: (name, size) => `${name} · 磁盘上共 ${size}`,
+    ctrEngine_running: "运行中",
+    ctrEngine_stopped: "没在运行，只能看到磁盘大小；启动后才能列出镜像",
+    ctrEngine_noCli: "找不到命令行工具，只能看到磁盘大小",
+    ctrUse_running: (names) => `在用：容器 ${names} 正在运行`,
+    ctrUse_stopped: (names) => `在用：停止的容器 ${names} 还引用它，先删掉容器才能移走`,
+    ctrUse_recent: (days) => `最近 ${days} 天内拉取或运行过，可能还会用`,
+    ctrUse_dangling: "没有标签的旧镜像，通常可以直接清理",
+    ctrUse_idle: "没有容器在用，也很久没拉取或运行",
+    ctrLastUsed: (days) => (days <= 0 ? "今天用过" : `${days} 天前用过`),
+    ctrOffload: "放到云端",
+    ctrClean: "清理",
+    ctrRestore: "恢复",
+    ctrForget: "从仓库删除",
+    ctrOffloaded: "已放到云端",
+    ctrVolumes: "卷",
+    ctrVolumeInUse: "有容器在用",
+    ctrVolumeNote: "卷里是容器的数据，这里只显示大小，不会动它们。",
+    ctrInstalledHere: "这台 Mac 上也有",
+    ctrConfirmOffloadTitle: (name) => `把镜像 ${name} 放到云端？`,
+    ctrConfirmOffloadBody: (size, engine, recent) => `${recent ? "这个镜像最近用过。" : ""}用 ${engine} 把镜像导出成 tar（约 ${size}），写到仓库并校验 sha256 之后，再从这台 Mac 删除镜像。之后可以一键恢复。`,
+    ctrConfirmCleanTitle: (name) => `清理镜像 ${name}？`,
+    ctrConfirmCleanBody: (size) => `直接删除这个镜像（约 ${size}），不保存。以后需要时要重新拉取或构建。`,
+    ctrConfirmForgetTitle: (name) => `从仓库删除 ${name}？`,
+    ctrConfirmForgetBody: (size) => `删除仓库里的 ${size}，之后就不能再恢复了。`,
+    ctrVMNote: "镜像在虚拟机磁盘里，删除后要等虚拟机回收磁盘（通常重启一次）空间才会回到 Mac。",
+    ctrJobDone: (name, freed) => (freed ? `${name}：完成，腾出 ${freed}` : `${name}：完成`),
+    ctrJobFailed: (name) => `${name}：失败`,
+    phasecheck: "检查中",
+    phasesave: "导出中",
+    phaseupload: "上传中",
+    phaseverify: "校验中",
+    phaseremove: "删除中",
+    phaseload: "导入中",
+    phaseforget: "删除中",
     bigConfirmBody: (size) => `大约释放 ${size}。内容挪到废纸篓（Homebrew 用 brew cleanup），对应的工具下次用到时会重新下载或生成。`,
     filesSummary: (count, min, days) => `${count} 项 · 不小于 ${min}，且 ${days} 天以上没打开过`,
     filesEmpty: "主文件夹里没有又大又久未打开的文件",
@@ -722,6 +761,45 @@ const copy = {
     bigReason_appData: "App data. Offload it under Large files and folders, or clean it up in the app",
     bigReason_personal: "Personal folder. Offload what you rarely use under Large files and folders",
     bigConfirmTitle: (name) => `Clean “${name}”?`,
+    ctrTitle: "Container images",
+    ctrScanning: "Reading container images…",
+    ctrNone: "No Apple container, Docker Desktop, OrbStack, Colima or Dory on this Mac.",
+    ctrSummary: (n, size, free) => `${n} images, ${size} in all; ${free} nothing uses can be offloaded or cleaned.`,
+    ctrEngine: (name, size) => `${name} · ${size} on disk`,
+    ctrEngine_running: "Running",
+    ctrEngine_stopped: "Not running, so only its disk size is known; start it to list images",
+    ctrEngine_noCli: "Its command-line tool was not found, so only its disk size is known",
+    ctrUse_running: (names) => `In use: container ${names} is running`,
+    ctrUse_stopped: (names) => `In use: stopped container ${names} still refers to it; remove the container first`,
+    ctrUse_recent: (days) => `Pulled or run in the last ${days} days; you may still need it`,
+    ctrUse_dangling: "Old untagged image; usually safe to clean",
+    ctrUse_idle: "No container uses it, and it has not been pulled or run for a while",
+    ctrLastUsed: (days) => (days <= 0 ? "used today" : days === 1 ? "used 1 day ago" : `used ${days} days ago`),
+    ctrOffload: "Offload",
+    ctrClean: "Clean",
+    ctrRestore: "Restore",
+    ctrForget: "Delete from repo",
+    ctrOffloaded: "In the repo",
+    ctrVolumes: "Volumes",
+    ctrVolumeInUse: "used by a container",
+    ctrVolumeNote: "Volumes hold container data; they are listed here and never touched.",
+    ctrInstalledHere: "also on this Mac",
+    ctrConfirmOffloadTitle: (name) => `Offload image ${name}?`,
+    ctrConfirmOffloadBody: (size, engine, recent) => `${recent ? "This image was used recently. " : ""}${engine} saves the image as a tar (about ${size}). Once it is in the repo and its sha256 checks out, the image is removed from this Mac. You can restore it in one click.`,
+    ctrConfirmCleanTitle: (name) => `Clean image ${name}?`,
+    ctrConfirmCleanBody: (size) => `Deletes the image (about ${size}) without saving it. Pull or build it again when you need it.`,
+    ctrConfirmForgetTitle: (name) => `Delete ${name} from the repo?`,
+    ctrConfirmForgetBody: (size) => `Deletes ${size} from the repo; it can no longer be restored.`,
+    ctrVMNote: "The image lives in a VM disk; the space comes back to the Mac once the VM trims its disk (usually after a restart).",
+    ctrJobDone: (name, freed) => (freed ? `${name}: done, freed ${freed}` : `${name}: done`),
+    ctrJobFailed: (name) => `${name}: failed`,
+    phasecheck: "Checking",
+    phasesave: "Saving",
+    phaseupload: "Uploading",
+    phaseverify: "Verifying",
+    phaseremove: "Removing",
+    phaseload: "Loading",
+    phaseforget: "Deleting",
     bigConfirmBody: (size) => `Frees about ${size}. The contents go to the Trash (Homebrew uses brew cleanup); the tool fetches or rebuilds them when it next needs them.`,
     filesSummary: (count, min, days) => `${count} ${count === 1 ? "item" : "items"} · ${min} or more, not opened for ${days} days`,
     filesEmpty: "No large files that have sat unopened in your home folder",
@@ -3006,6 +3084,7 @@ async function load() {
   loadDev();
   if (!sessionBusy()) loadSessionPlan();
   if (appsSupported() && (!bigData || bigData.state !== "scanning")) loadBig();
+  if (!ctrData || ctrData.state !== "scanning") loadContainers();
 }
 
 function refresh() {
@@ -3264,6 +3343,146 @@ async function rescanBig() {
   bigTimer = setTimeout(loadBig, 2000);
 }
 
+// ---- container images -------------------------------------------------------
+
+let ctrData = null;
+let ctrTimer = null;
+const ctrBusy = new Map(); // key or record id -> job kind
+
+const engineTitle = (id) => ({ apple: "Apple container", "docker-desktop": "Docker Desktop", orbstack: "OrbStack", colima: "Colima", dory: "Dory" }[id] || id);
+const daysSince = (iso) => (iso ? Math.floor((Date.now() - Date.parse(iso)) / 86400000) : null);
+
+function ctrUseText(image) {
+  const names = (image.containers || []).join(", ");
+  if (image.use === "running" || image.use === "stopped") return t("ctrUse_" + image.use, names);
+  if (image.use === "recent") return t("ctrUse_recent", ctrData.recentDays || 30);
+  return t("ctrUse_" + image.use);
+}
+
+const ctrConfirms = {
+  "containers/offload": (item) => ({ title: ["ctrConfirmOffloadTitle", item.title], body: ["ctrConfirmOffloadBody", bytes(item.bytes), engineTitle(item.engine), item.use === "recent"], ok: "ctrOffload", danger: false }),
+  "containers/clean": (item) => ({ title: ["ctrConfirmCleanTitle", item.title], body: ["ctrConfirmCleanBody", bytes(item.bytes)], ok: "ctrClean", danger: true }),
+  "containers/forget": (item) => ({ title: ["ctrConfirmForgetTitle", item.title], body: ["ctrConfirmForgetBody", bytes(item.bytes)], ok: "ctrForget", danger: true }),
+};
+
+function ctrAction(kind, id, item) {
+  const confirm = ctrConfirms[kind];
+  if (confirm) askConfirm(confirm(item), () => ctrJob(kind, id, item.title));
+  else ctrJob(kind, id, item.title);
+}
+
+async function ctrJob(kind, id, label) {
+  if (ctrBusy.has(id)) return;
+  ctrBusy.set(id, kind);
+  renderContainers();
+  let failure = null;
+  try {
+    const started = await api(`/api/${kind}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ app: id }) });
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, JOB_POLL_MS));
+      const job = await api(`/api/jobs/${encodeURIComponent(started.jobId)}`);
+      if (job.state === "running") continue;
+      if (job.state !== "done") failure = job.error || { code: "failed", message: "" };
+      break;
+    }
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    failure = { code: error.code, message: error.message };
+  }
+  ctrBusy.delete(id);
+  if (failure) toast({ title: biPair(t("ctrJobFailed", label), null), error: failure, tone: "error" });
+  else toast({ title: biPair(t("ctrJobDone", label, null), null), tone: "ok" });
+  rescanContainers();
+}
+
+function renderContainers() {
+  const list = document.querySelector("#ctr-list");
+  const summary = document.querySelector("#ctr-summary");
+  if (!list) return;
+  list.replaceChildren();
+  if (!ctrData || (ctrData.state === "scanning" && !ctrData.engines)) {
+    summary.textContent = t("ctrScanning");
+    return;
+  }
+  const engines = ctrData.engines || [];
+  const images = ctrData.images || [];
+  const offloaded = ctrData.offloaded || [];
+  if (!engines.length && !offloaded.length) {
+    summary.textContent = t("ctrNone");
+    return;
+  }
+  summary.textContent = t("ctrSummary", images.length, bytes(ctrData.bytes || 0), bytes(ctrData.reclaimableBytes || 0)) + (ctrData.state === "scanning" ? " " + t("ctrScanning") : "");
+  const button = (labelKey, icon, kind, id, item, className, blocked) =>
+    actionButton({ labelKey, icon, className: className || "outline", busy: ctrBusy.get(id) === kind, disabled: ctrBusy.has(id) || !!blocked, blocked: blocked || undefined, onClick: () => ctrAction(kind, id, item) });
+  for (const engine of engines) {
+    const rows = [];
+    const engineNote = el("span");
+    engineNote.append(t("ctrEngine_" + engine.status));
+    if (engine.note && engine.status !== "running") engineNote.append(" · ", el("span", "muted small", engine.note));
+    if (engine.vmDisk) engineNote.append(el("br"), el("span", "muted small", t("ctrVMNote")));
+    for (const image of images.filter((i) => i.engine === engine.engine)) {
+      const detail = el("span");
+      const use = el("span", image.inUse ? "warn-text" : null, ctrUseText(image));
+      detail.append(use);
+      const days = daysSince(image.lastUsed);
+      if (days !== null) detail.append(" · ", t("ctrLastUsed", days));
+      detail.append(el("br"), el("span", "mono small", image.shortId));
+      const blocked = image.inUse ? ctrUseText(image) : null;
+      const buttons = [
+        button("ctrOffload", iconTray, "containers/offload", image.key, image, "outline", blocked),
+        button("ctrClean", iconTrash, "containers/clean", image.key, image, "danger-outline", blocked),
+      ];
+      rows.push(devRow(image.title, detail, bytes(image.bytes), buttons));
+    }
+    const volumes = (ctrData.volumes || []).filter((v) => v.engine === engine.engine);
+    for (const volume of volumes) {
+      const detail = el("span");
+      detail.append(t("ctrVolumes"));
+      if (volume.inUse) detail.append(" · ", t("ctrVolumeInUse"));
+      detail.append(" · ", el("span", "muted small", t("ctrVolumeNote")));
+      rows.push(devRow(volume.name, detail, volume.bytes != null ? bytes(volume.bytes) : "", []));
+    }
+    const box = el("div", "dev-group");
+    const head = el("h3", "dev-group-title");
+    head.append(t("ctrEngine", engine.title, bytes(engine.dataBytes || 0)));
+    box.append(head, el("p", "muted small", ""));
+    box.lastChild.append(engineNote);
+    if (rows.length) box.append(...rows);
+    list.append(box);
+  }
+  if (offloaded.length) {
+    const rows = offloaded.map((o) => {
+      const detail = el("span");
+      detail.append(engineTitle(o.engine), " · ", t("devFrom", o.host));
+      if (o.present) detail.append(" · ", t("ctrInstalledHere"));
+      const buttons = [];
+      if (!o.present) buttons.push(button("ctrRestore", iconDownload, "containers/restore", o.id, o));
+      buttons.push(button("ctrForget", iconTrash, "containers/forget", o.id, o, "danger-outline"));
+      return devRow(o.title, detail, bytes(o.bytes), buttons);
+    });
+    list.append(devGroup("ctrOffloaded", rows));
+  }
+}
+
+async function loadContainers() {
+  clearTimeout(ctrTimer);
+  try {
+    ctrData = await api("/api/containers");
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    ctrData = { state: "ready", engines: [], images: [] };
+  }
+  renderContainers();
+  if (ctrData.state === "scanning") ctrTimer = setTimeout(loadContainers, 2000);
+}
+
+async function rescanContainers() {
+  try { await api("/api/containers/scan", { method: "POST" }); } catch (error) { if (error.code === "unauthorized") return; }
+  ctrData = Object.assign({}, ctrData, { state: "scanning" });
+  renderContainers();
+  ctrTimer = setTimeout(loadContainers, 1500);
+}
+
 // ---- wiring ---------------------------------------------------------------
 
 document.querySelector("#refresh").addEventListener("click", refresh);
@@ -3272,6 +3491,7 @@ document.querySelector("#rescan").addEventListener("click", () => loadRecommenda
 document.querySelector("#usage-scan").addEventListener("click", startUsageScan);
 document.querySelector("#files-scan").addEventListener("click", startFilesScan);
 document.querySelector("#big-scan").addEventListener("click", rescanBig);
+document.querySelector("#ctr-scan").addEventListener("click", rescanContainers);
 document.querySelector("#usage-caches-clear").addEventListener("click", clearCaches);
 document.querySelector("#license-form").addEventListener("submit", submitLicense);
 document.querySelector("#license-remove").addEventListener("click", removeLicense);

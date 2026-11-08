@@ -8,6 +8,13 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Container images: `disklessly containers [list|offload|restore|clean|forget]`, `GET /api/containers`,
+  `POST /api/containers/scan`, jobs `containers/offload|clean|restore|forget`, and a "Container images" group under
+  Other big items. Lists the images and volumes of Apple container, Docker Desktop, OrbStack, Colima and Dory
+  (through each engine's own socket), says whether a running or stopped container uses each image or it was
+  pulled or run in the last 30 days, and falls back to the disk size when an engine is stopped or has no CLI.
+  Offload saves the image to `containers/images/<id>.tar` write-once, checks the repo copy's sha256, and only then
+  removes it; restore downloads, checks and `load`s it. Images a container uses are refused; volumes are only listed.
 - Archived agent sessions show a title (the agent's own title, or the first prompt) and can be filtered by title, agent or path before restoring.
 
 - Moving to another repo takes the offloaded apps along: `disklessly repo migrate --to ID|default
