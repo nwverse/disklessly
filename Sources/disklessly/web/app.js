@@ -324,12 +324,11 @@ const copy = {
     ctrVolumeNote: "卷里是容器的数据，这里只显示大小，不会动它们。",
     ctrInstalledHere: "这台 Mac 上也有",
     ctrConfirmOffloadTitle: (name) => `把镜像 ${name} 放到云端？`,
-    ctrConfirmOffloadBody: (size, engine) => `用 ${engine} 把镜像导出成 tar（约 ${size}），写到仓库并校验 sha256 之后，再从这台 Mac 删除镜像。之后可以一键恢复。`,
+    ctrConfirmOffloadBody: (size, engine, recent) => `${recent ? "这个镜像最近用过。" : ""}用 ${engine} 把镜像导出成 tar（约 ${size}），写到仓库并校验 sha256 之后，再从这台 Mac 删除镜像。之后可以一键恢复。`,
     ctrConfirmCleanTitle: (name) => `清理镜像 ${name}？`,
     ctrConfirmCleanBody: (size) => `直接删除这个镜像（约 ${size}），不保存。以后需要时要重新拉取或构建。`,
     ctrConfirmForgetTitle: (name) => `从仓库删除 ${name}？`,
     ctrConfirmForgetBody: (size) => `删除仓库里的 ${size}，之后就不能再恢复了。`,
-    ctrRecentWarn: "这个镜像最近用过。",
     ctrVMNote: "镜像在虚拟机磁盘里，删除后要等虚拟机回收磁盘（通常重启一次）空间才会回到 Mac。",
     ctrJobDone: (name, freed) => (freed ? `${name}：完成，腾出 ${freed}` : `${name}：完成`),
     ctrJobFailed: (name) => `${name}：失败`,
@@ -780,12 +779,11 @@ const copy = {
     ctrVolumeNote: "Volumes hold container data; they are listed here and never touched.",
     ctrInstalledHere: "also on this Mac",
     ctrConfirmOffloadTitle: (name) => `Offload image ${name}?`,
-    ctrConfirmOffloadBody: (size, engine) => `${engine} saves the image as a tar (about ${size}). Once it is in the repo and its sha256 checks out, the image is removed from this Mac. You can restore it in one click.`,
+    ctrConfirmOffloadBody: (size, engine, recent) => `${recent ? "This image was used recently. " : ""}${engine} saves the image as a tar (about ${size}). Once it is in the repo and its sha256 checks out, the image is removed from this Mac. You can restore it in one click.`,
     ctrConfirmCleanTitle: (name) => `Clean image ${name}?`,
     ctrConfirmCleanBody: (size) => `Deletes the image (about ${size}) without saving it. Pull or build it again when you need it.`,
     ctrConfirmForgetTitle: (name) => `Delete ${name} from the repo?`,
     ctrConfirmForgetBody: (size) => `Deletes ${size} from the repo; it can no longer be restored.`,
-    ctrRecentWarn: "This image was used recently.",
     ctrVMNote: "The image lives in a VM disk; the space comes back to the Mac once the VM trims its disk (usually after a restart).",
     ctrJobDone: (name, freed) => (freed ? `${name}: done, freed ${freed}` : `${name}: done`),
     ctrJobFailed: (name) => `${name}: failed`,
@@ -3328,7 +3326,7 @@ function ctrUseText(image) {
 }
 
 const ctrConfirms = {
-  "containers/offload": (item) => ({ title: ["ctrConfirmOffloadTitle", item.title], body: ["ctrConfirmOffloadBody", bytes(item.bytes), engineTitle(item.engine)], ok: "ctrOffload", danger: false }),
+  "containers/offload": (item) => ({ title: ["ctrConfirmOffloadTitle", item.title], body: ["ctrConfirmOffloadBody", bytes(item.bytes), engineTitle(item.engine), item.use === "recent"], ok: "ctrOffload", danger: false }),
   "containers/clean": (item) => ({ title: ["ctrConfirmCleanTitle", item.title], body: ["ctrConfirmCleanBody", bytes(item.bytes)], ok: "ctrClean", danger: true }),
   "containers/forget": (item) => ({ title: ["ctrConfirmForgetTitle", item.title], body: ["ctrConfirmForgetBody", bytes(item.bytes)], ok: "ctrForget", danger: true }),
 };
