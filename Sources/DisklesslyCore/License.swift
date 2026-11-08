@@ -51,6 +51,18 @@ public enum License {
     public static let product = "disklessly"
     /// Apps, files and folders that may be offloaded at the same time without a license.
     public static let freeAppLimit = 2
+
+    /// The switch for the free limit. Off for now: every pack and offload is allowed, nothing asks for a
+    /// license code, and the dashboard hides the license card. Turn it on here (or with
+    /// `DISKLESSLY_LICENSE_LIMIT=1`) when paid licenses start.
+    public static let limitEnabledByDefault = false
+    /// Tests set this to exercise the limit whatever the default is.
+    public static var limitOverride: Bool?
+    public static var limitEnabled: Bool {
+        if let limitOverride { return limitOverride }
+        if let value = ProcessInfo.processInfo.environment["DISKLESSLY_LICENSE_LIMIT"], !value.isEmpty { return value == "1" }
+        return limitEnabledByDefault
+    }
     public static let tokenPrefix = "DSL1"
     public static let fileName = "license.key"
 
@@ -149,7 +161,7 @@ public enum License {
     }
 
     private static func checkLimit(state: LicenseState, count: Int) throws {
-        if count < freeAppLimit { return }
+        if !limitEnabled || count < freeAppLimit { return }
         var why = "The free version offloads up to \(freeAppLimit) apps or files at once and \(count) are offloaded already."
         if case .expired(let payload) = state { why = "Your promo code expired on \(payload.expires ?? "an earlier date"). " + why }
         throw DisklesslyError.licenseRequired(why + " Starting, restoring and unpacking your offloaded apps, and bringing back offloaded files, stays free. Enter a license code with `disklessly license activate CODE` to offload more.")

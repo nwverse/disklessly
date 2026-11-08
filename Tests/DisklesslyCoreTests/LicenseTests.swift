@@ -4,6 +4,9 @@ import Crypto
 @testable import DisklesslyEngine
 
 final class LicenseTests: XCTestCase {
+    // These tests exercise the free limit, which is switched off by default for now.
+    override class func setUp() { super.setUp(); License.limitOverride = true }
+    override class func tearDown() { License.limitOverride = nil; super.tearDown() }
     private let key = Curve25519.Signing.PrivateKey()
     private func date(_ s: String) -> Date {
         var c = Calendar(identifier: .gregorian); c.timeZone = TimeZone(identifier: "UTC")!

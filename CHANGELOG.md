@@ -6,6 +6,14 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- The free limit is switched off for now (`License.limitEnabledByDefault = false`; `DISKLESSLY_LICENSE_LIMIT=1` turns it on): pack and offload never ask for a license code. Saved codes keep working.
+
+### Added
+
+- Data follows the app (v1): `disklessly data enable|disable|status APP`, jobs `POST /api/data/enable|disable`, an item in an offloaded app's ⋯ menu, and a button on the app's data folder under Other big items. An offloaded app's `~/Library/Application Support` folders are archived (tar+zstd, sealed with the image key when one exists) to `data/<deviceId>/<bundleId>/` in the repo after it quits and brought back before it launches. If the data cannot come back the launch is refused, a quit with unchanged data uploads nothing, and data is never written over a generation this Mac did not see. Containers are not touched yet. See docs/app-data-offload.md.
+
 ## [0.2.1] - 2026-11-07
 
 ### Changed

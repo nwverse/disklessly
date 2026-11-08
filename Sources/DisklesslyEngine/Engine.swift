@@ -960,10 +960,12 @@ public struct DisklesslyEngine {
         try restore.clearResolution(appId: manifest.bundleId)
     }
     public func watch(appId: String) throws {
+        let since = Date()
         restore.loadConfiguredFaults()
         try restore.watch(appId: appId)
         #if os(macOS)
         try superviseRunningMount(appId: appId)
+        appDataAfterQuit(appId: appId, since: since)
         #endif
     }
     /// `imageEncryption` from the config: `off` or `aes-gcm`.
@@ -1039,10 +1041,14 @@ public struct DisklesslyEngine {
         if HostPlatform.current.offloadsApps, EngineInstall.runningExecutable().lastPathComponent == "disklessly" {
             try installEngine()
         }
+        // The app's data comes back first; if it cannot, the app is not opened at all.
+        try restore.withLock(manifest.bundleId) { try appDataBeforeLaunch(manifest) }
+        let since = Date()
         if manifest.mode == .restore {
             _ = try prefetch(manifest)
             try restore.launch(manifest, documents: documents, urls: urls, arguments: arguments, wait: wait)
             _ = try enforceCacheQuota(justUsed: manifest.imageId)
+            if wait { appDataAfterQuit(appId: manifest.bundleId, since: since) }
             return
         }
         let image=try prefetch(manifest)
@@ -1094,6 +1100,7 @@ public struct DisklesslyEngine {
             return
         }
         try superviseMount(manifest, app: app, mount: mount)
+        appDataAfterQuit(appId: manifest.bundleId, since: since)
         #endif
     }
     #if os(macOS)

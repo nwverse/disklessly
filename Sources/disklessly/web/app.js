@@ -157,6 +157,24 @@ const copy = {
     actionoffloadfile: "卸载",
     phasepack: "卸载中",
     phasestop: "正在停止",
+    phasesnapshot: "正在快照",
+    phasearchive: "正在打包",
+    phaseencrypt: "正在加密",
+    phasehash: "正在校验",
+    phaseextract: "正在解包",
+    phaseplace: "正在放回",
+    "actiondata/enable": "数据放云端",
+    "actiondata/disable": "数据留本机",
+    dataEnable: "数据也放云端",
+    dataDisable: "数据留在本机",
+    dataInRepo: (size) => `数据在云端（${size}），打开时自动取回`,
+    dataOnQuit: "数据会在退出后放到云端",
+    dataWaiting: (why) => `数据暂留本机：${why}`,
+    confirmDataEnableTitle: (name) => `把 ${name} 的数据也放到云端？`,
+    confirmDataEnableBody: "它在「应用支持」里的文件夹会打包进仓库，然后从本机移走。打开它时先取回数据再启动，退出后数据有改动才重新上传。数据取不回来（比如离线）时不会启动，以免它用空数据打开。应用没退出时会等到它退出。",
+    confirmDataDisableTitle: (name) => `把 ${name} 的数据留在本机？`,
+    confirmDataDisableBody: "如果数据在云端，会先取回来，之后不再移走。",
+
     stopAndOffload: "停止并卸载",
     stopAndOffloadFor: (name) => `停止 ${name} 并卸载`,
     loginItemsSettings: "登录项设置",
@@ -625,6 +643,24 @@ const copy = {
     actionoffloadfile: "offload",
     phasepack: "Offloading",
     phasestop: "Stopping",
+    phasesnapshot: "Snapshotting",
+    phasearchive: "Packing",
+    phaseencrypt: "Encrypting",
+    phasehash: "Checking",
+    phaseextract: "Unpacking",
+    phaseplace: "Putting back",
+    "actiondata/enable": "Move data to the repo",
+    "actiondata/disable": "Keep data here",
+    dataEnable: "Move its data too",
+    dataDisable: "Keep its data here",
+    dataInRepo: (size) => `Data in the repo (${size}), fetched when you open it`,
+    dataOnQuit: "Data moves to the repo after it quits",
+    dataWaiting: (why) => `Data stays here for now: ${why}`,
+    confirmDataEnableTitle: (name) => `Move ${name}'s data to the repo too?`,
+    confirmDataEnableBody: "Its folders in Application Support are packed into the repo and removed from this Mac. Opening it fetches the data first; after it quits, the data is uploaded again only if it changed. If the data cannot be fetched (offline, for example) the app does not open, so it never starts with empty data. If the app is open, this waits until it quits.",
+    confirmDataDisableTitle: (name) => `Keep ${name}'s data on this Mac?`,
+    confirmDataDisableBody: "If the data is in the repo it is brought back first, and it stays here from then on.",
+
     stopAndOffload: "Stop and offload",
     stopAndOffloadFor: (name) => `Stop ${name} and offload it`,
     loginItemsSettings: "Login items",
@@ -1652,6 +1688,11 @@ function overflowMenu(app, busy) {
     [bi("unpack", dir), both("unpack", dir), () => confirmAction("unpack", app)],
   ];
   if (!app.cached) items.unshift([bi("prefetch"), both("prefetchFor", app.name), () => startJob("prefetch", app)]);
+  if (!fullAppHere(app) && isOnThisMac(app)) {
+    const data = app.data || {};
+    if (data.enabled) items.push([bi("dataDisable"), both("dataDisable"), () => confirmAction("data/disable", app)]);
+    else items.push([bi("dataEnable"), both("dataEnable"), () => confirmAction("data/enable", app)]);
+  }
   for (const [label, name, run] of items) {
     const item = el("button", "menuitem");
     item.append(label);
@@ -1851,6 +1892,15 @@ function localNote(app) {
   return "";
 }
 
+/// One line on what happens to the app's Application Support (data follows the app).
+function dataNote(app) {
+  const data = app.data;
+  if (!data) return "";
+  if (data.state === "offloaded") return t("dataInRepo", bytes(data.bytes));
+  if (data.lastError) return t("dataWaiting", data.lastError);
+  return data.enabled ? t("dataOnQuit") : "";
+}
+
 function appRow(app, quota) {
     const job = pending.get(app.name);
     const busy = Boolean(job);
@@ -1870,7 +1920,7 @@ function appRow(app, quota) {
     words.append(meta);
     const holders = (app.devices || []).filter(Boolean);
     const fromKey = isOnThisMac(app) ? "onDevices" : "packedOn";
-    const extra = [localNote(app), app.lastUsed ? t("lastUsedAt", app.lastUsed) : "", holders.length ? t(fromKey, holders.join(", ")) : ""].filter(Boolean);
+    const extra = [localNote(app), app.lastUsed ? t("lastUsedAt", app.lastUsed) : "", holders.length ? t(fromKey, holders.join(", ")) : "", dataNote(app)].filter(Boolean);
     if (extra.length) words.append(el("div", "app-extra", extra.join(" · ")));
     if (job) {
       const line = el("div", "job-line");
@@ -1921,6 +1971,8 @@ function confirmAction(kind, app) {
     restore: { title: ["confirmRestoreTitle", app.name], body: ["confirmRestoreBody"], ok: "confirmRestoreOk", danger: false },
     pack: { title: ["confirmPackTitle", app.name], body: [app.stopFirst ? "confirmStopPackBody" : "confirmPackBody", size], ok: app.stopFirst ? "stopAndOffload" : "confirmPackOk", danger: false },
     offloadfile: { title: ["confirmFileTitle", app.label || app.name], body: ["confirmFileBody", size], ok: "confirmPackOk", danger: false },
+    "data/enable": { title: ["confirmDataEnableTitle", app.name], body: ["confirmDataEnableBody"], ok: "dataEnable", danger: false },
+    "data/disable": { title: ["confirmDataDisableTitle", app.name], body: ["confirmDataDisableBody"], ok: "dataDisable", danger: false },
     unpack: { title: ["confirmUnpackTitle", app.name, dir], body: ["confirmUnpackBody", app.installPath || `${dir}/${app.name}.app`], ok: "confirmUnpackOk", danger: true },
   }[kind];
   askConfirm(spec, () => startJob(kind, app));
@@ -3438,6 +3490,14 @@ function renderBig() {
       buttons.push(actionButton({ labelKey: running ? "bigCleaning" : "bigClean", icon: iconTrash, className: "outline", busy: running, disabled: cleanup.state === "running",
         onClick: () => askConfirm({ title: ["bigConfirmTitle", item.title], body: ["bigConfirmBody", bytes(item.bytes)], ok: "bigClean", danger: true }, () => runBigCleanup(item)) }));
     } else {
+      // The data folder of an app offloaded here can follow that app into the repo.
+      const owner = item.kind === "appData" && ((lastStatus && lastStatus.apps) || []).find((app) =>
+        (app.name === item.title || app.bundleId === item.title) && isOnThisMac(app) && !fullAppHere(app));
+      if (owner && !(owner.data && owner.data.enabled)) {
+        const job = pending.get(owner.name);
+        buttons.push(actionButton({ labelKey: "dataEnable", icon: iconTray, className: "outline", busy: Boolean(job && job.kind === "data/enable"), disabled: Boolean(job),
+          onClick: () => confirmAction("data/enable", owner) }));
+      }
       buttons.push(actionButton({ labelKey: "bigShowUsage", icon: iconMore, className: "quiet", onClick: () => document.querySelector("#usage-section").scrollIntoView({ behavior: "smooth" }) }));
     }
     const detail = el("span");
