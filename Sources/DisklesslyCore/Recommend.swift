@@ -289,7 +289,8 @@ public enum RecommendFormatting {
     }
 
     public static func reason(sizeBytes: UInt64, daysIdle: Int?, neverUsed: Bool, macAppStore: Bool, sizeIncomplete: Bool, warnings: [String]) -> String {
-        if !warnings.isEmpty {
+        let blocking = warnings.filter { !RecommendRanking.noteOnlyWarnings.contains($0) }
+        if !blocking.isEmpty {
             return warnings.map(warningText).joined(separator: "; ")
         }
         var text = byteText(sizeBytes)
@@ -300,6 +301,7 @@ public enum RecommendFormatting {
         }
         if macAppStore { text += "; Mac App Store receipt, restore mode" }
         if sizeIncomplete { text += "; size is a lower bound because the scan timed out" }
+        for note in warnings { text += "; " + warningText(note) }
         return text
     }
 
@@ -317,6 +319,10 @@ public enum RecommendFormatting {
 public enum RecommendRanking {
     /// Stable warning codes. The first match also decides `suggestedMode` when several apply.
     public static let warningOrder = ["toolchain", "kernelExtension", "systemExtension", "backgroundHelper", "loginItem", "menuBarAgent", "pinned", "alreadyPacked", "sizeTimedOut"]
+    /// Codes that are only worth saying, not a reason to hold the app back: a login item or a
+    /// menu bar agent offloads fine (the launcher fetches it when it is started), so the app is
+    /// still recommended with the note.
+    public static let noteOnlyWarnings: Set<String> = ["loginItem", "menuBarAgent"]
 
     public static func rank(_ apps: [RecommendApp], options: RecommendOptions, scanAvailable: Bool = true) -> RecommendReport {
         var recommendations: [RecommendItem] = []
@@ -333,7 +339,7 @@ public enum RecommendRanking {
             // An app that is already offloaded and only restored here is managed in the app
             // list; it is not something "not to offload".
             if codes == ["alreadyPacked"] { continue }
-            let poor = !codes.isEmpty
+            let poor = codes.contains { !noteOnlyWarnings.contains($0) }
             if poor {
                 let largeEnough = app.sizeIncomplete || app.sizeBytes >= options.minSizeBytes
                 if !largeEnough { continue }
@@ -348,7 +354,7 @@ public enum RecommendRanking {
                     if !idleEnough { continue }
                 }
             }
-            recommendations.append(item(app, days: days, neverUsed: neverUsed, score: score, warnings: [], freed: app.sizeBytes, presence: presence))
+            recommendations.append(item(app, days: days, neverUsed: neverUsed, score: score, warnings: codes, freed: app.sizeBytes, presence: presence))
         }
         recommendations = sort(recommendations)
         warnings = sort(warnings)

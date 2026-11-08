@@ -72,17 +72,23 @@ final class RecommendTests: XCTestCase {
         let timed = app(name: "Partial", bundleId: "org.partial", size: 20 * mebi, sizeIncomplete: true)
         let tinyMenu = app(name: "Menu", bundleId: "org.menu", size: 2 * mebi, menuBarAgent: true)
         let report = RecommendRanking.rank([tinyMenu, timed, store, packed, pinned, kext, sysext, helper, login, xcode], options: RecommendOptions(minSizeBytes: hundred, now: now))
-        XCTAssertEqual(report.recommendations.map(\.bundleId), ["com.apple.Pages"])
-        XCTAssertEqual(report.recommendations[0].suggestedMode, "restore")
-        XCTAssertTrue(report.recommendations[0].reason.contains("Mac App Store receipt, restore mode"))
-        XCTAssertEqual(report.warnings.map(\.name), ["Xcode", "Driver", "Dropbox", "HelperHost", "Pinned", "VPN", "Partial"])
+        // A login item or menu bar agent is only noted: it is still recommended.
+        XCTAssertEqual(report.recommendations.map(\.bundleId), ["com.dropbox", "com.apple.Pages"])
+        let pages = report.recommendations[1]
+        XCTAssertEqual(pages.suggestedMode, "restore")
+        XCTAssertTrue(pages.reason.contains("Mac App Store receipt, restore mode"))
+        let dropbox = report.recommendations[0]
+        XCTAssertEqual(dropbox.warnings, ["loginItem", "menuBarAgent"])
+        XCTAssertEqual(dropbox.suggestedMode, "restore")
+        XCTAssertEqual(dropbox.estimatedFreedBytes, 200 * mebi)
+        XCTAssertTrue(dropbox.reason.hasSuffix("; login item; menu bar agent"), dropbox.reason)
+        XCTAssertEqual(report.warnings.map(\.name), ["Xcode", "Driver", "HelperHost", "Pinned", "VPN", "Partial"])
         XCTAssertEqual(report.warnings[0].warnings, ["toolchain"])
         XCTAssertEqual(report.warnings[0].suggestedMode, "unsupported")
         XCTAssertEqual(report.warnings[0].reason, "toolchain used by the engine")
-        XCTAssertEqual(report.warnings.first { $0.name == "Dropbox" }?.warnings, ["loginItem", "menuBarAgent"])
-        XCTAssertEqual(report.warnings.first { $0.name == "Dropbox" }?.suggestedMode, "restore")
+        XCTAssertEqual(report.warnings.first { $0.name == "HelperHost" }?.warnings, ["backgroundHelper"])
         XCTAssertEqual(report.warnings.first { $0.name == "Partial" }?.warnings, ["sizeTimedOut"])
-        XCTAssertEqual(report.estimatedFreedBytes, 200 * mebi)
+        XCTAssertEqual(report.estimatedFreedBytes, 400 * mebi)
         XCTAssertFalse(report.warnings.contains { $0.name == "Menu" })
     }
 

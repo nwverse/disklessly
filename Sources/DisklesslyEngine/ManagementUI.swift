@@ -298,6 +298,7 @@ public enum ManagementUI {
                     return failure(code: "bad_request", message: "path must be an .app in /Applications or ~/Applications", status: 400)
                 }
                 options.path = valid
+                options.stopFirst = flag(request, "stopFirst")
             }
             if kind == .offloadfile {
                 guard let path = packPath(request) else { return failure(code: "bad_request", message: "path is required", status: 400) }
@@ -362,6 +363,17 @@ public enum ManagementUI {
             var object = context.usage.snapshot()
             object["cleanup"] = context.cleaner.snapshot()
             return .json(object)
+        case ("POST", "/api/loginitems/open"):
+            // Login items are turned off by the user in System Settings; this only opens that pane.
+            #if os(macOS)
+            let open = Process()
+            open.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+            open.arguments = ["x-apple.systempreferences:com.apple.LoginItems-Settings.extension"]
+            do { try open.run() } catch { return failure(code: "failed", message: "could not open System Settings", status: 500) }
+            return .json(["ok": true])
+            #else
+            return failure(code: "unsupported", message: "login items are a macOS setting", status: 501)
+            #endif
         case ("POST", "/api/usage/clean"):
             let id = ((try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any])?["action"] as? String ?? ""
             guard UsageCleanup.known(id) else { return failure(code: "bad_request", message: "unknown cleanup", status: 400) }
@@ -681,7 +693,9 @@ public struct UIJobOptions: Equatable {
     public var force: Bool
     /// Bundle path for `pack`.
     public var path: String?
-    public init(force: Bool = false, path: String? = nil) { self.force = force; self.path = path }
+    /// For `pack`: quit the app's own processes (helpers, menu bar agents) first.
+    public var stopFirst: Bool
+    public init(force: Bool = false, path: String? = nil, stopFirst: Bool = false) { self.force = force; self.path = path; self.stopFirst = stopFirst }
 }
 
 public enum UIJobState: String {
@@ -838,6 +852,22 @@ public struct ManagementActions {
         ManagementActions(perform: { kind, name, options, progress in
             if kind == .pack {
                 guard let path = options.path else { throw DisklesslyError.usage("pack needs the app path") }
+                if options.stopFirst {
+                    progress.phase("stop")
+                    try BundleProcesses.stop(bundlePath: path)
+                    progress.phase("pack")
+                    do {
+                        _ = try engine.pack(path)
+                    } catch DisklesslyError.busy {
+                        // launchd may have started a helper again before the pack looked; once more.
+                        progress.phase("stop")
+                        try BundleProcesses.stop(bundlePath: path)
+                        progress.phase("pack")
+                        _ = try engine.pack(path)
+                    }
+                    MirrorAutoSync.kick(engine)
+                    return
+                }
                 progress.phase("pack")
                 _ = try engine.pack(path)
                 MirrorAutoSync.kick(engine)

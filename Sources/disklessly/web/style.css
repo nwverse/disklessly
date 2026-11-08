@@ -541,6 +541,8 @@ img.avatar { background: transparent; }
 .inline-command { display: inline-block; margin-top: 6px; padding: 3px 8px; border-radius: 6px; background: var(--card-2); font: 12px var(--mono); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .warn-title { font-size: 13px; margin: 18px 0 6px; color: var(--muted); }
 .poor-row, .device-row, #recommend-leftover-paths li { padding: 10px 0; border-top: 1px solid var(--line); }
+.poor-row-actionable { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.poor-row-actionable .actions { justify-content: flex-end; flex-shrink: 0; }
 .path { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .fold summary { display: flex; align-items: center; justify-content: space-between; gap: 10px; cursor: pointer; list-style: none; }
 .fold summary::-webkit-details-marker { display: none; }
@@ -628,7 +630,7 @@ img.avatar { background: transparent; }
   .session-main { grid-area: path; }
   .session-path { white-space: normal; overflow-wrap: anywhere; }
   .session-age { grid-area: age; }
-  .rec-row { flex-direction: column; align-items: stretch; }
+  .rec-row, .poor-row-actionable { flex-direction: column; align-items: stretch; }
   .menu { right: auto; left: 0; }
 }
 
