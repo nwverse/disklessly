@@ -4,6 +4,9 @@ import XCTest
 import DisklesslySessions
 
 final class FileOffloadTests: XCTestCase {
+    // These tests exercise the free limit, which is switched off by default for now.
+    override class func setUp() { super.setUp(); License.limitOverride = true }
+    override class func tearDown() { License.limitOverride = nil; super.tearDown() }
     private var root: URL!
     private var home: URL!
 

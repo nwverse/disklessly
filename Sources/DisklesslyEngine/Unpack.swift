@@ -57,13 +57,21 @@ extension DisklesslyEngine {
             throw DisklesslyError.resolution(attention.joined(separator: "; "))
         }
         if let directory {
+            if appDataStore.record(manifest.bundleId).state == .offloaded {
+                throw DisklesslyError.usage("\(manifest.name)'s data is in the repo; a copy elsewhere would open without it. Run disklessly data disable \(manifest.name) first.")
+            }
             try unpackCopy(manifest, directory: directory)
             return
         }
         // Held from preflight through install, so a stub click (which takes the same
         // lock to launch) cannot start the app while its stub is being replaced.
         try restore.withLock(manifest.bundleId) {
+            // The app is back for good, so its data comes back too and stops being offloaded.
+            try appDataIn(manifest)
             try unpackInPlace(manifest)
+        }
+        if appDataStore.load()[manifest.bundleId] != nil {
+            try appDataStore.update(manifest.bundleId) { $0.enabled = false }
         }
     }
 

@@ -58,6 +58,7 @@ public enum ManagementUI {
         let home = NSHomeDirectory()
         let localApps = LocalAppIndex(folders: Array(Set([engine.config.stubDir, "/Applications", home + "/Applications"])))
         let ownImageIds = Set(deviceRows.first { $0.deviceId == listing?.localDeviceId }?.images.map(\.imageId) ?? [])
+        let dataRecords = engine.appDataStore.load()
         for manifest in manifests {
                 let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
                 let exists = FileManager.default.fileExists(atPath: cached.path)
@@ -94,6 +95,11 @@ public enum ManagementUI {
                     "installPath": manifest.app.originalPath,
                     "local": localApps.presence(bundleId: manifest.bundleId, imageId: manifest.imageId, ownImageIds: ownImageIds).jsonObject,
                 ]
+                if let data = dataRecords[manifest.bundleId], data.enabled || data.state == .offloaded {
+                    var object: [String: Any] = ["enabled": data.enabled, "state": data.state.rawValue, "bytes": NSNumber(value: data.bytes)]
+                    if let error = data.lastError { object["lastError"] = error }
+                    row["data"] = object
+                }
                 if let used = record?.lastUsed { row["lastUsed"] = isoFormatter.string(from: used) }
                 apps.append(row)
         }
@@ -493,7 +499,7 @@ public enum ManagementUI {
 
     /// License state for the page. `offloaded` is how many apps and files count against the free limit.
     static func licenseObject(_ engine: DisklesslyEngine) -> [String: Any] {
-        var object: [String: Any] = ["ok": true, "freeLimit": License.freeAppLimit]
+        var object: [String: Any] = ["ok": true, "freeLimit": License.freeAppLimit, "limitEnabled": License.limitEnabled]
         object["offloaded"] = ((try? engine.offloadedBundleIdCount()) ?? 0) + engine.offloadedFileCount()
         switch License.load(stateDir: engine.config.stateDir) {
         case .free: object["state"] = "free"
@@ -672,6 +678,9 @@ public enum UIJobKind: String, CaseIterable {
     /// offload and clean, the repo record id for restore and forget.
     case containersOffload = "containers/offload", containersClean = "containers/clean"
     case containersRestore = "containers/restore", containersForget = "containers/forget"
+
+    /// Data follows the app (`disklessly data enable|disable`). `app` is the app name.
+    case dataEnable = "data/enable", dataDisable = "data/disable"
 
     public var isDev: Bool { rawValue.hasPrefix("dev/") }
     public var isContainers: Bool { rawValue.hasPrefix("containers/") }
@@ -937,6 +946,10 @@ public struct ManagementActions {
             case .unpin:
                 progress.phase("pin")
                 try engine.setPinned(manifest, pinned: false)
+            case .dataEnable:
+                _ = try engine.appDataEnable(manifest) { progress.phase($0) }
+            case .dataDisable:
+                try engine.appDataDisable(manifest) { progress.phase($0) }
             case .pack, .offloadfile, .devOffloadRuntime, .devRestoreRuntime, .devOffloadSimulator, .devRestoreSimulator, .devForget, .devCleanDerivedData, .devShutdownSimulator,
                  .containersOffload, .containersClean, .containersRestore, .containersForget:
                 break

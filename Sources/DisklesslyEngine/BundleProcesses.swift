@@ -8,7 +8,8 @@ import Darwin
 /// helpers (login items, menu bar agents, updaters). Used to stop them before pack
 /// when the user asked for "Stop and offload".
 public enum BundleProcesses {
-    /// pids whose executable is under `bundlePath` (or its resolved path). Never this process.
+    /// pids whose executable is under `bundlePath` (or its resolved path). Never this process or
+    /// its ancestors: a stub that started `disklessly launch` lives in the bundle and waits for it.
     public static func pids(inBundle bundlePath: String) -> [Int32] {
         #if os(macOS)
         // proc_pidpath reports the real path (/private/var/...), which Foundation's
@@ -17,9 +18,9 @@ public enum BundleProcesses {
             .map { URL(fileURLWithPath: $0).standardizedFileURL.path })
         if let real = realpath(bundlePath, nil) { roots.insert(String(cString: real)); free(real) }
         let prefixes = roots.map { $0.hasSuffix("/") ? $0 : $0 + "/" }
-        let me = getpid()
+        let skip = ancestors()
         return allProcesses().filter { pid, path in
-            pid != me && prefixes.contains { path.hasPrefix($0) }
+            !skip.contains(pid) && prefixes.contains { path.hasPrefix($0) }
         }.map(\.0)
         #else
         return []
@@ -46,6 +47,19 @@ public enum BundleProcesses {
     }
 
     #if os(macOS)
+    /// This process and every parent up to launchd.
+    static func ancestors() -> Set<Int32> {
+        var out: Set<Int32> = []
+        var pid = getpid()
+        while pid > 1, out.insert(pid).inserted {
+            var info = proc_bsdinfo()
+            let size = Int32(MemoryLayout<proc_bsdinfo>.size)
+            guard proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &info, size) == size else { break }
+            pid = Int32(info.pbi_ppid)
+        }
+        return out
+    }
+
     private static func waitGone(_ bundlePath: String, seconds: TimeInterval) -> Bool {
         let deadline = Date().addingTimeInterval(seconds)
         while Date() < deadline {

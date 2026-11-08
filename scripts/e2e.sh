@@ -342,6 +342,37 @@ assert_contains "$STATE" 'lastUsed' 'LRU timestamp updated'
 WAIT_TIMEOUT_HANDLER=log_state wait_for 10 'lifecycle state returned to cached/idle' state_is_cached
 pass 'lifecycle state returned to cached/idle'
 
+# Data follows the app, through the real stub, launch, quit and detach: Application Support goes to the
+# repo, is back while the app runs, and leaves again after it quits.
+DATA_HOME="$TMP/datahome"
+export DISKLESSLY_HOME="$DATA_HOME"
+DATA_DIR="$DATA_HOME/Library/Application Support/$FIXTURE_BUNDLE_ID"
+mkdir -p "$DATA_DIR/sub"
+printf 'kept' > "$DATA_DIR/state.txt"
+head -c 300000 /dev/urandom > "$DATA_DIR/sub/blob.bin"
+DATA_SHA="$(shasum -a 256 "$DATA_DIR/sub/blob.bin" | awk '{print $1}')"
+run_cli data enable Fixture >>"$LOG" 2>&1 || { tail -20 "$LOG" >&2; fail 'data enable on the packed fixture'; }
+[[ ! -e "$DATA_DIR" ]] || fail 'data enable moved Application Support to the repo'
+ls "$DISKLESSLY_REPO_PATH"/data/*/"$FIXTURE_BUNDLE_ID"/manifest.json >/dev/null 2>&1 || fail 'data manifest written under data/<device>/<bundle id>'
+rm -f "$DISKLESSLY_E2E_ARGV"
+PATH="$ROOT/.build/debug:$PATH" "$STUB/Contents/MacOS/disklessly-stub" --doc "$TMP/docs/open-me.txt" >>"$LOG" 2>&1 &
+APP_PID=$!
+wait_for 60 'data back before the app started' test -f "$DATA_DIR/state.txt"
+wait_for 60 'fixture relaunched with its data' test -f "$DISKLESSLY_E2E_ARGV"
+[[ "$(cat "$DATA_DIR/state.txt")" == kept ]] || fail 'data content came back'
+[[ "$(shasum -a 256 "$DATA_DIR/sub/blob.bin" | awk '{print $1}')" == "$DATA_SHA" ]] || fail 'binary data came back byte for byte'
+printf 'changed while running' > "$DATA_DIR/state.txt"
+if [[ -f "$DISKLESSLY_E2E_PID" ]]; then kill "$(cat "$DISKLESSLY_E2E_PID")" 2>/dev/null || true; fi
+kill "$APP_PID" 2>/dev/null || true
+wait "$APP_PID" 2>/dev/null || true
+APP_PID=""
+wait_for 30 'image detached after the data session' is_detached
+wait_for 60 'data moved out again after the app quit' test ! -e "$DATA_DIR"
+run_cli data disable Fixture >>"$LOG" 2>&1 || fail 'data disable brings the data back'
+[[ "$(cat "$DATA_DIR/state.txt")" == 'changed while running' ]] || fail 'the change made while running was uploaded and came back'
+unset DISKLESSLY_HOME
+pass 'data follows the app through stub launch, quit and detach'
+
 # A subsequent launch must reuse cache; then intentionally corrupt cache and reject it.
 BEFORE="$(stat -f '%m' "$CACHE_IMAGE")"
 run_cli prefetch "$IMAGE_ID" >>"$LOG" 2>&1 || fail 'second prefetch from cache'

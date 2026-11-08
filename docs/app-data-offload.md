@@ -1,6 +1,36 @@
-# Data follows the app — design (draft, not implemented)
+# Data follows the app — design
 
-Status: proposal, 2026-10-31. Nothing here is built. The shipped part of this topic is
+Status: **v1 shipped 2026-11-07** (`disklessly data`, `Sources/DisklesslyEngine/AppData.swift`); the rest is still a
+proposal. What v1 does and how it differs from the full design below:
+
+- Roots: only `~/Library/Application Support/<bundleId>` and `.../<app name>` (the name only when no other app in
+  /Applications or ~/Applications has it), real directories, no links. Containers, HTTPStorages, WebKit and saved
+  state are not touched.
+- Opt-in per app with `disklessly data enable APP` (dashboard: an offloaded app's ⋯ menu, or the app's data folder
+  under Other big items), only for apps offloaded on this Mac. Refused for `com.apple.*`, Disklessly itself, and
+  apps with a launchd job (a `~/Library/LaunchAgents` plist naming the app, or a loaded label starting with the
+  bundle id).
+- Format: the roots cloned into a snapshot, then one tar+zstd archive (the `FolderArchive` of file offload), sealed
+  with the image key when one exists (`.tar.zst.dkli`). No sparse bundle: every changed quit uploads the whole
+  archive, and every launch downloads it. A quit with nothing changed since the data came back uploads nothing.
+- Repo: `data/<deviceId>/<bundleId>/manifest.json` (`data/1`: generation, object, sha256, size, roots, fingerprint)
+  and the object. The previous object is deleted once the new generation is committed.
+- Gate: no process inside the stub path or the mount, no process naming a root, nothing open under a root
+  (`lsof +D`). No FSEvents quiet period.
+- Data-out runs after the session's supervisor sees the app quit (mount: after the detach; restore: after the
+  launch returns; `hook watch` for `--no-wait` launches). The upload runs without the app lock; the commit (re-check
+  gate and fingerprint, write the manifest, move the roots aside) runs under it. A launch after the session began
+  cancels the move.
+- Data-in runs at the start of every launch under the app lock. Any failure (no manifest, wrong generation, missing
+  key, no space, a root that reappeared meanwhile) refuses the launch, so the app never starts with empty data.
+- Data-out refuses when the repo's generation is not the one this Mac last had, so another copy is never
+  overwritten.
+- Recovery: no journal. Transactions live in `Application Support/.disklessly-data/<bundleId>--<id>/`; one with a
+  `committed` marker had a verified repo copy before any root was moved aside, so a crash mid-move is finished
+  (all moved) or rolled back (partly moved). Anything else there is a snapshot or download and is removed.
+- `unpack` brings the data back first and turns data offload off.
+
+The original proposal follows. The shipped part of this topic is
 `disklessly caches [--apply]` (see "Step 0" below). This document is the spec for what may come after it;
 docs/design.md stays the spec for everything else and wins where the two disagree.
 

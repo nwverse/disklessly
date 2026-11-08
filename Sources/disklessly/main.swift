@@ -40,6 +40,7 @@ Keep things tidy
   gc [--dry-run] [--include-legacy]
   evict-local | cleanup-backups | doctor [--fix] | reap [--dry-run]
   caches [--apply]                list (or with --apply clear) the caches of offloaded apps that are not running
+  data [status|enable APP|disable APP]  move an offloaded app's Application Support to the repo while it is closed
   install-engine | stub refresh --app ID|--all [--adopt] | icons backfill [--app ID]
 
 Xcode simulators
@@ -338,6 +339,31 @@ do {
         let manifest = try find(parsed.app)
         try engine.unpack(manifest, to: parsed.directory)
         say(["ok": true], CLIText.unpacked(manifest, to: parsed.directory))
+    case "data":
+        let sub = args.first ?? "status"
+        if !args.isEmpty { args.removeFirst() }
+        switch sub {
+        case "status":
+            let rows = try engine.appDataStatus()
+            say(["ok": true, "apps": rows.map { $0.jsonObject() }], rows.isEmpty ? "no app has data offload turned on" : rows.map { row in
+                let where_ = row.record.state == .offloaded ? "in the repo (\(sizeText(row.record.bytes)))" : "on this Mac (\(sizeText(row.localBytes)))"
+                return "\(row.name): \(row.record.enabled ? "on" : "off"), data \(where_), generation \(row.record.generation)" + (row.record.lastError.map { "; last try: \($0)" } ?? "")
+            }.joined(separator: "\n"))
+        case "enable":
+            guard let n = args.first else { throw DisklesslyError.usage("data enable requires app") }
+            let manifest = try find(n)
+            let row = try engine.appDataEnable(manifest) { phase in if !json { FileHandle.standardError.write(Data("disklessly: \(phase)\n".utf8)) } }
+            say(["ok": true, "data": row.jsonObject()], row.record.state == .offloaded
+                ? "\(manifest.name)'s data (\(sizeText(row.record.bytes))) is in the repo; it comes back when you open \(manifest.name)"
+                : "data offload is on for \(manifest.name); it moves after the app quits" + (row.record.lastError.map { " (\($0))" } ?? ""))
+        case "disable":
+            guard let n = args.first else { throw DisklesslyError.usage("data disable requires app") }
+            let manifest = try find(n)
+            try engine.appDataDisable(manifest)
+            say(["ok": true], "\(manifest.name)'s data is on this Mac and stays here")
+        default:
+            throw DisklesslyError.usage("data takes status, enable APP or disable APP")
+        }
     case "pin", "unpin":
         guard let n=args.first else { throw DisklesslyError.usage("\(command) requires app") }
         let manifest=try find(n)
