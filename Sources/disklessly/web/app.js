@@ -470,6 +470,9 @@ const copy = {
     tipDevOffloadTitle: "Xcode 模拟器",
     tipDevOffloadBody: "“资源库 › Developer”和“系统及其他”里的模拟器运行时和模拟器设备，可以放到云端，用时再取回。",
     tipDevOffloadLink: "去放到云端",
+    tipPackTitle: "系统数据太大？先卸载大应用",
+    tipPackBody: "“系统及其他”常常是大应用留下的文件。推荐列表里的应用可以用“卸载”放到云端，本机只留一个小入口，要用时再装回来。",
+    tipPackLink: "看推荐卸载的应用",
     copyCommand: "复制命令",
     copyCommandFor: (name) => `复制命令：打包 ${name}`,
     copied: (name) => `已复制 ${name} 的打包命令`,
@@ -956,6 +959,9 @@ const copy = {
     tipDevOffloadTitle: "Xcode simulators",
     tipDevOffloadBody: "Simulator runtimes and devices in \"Library › Developer\" and \"System & other\" can wait in the repo until you need them.",
     tipDevOffloadLink: "Offload them",
+    tipPackTitle: "System data too big? Offload big apps",
+    tipPackBody: "\"System & other\" is often left behind by big apps. Apps in the recommendations can be offloaded to the repo; this Mac keeps a small stub and they come back when you open them.",
+    tipPackLink: "See recommended apps",
     copyCommand: "Copy command",
     copyCommandFor: (name) => `Copy command to pack ${name}`,
     copied: (name) => `Copied the pack command for ${name}`,
@@ -3176,6 +3182,7 @@ function clearCaches() {
 const USAGE_TIPS = [
   { id: "RemoveMacAI", kind: "system", url: "https://github.com/omlahore/RemoveMacAI" },
   { id: "DevOffload", kind: "library", url: "#dev-section" },
+  { id: "Pack", kind: "system", url: "#recommend-section" },
 ];
 
 function renderUsageTips(focus, atRoot) {

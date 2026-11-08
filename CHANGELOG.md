@@ -6,8 +6,11 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-11-07
+
 ### Changed
 
+- Usage map: when "System & other" is large, the "Where to free up space" tips point to the recommended apps, which can be offloaded with "Offload" or "Stop and offload".
 - The free limit is switched off for now (`License.limitEnabledByDefault = false`; `DISKLESSLY_LICENSE_LIMIT=1` turns it on): pack and offload never ask for a license code. Saved codes keep working.
 
 ### Added
