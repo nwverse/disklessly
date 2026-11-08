@@ -564,7 +564,7 @@ extension DisklesslyEngine {
     }
 
     /// Union by image id. The remote copy wins when both sides name the same id.
-    private func mergeDeviceImages(_ remote: [DeviceImageRef], _ mirror: [DeviceImageRef]) -> [DeviceImageRef] {
+    func mergeDeviceImages(_ remote: [DeviceImageRef], _ mirror: [DeviceImageRef]) -> [DeviceImageRef] {
         var byId: [String: DeviceImageRef] = [:]
         for image in mirror { byId[image.mergeKey] = image }
         for image in remote {
@@ -637,7 +637,7 @@ extension DisklesslyEngine {
         return facts
     }
 
-    private func rewriteCatalog(_ backend: any StorageBackend, now: Date) throws {
+    func rewriteCatalog(_ backend: any StorageBackend, now: Date) throws {
         let manifests = try readManifests(backend)
         let deviceId = LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId ?? ""
         let data = try CatalogIndex.encode(manifests: manifests, deviceId: deviceId, now: now)

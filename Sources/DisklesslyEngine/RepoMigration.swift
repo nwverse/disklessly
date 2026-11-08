@@ -9,9 +9,13 @@ public struct RepoSwitchReport {
     public var sync: RepoCopyReport
     /// The old repo's id when it was kept as a mirror.
     public var keptAsMirror: String?
+    /// True when the new repo already was another repo and the old one was merged into it.
+    public var merged = false
+    /// Stubs restamped with the new repo's id after a merge.
+    public var adoptedStubs: [String] = []
 
     public var dictionary: [String: Any] {
-        var object: [String: Any] = ["from": from, "backendId": to, "migrated": migrated]
+        var object: [String: Any] = ["from": from, "backendId": to, "migrated": migrated, "merged": merged, "adoptedStubs": adoptedStubs]
         object.merge(sync.dictionary) { $1 }
         if let keptAsMirror { object["keptAsMirror"] = keptAsMirror }
         return object
@@ -113,7 +117,14 @@ extension DisklesslyEngine {
                 _ = try? RepoIdentity.ensure(old)
                 try? FileManager.default.removeItem(at: repoSyncStaging)
                 defer { try? FileManager.default.removeItem(at: repoSyncStaging) }
-                let sync = makeCopier(source: old, destination: new)
+                // The new repo may already be a repo of its own (apps packed into it before the
+                // switch). Then it keeps its id and the old repo is merged in.
+                let oldId = RepoIdentity.read(old)
+                let newId = RepoIdentity.read(new)
+                let merging = try newId != nil && newId != oldId && RepoCopier.hasContent(new)
+                var sync = makeCopier(source: old, destination: new)
+                sync.merge = merging
+                report.merged = merging
                 let first = try sync.run(progress: progress)
                 try Self.requireClean(first, what: "copying the repo")
                 // Another Mac may have written while the first pass ran.
@@ -123,6 +134,19 @@ extension DisklesslyEngine {
                 let problems = try sync.verify()
                 guard problems.isEmpty else {
                     throw DisklesslyError.integrity("the new repo is incomplete; still using the old one: \(problems.prefix(5).joined(separator: "; "))")
+                }
+                if merging {
+                    progress(RepoCopyProgress(phase: "merge"))
+                    try Self.mergeDevices(from: old, into: new, merge: target.mergeDeviceImages)
+                    try Self.mergeLegacyImages(from: old, into: new)
+                    try target.rewriteCatalog(new, now: Date())
+                    if keepOldAsMirror, newId != nil {
+                        // The old repo is now a subset of the new one; give it the new id so
+                        // mirror syncs can fill it in.
+                        let identity = try new.get(RepoIdentity.path, range: nil)
+                        if (try? old.stat(RepoIdentity.path)) != nil { try old.delete(RepoIdentity.path) }
+                        try old.put(RepoIdentity.path, data: identity)
+                    }
                 }
                 var combined = first
                 combined.copied += second.copied
@@ -152,7 +176,33 @@ extension DisklesslyEngine {
         try switched.prepareRepo()
         try switched.saveConfig()
         self.config = next
+        if report.merged {
+            // Stubs of the old repo name its id; their images are in this repo now.
+            if let refreshed = try? switched.refreshOwnedStubs(appId: nil, adopt: true) {
+                report.adoptedStubs = refreshed.updated
+            }
+        }
         progress(RepoCopyProgress(phase: "done"))
+        return report
+    }
+
+    /// Merges the repo `id` into the active repo without ever switching away from it: the
+    /// same copy, verify and merge as `switchRepo(migrate:)` with `id` as the source, so apps
+    /// packed into the active repo keep opening while the old repo is copied in.
+    @discardableResult
+    public mutating func mergeRepo(from id: String, keepOldAsMirror: Bool = false,
+                                   latest: @escaping () -> RuntimeConfig? = { nil },
+                                   progress: (RepoCopyProgress) -> Void = { _ in }) throws -> RepoSwitchReport {
+        let active = config.activeRepoId
+        guard config.knowsRepo(id) else { throw DisklesslyError.usage("unknown backend: \(id)") }
+        guard id != active else { throw DisklesslyError.usage("\(id) is already the active repo") }
+        var source = self
+        source.backendOverride = nil
+        try source.config.activate(id)
+        let saved = latest() ?? config
+        let report = try source.switchRepo(to: active, migrate: true, keepOldAsMirror: keepOldAsMirror,
+                                           latest: { latest() ?? saved }, progress: progress)
+        config = source.config
         return report
     }
 
@@ -190,6 +240,43 @@ extension DisklesslyEngine {
         #else
         return nil
         #endif
+    }
+
+    /// Device files of the old repo go into the new one: copied when absent, otherwise the
+    /// image refs are unioned so nothing either repo referenced looks unused to GC.
+    static func mergeDevices(from old: any StorageBackend, into new: any StorageBackend,
+                             merge: ([DeviceImageRef], [DeviceImageRef]) -> [DeviceImageRef]) throws {
+        for name in (try? old.list("devices")) ?? [] where name.hasSuffix(".json") && !RepoCopier.isTransient(name)
+            && !RepoFileNames.isPlaceholder(name) && !RepoFileNames.isConflictCopy(name) {
+            let path = "devices/\(name)"
+            let bytes = try old.get(path, range: nil)
+            let exists = (try? new.stat(path)) != nil
+            guard let source = try? DeviceRecord.decode(bytes) else {
+                // Not a record this engine reads: carry it over as is, never over the new repo's file.
+                if !exists { try new.put(path, data: bytes) }
+                continue
+            }
+            var record = source
+            if exists {
+                guard let present = try? DeviceRecord.decode(try new.get(path, range: nil)) else { continue }
+                record = present
+                record.images = merge(present.images, source.images).sorted { ($0.imageId, $0.bundleId) < ($1.imageId, $1.bundleId) }
+                record.lastSeen = max(present.lastSeen, source.lastSeen)
+                record.generation = max(present.generation ?? 0, source.generation ?? 0) + 1
+                try new.delete(path)
+            }
+            try new.put(path, data: try record.encode())
+        }
+    }
+
+    /// Union of both repos' legacy image ids (what pre-repoId stubs may claim).
+    static func mergeLegacyImages(from old: any StorageBackend, into new: any StorageBackend) throws {
+        guard let data = try? old.get(LegacyImages.path, range: nil), let theirs = LegacyImages.decode(data) else { return }
+        let mine = (try? new.get(LegacyImages.path, range: nil)).flatMap(LegacyImages.decode) ?? []
+        let union = Set(mine).union(theirs)
+        guard union.count > mine.count else { return }
+        if (try? new.stat(LegacyImages.path)) != nil { try new.delete(LegacyImages.path) }
+        try new.put(LegacyImages.path, data: try LegacyImages.encode(union.sorted()))
     }
 
     static func requireClean(_ report: RepoCopyReport, what: String) throws {

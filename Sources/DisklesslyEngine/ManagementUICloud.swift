@@ -42,6 +42,26 @@ extension ManagementUI {
             }
         case ("POST", "/api/cloud/use") where body["migrate"] as? Bool == true:
             return migrateRepo(engine: engine, body: body, drives: drives, openlist: openlist, context: context)
+        case ("POST", "/api/cloud/merge"):
+            // Copy another known repo (e.g. `default`, the iCloud folder) into the active one.
+            let source = body["id"] as? String ?? ""
+            var current = engine
+            if let latest = context.updatedConfig() { current.config = latest }
+            guard current.config.knowsRepo(source), source != current.config.activeRepoId else {
+                return failure(code: "usage", message: "pick another known repo to merge in", status: 400)
+            }
+            let keep = body["keepOldAsMirror"] as? Bool ?? true
+            let started = context.cloud.startDetailed("migrate") { report in
+                var engine = current
+                let result = try engine.mergeRepo(from: source, keepOldAsMirror: keep, latest: { context.updatedConfig() }) { state in
+                    report(state.dictionary)
+                }
+                context.configChanged(engine.config)
+                _ = context.health.current(engine, fresh: true)
+                return result.dictionary
+            }
+            return started ? .json(["ok": true, "taskId": context.cloud.taskId ?? "", "cloud": cloudObject(current, drives: drives, openlist: openlist, context: context)], status: 202)
+                : failure(code: "busy", message: "another cloud task is running", status: 409)
         case ("POST", "/api/cloud/mirrors"):
             let id = body["id"] as? String ?? ""
             var updated = engine

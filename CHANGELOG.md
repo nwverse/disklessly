@@ -8,6 +8,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `disklessly repo merge --from ID|default` and `POST /api/cloud/merge`: merge another repo into the active one. Migrating onto a backend that already is another repo now merges into it, keeping its `repoId` and rebuilding its catalog, instead of being refused.
+
 - Archived agent sessions show a title (the agent's own title, or the first prompt) and can be filtered by title, agent or path before restoring.
 
 - Moving to another repo takes the offloaded apps along: `disklessly repo migrate --to ID|default
