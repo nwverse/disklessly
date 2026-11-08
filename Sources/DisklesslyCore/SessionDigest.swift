@@ -41,6 +41,70 @@ public enum SessionDigest {
         return capped(body, maxBytes: cap)
     }
 
+    public static let titleCap = 80
+
+    /// A one-line title for a transcript, so an archived session can be found and restored by
+    /// topic: the agent's own title when it wrote one (Claude Code `custom-title`/`ai-title`/
+    /// `summary` records, Codex `session_index.jsonl` thread names), else the first user prompt.
+    public static func title(tool: String, path: String, data: Data, home: String = NSHomeDirectory()) -> String {
+        if let native = nativeTitle(tool: tool, path: path, data: data, home: home) { return oneLine(native) }
+        let format = detect(tool: tool, path: path, data: data)
+        var found = messages(format: format, data: data)
+        if found.isEmpty && format != .generic { found = generic(data) }
+        return oneLine(found.first { $0.role == "user" }?.text ?? "")
+    }
+
+    /// The first user prompt in a digest made by `digest(tool:path:data:)`, for index rows
+    /// archived before titles were recorded.
+    public static func title(fromDigest digest: String) -> String {
+        guard let range = digest.range(of: "**User:** ") else { return "" }
+        let rest = digest[range.upperBound...]
+        let end = rest.range(of: "\n\n**")?.lowerBound ?? rest.endIndex
+        return oneLine(String(rest[..<end]))
+    }
+
+    static func nativeTitle(tool: String, path: String, data: Data, home: String) -> String? {
+        var title: String?
+        if detect(tool: tool, path: path, data: data) == .claude {
+            // The last title record wins: a rename replaces the generated one.
+            forEachLine(data) { object in
+                switch object["type"] as? String {
+                case "custom-title": if let text = object["customTitle"] as? String, !text.isEmpty { title = text }
+                case "ai-title": if let text = object["aiTitle"] as? String, !text.isEmpty { title = text }
+                case "summary": if let text = object["summary"] as? String, !text.isEmpty { title = text }
+                default: break
+                }
+            }
+        }
+        if title == nil, tool == "codex" || path.contains("/.codex/") {
+            title = codexThreadName(path: path, home: home)
+        }
+        return title
+    }
+
+    /// Codex keeps thread names in `~/.codex/session_index.jsonl`, keyed by the UUID at the
+    /// end of the rollout file name.
+    static func codexThreadName(path: String, home: String) -> String? {
+        let stem = ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        guard stem.count >= 36 else { return nil }
+        let id = String(stem.suffix(36)).lowercased()
+        guard UUID(uuidString: id) != nil,
+              let index = FileManager.default.contents(atPath: (home as NSString).appendingPathComponent(".codex/session_index.jsonl")) else { return nil }
+        var name: String?
+        forEachLine(index) { object in
+            if (object["id"] as? String)?.lowercased() == id, let text = object["thread_name"] as? String, !text.isEmpty { name = text }
+        }
+        return name
+    }
+
+    /// First non-empty line, whitespace collapsed, at most `titleCap` characters.
+    static func oneLine(_ text: String) -> String {
+        let line = text.split(whereSeparator: \.isNewline).lazy
+            .map { $0.split(whereSeparator: \.isWhitespace).joined(separator: " ") }
+            .first { !$0.isEmpty } ?? ""
+        return line.count > titleCap ? String(line.prefix(titleCap - 1)) + "…" : line
+    }
+
     /// The readable `<id>.md` file written next to the index.
     public static func markdown(id: String, tool: String, path: String, sha256: String, modified: Date, digest: String) -> String {
         let iso = ISO8601DateFormatter()

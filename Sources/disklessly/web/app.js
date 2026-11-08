@@ -271,6 +271,9 @@ const copy = {
     sessionDigest: "摘要",
     sessionDigestHide: "收起",
     sessionRestore: "还原",
+    sessionUntitled: "（无标题）",
+    sessionFilter: "按标题、工具或路径筛选",
+    sessionFilterNone: "没有匹配的会话",
     sessionRestored: (path) => `已还原到 ${path}`,
     sessionRestoreFailed: "还原失败",
     tiercold: "冷",
@@ -687,6 +690,9 @@ const copy = {
     sessionDigest: "Digest",
     sessionDigestHide: "Hide",
     sessionRestore: "Restore",
+    sessionUntitled: "(untitled)",
+    sessionFilter: "Filter by title, agent or path",
+    sessionFilterNone: "No matching sessions",
     sessionRestored: (path) => `Restored to ${path}`,
     sessionRestoreFailed: "Restore failed",
     tiercold: "Cold",
@@ -1936,20 +1942,46 @@ function renderSessions(sessions) {
     summary.append(bi("coldAfter", days), document.createTextNode(" · "), one("offloadedCount", offloaded.length));
   }
   if (!offloaded.length) {
+    document.querySelector("#sessions-filter")?.remove();
     const empty = el("li", "state-note");
     empty.append(bi("emptySessions"));
     list.append(empty);
     return;
   }
   const sorted = [...offloaded].sort((a, b) => (Date.parse(b.modified || "") || 0) - (Date.parse(a.modified || "") || 0));
-  for (const entry of sorted) {
+  let filter = document.querySelector("#sessions-filter");
+  if (!filter) {
+    filter = el("input", "session-filter");
+    filter.id = "sessions-filter";
+    filter.type = "search";
+    filter.autocomplete = "off";
+    filter.addEventListener("input", () => {
+      sessionFilter = filter.value;
+      renderSessions(lastSessions);
+    });
+    list.before(filter);
+  }
+  filter.placeholder = t("sessionFilter");
+  filter.value = sessionFilter;
+  lastSessions = sessions;
+  const needle = sessionFilter.trim().toLowerCase();
+  const shown = needle ? sorted.filter((e) => [e.title, e.tool, e.displayPath, e.path].some((v) => (v || "").toLowerCase().includes(needle))) : sorted;
+  if (!shown.length) {
+    const none = el("li", "state-note", t("sessionFilterNone"));
+    list.append(none);
+  }
+  for (const entry of shown) {
     const item = el("li", "session-row");
     // Only cold files are archived, so every offloaded row is cold.
     item.append(pill("grey", "tiercold"));
     item.append(el("span", "session-tool", entry.tool || ""));
+    const main = el("span", "session-main");
+    const title = el("span", "session-title", entry.title || t("sessionUntitled"));
+    title.title = entry.title || "";
     const path = el("span", "session-path mono", entry.displayPath || entry.path || "");
-    path.title = [entry.path, entry.preview].filter(Boolean).join("\n");
-    item.append(path);
+    path.title = entry.path || "";
+    main.append(title, path);
+    item.append(main);
     const age = entry.ageDays != null ? Number(entry.ageDays) : Math.max(0, Math.floor((Date.now() - (Date.parse(entry.modified || "") || Date.now())) / 86400000));
     const ageNode = el("span", "session-age", t("daysAgo", age));
     item.append(ageNode);
@@ -1978,6 +2010,8 @@ let sessionPick = null; // Set of tool ids the user ticked; null until the plan 
 let sessionTimer = null;
 let sessionApplyBytes = 0;
 const sessionDigestOpen = new Map(); // entry id -> digest text
+let sessionFilter = ""; // text typed into the archived-session filter
+let lastSessions = null;
 
 function sessionBusy() {
   return !!(sessionPlan && sessionPlan.task && sessionPlan.task.state === "running");
