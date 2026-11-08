@@ -292,6 +292,8 @@ public struct DisklesslyEngine {
     public var placeholderEvictOverride: ((URL) -> Void)? = nil
     /// Tests: whether an offloaded app runs, for `caches`. Nil asks the state file and `ps`.
     public var appRunningOverride: ((ImageManifest) -> Bool)? = nil
+    /// Tests: fake container CLIs and disk for `containers`. Nil runs the real tools.
+    public var containerToolsOverride: ContainerTools? = nil
     /// Test hook. Called with a point name such as `pack.swapped` or
     /// `unpack.installed.beforeMutation`; a throw there is an ordinary failure,
     /// not a simulated crash. Production leaves it nil.

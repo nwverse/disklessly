@@ -49,6 +49,11 @@ Xcode simulators
   dev forget RECORD               delete an offloaded image from the repo
   dev clean-derived-data          move Xcode's DerivedData to the Trash
 
+Container images (Apple container, Docker Desktop, OrbStack, Colima, Dory)
+  containers [list]               images, whether a container uses them, volumes, what is in the repo
+  containers offload ENGINE/ID    save to the repo, check sha256, then remove here
+  containers restore RECORD | containers clean ENGINE/ID | containers forget RECORD
+
 Repos and Macs
   backend add smb|nfs|webdav|openlist|rclone ... | backend list | backend use ID|default
   repo migrate --to ID|default [--keep-old-as-mirror]   copy this repo there, then switch
@@ -876,6 +881,47 @@ do {
             let cleaned = try engine.trashDerivedData()
             say(["ok": true, "items": cleaned.items, "bytes": NSNumber(value: cleaned.bytes)], "Moved \(cleaned.items) DerivedData folders (\(sizeText(cleaned.bytes))) to the Trash")
         default: throw DisklesslyError.usage("Unknown dev command: \(sub)")
+        }
+    case "containers":
+        let sub = args.first ?? "list"
+        if !args.isEmpty { args.removeFirst() }
+        func target() throws -> String {
+            guard let id = args.first else { throw DisklesslyError.usage("containers \(sub) requires an id") }
+            return id
+        }
+        func done(_ result: ContainerActionResult, _ verb: String) {
+            var line = "\(verb) \(result.title)"
+            if result.freedBytes > 0 { line += ", freed \(sizeText(result.freedBytes))" }
+            if let record = result.record { line += " (record \(record.id))" }
+            say(result.jsonObject(), line)
+            if let warning = result.warning { fputs("disklessly: \(warning)\n", stderr) }
+        }
+        switch sub {
+        case "list":
+            let report = engine.containerReport()
+            if json { emit(report.jsonObject()); break }
+            if report.engines.isEmpty { print("No container engine on this Mac") }
+            for state in report.engines {
+                print("\(state.kind.title)  \(state.status.rawValue)  \(sizeText(state.dataBytes)) on disk\(state.note.map { "  (\($0))" } ?? "")")
+                for image in report.images where image.engine == state.kind {
+                    let users = image.containers.isEmpty ? "" : "  [\(image.containers.joined(separator: ", "))]"
+                    print("  \(image.title)  \(sizeText(image.bytes))  \(image.use.rawValue)\(users)  \(image.key)")
+                }
+                for volume in report.volumes where volume.engine == state.kind {
+                    print("  volume \(volume.name)  \(volume.bytes.map(sizeText) ?? "?")\(volume.links.map { $0 > 0 ? "  in use" : "" } ?? "")")
+                }
+            }
+            print("In the repo")
+            if report.offloaded.isEmpty { print("  none") }
+            for o in report.offloaded { print("  \(o.engine.title)  \(o.title)  \(sizeText(o.size))  \(o.id)\(o.present(in: report.images) ? "  (also here)" : "")") }
+            if let repoError = report.repoError { print("  repo unavailable: \(repoError)") }
+        case "offload": done(try engine.offloadContainerImage(try target()), "Offloaded")
+        case "restore": done(try engine.restoreContainerImage(try target()), "Restored")
+        case "clean": done(try engine.cleanContainerImage(try target()), "Removed")
+        case "forget":
+            let record = try engine.forgetContainerImage(try target())
+            say(["ok": true, "id": record.id], "Deleted \(record.title) from the repo")
+        default: throw DisklesslyError.usage("Unknown containers command: \(sub)")
         }
     case "ui":
         var openBrowser = false
