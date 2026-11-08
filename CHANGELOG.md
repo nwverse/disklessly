@@ -6,6 +6,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-07
+
 ### Added
 
 - Session tiering lists each cold session (title, project folder, size, age) under its agent and can move only the ones you tick (`POST /api/sessions/apply` takes `paths`).
@@ -120,7 +122,7 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   used in place, old `.isenough-original-` backups are still recognized by `cleanup-backups`, and Keychain items
   saved under the old service name are still read.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-10-31
 
 First public release.
 
@@ -239,5 +241,6 @@ schema listed for it. A newer schema is never written by an older release.
 After upgrading, run `disklessly install-engine`, then `disklessly stub refresh --app ID`
 for each packed app so existing stubs exec the new engine.
 
-[Unreleased]: https://github.com/s546126/disklessly/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/s546126/disklessly/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/s546126/disklessly/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/s546126/disklessly/releases/tag/v0.1.0
