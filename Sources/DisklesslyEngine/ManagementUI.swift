@@ -422,6 +422,16 @@ public enum ManagementUI {
             var object = context.bigItems.snapshot()
             object["started"] = started
             return .json(object, status: 202)
+        case ("GET", "/api/containers"):
+            // Images and volumes of Apple container, Docker Desktop, OrbStack, Colima, Dory.
+            var object = context.containers.snapshot()
+            if object["state"] as? String == "idle" { context.containers.start(engine: engine); object["state"] = "scanning" }
+            return .json(object)
+        case ("POST", "/api/containers/scan"):
+            let started = context.containers.start(engine: engine)
+            var object = context.containers.snapshot()
+            object["started"] = started
+            return .json(object, status: 202)
         case ("POST", "/api/usage/scan"):
             let started = context.usage.start(engine: engine)
             var object = context.usage.snapshot()
@@ -515,7 +525,8 @@ public enum ManagementUI {
 
     /// Routes that pack, launch, or scan app bundles.
     static func isAppRoute(_ request: UIRequest) -> Bool {
-        if request.method == "POST", UIJobKind(path: request.path) != nil { return true }
+        // Container engines run on Linux too; their jobs are not app routes.
+        if request.method == "POST", let kind = UIJobKind(path: request.path) { return !kind.isContainers }
         return request.path == "/api/recommend" || request.path == "/api/icons/backfill"
     }
 
@@ -643,7 +654,13 @@ public enum UIJobKind: String, CaseIterable {
     case devForget = "dev/forget", devCleanDerivedData = "dev/clean-derived-data"
     case devShutdownSimulator = "dev/shutdown-simulator"
 
+    /// Container images (`disklessly containers`). `app` is `<engine>/<image id>` for
+    /// offload and clean, the repo record id for restore and forget.
+    case containersOffload = "containers/offload", containersClean = "containers/clean"
+    case containersRestore = "containers/restore", containersForget = "containers/forget"
+
     public var isDev: Bool { rawValue.hasPrefix("dev/") }
+    public var isContainers: Bool { rawValue.hasPrefix("containers/") }
 
     public init?(path: String) {
         guard path.hasPrefix("/api/") else { return nil }
@@ -830,6 +847,16 @@ public struct ManagementActions {
                 MirrorAutoSync.kick(engine)
                 return
             }
+            if kind.isContainers {
+                switch kind {
+                case .containersOffload: _ = try engine.offloadContainerImage(name) { progress.phase($0) }
+                case .containersClean: progress.phase("remove"); _ = try engine.cleanContainerImage(name)
+                case .containersRestore: _ = try engine.restoreContainerImage(name) { progress.phase($0) }
+                case .containersForget: progress.phase("forget"); _ = try engine.forgetContainerImage(name)
+                default: break
+                }
+                return
+            }
             if kind.isDev {
                 progress.phase(String(kind.rawValue.dropFirst("dev/".count)))
                 switch kind {
@@ -878,7 +905,8 @@ public struct ManagementActions {
             case .unpin:
                 progress.phase("pin")
                 try engine.setPinned(manifest, pinned: false)
-            case .pack, .offloadfile, .devOffloadRuntime, .devRestoreRuntime, .devOffloadSimulator, .devRestoreSimulator, .devForget, .devCleanDerivedData, .devShutdownSimulator:
+            case .pack, .offloadfile, .devOffloadRuntime, .devRestoreRuntime, .devOffloadSimulator, .devRestoreSimulator, .devForget, .devCleanDerivedData, .devShutdownSimulator,
+                 .containersOffload, .containersClean, .containersRestore, .containersForget:
                 break
             }
         })
@@ -938,6 +966,8 @@ public final class ManagementUIContext {
     public let cleaner = UsageCleaner()
     /// Simulators, DerivedData, rebuildable caches, big app data (`/api/bigitems`).
     public let bigItems = BigItemsScanner()
+    /// Container images and volumes (`/api/containers`).
+    public let containers = ContainerScanner()
     /// Large idle files and folders (`/api/files`).
     public let files: LargeFileScanner
     /// Home folder whose `Library/Caches` `/api/caches` looks in. Tests point it at a temp folder.

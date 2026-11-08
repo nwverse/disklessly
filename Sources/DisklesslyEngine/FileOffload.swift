@@ -209,7 +209,7 @@ extension DisklesslyEngine {
 
     /// SHA-256 of the object as the repo now holds it. A file-backed repo is hashed in place; an HTTP
     /// repo is downloaded once into the cache, since ranged reads there may resend the rest of the object.
-    private func readBackDigest(_ backend: any StorageBackend, _ object: String, size: UInt64) throws -> String {
+    func readBackDigest(_ backend: any StorageBackend, _ object: String, size: UInt64) throws -> String {
         if let root = backend.localRoot() {
             let file = root.appendingPathComponent(object)
             _ = try backend.stat(object)
