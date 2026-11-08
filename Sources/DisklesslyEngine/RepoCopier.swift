@@ -77,6 +77,11 @@ public struct RepoCopier {
     /// Delete `manifests/*.json` on the destination that the source no longer has (a
     /// mirror would otherwise list trashed apps as live). Images are never deleted.
     public var pruneManifests = false
+    /// Merge into a destination that is already another repo (its own `repo.json`, data and
+    /// devices). The destination keeps its id; `repo.json`, `catalog/` and `devices/` are left to
+    /// the caller (see `switchRepo`), and an object both sides hold with different content fails
+    /// as a conflict instead of being overwritten.
+    public var merge = false
 
     public init(source: any StorageBackend, destination: any StorageBackend, staging: URL) {
         self.source = source
@@ -172,9 +177,10 @@ public struct RepoCopier {
     /// the report and the rest still copy; a listing failure throws.
     public func run(progress: (RepoCopyProgress) -> Void = { _ in }) throws -> RepoCopyReport {
         progress(RepoCopyProgress(phase: "scan"))
-        let (items, folders) = try Self.scan(source)
+        let (scanned, folders) = try Self.scan(source)
+        let items = merge ? scanned.filter { !Self.isMergeManaged($0.path) } : scanned
         let digests = imageDigests(items)
-        try checkIdentity()
+        if !merge { try checkIdentity() }
         let total = items.reduce(UInt64(0)) { $0 + ($1.size ?? digests[$1.path]?.size ?? 0) }
         var report = RepoCopyReport()
         var state = RepoCopyProgress(phase: "copy", filesTotal: items.count, bytesTotal: total)
@@ -189,6 +195,9 @@ public struct RepoCopier {
             do {
                 if try same(item, expected: expected) {
                     report.skipped.append(item.path)
+                } else if merge, (try? destination.stat(item.path)) != nil {
+                    // Never overwrite the other repo's object; the user resolves this by hand.
+                    throw DisklesslyError.integrity("\(item.path) exists in both repos with different content")
                 } else {
                     let bytes = try copy(item, expected: expected, digest: digests[item.path], collections: &collections)
                     report.copied.append(item.path)
@@ -215,6 +224,12 @@ public struct RepoCopier {
         state.currentPath = nil
         progress(state)
         return report
+    }
+
+    /// Paths a merge never copies: the destination keeps its own identity, its catalog is
+    /// rebuilt from the merged manifests, and device files are merged record by record.
+    public static func isMergeManaged(_ path: String) -> Bool {
+        path == RepoIdentity.path || path.hasPrefix("catalog/") || path.hasPrefix("devices/")
     }
 
     /// Files the repo rewrites in place. Only these are compared by content; images and
@@ -316,7 +331,7 @@ public struct RepoCopier {
                 problems.append("\(manifest.image.file) is \(image.size) bytes on the destination, the manifest says \(manifest.image.size)")
             }
         }
-        if let wanted = RepoIdentity.read(source), RepoIdentity.read(destination) != wanted {
+        if !merge, let wanted = RepoIdentity.read(source), RepoIdentity.read(destination) != wanted {
             problems.append("repo.json on the destination does not carry repo id \(wanted)")
         }
         return problems

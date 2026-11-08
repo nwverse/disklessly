@@ -201,6 +201,52 @@ final class RepoMigrateMirrorTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: engine.repoSyncStaging.path), "staging is cleaned up")
     }
 
+    func testMergeIntoAnotherRepoKeepsItsIdAndUnionsEverything() throws {
+        let (old, oldId) = try populatedRepo("old")
+        let ref = { (id: String) in DeviceImageRef(imageId: id, bundleId: "com.test.\(id)", version: "1", build: "1", architectures: [], mode: "copy", packedAt: Date(timeIntervalSince1970: 0), installPath: nil) }
+        let device = { (images: [DeviceImageRef]) in DeviceRecord(deviceId: "mac-2", hostname: "h", displayName: "d", arch: "arm64", osVersion: "27", lastSeen: Date(timeIntervalSince1970: 0), images: images, generation: 3) }
+        try old.put("devices/mac-2.json", data: try device([ref("alpha")]).encode())
+        try old.put(LegacyImages.path, data: try LegacyImages.encode(["alpha"]))
+        let new = try folder("new")
+        let newId = try XCTUnwrap(RepoIdentity.ensure(new))
+        XCTAssertNotEqual(oldId, newId)
+        try addImage(new, id: "gamma", bytes: Data("gamma image".utf8))
+        try new.put("devices/mac-2.json", data: try device([ref("gamma")]).encode())
+
+        var engine = try makeEngine(repo: "old", backends: [localEndpoint("nas", folder: "new")], active: "nas")
+        let report = try engine.mergeRepo(from: RuntimeConfig.defaultRepoId, keepOldAsMirror: true)
+
+        XCTAssertTrue(report.merged)
+        XCTAssertEqual(engine.config.activeRepoId, "nas")
+        XCTAssertEqual(RepoIdentity.read(new), newId, "the destination keeps its own id")
+        XCTAssertEqual(RepoIdentity.read(old), newId, "the kept mirror is restamped with the new id")
+        for id in ["alpha", "beta", "gamma"] {
+            XCTAssertNotNil(try new.stat("manifests/\(id).json"))
+            XCTAssertNotNil(try new.stat("images/\(id).dmg"))
+        }
+        let catalog = String(decoding: try new.get("catalog/manifest.json", range: nil), as: UTF8.self)
+        for id in ["alpha", "beta", "gamma"] { XCTAssertTrue(catalog.contains(id), "catalog lists \(id)") }
+        let merged = try DeviceRecord.decode(try new.get("devices/mac-2.json", range: nil))
+        XCTAssertEqual(Set(merged.images.map(\.imageId)), ["alpha", "gamma"])
+        XCTAssertEqual(merged.generation, 4)
+        XCTAssertEqual(LegacyImages.decode(try new.get(LegacyImages.path, range: nil)), ["alpha"])
+        XCTAssertNotNil(try new.stat("devices/mac-1.json"), "an unreadable device file still travels when absent")
+        XCTAssertTrue(engine.config.mirrorBackendIds.contains { $0 != "nas" })
+    }
+
+    func testMergeStopsOnAnObjectBothReposHoldDifferently() throws {
+        let (_, _) = try populatedRepo("old")
+        let new = try folder("new")
+        _ = try RepoIdentity.ensure(new)
+        try addImage(new, id: "beta", bytes: Data("another beta".utf8))
+        var engine = try makeEngine(repo: "old", backends: [localEndpoint("nas", folder: "new")], active: "nas")
+        XCTAssertThrowsError(try engine.mergeRepo(from: RuntimeConfig.defaultRepoId))
+        XCTAssertEqual(String(decoding: try new.get("images/beta.dmg", range: nil), as: UTF8.self), "another beta", "never overwritten")
+        XCTAssertEqual(try savedConfigOrNil(engine)?.activeRepoId ?? "nas", "nas")
+    }
+
+    private func savedConfigOrNil(_ engine: DisklesslyEngine) throws -> RuntimeConfig? { try? savedConfig(engine) }
+
     func testFailedMigrationLeavesConfigOnTheOldRepo() throws {
         _ = try populatedRepo("old")
         // `images` is a plain file on the destination, so no image can be written there.

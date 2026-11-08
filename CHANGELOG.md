@@ -8,6 +8,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- `disklessly repo merge --from ID|default` and `POST /api/cloud/merge`: merge another repo into the active one. Migrating onto a backend that already is another repo now merges into it, keeping its `repoId` and rebuilding its catalog, instead of being refused.
+
 - Container images: `disklessly containers [list|offload|restore|clean|forget]`, `GET /api/containers`,
   `POST /api/containers/scan`, jobs `containers/offload|clean|restore|forget`, and a "Container images" group under
   Other big items. Lists the images and volumes of Apple container, Docker Desktop, OrbStack, Colima and Dory

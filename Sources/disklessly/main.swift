@@ -684,6 +684,24 @@ do {
             say(result.dictionary, result.migrated
                 ? "Copied \(result.sync.copied.count) object(s) (\(result.sync.skipped.count) already there) and switched to \(target)\(result.keptAsMirror.map { "; \($0) is kept as a mirror" } ?? "")"
                 : "Switched to \(target); the old repo had nothing to copy")
+        case "merge":
+            // Copy another known repo into the active one; the active repo stays in use throughout.
+            var source: String?, keep = true
+            while let flag = args.first {
+                args.removeFirst()
+                switch flag {
+                case "--from":
+                    guard let value = args.first else { throw DisklesslyError.usage("--from requires a backend id or default") }
+                    args.removeFirst()
+                    source = value
+                case "--no-mirror": keep = false
+                default: throw DisklesslyError.usage("Unknown option: \(flag)")
+                }
+            }
+            guard let source else { throw DisklesslyError.usage("repo merge requires --from ID|default") }
+            let result = try engine.mergeRepo(from: source, keepOldAsMirror: keep, progress: report)
+            config = engine.config
+            say(result.dictionary, "Merged \(source) into \(config.activeRepoId): copied \(result.sync.copied.count) object(s) (\(result.sync.skipped.count) already there), re-pointed \(result.adoptedStubs.count) stub(s)\(result.keptAsMirror.map { "; \($0) is kept as a mirror" } ?? "")")
         case "mirror", "mirrors":
             let action = args.first ?? "list"
             if !args.isEmpty { args.removeFirst() }
