@@ -6,6 +6,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-07
+
 ### Changed
 
 - Login items and menu bar agents are no longer held back from offloading: they are recommended with a note, and a login item gets a "Login items" button that opens System Settings → Login Items (`POST /api/loginitems/open`).
@@ -247,6 +249,7 @@ schema listed for it. A newer schema is never written by an older release.
 After upgrading, run `disklessly install-engine`, then `disklessly stub refresh --app ID`
 for each packed app so existing stubs exec the new engine.
 
-[Unreleased]: https://github.com/s546126/disklessly/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/s546126/disklessly/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/s546126/disklessly/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/s546126/disklessly/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/s546126/disklessly/releases/tag/v0.1.0
