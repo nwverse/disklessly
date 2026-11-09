@@ -192,9 +192,18 @@ final class RemoteMachinesTests: XCTestCase {
         XCTAssertTrue(generic.hasPrefix("if pgrep -x 'go|gopls'"), "a running Go build reads the module cache with plain opens; skip it whole")
         XCTAssertFalse(RemoteCleanCommand.body(id: "logs-var", path: "/var/log").contains("pgrep"))
         XCTAssertTrue(RemoteCleanCommand.body(id: "cache-gradle", path: "/h/.gradle/caches").contains("[G]radleDaemon"), "pgrep -f must not match its own shell")
+        XCTAssertTrue(RemoteCleanCommand.body(id: "cache-swiftpm", path: "/h/.cache/org.swift.swiftpm").contains("swift-build"), "SwiftPM cache is skipped while swift build/test runs")
+        XCTAssertTrue(RemoteCleanCommand.body(id: "cache-clang", path: "/h/.cache/clang").contains("clang"), "Clang module cache is skipped while clang/swift runs")
+        XCTAssertTrue(RemoteScanProbe.combinedScript.contains("cache-clang"))
         XCTAssertTrue(RemoteCleanCommand.body(id: "custom-x-1", path: "/h/.cache/x").contains("rmdir"))
         XCTAssertFalse(RemoteCleanCommand.body(id: "cache-npm", path: "/h/.npm").contains("rmdir"))
         XCTAssertTrue(RemoteCleanCommand.script(id: "cache-npm", path: "/home/u/.npm").contains("df -kP"))
+        XCTAssertTrue(SSHTransport.isSelfHost("localhost"))
+        XCTAssertTrue(SSHTransport.isSelfHost("127.0.0.1"))
+        if !ProcessInfo.processInfo.hostName.isEmpty {
+            XCTAssertTrue(SSHTransport.isSelfHost(ProcessInfo.processInfo.hostName))
+        }
+        XCTAssertFalse(SSHTransport.isSelfHost("nonexistent-remote-host-9999.invalid"))
 
         let outcome = RemoteCleanCommand.parse("noise\n@@BUSY /home/u/.cache/ms-playwright/chromium-1243\n@@RC 0\n@@FREED_KB 2048\n")
         XCTAssertEqual(outcome.freedBytes, 2048 * 1024)

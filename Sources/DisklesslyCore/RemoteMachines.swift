@@ -672,6 +672,7 @@ probe_dir "cache-cargo-git" "package-cache" "Cargo git cache" "$HOME/.cargo/git"
 probe_dir "cache-gobuild" "package-cache" "Go build cache" "$HOME/.cache/go-build" "clean" "false" "Rebuildable Go compiler cache"
 probe_dir "cache-gomod" "package-cache" "Go module cache" "$HOME/go/pkg/mod" "clean" "false" "Rebuildable Go module cache"
 probe_dir "cache-swiftpm" "package-cache" "SwiftPM package cache" "$HOME/.cache/org.swift.swiftpm" "clean" "false" "Rebuildable Swift Package Manager cache"
+probe_dir "cache-clang" "package-cache" "Clang module cache" "$HOME/.cache/clang" "clean" "false" "Rebuildable Clang module cache"
 probe_dir "cache-gradle" "package-cache" "Gradle build cache" "$HOME/.gradle/caches" "clean" "false" "Rebuildable Gradle caches"
 probe_dir "cache-playwright" "package-cache" "Playwright browser cache" "$HOME/.cache/ms-playwright" "clean" "false" "Re-downloadable Playwright headless browsers"
 probe_dir "cache-puppeteer" "package-cache" "Puppeteer browser cache" "$HOME/.cache/puppeteer" "clean" "false" "Re-downloadable Puppeteer headless browsers"
@@ -1031,6 +1032,7 @@ fi
         case "cache-pnpm", "cache-pnpm-store-legacy", "cache-pnpm-cache": return "pgrep -x pnpm"
         case "cache-npm", "cache-node-gyp": return "pgrep -x 'npm|npx|node-gyp'"
         case "cache-cargo", "cache-cargo-git": return "pgrep -x 'cargo|rustc'"
+        case "cache-swiftpm", "cache-clang": return "pgrep -x 'swift|swift-build|swift-test|swift-package|swiftc|clang'"
         case "cache-pip", "cache-uv": return "pgrep -x 'pip|pip3|uv'"
         default: return nil
         }

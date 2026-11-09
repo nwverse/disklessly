@@ -58,6 +58,72 @@ public struct SSHTransport: @unchecked Sendable {
         return "/usr/bin/ssh"
     }
 
+    /// True when `host` names this machine (loopback alias, local hostname, or a hostname resolving to one of this machine's network interface addresses).
+    public static func isSelfHost(_ host: String) -> Bool {
+        let lower = host.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !lower.isEmpty else { return false }
+        if lower == "localhost" || lower == "127.0.0.1" || lower == "::1" || lower == "[::1]" {
+            return true
+        }
+        let localHost = ProcessInfo.processInfo.hostName.lowercased()
+        if !localHost.isEmpty {
+            if lower == localHost { return true }
+            if let short = localHost.split(separator: ".").first, lower == String(short) {
+                return true
+            }
+        }
+        let localIPs = localInterfaceAddresses()
+        guard !localIPs.isEmpty else { return false }
+        if localIPs.contains(lower) { return true }
+        let resolved = resolveHostAddresses(lower)
+        return !resolved.isEmpty && !localIPs.isDisjoint(with: resolved)
+    }
+
+    private static func localInterfaceAddresses() -> Set<String> {
+        var result: Set<String> = ["127.0.0.1", "::1"]
+        var ifaddr: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&ifaddr) == 0, let first = ifaddr else { return result }
+        defer { freeifaddrs(first) }
+        var ptr: UnsafeMutablePointer<ifaddrs>? = first
+        while let cur = ptr {
+            if let sa = cur.pointee.ifa_addr {
+                let family = Int32(sa.pointee.sa_family)
+                if family == AF_INET || family == AF_INET6 {
+                    var hostBuf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    let len = family == AF_INET ? socklen_t(MemoryLayout<sockaddr_in>.size) : socklen_t(MemoryLayout<sockaddr_in6>.size)
+                    if getnameinfo(sa, len, &hostBuf, socklen_t(hostBuf.count), nil, 0, NI_NUMERICHOST) == 0 {
+                        let s = String(cString: hostBuf).split(separator: "%").first.map(String.init)?.lowercased() ?? ""
+                        if !s.isEmpty { result.insert(s) }
+                    }
+                }
+            }
+            ptr = cur.pointee.ifa_next
+        }
+        return result
+    }
+
+    private static func resolveHostAddresses(_ host: String) -> Set<String> {
+        var result = Set<String>()
+        var res: UnsafeMutablePointer<addrinfo>?
+        guard getaddrinfo(host, nil, nil, &res) == 0, let first = res else { return result }
+        defer { freeaddrinfo(first) }
+        var ptr: UnsafeMutablePointer<addrinfo>? = first
+        while let cur = ptr {
+            if let sa = cur.pointee.ai_addr {
+                let family = cur.pointee.ai_family
+                if family == AF_INET || family == AF_INET6 {
+                    var hostBuf = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+                    if getnameinfo(sa, cur.pointee.ai_addrlen, &hostBuf, socklen_t(hostBuf.count), nil, 0, NI_NUMERICHOST) == 0 {
+                        let s = String(cString: hostBuf).split(separator: "%").first.map(String.init)?.lowercased() ?? ""
+                        if !s.isEmpty { result.insert(s) }
+                    }
+                }
+            }
+            ptr = cur.pointee.ai_next
+        }
+        return result
+    }
+
     private static func executeSSH(
         executable: String,
         environment: [String: String],
@@ -75,9 +141,15 @@ public struct SSHTransport: @unchecked Sendable {
         // Ignore SIGPIPE so an early remote exit while writing to stdin does not kill our process.
         _ = signal(SIGPIPE, SIG_IGN)
 
+        let useDirectLocalSh = (executable == "/usr/bin/ssh" || executable == "/bin/ssh" || executable.hasSuffix("/bin/ssh")) && isSelfHost(host)
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = SSHCommand.arguments(host: host, remoteCommand: remoteCommand)
+        if useDirectLocalSh {
+            process.executableURL = URL(fileURLWithPath: "/bin/sh")
+            process.arguments = ["-c", remoteCommand]
+        } else {
+            process.executableURL = URL(fileURLWithPath: executable)
+            process.arguments = SSHCommand.arguments(host: host, remoteCommand: remoteCommand)
+        }
         process.environment = ParsedCommand.environment(inheriting: environment)
 
         let outPipe = Pipe()
@@ -555,6 +627,18 @@ extension DisklesslyEngine {
         let localUsed = localTotal >= localAvail ? localTotal - localAvail : 0
         let localFacts = deviceFactsOverride ?? LiveDeviceFacts.current()
         let localLevel = MachineHealthLevel.evaluate(reachable: true, totalBytes: localTotal, availableBytes: localAvail)
+        var localCached: RemoteScanReport?
+        let scansDir = RemoteMachineStore.machinesDir(stateDir: config.stateDir).appendingPathComponent("scans", isDirectory: true)
+        if let files = try? FileManager.default.contentsOfDirectory(at: scansDir, includingPropertiesForKeys: nil) {
+            for file in files where file.pathExtension == "json" {
+                let alias = file.deletingPathExtension().lastPathComponent
+                if SSHTransport.isSelfHost(alias), let hit = RemoteMachineStore.loadCachedScan(stateDir: config.stateDir, host: alias) {
+                    if localCached == nil || hit.scannedAt > localCached!.scannedAt {
+                        localCached = hit
+                    }
+                }
+            }
+        }
         cards.append(MachineCardSummary(
             id: "local",
             host: "localhost",
@@ -569,10 +653,10 @@ extension DisklesslyEngine {
             totalBytes: localTotal,
             usedBytes: localUsed,
             availableBytes: localAvail,
-            reclaimableBytes: 0,
-            offloadableBytes: 0,
+            reclaimableBytes: localCached?.reclaimableBytes ?? 0,
+            offloadableBytes: localCached?.offloadableBytes ?? 0,
             offloadedCount: (try? list().count) ?? 0,
-            lastScannedAt: now
+            lastScannedAt: localCached?.scannedAt ?? now
         ))
 
         // 2. Configured remote SSH machines
