@@ -1,0 +1,11 @@
+.build/
+.swiftpm/
+.DS_Store
+*.xcuserstate
+*.dSYM/
+build/
+dist/
+
+# Disklessly Google OAuth client (scripts/build-app.sh)
+google-oauth.json
+gdrive-client.json

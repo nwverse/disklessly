@@ -1,0 +1,97 @@
+name: macOS E2E
+
+# macOS minutes bill at 10x Linux on a private repo. Routine runs are the Daily
+# workflow's workflow_call, once each morning. workflow_dispatch stays for an
+# urgent macOS-only check. Tagged releases still run this E2E inside release.yml,
+# which is not on the daily schedule.
+#
+# The job conditions run for every event other than an unlabelled pull_request.
+# workflow_call (what Daily uses), workflow_dispatch, and schedule all take that
+# path. This file no longer has a pull_request trigger, so the label clause does
+# not fire; it remains so a non-PR event cannot be skipped by it.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos-e2e:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    if: >-
+      github.event_name != 'pull_request' ||
+      (contains(github.event.pull_request.labels.*.name, 'macos-e2e') &&
+       (github.event.action != 'labeled' || github.event.label.name == 'macos-e2e'))
+    # Job-level so that a skipped run (unlabelled PR) never cancels a real one.
+    concurrency:
+      group: macos-e2e-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show macOS and toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+      - name: Build
+        run: swift build
+      - name: Unit tests
+        run: swift test
+      - name: End-to-end harness
+        env:
+          E2E_LOG_FILE: ${{ runner.temp }}/disklessly-e2e.log
+        run: bash scripts/e2e.sh
+      - name: Build the app bundle and dry-run release signing
+        run: |
+          bash scripts/build-app.sh
+          env -u DISKLESSLY_SIGN_IDENTITY -u NOTARY_PROFILE bash scripts/release-sign.sh --dry-run
+      - name: Print bounded E2E log on failure
+        if: failure()
+        run: tail -200 "${{ runner.temp }}/disklessly-e2e.log" || true
+      - name: Upload E2E log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-e2e-log
+          path: ${{ runner.temp }}/disklessly-e2e.log
+          if-no-files-found: warn
+
+  # Optional Mac mini runner. Register the machine by hand; this job stays idle until the variable is set.
+  self-hosted-e2e:
+    runs-on: [self-hosted, macOS]
+    if: >-
+      vars.DISKLESSLY_SELF_HOSTED == 'true' &&
+      (github.event_name != 'pull_request' ||
+       (contains(github.event.pull_request.labels.*.name, 'macos-e2e') &&
+        (github.event.action != 'labeled' || github.event.label.name == 'macos-e2e')))
+    concurrency:
+      group: self-hosted-e2e-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show macOS and toolchain versions
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+      - name: Build
+        run: swift build
+      - name: Unit tests
+        run: swift test
+      - name: End-to-end harness
+        env:
+          E2E_LOG_FILE: ${{ runner.temp }}/disklessly-e2e.log
+        run: bash scripts/e2e.sh
+      - name: Print bounded E2E log on failure
+        if: failure()
+        run: tail -200 "${{ runner.temp }}/disklessly-e2e.log" || true
+      - name: Upload E2E log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-e2e-log
+          path: ${{ runner.temp }}/disklessly-e2e.log
+          if-no-files-found: warn

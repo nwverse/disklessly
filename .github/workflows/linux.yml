@@ -1,0 +1,37 @@
+name: Linux
+
+# Routine runs are the Daily workflow's workflow_call, once each morning.
+# workflow_dispatch stays for an urgent Linux-only check. Push and pull_request
+# used to build a branch on the PR and again when it merged.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A newer run on the same ref cancels the older one. pull_request.number is
+# empty for workflow_call and workflow_dispatch, so those group by github.ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      matrix:
+        swift: ["5.10", "6.1"]
+    container: swift:${{ matrix.swift }}-jammy
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SQLite headers and test tools
+        # python3 and sqlite3 back the WebDAV/OpenList fixtures and the index tests.
+        run: apt-get update && apt-get install -y libsqlite3-dev g++ python3 sqlite3 curl
+      - name: Build
+        run: swift build
+      - name: Test
+        run: swift test --parallel
+      - name: Smoke-run the CLI
+        run: bash scripts/linux-smoke.sh "$(swift build --show-bin-path)/disklessly"

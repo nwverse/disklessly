@@ -1,0 +1,30 @@
+Disklessly
+Copyright (c) 2026 Shengtao Lin. All rights reserved.
+
+This software, including its source code, binaries, documentation and assets
+(the "Software"), is proprietary and confidential. It is licensed, not sold.
+
+Use of the released Disklessly app and command-line tool is permitted under the
+terms the copyright holder publishes with each release, including the free
+version and paid license codes. No other right is granted.
+
+Except as those terms expressly allow, or with prior written permission from the
+copyright holder, you may not:
+
+  - copy, modify, translate or create derivative works of the Software;
+  - distribute, sublicense, rent, lease, sell or otherwise make the Software
+    available to others;
+  - reverse engineer, decompile or disassemble the Software, except to the
+    extent applicable law expressly permits it despite this limitation;
+  - remove or circumvent license checks, notices or other protections.
+
+Third-party components included in the Software are licensed under their own
+terms, listed in THIRD_PARTY_NOTICES.md. Nothing in this license limits your
+rights under those terms.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT
+HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.

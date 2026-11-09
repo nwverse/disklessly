@@ -1,0 +1,288 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>Disklessly</title>
+<script>
+// Runs before the first paint so theme and language order never flash.
+// Theme follows prefers-color-scheme; ?theme=light|dark pins it (screenshots, debugging).
+// One language at a time: ?lang= wins, then the choice saved by the top-bar switch (a cookie,
+// since the loopback port can change between launches), then the system language.
+(function () {
+  var root = document.documentElement;
+  var params = new URLSearchParams(location.search);
+  var theme = params.get("theme");
+  var lang = params.get("lang");
+  if (theme === "light" || theme === "dark") root.setAttribute("data-theme", theme);
+  if (lang !== "en" && lang !== "zh") {
+    var saved = (document.cookie.match(/(?:^|; )disklessly_lang=(en|zh)/) || [])[1];
+    lang = saved || ((navigator.language || "").toLowerCase().indexOf("zh") === 0 ? "zh" : "en");
+  }
+  root.setAttribute("data-lang", lang);
+  root.lang = lang === "zh" ? "zh-Hans" : "en";
+})();
+</script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" id="skip" href="#apps" data-t="skip"></a>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <div>
+        <h1>Disklessly</h1>
+        <p class="sub" data-t="subtitle"></p>
+      </div>
+    </div>
+    <div class="top-actions">
+      <span id="updated" class="updated"></span>
+      <button id="lang-toggle" type="button" class="btn quiet lang-toggle"></button>
+      <button id="refresh" type="button" class="btn outline"><span data-t="refresh"></span></button>
+    </div>
+  </div>
+</header>
+<div class="page">
+  <div id="banner" class="banner" role="alert" hidden>
+    <div id="banner-text" class="banner-text"></div>
+    <button id="retry" type="button" class="btn outline"><span data-t="retry"></span></button>
+  </div>
+  <section id="expired" class="card expired" hidden aria-labelledby="expired-title">
+    <h2 id="expired-title" data-t="expiredTitle"></h2>
+    <p data-t="expiredBody"></p>
+    <pre class="command"><code>disklessly ui</code></pre>
+  </section>
+  <main id="content">
+    <section id="permissions" class="card" hidden aria-labelledby="permissions-title">
+      <h2 id="permissions-title" data-t="permTitle"></h2>
+      <p class="muted" data-t="permBody"></p>
+      <ul class="perm-list">
+        <li>
+          <strong data-t="permFda"></strong>
+          <span id="perm-fda-state" class="muted"></span>
+          <button id="perm-fda" type="button" class="btn quiet"><span data-t="permOpen"></span></button>
+        </li>
+        <li>
+          <strong data-t="permAppMgmt"></strong>
+          <span class="muted" data-t="permAppMgmtBody"></span>
+          <button id="perm-app" type="button" class="btn quiet"><span data-t="permOpen"></span></button>
+          <button id="perm-app-ok" type="button" class="btn quiet"><span data-t="permDone"></span></button>
+        </li>
+      </ul>
+    </section>
+    <section id="onboarding" class="card hero" hidden aria-labelledby="onboarding-title">
+      <h2 id="onboarding-title" data-t="heroTitle"></h2>
+      <p class="muted" data-t="heroBody"></p>
+      <ol class="steps">
+        <li>
+          <strong data-t="heroStep1"></strong>
+          <span id="hero-repo" class="muted"></span>
+          <pre class="command"><code>disklessly init --root /Volumes/apps/Disklessly</code></pre>
+        </li>
+        <li>
+          <strong data-t="heroStep2"></strong>
+          <span class="muted" data-t="heroStep2Body"></span>
+          <a href="#recommend-section" class="link" data-t="heroStep2Link"></a>
+        </li>
+        <li>
+          <strong data-t="heroStep3"></strong>
+          <span class="muted" data-t="heroStep3Body"></span>
+          <pre class="command"><code>disklessly pack "/Applications/Example.app"</code></pre>
+        </li>
+      </ol>
+    </section>
+    <section class="card" id="usage-section" aria-labelledby="usage-title">
+      <div class="card-head">
+        <h2 id="usage-title" data-t="usage"></h2>
+        <p class="scan-line">
+          <span id="usage-scanned" class="muted"></span>
+          <button id="usage-scan" type="button" class="btn quiet"><span data-t="usageScan"></span></button>
+        </p>
+      </div>
+      <p id="usage-summary" class="muted"></p>
+      <nav id="usage-crumbs" class="usage-crumbs" aria-label="path" hidden></nav>
+      <div id="usage-chart" class="usage-chart" hidden></div>
+      <p id="usage-tip" class="usage-tip muted" aria-live="polite" hidden></p>
+      <ul id="usage-legend" class="usage-legend" hidden></ul>
+      <div id="usage-clean" class="usage-clean" hidden></div>
+      <p id="usage-caches" class="usage-caches muted" hidden>
+        <span id="usage-caches-text"></span>
+        <button id="usage-caches-clear" type="button" class="btn quiet" hidden><span data-t="cachesClear"></span></button>
+      </p>
+      <div id="usage-tips" class="usage-tips" hidden></div>
+    </section>
+    <section class="card" id="recommend-section" aria-labelledby="recommend-title">
+      <div class="card-head">
+        <h2 id="recommend-title" data-t="recommend"></h2>
+        <p class="scan-line">
+          <span id="recommend-scanned" class="muted"></span>
+          <button id="rescan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
+        </p>
+      </div>
+      <p id="recommend-total" class="total" hidden></p>
+      <p id="recommend-summary" class="muted"></p>
+      <div id="recommend-list" class="rec-list" aria-busy="true"></div>
+      <h3 id="recommend-warn-title" class="warn-title" hidden data-t="recommendWarn"></h3>
+      <ul id="recommend-warnings" class="plain-list"></ul>
+      <p id="recommend-leftovers" class="muted" hidden></p>
+      <ul id="recommend-leftover-paths" class="plain-list" hidden></ul>
+      <div class="card-head files-head">
+        <h3 id="big-title" data-t="bigTitle"></h3>
+        <p class="scan-line">
+          <span id="big-scanned" class="muted"></span>
+          <button id="big-scan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
+        </p>
+      </div>
+      <p id="big-summary" class="muted"></p>
+      <div id="big-list" class="rec-list"></div>
+      <div class="card-head files-head">
+        <h3 id="files-title" data-t="filesTitle"></h3>
+        <p class="scan-line">
+          <span id="files-scanned" class="muted"></span>
+          <button id="files-scan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
+        </p>
+      </div>
+      <p id="files-summary" class="muted"></p>
+      <div id="files-list" class="rec-list"></div>
+    </section>
+    <section id="apps" class="section" aria-labelledby="apps-title">
+      <div class="section-head">
+        <h2 id="apps-title" data-t="apps"></h2>
+        <p id="apps-summary" class="section-summary"></p>
+      </div>
+      <div class="card table-card">
+        <div class="list-tools" id="list-tools" hidden>
+          <label class="field grow">
+            <span data-t="search"></span>
+            <input id="search" type="search" autocomplete="off" spellcheck="false">
+          </label>
+          <label class="field">
+            <span data-t="sortBy"></span>
+            <select id="sort">
+              <option value="name" data-tp="sortName"></option>
+              <option value="size" data-tp="sortSize"></option>
+              <option value="lastUsed" data-tp="sortLastUsed"></option>
+            </select>
+          </label>
+          <label class="field">
+            <span data-t="filterBy"></span>
+            <select id="filter">
+              <option value="all" data-tp="filterAll"></option>
+              <option value="cached" data-tp="filterCached"></option>
+              <option value="remote" data-tp="filterRemote"></option>
+              <option value="pinned" data-tp="filterPinned"></option>
+            </select>
+          </label>
+          <button id="icon-backfill" type="button" class="btn quiet"><span data-t="backfillIcons"></span></button>
+        </div>
+        <div class="table-head" id="table-head" hidden aria-hidden="true">
+          <span data-t="colApp"></span>
+          <span data-t="colStatus"></span>
+          <span data-t="colCache"></span>
+          <span class="right" data-t="colActions"></span>
+        </div>
+        <div id="app-list" class="app-list" aria-busy="true"></div>
+        <p class="table-foot"><span class="foot-icon" aria-hidden="true">i</span><span data-t="evictNote"></span></p>
+      </div>
+    </section>
+    <section class="card" id="ctr-section" aria-labelledby="ctr-title">
+      <div class="card-head">
+        <h2 id="ctr-title" data-t="ctrTitle"></h2>
+        <p class="scan-line">
+          <button id="ctr-scan" type="button" class="btn quiet"><span data-t="rescan"></span></button>
+        </p>
+      </div>
+      <p id="ctr-summary" class="muted"></p>
+      <div id="ctr-list" class="rec-list"></div>
+    </section>
+    <section class="card" id="devices-section" aria-labelledby="devices-title">
+      <div class="card-head"><h2 id="devices-title" data-t="devices"></h2><span id="devices-count" class="count"></span></div>
+      <p id="devices-summary" class="muted"></p>
+      <ul id="devices" class="plain-list"></ul>
+    </section>
+    <section class="card" id="dev-section" aria-labelledby="dev-title">
+      <div class="card-head"><h2 id="dev-title" data-t="dev"></h2></div>
+      <p class="muted" data-t="devIntro"></p>
+      <div id="dev-list" class="rec-list" aria-busy="true"></div>
+    </section>
+    <section class="card" id="sessions-section" aria-labelledby="sessions-title">
+      <div class="card-head">
+        <h2 id="sessions-title" data-t="sessionTiers"></h2>
+        <p id="sessions-summary" class="section-summary"></p>
+      </div>
+      <p class="muted" data-t="sessionIntro"></p>
+      <div id="sessions-plan" class="session-plan" aria-busy="true"></div>
+      <ul id="sessions" class="session-list"></ul>
+    </section>
+    <section class="card" id="cloud-section" aria-labelledby="cloud-title">
+      <div class="card-head">
+        <h2 id="cloud-title" data-t="cloudTitle"></h2>
+        <p id="cloud-summary" class="section-summary"></p>
+      </div>
+      <p id="cloud-repo" class="muted"></p>
+      <p id="cloud-task" class="cloud-task" hidden></p>
+      <h3 class="cloud-sub" data-t="cloudDrives"></h3>
+      <p class="muted" data-t="cloudDrivesNote"></p>
+      <ul id="cloud-remotes" class="cloud-list"></ul>
+      <div id="cloud-connect" class="cloud-actions"></div>
+      <h3 class="cloud-sub" data-t="openlistTitle"></h3>
+      <p class="muted" data-t="openlistNote"></p>
+      <div id="cloud-openlist" class="cloud-openlist"></div>
+    </section>
+    <div class="grid">
+      <article class="card backend-card" id="backend-card" data-level="unknown" aria-labelledby="backend-title">
+        <div class="card-head">
+          <h2 id="backend-title" data-t="backend"></h2>
+          <span id="backend-pill" class="pill-slot"></span>
+        </div>
+        <div id="backend-body" aria-busy="true">
+          <div class="sk-line wide"></div>
+          <div class="sk-line"></div>
+          <div class="sk-line short"></div>
+        </div>
+      </article>
+      <article class="card cache-card" id="cache-card" data-level="ok" aria-labelledby="cache-title">
+        <div class="card-head">
+          <h2 id="cache-title" data-t="cache"></h2>
+          <span id="cache-pill" class="pill-slot"></span>
+        </div>
+        <div id="cache-body" aria-busy="true">
+          <div class="sk-line wide tall"></div>
+          <div class="sk-line"></div>
+          <div class="sk-line short"></div>
+        </div>
+      </article>
+    </div>
+    <section class="card" id="license-section" hidden aria-labelledby="license-title">
+      <div class="card-head">
+        <h2 id="license-title" data-t="license"></h2>
+        <p id="license-summary" class="section-summary"></p>
+      </div>
+      <p id="license-detail" class="muted"></p>
+      <form id="license-form" class="license-form" autocomplete="off">
+        <label class="field grow">
+          <span data-t="licenseCode"></span>
+          <input id="license-code" type="text" spellcheck="false" autocapitalize="off" autocomplete="off" placeholder="DSL1.…">
+        </label>
+        <button id="license-activate" type="submit" class="btn primary"><span data-t="licenseActivate"></span></button>
+        <a id="license-buy" class="btn tint" target="_blank" rel="noopener noreferrer" hidden><span data-t="licenseBuy"></span></a>
+        <button id="license-remove" type="button" class="btn quiet" hidden><span data-t="licenseRemove"></span></button>
+      </form>
+    </section>
+  </main>
+</div>
+<div id="toasts" class="toasts" role="status" aria-live="polite" aria-atomic="false"></div>
+<dialog id="confirm" class="confirm" aria-labelledby="confirm-title" aria-describedby="confirm-body">
+  <form method="dialog">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-body"></p>
+    <div class="dialog-actions">
+      <button id="confirm-cancel" type="submit" value="cancel" class="btn outline"><span data-t="cancel"></span></button>
+      <button id="confirm-ok" type="submit" value="ok" class="btn danger"></button>
+    </div>
+  </form>
+</dialog>
+<script type="module" src="app.js"></script>
+</body>
+</html>
