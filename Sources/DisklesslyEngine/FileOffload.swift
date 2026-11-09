@@ -203,7 +203,9 @@ extension DisklesslyEngine {
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let note = "This folder was offloaded to the Disklessly repo. Open Disklessly and click Bring back (取回) on it.\n"
         try Data(note.utf8).write(to: folder.appendingPathComponent("README.txt"))
+        #if os(macOS)
         StubIcon.badgeColdFolder(folder)
+        #endif
         try FileManager.default.createSymbolicLink(atPath: source.path, withDestinationPath: folder.path)
     }
 

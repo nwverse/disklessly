@@ -18,6 +18,9 @@ public enum ManagementUI {
         if request.path.hasPrefix("/api/cloud") || request.path.hasPrefix("/api/openlist") {
             return cloudAPI(engine: engine, request: request, context: context)
         }
+        if request.path.hasPrefix("/api/machines") {
+            return machinesAPI(engine: engine, request: request, context: context)
+        }
         if request.path.hasPrefix("/api/") { return api(engine: engine, request: request, context: context) }
         return staticFile(webRoot: webRoot, request: request)
     }
@@ -1086,6 +1089,8 @@ public final class ManagementUIContext {
     public let cloud = CloudTaskRunner()
     /// Archiving or restoring agent sessions (`/api/sessions/apply`, `/api/sessions/restore`).
     public let sessionTask = CloudTaskRunner()
+    /// SSH remote machines scan and error state (`/api/machines`).
+    public let machines = RemoteMachinesState()
     private var savedConfig: RuntimeConfig?
     private let now: () -> Date
     private let lock = NSLock()

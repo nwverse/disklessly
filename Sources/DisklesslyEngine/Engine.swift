@@ -144,8 +144,8 @@ public struct RuntimeConfig: Codable {
     /// `--config` replaces the file outright. Otherwise `<stateDir>/config.json` is
     /// loaded and explicit `DISKLESSLY_*` path overrides are applied on top. `backend`
     /// stays as stored, so `init --backend icloud` is what `status` reports.
-    public static func resolved(environment env: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory(), stateDirOverride: String?, explicitConfig: String?) -> RuntimeConfig {
-        var config = environment(env, home: home)
+    public static func resolved(environment env: [String: String] = ProcessInfo.processInfo.environment, home: String = NSHomeDirectory(), stateDirOverride: String?, explicitConfig: String?, platform: HostPlatform = .current) -> RuntimeConfig {
+        var config = environment(env, home: home, platform: platform)
         if let stateDirOverride { config.stateDir = stateDirOverride }
         if let explicitConfig {
             let url = URL(fileURLWithPath: explicitConfig)
@@ -302,6 +302,8 @@ public struct DisklesslyEngine {
     public var appRunningOverride: ((ImageManifest) -> Bool)? = nil
     /// Tests: fake container CLIs and disk for `containers`. Nil runs the real tools.
     public var containerToolsOverride: ContainerTools? = nil
+    /// Tests: fake or loopback SSH transport for `remote` / Machines UI. Nil uses `/usr/bin/ssh`.
+    public var sshTransportOverride: SSHTransport? = nil
     /// Test hook. Called with a point name such as `pack.swapped` or
     /// `unpack.installed.beforeMutation`; a throw there is an ordinary failure,
     /// not a simulated crash. Production leaves it nil.
