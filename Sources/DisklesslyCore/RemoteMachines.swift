@@ -647,18 +647,36 @@ probe_dir() {
   cat_id="$1"; cat_kind="$2"; title="$3"; target="$4"; act="$5"; rec="$6"; reason="$7"
   if [ -e "$target" ]; then
     kb=$(du -xsk "$target" 2>/dev/null | awk '{print $1}' | head -n 1)
+    if [ -z "$kb" ] || [ "$kb" -eq 0 ] 2>/dev/null; then
+      case "$target" in
+        /var/*) kb=$(sudo -n du -xsk "$target" 2>/dev/null | awk '{print $1}' | head -n 1) ;;
+      esac
+    fi
     if [ -n "$kb" ] && [ "$kb" -gt 0 ] 2>/dev/null; then
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$cat_id" "$cat_kind" "$title" "$target" "$kb" "$act" "$rec" "$reason"
     fi
   fi
 }
 probe_dir "cache-apt" "package-cache" "APT package cache" "/var/cache/apt/archives" "clean" "false" "Rebuildable apt archive cache"
+probe_dir "cache-dnf" "package-cache" "DNF package cache" "/var/cache/dnf" "clean" "false" "Rebuildable dnf package and metadata cache"
+probe_dir "cache-yum" "package-cache" "YUM package cache" "/var/cache/yum" "clean" "false" "Rebuildable yum package cache"
 probe_dir "cache-pip" "package-cache" "pip wheel & http cache" "$HOME/.cache/pip" "clean" "false" "Rebuildable Python pip cache"
+probe_dir "cache-uv" "package-cache" "uv Python cache" "$HOME/.cache/uv" "clean" "false" "Rebuildable uv cache"
 probe_dir "cache-npm" "package-cache" "npm package cache" "$HOME/.npm" "clean" "false" "Rebuildable npm cache"
+probe_dir "cache-pnpm" "package-cache" "pnpm content-addressable store" "$HOME/.local/share/pnpm/store" "clean" "false" "Rebuildable pnpm package store"
+probe_dir "cache-pnpm-store-legacy" "package-cache" "pnpm store (legacy ~/.pnpm-store)" "$HOME/.pnpm-store" "clean" "false" "Rebuildable pnpm package store"
+probe_dir "cache-pnpm-cache" "package-cache" "pnpm download & dlx cache" "$HOME/.cache/pnpm" "clean" "false" "Rebuildable pnpm cache"
+probe_dir "cache-yarn" "package-cache" "Yarn package cache" "$HOME/.cache/yarn" "clean" "false" "Rebuildable Yarn package cache"
 probe_dir "cache-cargo" "package-cache" "Cargo registry cache" "$HOME/.cargo/registry" "clean" "false" "Rebuildable Rust cargo registry"
+probe_dir "cache-cargo-git" "package-cache" "Cargo git cache" "$HOME/.cargo/git" "clean" "false" "Rebuildable Rust cargo git checkouts"
 probe_dir "cache-gobuild" "package-cache" "Go build cache" "$HOME/.cache/go-build" "clean" "false" "Rebuildable Go compiler cache"
 probe_dir "cache-gomod" "package-cache" "Go module cache" "$HOME/go/pkg/mod" "clean" "false" "Rebuildable Go module cache"
-probe_dir "cache-uv" "package-cache" "uv Python cache" "$HOME/.cache/uv" "clean" "false" "Rebuildable uv cache"
+probe_dir "cache-swiftpm" "package-cache" "SwiftPM package cache" "$HOME/.cache/org.swift.swiftpm" "clean" "false" "Rebuildable Swift Package Manager cache"
+probe_dir "cache-gradle" "package-cache" "Gradle build cache" "$HOME/.gradle/caches" "clean" "false" "Rebuildable Gradle caches"
+probe_dir "cache-playwright" "package-cache" "Playwright browser cache" "$HOME/.cache/ms-playwright" "clean" "false" "Re-downloadable Playwright headless browsers"
+probe_dir "cache-puppeteer" "package-cache" "Puppeteer browser cache" "$HOME/.cache/puppeteer" "clean" "false" "Re-downloadable Puppeteer headless browsers"
+probe_dir "cache-node-gyp" "package-cache" "node-gyp headers cache" "$HOME/.cache/node-gyp" "clean" "false" "Rebuildable node-gyp headers cache"
+probe_dir "cache-typescript" "package-cache" "TypeScript cache" "$HOME/.cache/typescript" "clean" "false" "Rebuildable TypeScript cache"
 probe_dir "cache-brew" "package-cache" "Homebrew cache" "$HOME/Library/Caches/Homebrew" "clean" "false" "Rebuildable Homebrew download cache"
 probe_dir "logs-var" "logs" "System logs (/var/log)" "/var/log" "clean" "false" "Rotated and archived system logs"
 probe_dir "logs-coredump" "logs" "Systemd core dumps" "/var/lib/systemd/coredump" "clean" "false" "Crash core dump files"
@@ -680,7 +698,7 @@ if [ -n "$cur_k" ] && [ -d /lib/modules ]; then
 fi
 echo "@@SECTION:JOURNAL"
 if command -v journalctl >/dev/null 2>&1; then
-  journalctl --disk-usage 2>/dev/null || true
+  journalctl --disk-usage 2>/dev/null || sudo -n journalctl --disk-usage 2>/dev/null || true
 fi
 echo "@@SECTION:CONTAINERS"
 if command -v docker >/dev/null 2>&1; then
@@ -693,6 +711,11 @@ if command -v podman >/dev/null 2>&1; then
 fi
 if command -v ctr >/dev/null 2>&1; then
   ctr -n k8s.io images ls 2>/dev/null | awk 'NR>1 && NF>=4 {print "containerd|"$1"|"$3"|"$4$5}' | head -n 20 || true
+fi
+echo "@@SECTION:BUILD_CACHE"
+if command -v docker >/dev/null 2>&1; then
+  T=""; command -v timeout >/dev/null 2>&1 && T="timeout 30"
+  $T docker system df --format '{{.Type}}|{{.Reclaimable}}' 2>/dev/null | awk -F'|' '$1=="Build Cache"{print "docker|"$2}' || true
 fi
 echo "@@SECTION:LARGE_HOME"
 if [ -d "$HOME" ]; then
@@ -822,6 +845,27 @@ echo "@@SECTION:END"
             ))
         }
 
+        // 3b. Unused container build cache (`docker system df` reclaimable)
+        for line in sections["BUILD_CACHE"] ?? [] {
+            let parts = line.split(separator: "|", omittingEmptySubsequences: false).map(String.init)
+            guard parts.count >= 2 else { continue }
+            let runtime = parts[0].trimmingCharacters(in: .whitespaces)
+            let sizeToken = parts[1].trimmingCharacters(in: .whitespaces).split(separator: " ").first.map(String.init) ?? ""
+            guard runtime == "docker", let bytes = ContainerParse.dockerSize(sizeToken), bytes > 0 else { continue }
+            let path = "\(runtime)://build-cache"
+            guard seenPaths.insert(path).inserted else { continue }
+            items.append(RemoteScanItem(
+                id: "cache-\(runtime)-build",
+                category: "build-cache",
+                title: "Docker build cache (unused)",
+                path: path,
+                bytes: bytes,
+                action: .clean,
+                recoverable: false,
+                reason: "BuildKit cache not referenced by any running build; rebuilt on next docker build"
+            ))
+        }
+
         // 4. Large home directories / files
         for line in sections["LARGE_HOME"] ?? [] {
             let parts = line.split(separator: "\t", maxSplits: 2, omittingEmptySubsequences: false).map(String.init)
@@ -903,7 +947,9 @@ echo "@@SECTION:END"
                     continue
                 }
                 if let procInfo = procByMount[mountPoint] {
-                    if skippedFsTypes.contains(procInfo.fsType.lowercased()) { continue }
+                    let fs = procInfo.fsType.lowercased()
+                    // Network/FUSE mounts (rclone, sshfs, ...) report the remote's capacity, not this disk's.
+                    if skippedFsTypes.contains(fs) || fs.hasPrefix("fuse") { continue }
                 }
                 if dev.hasPrefix("/dev/") {
                     if !seenDevices.insert(dev).inserted { continue }
@@ -936,6 +982,125 @@ echo "@@SECTION:END"
             token.append("iB")
         }
         return ContainerParse.dockerSize(token)
+    }
+}
+
+/// Builds the POSIX sh run on the remote for one `clean` item and parses what it reports back.
+///
+/// Every script prints `@@FREED_KB <n>` (free-space delta of the item's filesystem measured with `df`
+/// before and after, so hard links, sudo-only files and partial deletes are reported truthfully) and
+/// `@@BUSY <path>` for each child it skipped because a running process maps or executes a file under it.
+public enum RemoteCleanCommand {
+    public struct Outcome: Equatable, Sendable {
+        public var freedBytes: UInt64?
+        public var busy: [String]
+        public var exitCode: Int32
+    }
+
+    /// Rotated logs: `*.gz`, `*.1`, `*.old`, and dateext rotations (`messages-20261025`) used by RHEL/Oracle/Fedora.
+    static let rotatedLogFind = #"find /var/log -type f \( -name '*.gz' -o -name '*.[0-9]' -o -name '*.old' -o -name '*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' \) -delete"#
+
+    /// Deletes each child of "$P" unless a live process maps/executes something under it; root-owned
+    /// trees fall back to `sudo -n`; read-only trees (Go module cache) are made writable first.
+    static let guardedChildDelete = #"""
+if [ -d "$P" ]; then
+  S=""; [ -w "$P" ] || S="sudo -n"
+  busy=$( { sudo -n sh -c 'ls -l /proc/[0-9]*/exe; cat /proc/[0-9]*/maps' || sh -c 'ls -l /proc/[0-9]*/exe; cat /proc/[0-9]*/maps'; } 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if (substr($i, 1, 1) == "/") print $i }' | sort -u )
+  for c in "$P"/* "$P"/.[!.]* "$P"/..?*; do
+    [ -e "$c" ] || [ -L "$c" ] || continue
+    r=$(readlink -f "$c" 2>/dev/null || printf '%s' "$c")
+    if printf '%s\n' "$busy" | awk -v r="$r" 'index($0, r "/") == 1 || $0 == r { f = 1 } END { exit !f }'; then
+      printf '@@BUSY %s\n' "$c"
+      continue
+    fi
+    $S chmod -R u+w "$c" 2>/dev/null
+    $S rm -rf "$c"
+  done
+elif [ -f "$P" ]; then
+  rm -f "$P" 2>/dev/null || sudo -n rm -f "$P"
+fi
+"""#
+
+    /// Toolchains that read a cache through ordinary file opens (not mmap/exec), so the per-child guard
+    /// cannot see them: if one is running, the whole cache is left alone and reported busy.
+    static func toolchainPattern(for id: String) -> String? {
+        switch id {
+        case "cache-gomod", "cache-gobuild": return "pgrep -x 'go|gopls'"
+        // `[G]` keeps `pgrep -f` from matching this very script's command line.
+        case "cache-gradle": return "pgrep -f '[G]radleDaemon|[G]radleWrapperMain'"
+        case "cache-pnpm", "cache-pnpm-store-legacy", "cache-pnpm-cache": return "pgrep -x pnpm"
+        case "cache-npm", "cache-node-gyp": return "pgrep -x 'npm|npx|node-gyp'"
+        case "cache-cargo", "cache-cargo-git": return "pgrep -x 'cargo|rustc'"
+        case "cache-pip", "cache-uv": return "pgrep -x 'pip|pip3|uv'"
+        default: return nil
+        }
+    }
+
+    public static func body(id: String, path: String) -> String {
+        let core = coreBody(id: id, path: path)
+        guard let check = toolchainPattern(for: id) else { return core }
+        return "if \(check) >/dev/null 2>&1; then printf '@@BUSY %s\\n' \(SSHCommand.shellQuote(path)); exit 0; fi\n\(core)"
+    }
+
+    static func coreBody(id: String, path: String) -> String {
+        switch id {
+        case "journalctl-vacuum":
+            return "sudo -n journalctl --vacuum-time=7d 2>/dev/null || journalctl --vacuum-time=7d"
+        case "cache-apt":
+            return "sudo -n apt-get clean 2>/dev/null || apt-get clean"
+        case "cache-dnf":
+            return "sudo -n dnf clean all 2>/dev/null || dnf clean all"
+        case "cache-yum":
+            return "sudo -n yum clean all 2>/dev/null || yum clean all"
+        case "cache-docker-build":
+            return "docker builder prune -af"
+        case "logs-var":
+            return "sudo -n \(rotatedLogFind) 2>/dev/null || \(rotatedLogFind) 2>/dev/null; true"
+        default:
+            // Well-known cache roots stay (tools expect them); an explicitly chosen sub-path goes entirely once emptied.
+            let tidy = id.hasPrefix("custom-") ? "\nrmdir \"$P\" 2>/dev/null || true" : ""
+            return "P=\(SSHCommand.shellQuote(path))\n\(guardedChildDelete)\(tidy)"
+        }
+    }
+
+    /// Full script: `df` before, the item's body in a subshell, `df` after, then the markers.
+    public static func script(id: String, path: String) -> String {
+        let dfTarget: String
+        if path.hasPrefix("docker://") {
+            dfTarget = "$(docker info -f '{{.DockerRootDir}}' 2>/dev/null || echo /)"
+        } else {
+            let parent = (path as NSString).deletingLastPathComponent
+            dfTarget = SSHCommand.shellQuote(parent.isEmpty ? "/" : parent)
+        }
+        return """
+        __dkl_avail() { df -kP "$1" 2>/dev/null | awk 'NR==2 { print $4 }'; }
+        __dkl_fs=\(dfTarget)
+        __dkl_b=$(__dkl_avail "$__dkl_fs")
+        (
+        \(body(id: id, path: path))
+        ); __dkl_rc=$?
+        __dkl_a=$(__dkl_avail "$__dkl_fs")
+        echo "@@RC $__dkl_rc"
+        echo "@@FREED_KB $(( ${__dkl_a:-0} - ${__dkl_b:-0} ))"
+        """
+    }
+
+    public static func parse(_ output: String) -> Outcome {
+        var freed: UInt64?
+        var busy: [String] = []
+        var rc: Int32 = 0
+        for raw in output.split(whereSeparator: \.isNewline) {
+            let line = String(raw)
+            if line.hasPrefix("@@RC ") {
+                rc = Int32(line.dropFirst("@@RC ".count).trimmingCharacters(in: .whitespaces)) ?? 0
+            } else if line.hasPrefix("@@FREED_KB ") {
+                let n = Int64(line.dropFirst("@@FREED_KB ".count).trimmingCharacters(in: .whitespaces)) ?? 0
+                freed = n > 0 ? UInt64(n) * 1024 : 0
+            } else if line.hasPrefix("@@BUSY ") {
+                busy.append(String(line.dropFirst("@@BUSY ".count)))
+            }
+        }
+        return Outcome(freedBytes: freed, busy: busy, exitCode: rc)
     }
 }
 

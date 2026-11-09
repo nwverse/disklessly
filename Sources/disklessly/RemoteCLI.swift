@@ -142,7 +142,18 @@ enum RemoteCLI {
                 printPlan(plan)
             } else {
                 let freed = (result["freedBytes"] as? NSNumber)?.uint64Value ?? 0
-                print("Cleaned \(targets.count) item(s) on \(host), freed \(RecommendFormatting.byteText(freed))")
+                for item in result["items"] as? [[String: Any]] ?? [] {
+                    let id = item["id"] as? String ?? "?"
+                    let scanned = (item["scannedBytes"] as? NSNumber)?.uint64Value ?? 0
+                    let got = (item["freedBytes"] as? NSNumber)?.uint64Value ?? 0
+                    let busy = item["skippedInUse"] as? [String] ?? []
+                    let rc = item["exitCode"] as? Int ?? 0
+                    var line = "  \(id)  scanned \(RecommendFormatting.byteText(scanned))  freed \(RecommendFormatting.byteText(got))"
+                    if !busy.isEmpty { line += "  kept in use: \(busy.joined(separator: ", "))" }
+                    if rc != 0 { line += "  (exit \(rc))" }
+                    print(line)
+                }
+                print("Cleaned \(targets.count) item(s) on \(host), freed \(RecommendFormatting.byteText(freed)) (measured with df)")
             }
 
         case "offload":

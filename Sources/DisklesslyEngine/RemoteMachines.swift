@@ -521,7 +521,8 @@ extension DisklesslyEngine {
     // MARK: - Remote Scan (#46 §2)
 
     /// Runs the single-trip combined SSH probe on `host`, caches the result locally, and returns the report.
-    public func scanRemoteMachine(host: String, now: Date = Date(), timeout: TimeInterval = 45) throws -> RemoteScanReport {
+    /// The default timeout leaves room for `du` over large homes and `docker system df` on busy hosts.
+    public func scanRemoteMachine(host: String, now: Date = Date(), timeout: TimeInterval = 150) throws -> RemoteScanReport {
         let validHost = try validateSSHHost(host)
         let scriptData = Data(RemoteScanProbe.combinedScript.utf8)
         do {
@@ -799,15 +800,25 @@ extension DisklesslyEngine {
             )
             try persistRemoteJournal(journal)
 
-            let cmd = remoteCleanShellCommand(for: item)
-            _ = try sshTransport.run(validHost, cmd, nil, 120)
+            let cmd = RemoteCleanCommand.script(id: item.id, path: item.path)
+            let out = try sshTransport.run(validHost, cmd, nil, 600)
+            let outcome = RemoteCleanCommand.parse(String(decoding: out, as: UTF8.self))
+            // Report what the filesystem actually gained, not the scanned size: hard-linked stores
+            // (pnpm), skipped in-use children and rotated-only log cleanup free less than `du` says.
+            let measured = outcome.freedBytes ?? item.bytes
 
             journal.phase = .completed
             journal.updatedAt = Date()
+            journal.note = outcome.busy.isEmpty ? nil : "skipped \(outcome.busy.count) in-use entr\(outcome.busy.count == 1 ? "y" : "ies")"
             try persistRemoteJournal(journal)
 
-            freedBytes += item.bytes
-            cleaned.append(item.jsonObject())
+            freedBytes += measured
+            var obj = item.jsonObject()
+            obj["scannedBytes"] = NSNumber(value: item.bytes)
+            obj["freedBytes"] = NSNumber(value: measured)
+            obj["skippedInUse"] = outcome.busy
+            obj["exitCode"] = Int(outcome.exitCode)
+            cleaned.append(obj)
         }
 
         _ = try? scanRemoteMachine(host: validHost)
@@ -820,20 +831,6 @@ extension DisklesslyEngine {
             "freedBytes": NSNumber(value: freedBytes),
             "items": cleaned,
         ]
-    }
-
-    private func remoteCleanShellCommand(for item: RemoteActionPlan.PlanItem) -> String {
-        switch item.id {
-        case "journalctl-vacuum":
-            return "journalctl --vacuum-time=7d 2>/dev/null || sudo -n journalctl --vacuum-time=7d"
-        case "cache-apt":
-            return "apt-get clean 2>/dev/null || sudo -n apt-get clean 2>/dev/null || rm -rf /var/cache/apt/archives/*.deb"
-        case "logs-var":
-            return "find /var/log -type f \\( -name '*.gz' -o -name '*.1' -o -name '*.old' \\) -delete 2>/dev/null || sudo -n find /var/log -type f \\( -name '*.gz' -o -name '*.1' -o -name '*.old' \\) -delete"
-        default:
-            let q = SSHCommand.shellQuote(item.path)
-            return "if [ -d \(q) ]; then find \(q) -mindepth 1 -maxdepth 1 -exec rm -rf {} +; elif [ -f \(q) ]; then rm -f \(q); fi"
-        }
     }
 
     /// Offloads a remote directory, file, or container image to the repository under `machines/<host>/...`.

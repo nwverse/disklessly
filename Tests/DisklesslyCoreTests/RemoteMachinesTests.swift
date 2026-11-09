@@ -158,6 +158,75 @@ final class RemoteMachinesTests: XCTestCase {
         XCTAssertTrue(report.offloadableBytes > 14 * 1024 * 1024 * 1024)
     }
 
+    func testScanParsesDockerBuildCacheAndSkipsFuseMounts() throws {
+        let sampleOutput = """
+        @@SECTION:UNAME
+        Linux aarch64
+        @@SECTION:PROC_MOUNTS
+        /dev/mapper/ocivolume-root / xfs rw 0 0
+        gdrive: /mnt/gdrive fuse.rclone rw 0 0
+        @@SECTION:DF
+        Filesystem     1024-blocks      Used Available Capacity Mounted on
+        /dev/mapper/ocivolume-root 191717376 184000000 7717376 96% /
+        gdrive: 5368709120 2408000000 2960709120 45% /mnt/gdrive
+        @@SECTION:BUILD_CACHE
+        docker|4.904GB
+        @@SECTION:END
+        """
+        let report = RemoteScanProbe.parse(host: "opc", output: sampleOutput)
+        XCTAssertEqual(report.mounts.map(\.mountPoint), ["/"], "FUSE/rclone mounts report remote capacity and must be skipped")
+        let cache = try XCTUnwrap(report.items.first { $0.id == "cache-docker-build" })
+        XCTAssertEqual(cache.action, .clean)
+        XCTAssertEqual(cache.path, "docker://build-cache")
+        XCTAssertGreaterThan(cache.bytes, 4_000_000_000)
+    }
+
+    func testRemoteCleanCommandCoversLinuxSpecificsAndParsesMeasuredOutcome() {
+        XCTAssertTrue(RemoteCleanCommand.body(id: "cache-dnf", path: "/var/cache/dnf").contains("dnf clean all"))
+        XCTAssertTrue(RemoteCleanCommand.body(id: "cache-docker-build", path: "docker://build-cache").contains("docker builder prune"))
+        let logs = RemoteCleanCommand.body(id: "logs-var", path: "/var/log")
+        XCTAssertTrue(logs.contains("-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]"), "dateext rotations like messages-20261025 must be matched")
+        let generic = RemoteCleanCommand.body(id: "cache-gomod", path: "/home/opc/go/pkg/mod")
+        XCTAssertTrue(generic.contains("chmod -R u+w"), "Go module cache is read-only and needs u+w before rm")
+        XCTAssertTrue(generic.contains("@@BUSY"), "children used by live processes are skipped")
+        XCTAssertTrue(generic.hasPrefix("if pgrep -x 'go|gopls'"), "a running Go build reads the module cache with plain opens; skip it whole")
+        XCTAssertFalse(RemoteCleanCommand.body(id: "logs-var", path: "/var/log").contains("pgrep"))
+        XCTAssertTrue(RemoteCleanCommand.body(id: "cache-gradle", path: "/h/.gradle/caches").contains("[G]radleDaemon"), "pgrep -f must not match its own shell")
+        XCTAssertTrue(RemoteCleanCommand.body(id: "custom-x-1", path: "/h/.cache/x").contains("rmdir"))
+        XCTAssertFalse(RemoteCleanCommand.body(id: "cache-npm", path: "/h/.npm").contains("rmdir"))
+        XCTAssertTrue(RemoteCleanCommand.script(id: "cache-npm", path: "/home/u/.npm").contains("df -kP"))
+
+        let outcome = RemoteCleanCommand.parse("noise\n@@BUSY /home/u/.cache/ms-playwright/chromium-1243\n@@RC 0\n@@FREED_KB 2048\n")
+        XCTAssertEqual(outcome.freedBytes, 2048 * 1024)
+        XCTAssertEqual(outcome.busy, ["/home/u/.cache/ms-playwright/chromium-1243"])
+        XCTAssertEqual(outcome.exitCode, 0)
+        XCTAssertEqual(RemoteCleanCommand.parse("@@FREED_KB -300\n").freedBytes, 0, "concurrent writes can make the delta negative")
+    }
+
+    func testLoopbackCleanSkipsChildInUseByRunningProcess() throws {
+        let (engine, remoteHome, _) = try makeLoopbackEngine()
+        let browsers = remoteHome.appendingPathComponent(".cache/ms-playwright", isDirectory: true)
+        let old = browsers.appendingPathComponent("chromium-1217", isDirectory: true)
+        let live = browsers.appendingPathComponent("chromium-1243", isDirectory: true)
+        try fm.createDirectory(at: old, withIntermediateDirectories: true)
+        try fm.createDirectory(at: live, withIntermediateDirectories: true)
+        try Data(repeating: 0x11, count: 64 * 1024).write(to: old.appendingPathComponent("chrome"))
+        // A running process whose executable lives under the "live" browser directory.
+        let exe = live.appendingPathComponent("chrome")
+        try fm.copyItem(atPath: "/bin/sleep", toPath: exe.path)
+        let proc = Process()
+        proc.executableURL = exe
+        proc.arguments = ["30"]
+        try proc.run()
+        defer { proc.terminate() }
+
+        let res = try engine.cleanRemoteMachine(host: "test-box", targets: [browsers.path], dryRun: false)
+        let item = try XCTUnwrap((res["items"] as? [[String: Any]])?.first)
+        XCTAssertFalse(fm.fileExists(atPath: old.path), "unused browser build is removed")
+        XCTAssertTrue(fm.fileExists(atPath: exe.path), "browser build used by a live process is kept")
+        XCTAssertEqual((item["skippedInUse"] as? [String])?.count, 1)
+    }
+
     func testDarwinMountsReportSystemVolumesData() {
         let dfLines = [
             "Filesystem     1024-blocks      Used Available Capacity Mounted on",
