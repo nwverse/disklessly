@@ -86,7 +86,8 @@ final class SessionsV2Tests: XCTestCase {
             bytes: data,
             tool: "pi"
         )
-        let built = try SegmentWriter.build(deviceId: device.deviceId, tool: "pi", now: now, members: [member], key: nil)
+        let built = try SegmentWriter.build(deviceId: device.deviceId, tool: "pi", now: now, members: [member], key: nil,
+                                            project: SessionIdentity.unknownProject, month: SessionIdentity.month(mtimeNs: finger.mtimeNs))
         let clash = root.appendingPathComponent("repo").appendingPathComponent(built.relativePath)
         try FileManager.default.createDirectory(at: clash.deletingLastPathComponent(), withIntermediateDirectories: true)
         try Data("different".utf8).write(to: clash)

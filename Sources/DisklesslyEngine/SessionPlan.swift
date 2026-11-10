@@ -103,7 +103,9 @@ extension SessionReport {
         ["ok": true, "applied": applied, "cold": cold,
          "skipped": skipped.map { ["path": $0.0, "reason": $0.1] },
          "keptLocal": keptLocal.map { ["path": $0.0, "reason": $0.1] },
-         "segments": segments]
+         "segments": segments,
+         "uploadedBytes": NSNumber(value: uploadedBytes),
+         "archived": archived.map { ["id": $0.id, "path": $0.path, "sessionId": $0.sessionId, "bytes": NSNumber(value: $0.bytes)] as [String: Any] }]
     }
 }
 
@@ -251,6 +253,6 @@ extension DisklesslyEngine {
     /// `paths`, when given, narrows it to those files (the sessions the user ticked); any other
     /// cold session is left local.
     public func sessionApply(tools: Set<String>?, paths: Set<String>? = nil, days: Int? = nil, home: String? = nil, encrypt: Bool = false, now: Date = Date()) throws -> SessionReport {
-        try SessionArchive.tier(config: config, backend: repo, now: now, apply: true, coldDays: days, home: home, tools: tools, only: paths, isOpen: sessionOpenProbe, secrets: secrets, encrypt: encrypt)
+        try SessionArchive.tier(config: config, backend: repo, now: now, apply: true, coldDays: days, home: home, tools: tools, only: paths, isOpen: sessionOpenProbe, secrets: secrets, encrypt: encrypt, requireRepoMarker: true)
     }
 }
