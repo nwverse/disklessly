@@ -6,6 +6,14 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Every session archive path (CLI apply, dashboard apply, settling pending rows) scans the user's
+  running processes and herdr's saved layout for referenced session ids and `.jsonl` paths, at plan
+  time and again before each local delete. A failed process listing keeps every local file of the
+  run (`reference check failed`).
+- `sessions status` and the sessions commands no longer create a missing local repo folder; it is
+  reported unreachable. Status adds `stateDir`.
+- `sessions restore` takes the sessions lock and never replaces a file that appeared during the
+  download (exit 9).
 - Archived sessions of this device get a local plain-text index, `stateDir/sessions/text/<entryId>.jsonl`
   (a header line, then one line per user or assistant message), written before the local file is
   deleted and never uploaded. A transcript whose text file cannot be written is skipped (`text index

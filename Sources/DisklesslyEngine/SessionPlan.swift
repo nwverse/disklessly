@@ -252,7 +252,16 @@ extension DisklesslyEngine {
     /// configured agents; an empty set or an unknown id is a usage error (exit 2).
     /// `paths`, when given, narrows it to those files (the sessions the user ticked); any other
     /// cold session is left local.
+    /// The repo for session apply, restore, and reindex. One that cannot be opened,
+    /// including a local repo folder that is missing, is unreachable (exit 4).
+    public func openSessionRepo() throws -> any StorageBackend {
+        do { return try openExistingBackend() } catch {
+            let text = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+            throw DisklesslyError.backend("backend unreachable: \(text)")
+        }
+    }
+
     public func sessionApply(tools: Set<String>?, paths: Set<String>? = nil, days: Int? = nil, home: String? = nil, encrypt: Bool = false, now: Date = Date()) throws -> SessionReport {
-        try SessionArchive.tier(config: config, backend: repo, now: now, apply: true, coldDays: days, home: home, tools: tools, only: paths, isOpen: sessionOpenProbe, secrets: secrets, encrypt: encrypt, requireRepoMarker: true)
+        try SessionArchive.tier(config: config, backend: openSessionRepo(), now: now, apply: true, coldDays: days, home: home, tools: tools, only: paths, isOpen: sessionOpenProbe, secrets: secrets, encrypt: encrypt, requireRepoMarker: true)
     }
 }

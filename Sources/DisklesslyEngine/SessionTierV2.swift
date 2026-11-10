@@ -4,7 +4,7 @@ import DisklesslyCore
 import DisklesslySessions
 
 enum SessionTierV2 {
-    static func apply(config: RuntimeConfig, backend: any StorageBackend, now: Date, cold: [SessionCandidate], skipped: [(String, String)], secrets: (any SecretStore)?, encrypt: Bool, isOpen: (String) -> Bool, beforeDelete: ((String) -> Void)?, afterIndexCommit: (() throws -> Void)?, exclusions: (() -> SessionExclusions)? = nil) throws -> SessionReport {
+    static func apply(config: RuntimeConfig, backend: any StorageBackend, now: Date, cold: [SessionCandidate], skipped: [(String, String)], secrets: (any SecretStore)?, encrypt: Bool, isOpen: (String) -> Bool, beforeDelete: ((String) -> Void)?, afterIndexCommit: (() throws -> Void)?, referenced: @escaping (String, String) -> String? = { _, _ in nil }) throws -> SessionReport {
         let lockURL = URL(fileURLWithPath: config.stateDir).appendingPathComponent("locks/sessions.lock")
         try FileManager.default.createDirectory(at: lockURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         var lock = FileLock(path: lockURL.path)
@@ -19,9 +19,8 @@ enum SessionTierV2 {
         // removed, and headers still without a segment are filled in.
         defer { pruneTextIndex(database: database, deviceId: device.deviceId, stateDir: config.stateDir) }
         let store = secrets ?? MemorySecretStore()
-        // The exclusion list is read again before each local delete, so a session
-        // referenced after the run started is still kept.
-        let referenced: (String, String) -> Bool = { tool, path in exclusions?().matches(tool: tool, path: path) ?? false }
+        // `referenced` (exclusion list and reference scan) is asked again before
+        // each local delete, so a session referenced after the run started is kept.
         let settled = try finishPending(database: database, isOpen: isOpen, backend: backend, config: config, secrets: store, referenced: referenced)
         var kept = settled.kept
         var archived = settled.archived
@@ -153,7 +152,7 @@ enum SessionTierV2 {
     /// Settles drafts whose entry id already has a row in a stored segment and
     /// returns the rest. The stored segment is checked first; one that cannot be
     /// read is skipped here and the draft is uploaded again as usual.
-    private static func reuseStored(_ drafts: [Snap], deviceId: String, database: SessionIndexDB, backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore, isOpen: (String) -> Bool, beforeDelete: ((String) -> Void)?, referenced: (String, String) -> Bool, retext: (SessionMemberDraft, String, String) -> Void, kept: inout [(String, String)], archived: inout [SessionArchivedItem]) throws -> [Snap] {
+    private static func reuseStored(_ drafts: [Snap], deviceId: String, database: SessionIndexDB, backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore, isOpen: (String) -> Bool, beforeDelete: ((String) -> Void)?, referenced: (String, String) -> String?, retext: (SessionMemberDraft, String, String) -> Void, kept: inout [(String, String)], archived: inout [SessionArchivedItem]) throws -> [Snap] {
         let rows = Dictionary(try database.allEntries().map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let paths = try database.segmentPaths()
         var good = Set<String>()
@@ -246,6 +245,12 @@ enum SessionTierV2 {
     /// `requireRepoMarker`, the marker may answer from a mirror: reads fail over to
     /// mirrors, so a primary without `repo.json` does not block a mirror's copy.
     static func restore(config: RuntimeConfig, backend open: () throws -> any StorageBackend, query: String, to: String?, secrets: (any SecretStore)?, requireRepoMarker: Bool = false) throws -> SessionRestoreResult {
+        // The same lock as apply, so a restore and an archive run never race on one path.
+        let lockURL = URL(fileURLWithPath: config.stateDir).appendingPathComponent("locks/sessions.lock")
+        try FileManager.default.createDirectory(at: lockURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var lock = FileLock(path: lockURL.path)
+        guard try lock.tryLock() else { throw DisklesslyError.busy("sessions are being tiered; try the restore again later") }
+        defer { lock.unlock() }
         let device = try LocalDeviceStore.loadOrCreate(stateDir: URL(fileURLWithPath: config.stateDir), suggestedName: "mac")
         let database = try SessionIndexDB(stateDir: config.stateDir)
         _ = try SessionMigration.migrateIfNeeded(stateDir: config.stateDir, deviceId: device.deviceId, database: database)
@@ -275,9 +280,7 @@ enum SessionTierV2 {
         let destination = to ?? row.path
         if FileManager.default.fileExists(atPath: destination) {
             let existing = try SHA256Digest.hexFile(URL(fileURLWithPath: destination))
-            if existing != row.sha256 {
-                throw DisklesslyError.busy("move \(destination) aside before restoring; its bytes differ from the archived session")
-            }
+            if existing != row.sha256 { throw differentBytes(destination) }
         } else if let legacy = row.legacyArchive {
             let backend = try open()
             if requireRepoMarker { try SessionBackendCheck.require(backend, mirrors: true) }
@@ -471,7 +474,7 @@ enum SessionTierV2 {
 
     /// Settles rows an earlier run left in pendingDelete. What it removes locally
     /// is reported as archived by this run.
-    private static func finishPending(database: SessionIndexDB, isOpen: (String) -> Bool, backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore, referenced: (String, String) -> Bool) throws -> (kept: [(String, String)], archived: [SessionArchivedItem]) {
+    private static func finishPending(database: SessionIndexDB, isOpen: (String) -> Bool, backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore, referenced: (String, String) -> String?) throws -> (kept: [(String, String)], archived: [SessionArchivedItem]) {
         var kept: [(String, String)] = []
         var archived: [SessionArchivedItem] = []
         let pending = try database.allEntries().filter { $0.state == "pendingDelete" }
@@ -531,7 +534,7 @@ enum SessionTierV2 {
     }
 
     /// Returns a kept-local reason, or nil when the file was removed and marked archived.
-    private static func settle(_ member: SessionMemberDraft, database: SessionIndexDB, isOpen: (String) -> Bool, txid: String, referenced: (String, String) -> Bool = { _, _ in false }) throws -> String? {
+    private static func settle(_ member: SessionMemberDraft, database: SessionIndexDB, isOpen: (String) -> Bool, txid: String, referenced: (String, String) -> String? = { _, _ in nil }) throws -> String? {
         let url = URL(fileURLWithPath: member.path)
         let fm = FileManager.default
         let deleting = member.path + ".disklessly-deleting-\(txid)"
@@ -546,9 +549,9 @@ enum SessionTierV2 {
             try database.setState(id: member.entryId, state: "archived")
             return nil
         }
-        if referenced(member.tool, member.path) {
+        if let reason = referenced(member.tool, member.path) {
             try database.setState(id: member.entryId, state: "keptLocal")
-            return "referenced"
+            return reason
         }
         guard let again = try? FileFingerprint.of(url: url) else {
             try database.setState(id: member.entryId, state: "keptLocal")
@@ -690,14 +693,35 @@ enum SessionTierV2 {
         }
     }
 
+    static func differentBytes(_ destination: String) -> DisklesslyError {
+        DisklesslyError.busy("move \(destination) aside before restoring; its bytes differ from the archived session")
+    }
+
+    /// Test seam: runs after the download, right before the restored file is placed.
+    nonisolated(unsafe) static var beforePlaceForTesting: ((String) -> Void)?
+
     private static func place(_ extracted: URL, sha256: String, tool: String, modified: Date, destination: String) throws {
         guard try SHA256Digest.hexFile(extracted) == sha256 else {
             throw DisklesslyError.integrity("restored session hash does not match the index")
         }
+        beforePlaceForTesting?(destination)
         let dest = URL(fileURLWithPath: destination)
-        let held = extracted.deletingLastPathComponent().appendingPathComponent("held-\(UUID().uuidString)")
+        let folder = dest.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // Staged next to the destination (hidden, so a scan skips it) and published
+        // without replacing: a file that appeared while the segment was downloaded wins.
+        let held = folder.appendingPathComponent(".\(dest.lastPathComponent).disklessly-restore-\(UUID().uuidString)")
         try ChunkedIO.copyFile(from: extracted, to: held)
-        try ChunkedIO.replaceFile(dest, with: held)
+        do {
+            try ChunkedIO.publishExclusive(temp: held, dest: dest)
+        } catch is WriteOnceConflict {
+            try? FileManager.default.removeItem(at: held)
+            if (try? SHA256Digest.hexFile(dest)) != sha256 { throw differentBytes(destination) }
+            return
+        } catch {
+            try? FileManager.default.removeItem(at: held)
+            throw error
+        }
         let restoredDate = tool == "claude" ? Date() : modified
         try FileManager.default.setAttributes([.modificationDate: restoredDate], ofItemAtPath: SessionPaths.canonical(dest.path))
     }

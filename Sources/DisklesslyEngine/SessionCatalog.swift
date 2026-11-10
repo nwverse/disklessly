@@ -270,6 +270,7 @@ extension SessionArchive {
         return [
             "ok": true,
             "deviceId": catalog.deviceId,
+            "stateDir": SessionPaths.canonical(config.stateDir),
             "backend": [
                 "id": backendId,
                 "type": backendType,

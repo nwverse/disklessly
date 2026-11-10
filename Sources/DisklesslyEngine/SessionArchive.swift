@@ -86,6 +86,14 @@ public enum SessionArchive {
         return found.sorted { $0.path < $1.path }
     }
 
+    /// The home of the built-in roots and of herdr's layout: `--home`, then
+    /// `config.sessionHome`, then `$HOME` (the passwd home when HOME is unset).
+    static func sessionHome(config: RuntimeConfig, home: String?, environment: [String: String]) -> String {
+        if let home, !home.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return SessionPaths.canonical(home) }
+        if let configured = config.sessionHome, !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return SessionPaths.canonical(configured) }
+        return SessionPaths.homeDirectory(environment: environment)
+    }
+
     /// Built-in roots come from `--home`, then `config.sessionHome`, then `$HOME`.
     /// The passwd home is used only when HOME is unset. An explicit `sessionRoots`
     /// list replaces the built-in directories.
@@ -97,15 +105,7 @@ public enum SessionArchive {
                 return copy
             }
         }
-        let base: String
-        if let home, !home.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            base = SessionPaths.canonical(home)
-        } else if let configured = config.sessionHome, !configured.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            base = SessionPaths.canonical(configured)
-        } else {
-            base = SessionPaths.homeDirectory(environment: environment)
-        }
-        return SessionRoot.defaults(home: base)
+        return SessionRoot.defaults(home: sessionHome(config: config, home: home, environment: environment))
     }
 
     /// Roots whose tool is in `tools`. Nil keeps them all.
@@ -137,17 +137,25 @@ public enum SessionArchive {
     /// means every configured root. An empty set or an id with no root is a usage
     /// error. Pending rows from earlier runs are settled whatever the filter.
     /// `exclusions` names sessions another tool still references; they are skipped
-    /// as `referenced`, and the list is asked again right before each local delete.
+    /// as `referenced`, and the list is asked again right before each local delete,
+    /// together with the built-in scan of running agents and herdr's layout
+    /// (`SessionReferences`). When the process listing fails, no local file is
+    /// deleted in this run (`reference check failed`).
     /// `requireRepoMarker` refuses `apply` (exit 4) unless the repo's `repo.json`
     /// answers, before anything is uploaded or deleted.
     public static func tier(config: RuntimeConfig, backend: any StorageBackend, now: Date = Date(), apply: Bool = false, coldDays: Int? = nil, home: String? = nil, environment: [String: String] = ProcessInfo.processInfo.environment, tools: Set<String>? = nil, only: Set<String>? = nil, isOpen: (String) -> Bool = { _ in false }, secrets: (any SecretStore)? = nil, encrypt: Bool = false, beforeDelete: ((String) -> Void)? = nil, afterIndexCommit: (() throws -> Void)? = nil, exclusions: (() -> SessionExclusions)? = nil, requireRepoMarker: Bool = false) throws -> SessionReport {
         let days = coldDays ?? config.sessionColdDays
-        let excluded = exclusions?() ?? SessionExclusions()
+        // Sessions named by running agents or herdr's layout count as referenced,
+        // like `--exclude-from` entries. The scan runs again before each delete.
+        let referenceHome = sessionHome(config: config, home: home, environment: environment)
+        let planScan = SessionReferences.scan(home: referenceHome)
+        var excluded = exclusions?() ?? SessionExclusions()
+        SessionReferences.merge(&excluded, planScan.exclusions)
         let roots = try restrict(configuredRoots(config: config, home: home, environment: environment), to: tools)
         // Ask the open-file probe only about files that are cold by name and age;
         // a recent file is skipped either way and lsof is slow per call.
         let scanned = try scan(roots: roots, isOpen: { _ in false })
-        let referenced = scanned.filter { excluded.matches(tool: $0.tool, path: $0.path) }.map { ($0.path, "referenced") }
+        let referencedSkips = scanned.filter { excluded.matches(tool: $0.tool, path: $0.path) }.map { ($0.path, "referenced") }
         let unreferenced = scanned.filter { !excluded.matches(tool: $0.tool, path: $0.path) }
         // A transcript restored less than `days` ago and unchanged since stays local.
         let held = SessionTierV2.recentlyRestored(config: config, candidates: unreferenced, now: now, days: days)
@@ -163,14 +171,23 @@ public enum SessionArchive {
         let cold = decisions.filter { $0.cold && picked($0.candidate.path) }.map(\.candidate)
         let skipped = decisions.filter { !$0.cold }.map { ($0.candidate.path, $0.reason) }
             + decisions.filter { $0.cold && !picked($0.candidate.path) }.map { ($0.candidate.path, "not selected") }
-            + referenced + restored
+            + referencedSkips + restored
         guard apply else { return SessionReport(cold: cold.map(\.path), skipped: skipped, applied: false) }
         let outside = pathsOutsideRoots(candidates.map(\.path), roots: roots)
         if !outside.isEmpty {
             throw DisklesslyError.usage("refusing to apply session tiering; candidate is outside the configured roots: \(outside.sorted().joined(separator: ", "))")
         }
         if requireRepoMarker { try SessionBackendCheck.require(backend) }
-        return try SessionTierV2.apply(config: config, backend: backend, now: now, cold: cold, skipped: skipped, secrets: secrets, encrypt: encrypt, isOpen: isOpen, beforeDelete: beforeDelete, afterIndexCommit: afterIndexCommit, exclusions: exclusions)
+        // A listing that fails once in this run keeps every local file of the run.
+        var listingFailed = planScan.failed
+        let stillReferenced: (String, String) -> String? = { tool, path in
+            if exclusions?().matches(tool: tool, path: path) == true { return "referenced" }
+            let live = SessionReferences.scan(home: referenceHome)
+            if live.exclusions.matches(tool: tool, path: path) { return "referenced" }
+            if live.failed { listingFailed = true }
+            return listingFailed ? "reference check failed" : nil
+        }
+        return try SessionTierV2.apply(config: config, backend: backend, now: now, cold: cold, skipped: skipped, secrets: secrets, encrypt: encrypt, isOpen: isOpen, beforeDelete: beforeDelete, afterIndexCommit: afterIndexCommit, referenced: stillReferenced)
     }
 
     /// Archived (cold) sessions for the dashboard. It never runs the legacy JSON

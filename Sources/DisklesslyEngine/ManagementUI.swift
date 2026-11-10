@@ -470,7 +470,7 @@ public enum ManagementUI {
             guard !id.isEmpty, id.allSatisfy({ $0.isHexDigit }) else { return failure(code: "usage", message: "bad id", status: 400) }
             let started = context.sessionTask.start("sessions-restore") { progress in
                 progress("restore")
-                return ["path": try SessionArchive.restore(config: engine.config, backend: try engine.repo, query: id, secrets: engine.secrets)]
+                return ["path": try SessionArchive.restoreSession(config: engine.config, open: { try engine.openSessionRepo() }, query: id, secrets: engine.secrets).path]
             }
             guard started else { return failure(code: "busy", message: "a session task is already running", status: 409) }
             return .json(["ok": true, "task": context.sessionTask.snapshot()], status: 202)

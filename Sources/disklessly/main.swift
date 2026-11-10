@@ -599,12 +599,7 @@ do {
         let parsed = try SessionsArguments.parse(args)
         let secrets = engine.secrets
         /// The repo for apply, restore, and reindex. One that cannot even be opened is unreachable (exit 4).
-        func sessionRepo() throws -> any StorageBackend {
-            do { return try engine.openBackend() } catch {
-                let text = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
-                throw DisklesslyError.backend("backend unreachable: \(text)")
-            }
-        }
+        func sessionRepo() throws -> any StorageBackend { try engine.openSessionRepo() }
         switch parsed.command {
         case .tier:
             var exclusions: (() -> SessionExclusions)?
@@ -633,7 +628,7 @@ do {
             let id = config.activeRepoId
             let type = config.backends.first(where: { $0.id == id })?.type ?? config.backend
             let current = engine
-            emit(try SessionArchive.sessionStatus(config: config, backendId: id, backendType: type, checkSegments: parsed.checkSegments, open: { try current.repo }))
+            emit(try SessionArchive.sessionStatus(config: config, backendId: id, backendType: type, checkSegments: parsed.checkSegments, open: { try current.openExistingBackend() }))
         case .search:
             let hits = try SessionArchive.search(config: config, query: parsed.query ?? "")
             let limited = parsed.limit.map { Array(hits.prefix($0)) } ?? hits
