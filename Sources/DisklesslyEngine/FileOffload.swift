@@ -289,6 +289,7 @@ extension DisklesslyEngine {
         guard SpaceFloor.admits(freeBytes: free, incoming: size, floor: config.minFreeBytes) else {
             throw DisklesslyError.noSpace("checking the repo copy needs \(size) bytes in \(config.cacheDir), which has \(free) free above the \(config.minFreeBytes) byte floor; the original was not changed")
         }
+        try FileManager.default.createDirectory(atPath: config.cacheDir, withIntermediateDirectories: true)
         let temp = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("verify-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(at: temp) }
         _ = try backend.download(object, to: temp, offset: 0)

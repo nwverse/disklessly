@@ -8,8 +8,15 @@ import Darwin
 
 public enum VolumeSpace {
     public static func availableBytes(at path: String) throws -> UInt64 {
+        var candidate = URL(fileURLWithPath: path).standardizedFileURL
+        let fm = FileManager.default
+        while !fm.fileExists(atPath: candidate.path) && candidate.path != "/" {
+            let parent = candidate.deletingLastPathComponent()
+            if parent.path == candidate.path { break }
+            candidate = parent
+        }
         var info = statvfs()
-        let result = path.withCString { statvfs($0, &info) }
+        let result = candidate.path.withCString { statvfs($0, &info) }
         guard result == 0 else { throw DisklesslyError.failure("Could not read free space for \(path)") }
         return UInt64(info.f_bavail) * UInt64(info.f_frsize)
     }

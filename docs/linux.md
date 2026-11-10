@@ -8,11 +8,13 @@ keeps things, and a design note for offloading AppImage files later.
 
 | Command | Linux | Notes |
 |---|---|---|
+| `files`, `offload PATH...`, `fetch PLACEHOLDER...` | yes | scan large idle files/folders in `$HOME`, offload as verified `.tar.zst`/`.bin` objects, leave `.disklessly` placeholders and cold-folder links |
+| `containers …` | yes | list, offload, restore, clean, and forget Docker container images |
 | `sessions …` | yes | archive, search, restore, reindex, verify, `key init/status`, `--encrypt` |
 | `ui [--open]` | yes | dashboard with sessions, disk usage, devices, license; app panels are hidden |
-| `backend add/list/use` | yes | SMB and NFS shares must already be mounted (`--mount DIR`); WebDAV and OpenList connect directly |
+| `backend add/list/use`, `cloud …`, `rclone …` | yes | SMB and NFS shares must already be mounted (`--mount DIR`); WebDAV, OpenList, and rclone remotes connect directly |
 | `devices`, `license`, `init`, `list`, `status`, `version`, `help` | yes | `list`/`status` show images that Macs offloaded into a shared repo |
-| `pack`, `launch`, `restore`, `unpack`, `recommend`, `prefetch`, `pin`, `unpin`, `evict`, `detach`, `reap`, `evict-local`, `cleanup-backups`, `gc`, `doctor`, `resolve`, `hook`, `icons`, `install-engine`, `stub` | no | exit 3 (`EX_UNSUPPORTED`) with "… is macOS only" |
+| `pack`, `launch`, `restore`, `unpack`, `recommend`, `prefetch`, `pin`, `unpin`, `evict`, `detach`, `reap`, `evict-local`, `cleanup-backups`, `gc`, `doctor`, `resolve`, `hook`, `icons`, `install-engine`, `stub`, `dev`, `data`, `caches`, `openlist` | no | exit 3 (`EX_UNSUPPORTED`) with "… is macOS only" |
 
 `gc` is refused because it trashes and purges images in the repo. A Linux machine
 sharing a repo with Macs should not rewrite the Macs' images.

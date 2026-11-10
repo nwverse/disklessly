@@ -92,8 +92,18 @@ Environment overrides: DISKLESSLY_REPO_PATH, DISKLESSLY_CACHE_DIR, DISKLESSLY_ST
   DISKLESSLY_DOCTOR_TIMEOUT, DISKLESSLY_WEB_ROOT, DISKLESSLY_HOME, DISKLESSLY_DEBUG, DISKLESSLY_IMAGE_ENCRYPTION
 """
 let linuxHelpText = """
-disklessly: archive coding-agent sessions and see what fills your disk (Linux build).
+disklessly: offload large files/folders, manage remote machines, and archive coding-agent sessions (Linux build).
 Usage: disklessly [--json] [--config PATH] [--state-dir PATH] <command> [options]
+
+Large files and folders
+  files [--min-size SIZE] [--min-idle-days N] [--limit N]   large items in your home folder not opened lately
+  offload PATH...                 move a file or folder into the repo; leaves PATH.disklessly in its place
+  fetch PLACEHOLDER...            bring back the file or folder of a .disklessly placeholder
+
+Container images (Docker, Podman)
+  containers [list]               images, whether a container uses them, volumes, what is in the repo
+  containers offload ENGINE/ID    save to the repo, check sha256, then remove here
+  containers restore RECORD | containers clean ENGINE/ID | containers forget RECORD
 
 Coding-agent sessions
   sessions [--apply] [--days N] [--home DIR] [--encrypt] | sessions search QUERY [--limit N]
@@ -105,7 +115,9 @@ Dashboard
 
 Repos and machines
   init [--root DIR] [--cache-dir DIR]
-  backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
+  backend add smb|nfs|webdav|openlist|rclone ... | backend list | backend use ID|default
+  cloud [list] | cloud connect gdrive|dropbox|onedrive|box|pcloud [--name N] [--root DIR] [--use]
+  cloud disconnect NAME | rclone ARGS...   (rclone with Disklessly's own config)
   repo migrate --to ID|default [--keep-old-as-mirror] | repo mirror [list]|add ID|remove ID|sync
   devices [list] | devices rename NAME | devices forget DEVICEID --yes
   remote [list|add HOST|remove HOST|scan HOST|plan HOST ...|clean HOST ...|offload HOST PATH|restore HOST ID|deploy HOST]
@@ -121,7 +133,7 @@ Secrets go to the Secret Service through secret-tool in a desktop session (D-Bus
   ${XDG_CONFIG_HOME:-~/.config}/disklessly/secrets.json (mode 0600). DISKLESSLY_SECRET_STORE=file|secret-tool forces one.
 --json is accepted before or after the command.
 Environment overrides: DISKLESSLY_REPO_PATH, DISKLESSLY_CACHE_DIR, DISKLESSLY_STATE_DIR,
-  DISKLESSLY_CONFIG, DISKLESSLY_SECRET_STORE, DISKLESSLY_WEB_ROOT, DISKLESSLY_DEBUG
+  DISKLESSLY_CONFIG, DISKLESSLY_SECRET_STORE, DISKLESSLY_WEB_ROOT, DISKLESSLY_HOME, DISKLESSLY_DEBUG
 """
 let helpText = HostPlatform.current == .linux ? linuxHelpText : macHelpText
 func usage() -> Never {
