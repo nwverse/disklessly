@@ -81,7 +81,9 @@ public enum SessionDigest {
     static func stripLeadingTags(_ text: String) -> String {
         var rest = Substring(text).drop { $0.isWhitespace }
         while rest.hasPrefix("<"), let close = rest.firstIndex(of: ">") {
-            let name = rest[rest.index(after: rest.startIndex)..<close]
+            // The tag name ends at the first space, so `<tag attr="…">` blocks are dropped too.
+            let head = rest[rest.index(after: rest.startIndex)..<close]
+            let name = head.prefix { !$0.isWhitespace }
             guard !name.isEmpty, name.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" }),
                   let end = rest.range(of: "</\(name)>") else { break }
             let after = rest[end.upperBound...].drop { $0.isWhitespace }
@@ -479,8 +481,10 @@ public enum SessionDigest {
     ]
 
     private static let blockPatterns: [NSRegularExpression] = [
-        "<system-reminder>[\\s\\S]*?</system-reminder>",
-        "<environment_context>[\\s\\S]*?</environment_context>",
+        "<system-reminder\\b[^>]*>[\\s\\S]*?</system-reminder>",
+        "<environment_context\\b[^>]*>[\\s\\S]*?</environment_context>",
+        // Context a host app (e.g. Persona) prepends to the user's prompt.
+        "<persona-context\\b[^>]*>[\\s\\S]*?</persona-context>",
     ].compactMap { try? NSRegularExpression(pattern: $0) }
 
     private static let wholeTagPattern = try? NSRegularExpression(pattern: "^<([A-Za-z][A-Za-z0-9_-]*)(\\s[^>]*)?>[\\s\\S]*</\\1>$")

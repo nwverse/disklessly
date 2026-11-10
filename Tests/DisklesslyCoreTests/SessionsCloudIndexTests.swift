@@ -467,6 +467,19 @@ final class SessionsCloudIndexTests: XCTestCase {
         XCTAssertEqual(SessionDigest.firstPrompt(tool: "claude", path: "/x.jsonl", data: Data(claudeBody(cwd: "/w", prompt: longPrompt).utf8)).count, 500)
     }
 
+    func testHostContextBlockWithAttributesIsNotTheTitle() throws {
+        // A host app prepends `<persona-context kind="…">…</persona-context>` to what the user typed.
+        // `claudeBody` puts the prompt into a JSON string as is, so it is written JSON-escaped here.
+        let typed = #"<persona-context kind=\"context\" title=\"project\">\nbackground notes\n</persona-context>\n\nrename the export button"#
+        let data = Data(claudeBody(cwd: "/w", prompt: typed).utf8)
+        XCTAssertEqual(SessionDigest.firstPrompt(tool: "claude", path: "/x.jsonl", data: data), "rename the export button")
+        XCTAssertEqual(SessionDigest.title(tool: "claude", path: "/h/.claude/projects/p/x.jsonl", data: data, home: "/nonexistent"), "rename the export button")
+        let texts = SessionDigest.messages(format: .claude, data: data).map(\.text)
+        XCTAssertFalse(texts.contains { $0.contains("background notes") }, "\(texts)")
+        let reminder = Data(claudeBody(cwd: "/w", prompt: #"<system-reminder data=\"x\">r</system-reminder> ask"#).utf8)
+        XCTAssertEqual(SessionDigest.firstPrompt(tool: "claude", path: "/x.jsonl", data: reminder), "ask")
+    }
+
     func testEncryptedSegmentsUseHashedProjectKey() throws {
         let home = try home("a")
         var config = home.config
