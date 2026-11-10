@@ -184,16 +184,26 @@ Each following line is one user or assistant message, in transcript order:
 `{"type":"user"|"assistant","timestamp":"<RFC 3339 or empty>","text":"…"}`. The same extractors and
 filters as the digest are used (tool calls and results, reasoning, images, `data:` URIs and long base64
 runs, and injected blocks are dropped), but every message is kept: one message is cut at 32 KiB, and
-when the message text of a file passes 1 MiB, whole messages are kept from the head (up to half) and
-the tail, with `{"type":"omitted","bytes":N}` between them. Cuts fall on Unicode scalar boundaries.
+when the message lines of a file (as written, JSON escaping included) pass 1 MiB, whole messages are
+kept from the head (up to half) and the tail, with `{"type":"omitted","bytes":N}` between them, where
+`N` is the message text left out. Cuts fall on Unicode scalar boundaries.
 
 The file is written from the snapshot bytes before anything is uploaded (with `segment` and
 `archivedAt` empty) and rewritten with them once the segment is committed, before the local delete. If
 the first write fails, that transcript is skipped with reason `text index failed`: nothing is uploaded
-for it and the local file stays. A `pendingDelete` row left by an earlier run without a text file gets
-one from the local file before the delete, or stays pending. `sessions restore` leaves the text file
-in place (a consumer sees the session is back because the original path exists again). Rows of other
-devices (from `reindex`) have no text file.
+for it and the local file stays. A file that already exists for the same entry id (same bytes) is not
+rewritten before the upload, so its header keeps the segment of the stored copy. A `pendingDelete` row
+left by an earlier run without a text file gets one from the local file (or from the
+`.disklessly-deleting-*` copy an interrupted delete left) before the delete, or stays pending with
+`text index failed`. `sessions restore` leaves the text file in place (a consumer sees the session is
+back because the original path exists again). Rows of other devices (from `reindex`) have no text file.
+
+At the end of every `sessions --apply`, also one that fails, the directory is tidied: there is one file
+per session path of this device, the one of its newest index row (a row that is not `restored` wins
+over a restored one). Files with no index row (the run failed or stopped after the first write), files
+of an older version of a session that was restored, continued and archived again, and leftover temp
+files are removed, and a kept file whose header still has no `segment` or `archivedAt` gets them from
+its row.
 
 ## Layout
 

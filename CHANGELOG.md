@@ -9,7 +9,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Archived sessions of this device get a local plain-text index, `stateDir/sessions/text/<entryId>.jsonl`
   (a header line, then one line per user or assistant message), written before the local file is
   deleted and never uploaded. A transcript whose text file cannot be written is skipped (`text index
-  failed`) and stays local. `sessions status` adds `textDir` and `textFiles`.
+  failed`) and stays local. `sessions status` adds `textDir` and `textFiles`. Each apply keeps one
+  text file per session (the newest archived version) and removes files left by failed runs.
 - `sessions list` prints the archived-session index with session ids, working directories, titles,
   first prompts, and segment paths; `sessions status` reports index counts and whether the backend's
   `repo.json` answers (`--check-segments` stats every referenced segment).

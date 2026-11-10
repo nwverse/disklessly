@@ -8,8 +8,9 @@ import Foundation
 public enum SessionText {
     /// One message longer than this is cut.
     public static let messageCap = 32 * 1024
-    /// The message text of a whole file is kept to this many bytes: the head and
-    /// the tail, with an `omitted` line between them.
+    /// The message lines of a whole file (as written, JSON escaping included)
+    /// are kept to this many bytes: the head and the tail, with an `omitted`
+    /// line between them.
     public static let fileCap = 1024 * 1024
     public static let headerType = "disklessly-archive"
     public static let version = 1
@@ -54,51 +55,58 @@ public enum SessionText {
         return found.filter { $0.role == "user" || $0.role == "assistant" }
     }
 
-    /// Messages kept under `fileCap` bytes of text: whole messages from the head
-    /// and from the tail, and the number of text bytes left out between them.
-    public static func capped(_ messages: [SessionDigest.Message], fileCap: Int = fileCap) -> (head: [SessionDigest.Message], omitted: Int, tail: [SessionDigest.Message]) {
-        let sizes = messages.map { $0.text.utf8.count }
+    /// Which of `sizes` (the written size of each message line) to keep so
+    /// their sum stays under `fileCap`: whole lines from the head (up to half)
+    /// and from the tail. Returns the end of the head and the start of the tail;
+    /// the lines between them are left out.
+    public static func capped(sizes: [Int], fileCap: Int = fileCap) -> (headEnd: Int, tailStart: Int) {
         let total = sizes.reduce(0, +)
-        guard total > fileCap else { return (messages, 0, []) }
+        guard total > fileCap else { return (sizes.count, sizes.count) }
         let half = fileCap / 2
         var headEnd = 0
         var used = 0
-        while headEnd < messages.count, used + sizes[headEnd] <= half {
+        while headEnd < sizes.count, used + sizes[headEnd] <= half {
             used += sizes[headEnd]
             headEnd += 1
         }
-        var tailStart = messages.count
+        var tailStart = sizes.count
         var tailUsed = 0
         while tailStart > headEnd, tailUsed + sizes[tailStart - 1] <= fileCap - used {
             tailUsed += sizes[tailStart - 1]
             tailStart -= 1
         }
-        let omitted = sizes[headEnd..<tailStart].reduce(0, +)
-        return (Array(messages[..<headEnd]), omitted, Array(messages[tailStart...]))
+        return (headEnd, tailStart)
     }
 
-    /// The whole file: header, then message lines, each ending in a newline.
-    /// Keys are written in a fixed order, `type` first.
-    public static func render(header: Header, messages: [SessionDigest.Message], fileCap: Int = fileCap) throws -> Data {
-        var out = Data()
-        try out.append(object([
+    /// The header line, keys in a fixed order with `type` first.
+    public static func headerLine(_ header: Header) throws -> Data {
+        try object([
             ("type", header.type), ("version", header.version), ("entryId", header.entryId), ("deviceId", header.deviceId),
             ("sessionId", header.sessionId), ("tool", header.tool), ("path", header.path), ("cwd", header.cwd),
             ("title", header.title), ("firstPrompt", header.firstPrompt), ("mtime", header.mtime),
             ("archivedAt", header.archivedAt), ("bytes", header.bytes), ("segment", header.segment),
-        ]))
-        func line(_ message: SessionDigest.Message) throws -> Data {
+        ])
+    }
+
+    /// The whole file: header, then message lines, each ending in a newline.
+    /// `fileCap` bounds the written message lines (JSON escaping included), so
+    /// the file stays near `fileCap` plus the header. The `omitted` line counts
+    /// the message text bytes left out.
+    public static func render(header: Header, messages: [SessionDigest.Message], fileCap: Int = fileCap) throws -> Data {
+        var out = try headerLine(header)
+        let lines = try messages.map { message in
             try object([("type", message.role), ("timestamp", message.timestamp), ("text", message.text)])
         }
-        let (head, omitted, tail) = capped(messages, fileCap: fileCap)
-        for message in head { try out.append(line(message)) }
-        if omitted > 0 { try out.append(object([("type", "omitted"), ("bytes", omitted)])) }
-        for message in tail { try out.append(line(message)) }
+        let (headEnd, tailStart) = capped(sizes: lines.map(\.count), fileCap: fileCap)
+        for line in lines[..<headEnd] { out.append(line) }
+        let omitted = messages[headEnd..<tailStart].reduce(0) { $0 + $1.text.utf8.count }
+        if tailStart > headEnd { try out.append(object([("type", "omitted"), ("bytes", omitted)])) }
+        for line in lines[tailStart...] { out.append(line) }
         return out
     }
 
     /// One JSON object with its keys in the given order, and a newline.
-    static func object(_ fields: [(String, Any)]) throws -> Data {
+    public static func object(_ fields: [(String, Any)]) throws -> Data {
         var out = Data("{".utf8)
         for (index, field) in fields.enumerated() {
             if index > 0 { out.append(UInt8(ascii: ",")) }

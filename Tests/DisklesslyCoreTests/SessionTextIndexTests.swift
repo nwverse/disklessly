@@ -194,8 +194,18 @@ final class SessionTextIndexTests: XCTestCase {
         let data = try SessionText.render(header: header, messages: messages, fileCap: 450)
         let decoded = try data.split(separator: 0x0A).map { try XCTUnwrap(try JSONSerialization.jsonObject(with: Data($0)) as? [String: Any]) }
         let texts = decoded.dropFirst().map { ($0["type"] as? String ?? "") + ":" + String(($0["text"] as? String ?? "").prefix(2)) }
-        XCTAssertEqual(texts, ["user:m0", "assistant:m1", "omitted:", "user:m8", "assistant:m9"])
-        XCTAssertEqual((decoded[3]["bytes"] as? NSNumber)?.intValue, 600)
+        // Each line is 100 text bytes plus about 40 of JSON, so the cap of 450
+        // keeps one line from the head (under 225) and two from the tail.
+        XCTAssertEqual(texts, ["user:m0", "omitted:", "user:m8", "assistant:m9"])
+        XCTAssertEqual((decoded[2]["bytes"] as? NSNumber)?.intValue, 700)
+        XCTAssertLessThanOrEqual(data.count - (try SessionText.headerLine(header)).count, 450 + 40)
+
+        // The cap counts the written JSON: text that escapes to six bytes per
+        // character is cut by its escaped size, not by its raw size.
+        let control = (0..<8).map { SessionDigest.Message(role: "user", text: "c\($0)" + String(repeating: "\u{01}", count: 200)) }
+        let escaped = try SessionText.render(header: header, messages: control, fileCap: 4_000)
+        XCTAssertLessThanOrEqual(escaped.count - (try SessionText.headerLine(header)).count, 4_000 + 40)
+        XCTAssertTrue(String(decoding: escaped, as: UTF8.self).contains("\"type\":\"omitted\""))
         let uncapped = try SessionText.render(header: header, messages: messages)
         XCTAssertEqual(uncapped.split(separator: 0x0A).count, 11)
     }
@@ -238,4 +248,171 @@ final class SessionTextIndexTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: home.claude))
         XCTAssertTrue(FileManager.default.fileExists(atPath: SessionTextIndex.url(stateDir: home.config.stateDir, id: id).path))
     }
+
+    // MARK: lifecycle
+
+    private func textIds(_ config: RuntimeConfig) -> [String] {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: SessionTextIndex.directory(stateDir: config.stateDir).path)) ?? []
+        return names.filter { $0.hasSuffix(".jsonl") }.map { String($0.dropLast(6)) }.sorted()
+    }
+
+    private func rows(_ config: RuntimeConfig) throws -> [SessionEntryRow] {
+        try SessionIndexDB(stateDir: config.stateDir).allEntries()
+    }
+
+    func testFailedUploadLeavesNoTextFile() throws {
+        let home = try home("upload")
+        let backend = FailingSessions(try markedRepo(), failPut: true)
+        XCTAssertThrowsError(try SessionArchive.tier(config: home.config, backend: backend, now: now, apply: true, requireRepoMarker: true))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: home.claude))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: home.codex))
+        XCTAssertEqual(try rows(home.config).count, 0)
+        XCTAssertEqual(textIds(home.config), [])
+        XCTAssertEqual(SessionTextIndex.count(stateDir: home.config.stateDir), 0)
+    }
+
+    func testRearchivedSessionKeepsOnlyTheNewestTextFile() throws {
+        let home = try home("again")
+        let backend = try markedRepo()
+        _ = try SessionArchive.tier(config: home.config, backend: backend, now: now, apply: true, tools: ["claude"], requireRepoMarker: true)
+        let first = try XCTUnwrap(try listed(home.config, tool: "claude")["id"] as? String)
+        _ = try SessionArchive.restoreSession(config: home.config, backend: backend, query: first, requireRepoMarker: true)
+        let handle = try FileHandle(forWritingTo: URL(fileURLWithPath: home.claude))
+        try handle.seekToEnd()
+        try handle.write(contentsOf: Data("{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"one more synthetic question\"}}\n".utf8))
+        try handle.close()
+        try FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-30 * 86_400)], ofItemAtPath: home.claude)
+        let report = try SessionArchive.tier(config: home.config, backend: backend, now: now, apply: true, tools: ["claude"], requireRepoMarker: true)
+        let second = try XCTUnwrap(report.archived.first?.id)
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(textIds(home.config), [second])
+        let all = try lines(SessionTextIndex.url(stateDir: home.config.stateDir, id: second))
+        XCTAssertEqual(all.last?["text"] as? String, "one more synthetic question")
+        XCTAssertFalse((all[0]["segment"] as? String ?? "").isEmpty)
+    }
+
+    func testEmptyHeaderIsFilledInByALaterRun() throws {
+        let home = try home("repair")
+        let backend = try markedRepo()
+        _ = try SessionArchive.tier(config: home.config, backend: backend, now: now, apply: true, tools: ["claude"], requireRepoMarker: true)
+        let row = try XCTUnwrap(try rows(home.config).first)
+        // As if the rewrite before the delete had failed.
+        var header = try XCTUnwrap(SessionTextIndex.header(stateDir: home.config.stateDir, id: row.id))
+        let segment = header.segment
+        header.segment = ""
+        header.archivedAt = ""
+        try SessionTextIndex.rewriteHeader(header, stateDir: home.config.stateDir)
+        let before = try lines(SessionTextIndex.url(stateDir: home.config.stateDir, id: row.id))
+        _ = try SessionArchive.tier(config: home.config, backend: backend, now: now, apply: true, tools: ["claude"], requireRepoMarker: true)
+        let after = try lines(SessionTextIndex.url(stateDir: home.config.stateDir, id: row.id))
+        XCTAssertEqual(after[0]["segment"] as? String, segment)
+        XCTAssertEqual(after[0]["archivedAt"] as? String, row.archivedAt)
+        XCTAssertEqual(after.count, before.count)
+        XCTAssertEqual(after.dropFirst().map { $0["text"] as? String }, before.dropFirst().map { $0["text"] as? String })
+        XCTAssertEqual(try mode(SessionTextIndex.url(stateDir: home.config.stateDir, id: row.id).path), 0o600)
+    }
+
+    /// A kept-local session settled later against its stored segment keeps its
+    /// header when the backend drops, and is archived without a new upload.
+    func testReusedSegmentKeepsHeaderAndIsArchivedWithoutUpload() throws {
+        let home = try home("reuse")
+        let repo = try markedRepo()
+        let path = home.claude
+        let report = try SessionArchive.tier(config: home.config, backend: repo, now: now, apply: true, tools: ["claude"], beforeDelete: { [now] _ in
+            try? FileManager.default.setAttributes([.modificationDate: now.addingTimeInterval(-41 * 86_400)], ofItemAtPath: path)
+        }, requireRepoMarker: true)
+        XCTAssertEqual(report.keptLocal.map(\.0), [path])
+        let row = try XCTUnwrap(try rows(home.config).first)
+        XCTAssertEqual(row.state, "keptLocal")
+        let segment = try XCTUnwrap(SessionTextIndex.header(stateDir: home.config.stateDir, id: row.id)).segment
+        XCTAssertFalse(segment.isEmpty)
+        let objects = segmentObjects()
+
+        XCTAssertThrowsError(try SessionArchive.tier(config: home.config, backend: FailingSessions(repo, failPut: false), now: now, apply: true, tools: ["claude"], requireRepoMarker: true)) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 4)
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+        XCTAssertEqual(SessionTextIndex.header(stateDir: home.config.stateDir, id: row.id)?.segment, segment)
+
+        let again = try SessionArchive.tier(config: home.config, backend: repo, now: now, apply: true, tools: ["claude"], requireRepoMarker: true)
+        XCTAssertEqual(again.archived.map(\.id), [row.id])
+        XCTAssertEqual(again.segments, [])
+        XCTAssertEqual(segmentObjects(), objects)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+        XCTAssertEqual(SessionTextIndex.header(stateDir: home.config.stateDir, id: row.id)?.segment, segment)
+        XCTAssertEqual(textIds(home.config), [row.id])
+    }
+
+    private struct Killed: Error {}
+
+    /// Leaves one pendingDelete row with no text file, as a run of a build
+    /// without the text index would.
+    private func pendingWithoutText(_ home: Home, backend: LocalFolderBackend) throws -> SessionEntryRow {
+        XCTAssertThrowsError(try SessionArchive.tier(config: home.config, backend: backend, now: now, apply: true, tools: ["claude"], afterIndexCommit: { throw Killed() }, requireRepoMarker: true))
+        let row = try XCTUnwrap(try rows(home.config).first)
+        XCTAssertEqual(row.state, "pendingDelete")
+        try FileManager.default.removeItem(at: SessionTextIndex.url(stateDir: home.config.stateDir, id: row.id))
+        return row
+    }
+
+    func testPendingRowWithoutTextGetsItBeforeTheDelete() throws {
+        let home = try home("pending")
+        let backend = try markedRepo()
+        let row = try pendingWithoutText(home, backend: backend)
+        let report = try SessionArchive.tier(config: home.config, backend: backend, now: now, apply: true, tools: ["codex"], requireRepoMarker: true)
+        XCTAssertTrue(report.archived.contains { $0.id == row.id })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: home.claude))
+        let all = try lines(SessionTextIndex.url(stateDir: home.config.stateDir, id: row.id))
+        XCTAssertFalse((all[0]["segment"] as? String ?? "").isEmpty)
+        XCTAssertEqual(all[0]["cwd"] as? String, "/work/demo-app")
+        XCTAssertEqual(all.dropFirst().first?["text"] as? String, "add a health check endpoint")
+    }
+
+    func testPendingRowStaysWhenItsTextCannotBeWritten() throws {
+        let home = try home("pending-fail")
+        let backend = try markedRepo()
+        let row = try pendingWithoutText(home, backend: backend)
+        let dir = SessionTextIndex.directory(stateDir: home.config.stateDir)
+        try FileManager.default.removeItem(at: dir)
+        try Data("not a directory".utf8).write(to: dir)
+        let report = try SessionArchive.tier(config: home.config, backend: backend, now: now, apply: true, tools: ["claude"], requireRepoMarker: true)
+        XCTAssertTrue(report.keptLocal.contains { $0.0 == home.claude && $0.1 == "text index failed" })
+        XCTAssertTrue(FileManager.default.fileExists(atPath: home.claude))
+        XCTAssertEqual(try rows(home.config).first { $0.id == row.id }?.state, "pendingDelete")
+    }
+
+    /// A delete interrupted after the rename leaves `<path>.disklessly-deleting-<txid>`;
+    /// the text is built from that copy before it is removed.
+    func testInterruptedDeleteCopyIsIndexedBeforeRemoval() throws {
+        let home = try home("deleting")
+        let backend = try markedRepo()
+        let row = try pendingWithoutText(home, backend: backend)
+        let deleting = home.claude + ".disklessly-deleting-" + String(try XCTUnwrap(row.segmentId).prefix(8))
+        try FileManager.default.moveItem(atPath: home.claude, toPath: deleting)
+        let report = try SessionArchive.tier(config: home.config, backend: backend, now: now, apply: true, tools: ["claude"], requireRepoMarker: true)
+        XCTAssertTrue(report.archived.contains { $0.id == row.id })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: deleting))
+        let all = try lines(SessionTextIndex.url(stateDir: home.config.stateDir, id: row.id))
+        XCTAssertEqual(all.dropFirst().first?["text"] as? String, "add a health check endpoint")
+    }
+}
+
+/// Fails puts under `sessions/` (an upload that does not go through), or with
+/// `failPut` false, reads under `sessions/` with a backend error (exit 4).
+private final class FailingSessions: StorageBackend {
+    let inner: LocalFolderBackend
+    let failPut: Bool
+    init(_ inner: LocalFolderBackend, failPut: Bool) { self.inner = inner; self.failPut = failPut }
+    func list(_ path: String) throws -> [String] { try inner.list(path) }
+    func stat(_ path: String) throws -> BackendStat? { try inner.stat(path) }
+    func get(_ path: String, range: Range<UInt64>?) throws -> Data {
+        if !failPut && path.hasPrefix("sessions/") { throw DisklesslyError.backend("backend unreachable (synthetic)") }
+        return try inner.get(path, range: range)
+    }
+    func put(_ path: String, data: Data) throws {
+        if failPut && path.hasPrefix("sessions/") { throw DisklesslyError.failure("synthetic upload failure") }
+        try inner.put(path, data: data)
+    }
+    func delete(_ path: String) throws { try inner.delete(path) }
+    func localRoot() -> URL? { nil }
 }

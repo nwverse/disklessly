@@ -14,6 +14,10 @@ enum SessionTierV2 {
         let device = try LocalDeviceStore.loadOrCreate(stateDir: URL(fileURLWithPath: config.stateDir), suggestedName: "mac")
         let database = try SessionIndexDB(stateDir: config.stateDir)
         _ = try SessionMigration.migrateIfNeeded(stateDir: config.stateDir, deviceId: device.deviceId, database: database)
+        // Runs last, also when the run throws: text files of transcripts that did
+        // not end up indexed, or of an older version of the same session, are
+        // removed, and headers still without a segment are filled in.
+        defer { pruneTextIndex(database: database, deviceId: device.deviceId, stateDir: config.stateDir) }
         let store = secrets ?? MemorySecretStore()
         // The exclusion list is read again before each local delete, so a session
         // referenced after the run started is still kept.
@@ -44,8 +48,13 @@ enum SessionTierV2 {
             draft.member.firstPrompt = SessionDigest.firstPrompt(tool: draft.tool, path: draft.member.path, data: draft.member.bytes)
             draft.member.entryId = SegmentWriter.entryId(deviceId: device.deviceId, path: draft.member.path, sha256: draft.member.sha256)
             let messages = SessionText.messages(tool: draft.tool, path: draft.member.path, data: draft.member.bytes)
+            // The entry id covers the bytes, so an existing file already holds this
+            // text; it is left as it is (its header may carry the segment of a
+            // stored copy that reuseStored settles against).
             do {
-                try SessionTextIndex.write(header: textHeader(draft.member, deviceId: device.deviceId, segment: "", archivedAt: ""), messages: messages, stateDir: config.stateDir)
+                if !SessionTextIndex.exists(stateDir: config.stateDir, id: draft.member.entryId) {
+                    try SessionTextIndex.write(header: textHeader(draft.member, deviceId: device.deviceId, segment: "", archivedAt: ""), messages: messages, stateDir: config.stateDir)
+                }
             } catch {
                 extraSkipped.append((draft.member.path, "text index failed"))
                 continue
@@ -54,7 +63,8 @@ enum SessionTierV2 {
             drafts.append(draft)
         }
         // Fills in the segment and archive time once known, still before the
-        // delete. The file written above already exists, so a failure here keeps it.
+        // delete. The file written above already exists, so a failure here does not
+        // block the delete; pruneTextIndex fills the header in on this or a later run.
         let retext: (SessionMemberDraft, String, String) -> Void = { member, segment, archivedAt in
             try? SessionTextIndex.write(header: textHeader(member, deviceId: device.deviceId, segment: segment, archivedAt: archivedAt), messages: texts[member.path] ?? [], stateDir: config.stateDir)
         }
@@ -101,6 +111,39 @@ enum SessionTierV2 {
 
     static func textHeader(_ member: SessionMemberDraft, deviceId: String, segment: String, archivedAt: String) -> SessionText.Header {
         SessionText.Header(entryId: member.entryId, deviceId: deviceId, sessionId: SessionIdentity.sessionId(tool: member.tool, path: member.path), tool: member.tool, path: member.path, cwd: member.cwd, title: member.title, firstPrompt: member.firstPrompt, mtime: SessionTextIndex.rfc3339(mtimeNs: member.mtimeNs), archivedAt: archivedAt, bytes: member.size, segment: segment)
+    }
+
+    /// Keeps one text file per session of this device: the one of the newest
+    /// index row for its path (a row that is not restored before a restored one).
+    /// Files with no index row (a run that failed or stopped after the first
+    /// write), files of older versions of a path, and leftover temp files are
+    /// removed. A kept file whose header still lacks the segment or archive time
+    /// gets them from the row. Failures are ignored; the next run tries again.
+    static func pruneTextIndex(database: SessionIndexDB, deviceId: String, stateDir: String) {
+        let (ids, temps) = SessionTextIndex.listing(stateDir: stateDir)
+        let dir = SessionTextIndex.directory(stateDir: stateDir)
+        for name in temps { try? FileManager.default.removeItem(at: dir.appendingPathComponent(name)) }
+        guard !ids.isEmpty, let rows = try? database.allEntries(), let paths = try? database.segmentPaths() else { return }
+        let mine = rows.filter { $0.deviceId == deviceId }
+        var current: [String: SessionEntryRow] = [:]
+        for row in mine {
+            guard let other = current[row.path] else { current[row.path] = row; continue }
+            let rank = { (r: SessionEntryRow) in (r.state == "restored" ? 0 : 1, r.archivedAt, r.mtimeNs, r.id) }
+            if rank(other) < rank(row) { current[row.path] = row }
+        }
+        let keep = Dictionary(current.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for id in ids {
+            guard let row = keep[id] else {
+                try? FileManager.default.removeItem(at: SessionTextIndex.url(stateDir: stateDir, id: id))
+                continue
+            }
+            let segment = row.segmentId.flatMap { paths[$0] } ?? row.legacyArchive ?? ""
+            guard !segment.isEmpty, var header = SessionTextIndex.header(stateDir: stateDir, id: id),
+                  header.segment.isEmpty || header.archivedAt.isEmpty else { continue }
+            header.segment = segment
+            header.archivedAt = row.archivedAt
+            try? SessionTextIndex.rewriteHeader(header, stateDir: stateDir)
+        }
     }
 
     private static func archivedItem(_ member: SessionMemberDraft) -> SessionArchivedItem {
@@ -450,11 +493,13 @@ enum SessionTierV2 {
             // A row left by a run that had no text index gets one from the local
             // file before it is deleted; when that fails the file stays and the row
             // stays pending for the next run.
-            if !textIndexed(member, row: row, paths: paths, stateDir: config.stateDir) {
+            // The run that wrote the row renamed the file with the segment id's prefix.
+            let txid = String((row.segmentId ?? row.id).prefix(8))
+            if !textIndexed(member, row: row, paths: paths, txid: txid, stateDir: config.stateDir) {
                 kept.append((row.path, "text index failed"))
                 continue
             }
-            if let reason = try settle(member, database: database, isOpen: isOpen, txid: String(row.id.prefix(8)), referenced: referenced) {
+            if let reason = try settle(member, database: database, isOpen: isOpen, txid: txid, referenced: referenced) {
                 kept.append((row.path, reason))
             } else {
                 archived.append(archivedItem(member))
@@ -464,12 +509,17 @@ enum SessionTierV2 {
     }
 
     /// True when the row's text index exists or was just written from the local
-    /// file, or when there is no local file (or it changed) to write it from.
-    private static func textIndexed(_ member: SessionMemberDraft, row: SessionEntryRow, paths: [String: String], stateDir: String) -> Bool {
+    /// bytes (the file, or the `.disklessly-deleting-<txid>` copy an interrupted
+    /// delete left), or when there are no matching local bytes, so settle will
+    /// not delete anything.
+    private static func textIndexed(_ member: SessionMemberDraft, row: SessionEntryRow, paths: [String: String], txid: String, stateDir: String) -> Bool {
         let fm = FileManager.default
-        guard row.deviceId.isEmpty == false, fm.fileExists(atPath: row.path),
-              !fm.fileExists(atPath: SessionTextIndex.url(stateDir: stateDir, id: row.id).path) else { return true }
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: row.path)), SHA256Digest.hex(data) == row.sha256 else { return true }
+        guard !row.deviceId.isEmpty, !SessionTextIndex.exists(stateDir: stateDir, id: row.id) else { return true }
+        let source = fm.fileExists(atPath: row.path) ? row.path : row.path + ".disklessly-deleting-\(txid)"
+        guard fm.fileExists(atPath: source) else { return true }
+        // settle deletes only bytes whose hash matches the row, so other bytes need no text.
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: source)) else { return false }
+        guard SHA256Digest.hex(data) == row.sha256 else { return true }
         let segment = row.segmentId.flatMap { paths[$0] } ?? row.legacyArchive ?? ""
         let messages = SessionText.messages(tool: row.tool, path: row.path, data: data)
         do {

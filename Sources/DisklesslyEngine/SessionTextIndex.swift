@@ -75,6 +75,40 @@ public enum SessionTextIndex {
         try write(try SessionText.render(header: header, messages: messages), stateDir: stateDir, id: header.entryId)
     }
 
+    public static func exists(stateDir: String, id: String) -> Bool {
+        FileManager.default.fileExists(atPath: url(stateDir: stateDir, id: id).path)
+    }
+
+    /// Entry ids of the `.jsonl` files, and the names of leftover temp files.
+    static func listing(stateDir: String) -> (ids: [String], temps: [String]) {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: directory(stateDir: stateDir).path)) ?? []
+        let ids = names.filter { $0.hasSuffix(".jsonl") && !$0.hasPrefix(".") }.map { String($0.dropLast(".jsonl".count)) }
+        let temps = names.filter { $0.hasPrefix(".") && $0.contains(".jsonl.tmp-") }
+        return (ids, temps)
+    }
+
+    /// The header of an existing file, or nil when it is missing or unreadable.
+    public static func header(stateDir: String, id: String) -> SessionText.Header? {
+        guard let handle = try? FileHandle(forReadingFrom: url(stateDir: stateDir, id: id)) else { return nil }
+        defer { try? handle.close() }
+        var head = Data()
+        while head.firstIndex(of: 0x0A) == nil {
+            guard let chunk = try? handle.read(upToCount: 65_536), !chunk.isEmpty else { break }
+            head.append(chunk)
+        }
+        let line = head.firstIndex(of: 0x0A).map { head[..<$0] } ?? head[...]
+        return try? JSONDecoder().decode(SessionText.Header.self, from: Data(line))
+    }
+
+    /// Replaces the header line of an existing file and keeps the message lines.
+    public static func rewriteHeader(_ header: SessionText.Header, stateDir: String) throws {
+        let data = try Data(contentsOf: url(stateDir: stateDir, id: header.entryId))
+        let rest = data.firstIndex(of: 0x0A).map { data[data.index(after: $0)...] } ?? Data()[...]
+        var out = try SessionText.headerLine(header)
+        out.append(contentsOf: rest)
+        try write(out, stateDir: stateDir, id: header.entryId)
+    }
+
     public static func rfc3339(mtimeNs: Int64) -> String {
         let formatter = ISO8601DateFormatter()
         return formatter.string(from: Date(timeIntervalSince1970: Double(mtimeNs) / 1_000_000_000))
