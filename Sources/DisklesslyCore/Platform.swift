@@ -24,18 +24,19 @@ public enum PlatformCommands {
     public static let linux: Set<String> = [
         "help", "--help", "-h", "version", "init", "list", "status",
         "sessions", "ui", "backend", "repo", "devices", "license", "hooks", "remote",
+        "files", "offload", "fetch", "cloud", "rclone", "containers",
     ]
 
     /// Commands that exist but only on macOS. Anything else is an unknown command.
     public static let macOSOnly: Set<String> = [
         "pack", "launch", "restore", "unpack", "recommend", "prefetch", "pin", "unpin",
         "evict", "detach", "reap", "evict-local", "cleanup-backups", "gc", "doctor",
-        "hook", "resolve", "icons", "install-engine", "stub",
+        "hook", "resolve", "icons", "install-engine", "stub", "dev", "data", "caches", "openlist",
     ]
 
     /// The refusal for `command` on `platform`, or nil when it may run (or is unknown).
     public static func refusal(_ command: String, on platform: HostPlatform) -> DisklesslyError? {
         guard platform != .macOS, macOSOnly.contains(command) else { return nil }
-        return .unsupported("\(command) is macOS only. On Linux disklessly offers sessions, ui, backend, repo, devices, license, init, list, status, and version; see docs/linux.md")
+        return .unsupported("\(command) is macOS only. On Linux disklessly offers files, offload, fetch, containers, sessions, ui, backend, cloud, rclone, repo, devices, license, init, list, status, and version; see docs/linux.md")
     }
 }

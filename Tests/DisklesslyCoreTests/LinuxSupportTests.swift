@@ -191,6 +191,11 @@ final class LinuxSupportTests: XCTestCase {
             let object = try JSONSerialization.jsonObject(with: response.body) as? [String: Any]
             XCTAssertEqual((object?["error"] as? [String: Any])?["code"] as? String, "unsupported", path)
         }
+        // Large file/folder offload routes are allowed on Linux (not 501 unsupported)
+        let filesResp = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/files"), context: context)
+        XCTAssertEqual(filesResp.status, 200)
+        let offloadMissingPath = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "POST", path: "/api/offloadfile", body: Data("{\"app\":\"X\"}".utf8)), context: context)
+        XCTAssertEqual(offloadMissingPath.status, 400, "offloadfile is routed on Linux, not refused with 501")
         let license = ManagementUI.respond(engine: engine, webRoot: nil, request: UIRequest(method: "GET", path: "/api/license"), context: context)
         XCTAssertEqual(license.status, 200)
         XCTAssertEqual(ManagementUI.dashboard(engine, context: context)["platform"] as? String, "linux")

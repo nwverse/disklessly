@@ -17,8 +17,8 @@ public enum RcloneTool {
         candidates += path.split(separator: ":").map { "\($0)/rclone" }
         // The app bundle, for an engine copy that has no rclone beside it.
         let home = environment["HOME"] ?? NSHomeDirectory()
-        candidates += ["/Applications/Disklessly.app/Contents/MacOS/rclone", "\(home)/Applications/Disklessly.app/Contents/MacOS/rclone"]
-        candidates += ["/opt/homebrew/bin/rclone", "/usr/local/bin/rclone", "/usr/bin/rclone"]
+        candidates += ["/Applications/Disklessly.app/Contents/MacOS/rclone", "\(home)/Applications/Disklessly.app/Contents/MacOS/rclone", "\(home)/.local/bin/rclone"]
+        candidates += ["/opt/homebrew/bin/rclone", "/home/linuxbrew/.linuxbrew/bin/rclone", "/usr/local/bin/rclone", "/usr/bin/rclone"]
         return candidates.first(where: isExecutable).map { URL(fileURLWithPath: $0) }
     }
 

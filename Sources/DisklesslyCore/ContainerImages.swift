@@ -22,6 +22,7 @@ public enum ContainerImages {
 /// Which engine holds an image.
 public enum ContainerEngineKind: String, Codable, CaseIterable {
     case apple
+    case docker
     case dockerDesktop = "docker-desktop"
     case orbstack
     case colima
@@ -30,6 +31,7 @@ public enum ContainerEngineKind: String, Codable, CaseIterable {
     public var title: String {
         switch self {
         case .apple: return "Apple container"
+        case .docker: return "Docker Engine"
         case .dockerDesktop: return "Docker Desktop"
         case .orbstack: return "OrbStack"
         case .colima: return "Colima"
@@ -39,7 +41,7 @@ public enum ContainerEngineKind: String, Codable, CaseIterable {
 
     /// Engines that keep images inside one VM disk file: deleting an image inside the VM
     /// gives space back to the Mac only once the VM trims its disk.
-    public var usesVMDisk: Bool { self != .apple }
+    public var usesVMDisk: Bool { self != .apple && self != .docker }
 }
 
 /// Why an image counts as in use, or why it is a candidate.

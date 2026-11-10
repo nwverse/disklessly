@@ -165,6 +165,9 @@ struct ContainerEndpoint {
         [
             ContainerEndpoint(kind: .apple, socket: nil,
                               dataPaths: [home + "/Library/Application Support/com.apple.container"], markers: []),
+            ContainerEndpoint(kind: .docker, socket: "/var/run/docker.sock",
+                              dataPaths: ["/var/lib/docker"],
+                              markers: ["/var/run/docker.sock"]),
             ContainerEndpoint(kind: .dockerDesktop, socket: home + "/.docker/run/docker.sock",
                               dataPaths: [home + "/Library/Containers/com.docker.docker/Data/vms"],
                               markers: ["/Applications/Docker.app"]),
@@ -184,7 +187,7 @@ struct ContainerEndpoint {
 
     /// Any docker CLI talks to any of these sockets with `-H`.
     static func dockerCLI(_ tools: ContainerTools) -> String? {
-        ["/opt/homebrew/bin/docker", "/usr/local/bin/docker",
+        ["/opt/homebrew/bin/docker", "/usr/local/bin/docker", "/usr/bin/docker", "/bin/docker",
          "/Applications/Docker.app/Contents/Resources/bin/docker",
          tools.home + "/.orbstack/bin/docker", "/Applications/OrbStack.app/Contents/MacOS/xbin/docker",
          tools.home + "/.dory/bin/docker", "/Applications/Dory.app/Contents/Resources/bin/docker"].first(where: tools.isExecutable)

@@ -592,8 +592,10 @@ public enum ManagementUI {
 
     /// Routes that pack, launch, or scan app bundles.
     static func isAppRoute(_ request: UIRequest) -> Bool {
-        // Container engines run on Linux too; their jobs are not app routes.
-        if request.method == "POST", let kind = UIJobKind(path: request.path) { return !kind.isContainers }
+        // Container engines and large file/folder offload run on Linux too; their jobs are not app routes.
+        if request.method == "POST", let kind = UIJobKind(path: request.path) {
+            return !kind.isContainers && kind != .offloadfile && kind != .trashpath
+        }
         return request.path == "/api/recommend" || request.path == "/api/icons/backfill"
     }
 
