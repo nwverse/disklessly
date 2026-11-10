@@ -63,6 +63,7 @@ Repos and Macs
   cloud disconnect NAME | rclone ARGS...   (bundled rclone with Disklessly's own config)
   openlist status|install [--use]|password|start|stop|uninstall [--purge]
   devices [list] | devices rename NAME | devices forget DEVICEID --yes
+  remote [list|add HOST|remove HOST|scan HOST|plan HOST ...|clean HOST ...|offload HOST PATH|restore HOST ID|deploy HOST]
 
 Encrypted images
   images key init | images key status   make or show the image key (iCloud Keychain)
@@ -107,6 +108,7 @@ Repos and machines
   backend add smb|nfs|webdav|openlist ... | backend list | backend use ID
   repo migrate --to ID|default [--keep-old-as-mirror] | repo mirror [list]|add ID|remove ID|sync
   devices [list] | devices rename NAME | devices forget DEVICEID --yes
+  remote [list|add HOST|remove HOST|scan HOST|plan HOST ...|clean HOST ...|offload HOST PATH|restore HOST ID|deploy HOST]
   list | status                   images in the repo (offloaded from Macs)
   license [status] | license activate CODE | deactivate
 
@@ -967,6 +969,9 @@ do {
             say(["ok": true, "id": record.id], "Deleted \(record.title) from the repo")
         default: throw DisklesslyError.usage("Unknown containers command: \(sub)")
         }
+    case "remote":
+        if args.contains("--help") || args.contains("-h") { usage() }
+        try RemoteCLI.run(args: args, engine: engine, json: json, emit: emit)
     case "ui":
         var openBrowser = false
         while let flag = args.first {

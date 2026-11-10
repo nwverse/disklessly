@@ -554,6 +554,38 @@ const copy = {
     conflictCopies: (n) => `${n} 个 iCloud 冲突副本，未合并`,
     placeholders: (n) => `${n} 个设备文件还没下载`,
     countNone: "无",
+    machinesTitle: "远程机器（SSH）",
+    machinesSummary: (n, r) => `${n} 台机器 · ${r} 台 SSH 远程`,
+    machinesHostLabel: "SSH 主机",
+    machinesHostPlaceholder: "例如 gpu-box 或 dev-server",
+    machinesAdd: "添加主机",
+    machinesRemove: "移除",
+    machinesScan: "扫描磁盘",
+    machinesScanning: "正在通过 SSH 扫描…",
+    machinesInspect: "查看大项",
+    machinesLocalBadge: "本机",
+    machinesRemoteBadge: "SSH",
+    machinesLevel_offline: "离线",
+    machinesLevel_critical: "紧张",
+    machinesLevel_warning: "偏高",
+    machinesLevel_ok: "正常",
+    machinesDiskLine: (used, total, reclaim) => `已用 ${used} / ${total} · 可清理/可卸载 ${reclaim}`,
+    machinesNotScanned: "尚未扫描，点击“扫描磁盘”采集挂载点与大项",
+    machinesDetailTitle: (host, mode) => `${host} 扫描详情（${mode || "ssh"}）`,
+    machinesMountsTitle: "挂载点",
+    machinesMountFree: (dev, fs, size) => `${dev} (${fs}) · 可用 ${size}`,
+    machinesItemsTitle: "可清理缓存与可卸载大项",
+    machinesOffloadedTitle: "已卸载到云端仓库",
+    machinesNoItems: "未发现可清理或可卸载的大项",
+    machinesCleanBtn: "清理",
+    machinesOffloadBtn: "卸载上云",
+    machinesRestoreBtn: "取回还原",
+    machinesPlanConfirmTitle: (act, title, host) => `在 ${host} 上${act} ${title}？`,
+    machinesPlanConfirmBody: (path, size, rec) => `目标路径：${path}\n预计释放：${size}\n可从仓库恢复：${rec ? "是（先上传校验再移除原件，留存 .disklessly-remote 占位与事务日志）" : "否（可重建缓存/日志直接清理）"}`,
+    machinesRestoreConfirmTitle: (title, host) => `取回 ${title} 并还原到 ${host}？`,
+    machinesRestoreConfirmBody: (path, size) => `将从云端仓库流式还原到 ${path}（${size}），校验通过后移除占位标记。`,
+    machinesActionDone: (host, title) => `${host}: ${title} 已完成`,
+    machinesActionFailed: (host, title) => `${host}: ${title} 失败`,
   },
   en: {
     subtitle: "256G is enough",
@@ -1094,6 +1126,38 @@ const copy = {
     conflictCopies: (n) => `${n} iCloud conflict ${n === 1 ? "copy" : "copies"}, not merged`,
     placeholders: (n) => `${n} device ${n === 1 ? "file is" : "files are"} not downloaded`,
     countNone: "None",
+    machinesTitle: "Machines (SSH)",
+    machinesSummary: (n, r) => `${n} ${n === 1 ? "machine" : "machines"} · ${r} over SSH`,
+    machinesHostLabel: "SSH Host",
+    machinesHostPlaceholder: "e.g. gpu-box or dev-server",
+    machinesAdd: "Add host",
+    machinesRemove: "Remove",
+    machinesScan: "Scan disk",
+    machinesScanning: "Scanning over SSH…",
+    machinesInspect: "Inspect items",
+    machinesLocalBadge: "This machine",
+    machinesRemoteBadge: "SSH",
+    machinesLevel_offline: "Offline",
+    machinesLevel_critical: "Critical",
+    machinesLevel_warning: "Warning",
+    machinesLevel_ok: "Healthy",
+    machinesDiskLine: (used, total, reclaim) => `${used} / ${total} used · ${reclaim} reclaimable`,
+    machinesNotScanned: "Not scanned yet; click Scan disk to inspect mounts and big items",
+    machinesDetailTitle: (host, mode) => `${host} scan details (${mode || "ssh"})`,
+    machinesMountsTitle: "Mounts",
+    machinesMountFree: (dev, fs, size) => `${dev} (${fs}) · ${size} free`,
+    machinesItemsTitle: "Cleanable caches & offloadable big items",
+    machinesOffloadedTitle: "Offloaded in the repo",
+    machinesNoItems: "No large cleanable or offloadable items found",
+    machinesCleanBtn: "Clean",
+    machinesOffloadBtn: "Offload",
+    machinesRestoreBtn: "Restore",
+    machinesPlanConfirmTitle: (act, title, host) => `${act} ${title} on ${host}?`,
+    machinesPlanConfirmBody: (path, size, rec) => `Path: ${path}\nSize: ${size}\nRestorable from repo: ${rec ? "Yes (verified in repo before removal, leaves .disklessly-remote stub and journal)" : "No (rebuildable cache/logs deleted in place)"}`,
+    machinesRestoreConfirmTitle: (title, host) => `Restore ${title} to ${host}?`,
+    machinesRestoreConfirmBody: (path, size) => `Streams ${size} from the repo back to ${path} and removes the stub after verification.`,
+    machinesActionDone: (host, title) => `${host}: ${title} finished`,
+    machinesActionFailed: (host, title) => `${host}: ${title} failed`,
   },
 };
 // i18n:end
@@ -3571,6 +3635,7 @@ async function load() {
   if (!sessionBusy()) loadSessionPlan();
   if (appsSupported() && (!bigData || bigData.state !== "scanning")) loadBig();
   if (!ctrData || ctrData.state !== "scanning") loadContainers();
+  if (!machinesData || !machinesData.scanning) loadMachines();
 }
 
 /// The disk map is measured again when it was never measured or is older than USAGE_STALE_MS.
@@ -4014,6 +4079,347 @@ async function rescanContainers() {
   ctrTimer = setTimeout(loadContainers, 1500);
 }
 
+// ---- remote ssh machines ----------------------------------------------------
+
+let machinesData = null;
+let machinesTimer = null;
+let selectedMachineHost = null;
+let selectedMachineDetail = null;
+const machineBusy = new Set();
+
+function machineLevelPillKind(level) {
+  if (level === "offline" || level === "critical") return "red";
+  if (level === "warning") return "amber";
+  return "green";
+}
+
+function renderMachines() {
+  const cardsNode = document.querySelector("#machines-cards");
+  const summaryNode = document.querySelector("#machines-summary");
+  const detailNode = document.querySelector("#machines-detail");
+  if (!cardsNode || !summaryNode) return;
+  cardsNode.replaceChildren();
+  if (!machinesData) {
+    summaryNode.textContent = t("loading");
+    return;
+  }
+  const list = machinesData.machines || [];
+  const remoteCount = list.filter((m) => !m.isLocal).length;
+  summaryNode.textContent = t("machinesSummary", list.length, remoteCount) + (machinesData.scanning ? " · " + t("machinesScanning") : "");
+
+  for (const m of list) {
+    const detail = el("span");
+    detail.append(
+      pill(m.isLocal ? "blue" : "grey", m.isLocal ? "machinesLocalBadge" : "machinesRemoteBadge"),
+      " ",
+      pill(machineLevelPillKind(m.level), "machinesLevel_" + (m.level || "ok"))
+    );
+    if (m.platform) detail.append(" · ", el("span", "mono small", m.platform));
+    if (m.scanMode && !m.isLocal) detail.append(" · ", el("span", "muted small", m.scanMode));
+    detail.append(el("br"));
+    if (m.totalBytes > 0) {
+      const reclaim = (m.reclaimableBytes || 0) + (m.offloadableBytes || 0);
+      detail.append(t("machinesDiskLine", bytes(m.usedBytes || 0), bytes(m.totalBytes || 0), bytes(reclaim)));
+    } else if (!m.isLocal) {
+      detail.append(el("span", "muted small", m.lastError || t("machinesNotScanned")));
+    }
+
+    const buttons = [];
+    if (!m.isLocal) {
+      const scanning = Boolean(m.scanning) || machineBusy.has("scan:" + m.host);
+      buttons.push(actionButton({
+        labelKey: scanning ? "machinesScanning" : "machinesScan",
+        icon: iconRefresh,
+        className: "outline",
+        busy: scanning,
+        disabled: scanning,
+        onClick: () => triggerMachineScan(m.host),
+      }));
+      buttons.push(actionButton({
+        labelKey: "machinesInspect",
+        icon: iconMore,
+        className: selectedMachineHost === m.host ? "primary" : "outline",
+        onClick: () => selectMachineDetail(m.host),
+      }));
+      buttons.push(actionButton({
+        labelKey: "machinesRemove",
+        icon: iconTrash,
+        className: "quiet",
+        onClick: () => removeMachineHost(m.host),
+      }));
+    }
+    const sizeLabel = m.totalBytes > 0 ? bytes(m.usedBytes || 0) : "";
+    const row = devRow(m.displayName || m.host, detail, sizeLabel, buttons);
+    row.dataset.level = m.level || "ok";
+    row.dataset.host = m.host;
+    cardsNode.append(row);
+  }
+
+  renderMachineDetail(detailNode);
+}
+
+function renderMachineDetail(detailNode) {
+  if (!detailNode) return;
+  detailNode.replaceChildren();
+  if (!selectedMachineHost || !selectedMachineDetail) {
+    detailNode.hidden = true;
+    return;
+  }
+  detailNode.hidden = false;
+  const host = selectedMachineHost;
+  const d = selectedMachineDetail;
+  const head = el("h3", "dev-group-title", t("machinesDetailTitle", host, d.scanMode || "fallback-sh"));
+  detailNode.append(head);
+
+  if (d.lastError) {
+    detailNode.append(el("p", "warn-text small", d.lastError));
+  }
+
+  const mounts = d.mounts || [];
+  if (mounts.length) {
+    const mGroup = el("div", "dev-group");
+    mGroup.append(el("h4", "dev-group-title", t("machinesMountsTitle")));
+    for (const m of mounts) {
+      const sub = el("span", "mono small", t("machinesMountFree", m.device, m.fsType, bytes(m.availableBytes || 0)));
+      mGroup.append(devRow(m.mountPoint, sub, `${bytes(m.usedBytes || 0)} / ${bytes(m.totalBytes || 0)}`, []));
+    }
+    detailNode.append(mGroup);
+  }
+
+  const items = d.items || [];
+  const iGroup = el("div", "dev-group");
+  iGroup.append(el("h4", "dev-group-title", t("machinesItemsTitle")));
+  if (!items.length) {
+    iGroup.append(el("p", "muted small", t("machinesNoItems")));
+  } else {
+    for (const item of items) {
+      const sub = el("span");
+      sub.append(item.reason || item.category || "");
+      sub.append(el("br"), el("span", "mono small", item.path));
+      const busyKey = `${host}:${item.id}`;
+      const busy = machineBusy.has(busyKey);
+      const isOffload = item.action === "offload";
+      const btn = actionButton({
+        labelKey: isOffload ? "machinesOffloadBtn" : "machinesCleanBtn",
+        icon: isOffload ? iconTray : iconTrash,
+        className: isOffload ? "outline" : "danger-outline",
+        busy,
+        disabled: busy,
+        onClick: () => planAndConfirmRemoteItem(host, item),
+      });
+      iGroup.append(devRow(item.title, sub, bytes(item.bytes || 0), [btn]));
+    }
+  }
+  detailNode.append(iGroup);
+
+  const offloaded = d.offloaded || [];
+  if (offloaded.length) {
+    const oGroup = el("div", "dev-group");
+    oGroup.append(el("h4", "dev-group-title", t("machinesOffloadedTitle")));
+    for (const rec of offloaded) {
+      const sub = el("span");
+      sub.append(el("span", "mono small", rec.originalPath));
+      const busyKey = `${host}:restore:${rec.id}`;
+      const busy = machineBusy.has(busyKey);
+      const btn = actionButton({
+        labelKey: "machinesRestoreBtn",
+        icon: iconDownload,
+        className: "outline",
+        busy,
+        disabled: busy,
+        onClick: () => confirmRestoreRemoteItem(host, rec),
+      });
+      oGroup.append(devRow(rec.title, sub, bytes(rec.logicalBytes || rec.storedBytes || 0), [btn]));
+    }
+    detailNode.append(oGroup);
+  }
+}
+
+async function loadMachines() {
+  clearTimeout(machinesTimer);
+  try {
+    machinesData = await api("/api/machines");
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    machinesData = { machines: [], scanning: false };
+  }
+  if (!selectedMachineHost && machinesData.machines) {
+    const firstRemote = machinesData.machines.find((m) => !m.isLocal);
+    if (firstRemote && firstRemote.totalBytes > 0) {
+      selectedMachineHost = firstRemote.host;
+    }
+  }
+  if (selectedMachineHost) {
+    try {
+      selectedMachineDetail = await api(`/api/machines/detail?host=${encodeURIComponent(selectedMachineHost)}`);
+    } catch (e) {
+      selectedMachineDetail = null;
+    }
+  }
+  renderMachines();
+  if (machinesData && machinesData.scanning) {
+    machinesTimer = setTimeout(loadMachines, 1500);
+  }
+}
+
+async function selectMachineDetail(host) {
+  selectedMachineHost = host;
+  try {
+    selectedMachineDetail = await api(`/api/machines/detail?host=${encodeURIComponent(host)}`);
+  } catch (error) {
+    if (error.code === "unauthorized") return;
+    selectedMachineDetail = null;
+  }
+  renderMachines();
+}
+
+async function triggerMachineScan(host) {
+  const key = "scan:" + host;
+  if (machineBusy.has(key)) return;
+  machineBusy.add(key);
+  selectedMachineHost = host;
+  renderMachines();
+  try {
+    await api("/api/machines/scan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, sync: true }),
+    });
+  } catch (error) {
+    if (error.code !== "unauthorized") {
+      toast({ title: biPair(t("machinesActionFailed", host, t("machinesScan")), null), error: { code: error.code, message: error.message }, tone: "error" });
+    }
+  } finally {
+    machineBusy.delete(key);
+  }
+  await loadMachines();
+}
+
+async function addMachineFromInput() {
+  const input = document.querySelector("#machines-host-input");
+  if (!input) return;
+  const host = input.value.trim();
+  if (!host) return;
+  try {
+    machinesData = await api("/api/machines/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host }),
+    });
+    input.value = "";
+    selectedMachineHost = host;
+    await triggerMachineScan(host);
+  } catch (error) {
+    if (error.code !== "unauthorized") {
+      toast({ title: biPair(t("machinesActionFailed", host, t("machinesAdd")), null), error: { code: error.code, message: error.message }, tone: "error" });
+    }
+  }
+}
+
+async function removeMachineHost(host) {
+  try {
+    machinesData = await api("/api/machines/remove", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host }),
+    });
+    if (selectedMachineHost === host) {
+      selectedMachineHost = null;
+      selectedMachineDetail = null;
+    }
+    renderMachines();
+  } catch (error) {
+    if (error.code !== "unauthorized") {
+      toast({ title: biPair(t("machinesActionFailed", host, t("machinesRemove")), null), error: { code: error.code, message: error.message }, tone: "error" });
+    }
+  }
+}
+
+async function planAndConfirmRemoteItem(host, item) {
+  let planItem = item;
+  try {
+    const plan = await api("/api/machines/plan", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, action: item.action, target: item.id }),
+    });
+    if (plan.items && plan.items.length) planItem = plan.items[0];
+  } catch (error) {
+    if (error.code !== "unauthorized") {
+      toast({ title: biPair(t("machinesActionFailed", host, item.title), null), error: { code: error.code, message: error.message }, tone: "error" });
+    }
+    return;
+  }
+  const isOffload = item.action === "offload";
+  const actLabel = t(isOffload ? "machinesOffloadBtn" : "machinesCleanBtn");
+  askConfirm(
+    {
+      title: ["machinesPlanConfirmTitle", actLabel, planItem.title || item.title, host],
+      body: ["machinesPlanConfirmBody", planItem.path || item.path, bytes(planItem.bytes || item.bytes || 0), Boolean(planItem.recoverable)],
+      ok: isOffload ? "machinesOffloadBtn" : "machinesCleanBtn",
+      danger: !isOffload,
+    },
+    () => executeRemoteItemAction(host, item)
+  );
+}
+
+async function executeRemoteItemAction(host, item) {
+  const busyKey = `${host}:${item.id}`;
+  if (machineBusy.has(busyKey)) return;
+  machineBusy.add(busyKey);
+  renderMachines();
+  const endpoint = item.action === "offload" ? "/api/machines/offload" : "/api/machines/clean";
+  try {
+    await api(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, target: item.id }),
+    });
+    toast({ title: biPair(t("machinesActionDone", host, item.title), null), tone: "ok" });
+  } catch (error) {
+    if (error.code !== "unauthorized") {
+      toast({ title: biPair(t("machinesActionFailed", host, item.title), null), error: { code: error.code, message: error.message }, tone: "error" });
+    }
+  } finally {
+    machineBusy.delete(busyKey);
+  }
+  await loadMachines();
+}
+
+function confirmRestoreRemoteItem(host, rec) {
+  askConfirm(
+    {
+      title: ["machinesRestoreConfirmTitle", rec.title, host],
+      body: ["machinesRestoreConfirmBody", rec.originalPath, bytes(rec.logicalBytes || rec.storedBytes || 0)],
+      ok: "machinesRestoreBtn",
+      danger: false,
+    },
+    () => executeRestoreRemoteItem(host, rec)
+  );
+}
+
+async function executeRestoreRemoteItem(host, rec) {
+  const busyKey = `${host}:restore:${rec.id}`;
+  if (machineBusy.has(busyKey)) return;
+  machineBusy.add(busyKey);
+  renderMachines();
+  try {
+    await api("/api/machines/restore", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ host, id: rec.id }),
+    });
+    toast({ title: biPair(t("machinesActionDone", host, rec.title), null), tone: "ok" });
+  } catch (error) {
+    if (error.code !== "unauthorized") {
+      toast({ title: biPair(t("machinesActionFailed", host, rec.title), null), error: { code: error.code, message: error.message }, tone: "error" });
+    }
+  } finally {
+    machineBusy.delete(busyKey);
+  }
+  await loadMachines();
+}
+
 // ---- wiring ---------------------------------------------------------------
 
 document.querySelector("#refresh").addEventListener("click", refresh);
@@ -4030,6 +4436,14 @@ document.querySelector("#perm-app-ok").addEventListener("click", () => {
 document.querySelector("#files-scan").addEventListener("click", startFilesScan);
 document.querySelector("#big-scan").addEventListener("click", rescanBig);
 document.querySelector("#ctr-scan").addEventListener("click", rescanContainers);
+document.querySelector("#machines-refresh")?.addEventListener("click", loadMachines);
+document.querySelector("#machines-add-btn")?.addEventListener("click", addMachineFromInput);
+document.querySelector("#machines-host-input")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    addMachineFromInput();
+  }
+});
 document.querySelector("#usage-caches-clear").addEventListener("click", clearCaches);
 document.querySelector("#license-form").addEventListener("submit", submitLicense);
 document.querySelector("#license-remove").addEventListener("click", removeLicense);

@@ -68,7 +68,7 @@ final class LegacyNameTests: XCTestCase {
         try fm.createDirectory(atPath: stateDir, withIntermediateDirectories: true)
         let saved = "{\"cacheDir\":\"\(home)/Library/Caches/256isenough\",\"mountRoot\":\"\(home)/Library/Caches/256isenough/mnt\"}"
         try saved.write(toFile: "\(stateDir)/config.json", atomically: true, encoding: .utf8)
-        let resolved = RuntimeConfig.resolved(environment: [:], home: home, stateDirOverride: stateDir, explicitConfig: nil)
+        let resolved = RuntimeConfig.resolved(environment: [:], home: home, stateDirOverride: stateDir, explicitConfig: nil, platform: .macOS)
         XCTAssertTrue(resolved.cacheDir.hasSuffix("/Library/Caches/Disklessly"), resolved.cacheDir)
         XCTAssertTrue(resolved.mountRoot.hasPrefix("\(home)/Library/Caches/Disklessly/"), resolved.mountRoot)
     }

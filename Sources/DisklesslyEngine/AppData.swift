@@ -518,7 +518,6 @@ extension DisklesslyEngine {
     /// Asks iCloud to drop the local copy of a repo object. On failure the object is recorded in
     /// `pendingEvict` and retried later by `appDataRetryEvictions`; the caller is not failed.
     func appDataEvictLocal(_ object: String, appId: String, backend: any StorageBackend) {
-        #if os(macOS)
         guard let root = backend.localRoot() else { return }
         guard AppDataEviction.hook != nil || ICloudFolderBackend.looksLikeICloud(root) else { return }
         do {
@@ -530,13 +529,11 @@ extension DisklesslyEngine {
                 record.pendingEvict = pending
             }
         }
-        #endif
     }
 
     /// Retries evictions that failed earlier, once each, without waiting. An object the repo no longer
     /// holds is dropped; one the repo cannot be asked about (offline) stays pending.
     func appDataRetryEvictions(_ appId: String) {
-        #if os(macOS)
         let pending = appDataStore.record(appId).pendingEvict ?? []
         guard !pending.isEmpty, let backend = try? repo, let root = backend.localRoot() else { return }
         guard AppDataEviction.hook != nil || ICloudFolderBackend.looksLikeICloud(root) else { return }
@@ -552,7 +549,6 @@ extension DisklesslyEngine {
             let left = (record.pendingEvict ?? []).filter { !done.contains($0) }
             record.pendingEvict = left.isEmpty ? nil : left
         }
-        #endif
     }
 
     // MARK: - Data-in

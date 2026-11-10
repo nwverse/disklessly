@@ -196,6 +196,24 @@
       <p id="ctr-summary" class="muted"></p>
       <div id="ctr-list" class="rec-list"></div>
     </section>
+    <section class="card" id="machines-section" aria-labelledby="machines-title">
+      <div class="card-head">
+        <h2 id="machines-title" data-t="machinesTitle"></h2>
+        <p class="scan-line">
+          <button id="machines-refresh" type="button" class="btn quiet"><span data-t="rescan"></span></button>
+        </p>
+      </div>
+      <p id="machines-summary" class="muted"></p>
+      <div class="list-tools" id="machines-tools">
+        <label class="field grow">
+          <span data-t="machinesHostLabel"></span>
+          <input id="machines-host-input" type="text" autocomplete="off" spellcheck="false" data-tp="machinesHostPlaceholder">
+        </label>
+        <button id="machines-add-btn" type="button" class="btn outline"><span data-t="machinesAdd"></span></button>
+      </div>
+      <div id="machines-cards" class="rec-list"></div>
+      <div id="machines-detail" class="dev-group" hidden></div>
+    </section>
     <section class="card" id="devices-section" aria-labelledby="devices-title">
       <div class="card-head"><h2 id="devices-title" data-t="devices"></h2><span id="devices-count" class="count"></span></div>
       <p id="devices-summary" class="muted"></p>

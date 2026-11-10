@@ -23,7 +23,7 @@ public enum PlatformCommands {
     /// Commands a Linux build runs. `hooks` is the hidden placeholder kept for old scripts.
     public static let linux: Set<String> = [
         "help", "--help", "-h", "version", "init", "list", "status",
-        "sessions", "ui", "backend", "repo", "devices", "license", "hooks",
+        "sessions", "ui", "backend", "repo", "devices", "license", "hooks", "remote",
     ]
 
     /// Commands that exist but only on macOS. Anything else is an unknown command.
