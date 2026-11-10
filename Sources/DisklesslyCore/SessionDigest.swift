@@ -20,9 +20,12 @@ public enum SessionDigest {
     public struct Message: Equatable {
         public var role: String
         public var text: String
-        public init(role: String, text: String) {
+        /// The record's own timestamp (RFC 3339), or empty when it has none.
+        public var timestamp: String
+        public init(role: String, text: String, timestamp: String = "") {
             self.role = role
             self.text = text
+            self.timestamp = timestamp
         }
     }
 
@@ -189,21 +192,33 @@ public enum SessionDigest {
         return .generic
     }
 
-    public static func messages(format: Format, data: Data) -> [Message] {
+    /// Messages of a transcript; each one is cut at `cap` UTF-8 bytes.
+    public static func messages(format: Format, data: Data, cap: Int = messageCap) -> [Message] {
         switch format {
-        case .claude: return claude(data)
-        case .codex: return codex(data)
-        case .pi: return pi(data)
-        case .gemini: return gemini(data)
-        case .generic: return generic(data)
+        case .claude: return claude(data, cap: cap)
+        case .codex: return codex(data, cap: cap)
+        case .pi: return pi(data, cap: cap)
+        case .gemini: return gemini(data, cap: cap)
+        case .generic: return generic(data, cap: cap)
         }
+    }
+
+    /// A record's `timestamp` as RFC 3339: a string is kept as written, epoch
+    /// seconds or milliseconds are converted. Empty when there is none.
+    static func timestamp(_ record: [String: Any]) -> String {
+        if let text = record["timestamp"] as? String { return text }
+        guard let number = record["timestamp"] as? NSNumber else { return "" }
+        let value = number.doubleValue
+        let seconds = value > 100_000_000_000 ? value / 1000 : value
+        let formatter = ISO8601DateFormatter()
+        return formatter.string(from: Date(timeIntervalSince1970: seconds))
     }
 
     // MARK: extractors
 
     /// Claude Code JSONL: `{type: user|assistant, message: {role, content}}`.
     /// User records holding only `tool_result` blocks are not prompts.
-    static func claude(_ data: Data) -> [Message] {
+    static func claude(_ data: Data, cap: Int = messageCap) -> [Message] {
         var out: [Message] = []
         forEachLine(data) { object in
             guard let type = object["type"] as? String, type == "user" || type == "assistant" else { return }
@@ -211,8 +226,8 @@ public enum SessionDigest {
             guard let message = object["message"] as? [String: Any] else { return }
             let role = (message["role"] as? String) ?? type
             guard role == "user" || role == "assistant" else { return }
-            if let text = clean(texts(message["content"], blockTypes: ["text"])) {
-                out.append(Message(role: role, text: text))
+            if let text = clean(texts(message["content"], blockTypes: ["text"]), cap: cap) {
+                out.append(Message(role: role, text: text, timestamp: timestamp(object)))
             }
         }
         return out
@@ -221,21 +236,21 @@ public enum SessionDigest {
     /// Codex rollout JSONL: `response_item` messages with `input_text`/`output_text`
     /// blocks. Older rollouts write the message object on the line itself. When a
     /// file has no message items, `event_msg` user and agent messages are used.
-    static func codex(_ data: Data) -> [Message] {
+    static func codex(_ data: Data, cap: Int = messageCap) -> [Message] {
         var items: [Message] = []
         var events: [Message] = []
         forEachLine(data) { object in
             let payload = (object["payload"] as? [String: Any]) ?? object
             let payloadType = payload["type"] as? String
             if payloadType == "message", let role = payload["role"] as? String, role == "user" || role == "assistant" {
-                if let text = clean(texts(payload["content"], blockTypes: ["input_text", "output_text", "text"])) {
-                    items.append(Message(role: role, text: text))
+                if let text = clean(texts(payload["content"], blockTypes: ["input_text", "output_text", "text"]), cap: cap) {
+                    items.append(Message(role: role, text: text, timestamp: timestamp(object)))
                 }
             } else if object["type"] as? String == "event_msg" {
-                if payloadType == "user_message", let text = clean(payload["message"] as? String) {
-                    events.append(Message(role: "user", text: text))
-                } else if payloadType == "agent_message", let text = clean(payload["message"] as? String) {
-                    events.append(Message(role: "assistant", text: text))
+                if payloadType == "user_message", let text = clean(payload["message"] as? String, cap: cap) {
+                    events.append(Message(role: "user", text: text, timestamp: timestamp(object)))
+                } else if payloadType == "agent_message", let text = clean(payload["message"] as? String, cap: cap) {
+                    events.append(Message(role: "assistant", text: text, timestamp: timestamp(object)))
                 }
             }
         }
@@ -244,13 +259,14 @@ public enum SessionDigest {
 
     /// pi / omp JSONL: `{type: message, message: {role, content}}`. System,
     /// `toolResult`, `toolCall`, and `thinking` content is dropped.
-    static func pi(_ data: Data) -> [Message] {
+    static func pi(_ data: Data, cap: Int = messageCap) -> [Message] {
         var out: [Message] = []
         forEachLine(data) { object in
             guard object["type"] as? String == "message", let message = object["message"] as? [String: Any] else { return }
             guard let role = message["role"] as? String, role == "user" || role == "assistant" else { return }
-            if let text = clean(texts(message["content"], blockTypes: ["text"])) {
-                out.append(Message(role: role, text: text))
+            if let text = clean(texts(message["content"], blockTypes: ["text"]), cap: cap) {
+                let stamp = timestamp(object)
+                out.append(Message(role: role, text: text, timestamp: stamp.isEmpty ? timestamp(message) : stamp))
             }
         }
         return out
@@ -258,7 +274,7 @@ public enum SessionDigest {
 
     /// Gemini CLI (and Qwen legacy) JSON: `{messages: [{type: user|gemini, content}]}`.
     /// A JSONL file of the same records is read line by line.
-    static func gemini(_ data: Data) -> [Message] {
+    static func gemini(_ data: Data, cap: Int = messageCap) -> [Message] {
         var out: [Message] = []
         func take(_ record: [String: Any]) {
             let kind = ((record["type"] as? String) ?? (record["role"] as? String) ?? "").lowercased()
@@ -269,8 +285,8 @@ public enum SessionDigest {
             default: return
             }
             let content = record["content"] ?? record["parts"]
-            if let text = clean(texts(content, blockTypes: ["text"])) {
-                out.append(Message(role: role, text: text))
+            if let text = clean(texts(content, blockTypes: ["text"]), cap: cap) {
+                out.append(Message(role: role, text: text, timestamp: timestamp(record)))
             }
         }
         if let object = wholeJSON(data) {
@@ -287,7 +303,7 @@ public enum SessionDigest {
 
     /// Any other JSON or JSONL: strings under `text`/`content`, with a role taken
     /// from `role`, `message.role`, or `type` when it says user or assistant.
-    static func generic(_ data: Data) -> [Message] {
+    static func generic(_ data: Data, cap: Int = messageCap) -> [Message] {
         var out: [Message] = []
         func take(_ record: [String: Any]) {
             if skippable(record) { return }
@@ -300,8 +316,8 @@ public enum SessionDigest {
             else { return }
             var collected: [String] = []
             walk(record, into: &collected)
-            if let text = clean(collected.joined(separator: "\n")) {
-                out.append(Message(role: role, text: text))
+            if let text = clean(collected.joined(separator: "\n"), cap: cap) {
+                out.append(Message(role: role, text: text, timestamp: timestamp(record)))
             }
         }
         if let object = wholeJSON(data) {
@@ -332,7 +348,7 @@ public enum SessionDigest {
                 out.append(assistant)
                 pendingAssistant = nil
             }
-            if let last = out.last, last == message { continue }
+            if let last = out.last, last.role == message.role, last.text == message.text { continue }
             out.append(message)
         }
         if let assistant = pendingAssistant { out.append(assistant) }
@@ -474,9 +490,9 @@ public enum SessionDigest {
         ("[A-Za-z0-9+/=]{200,}", "[base64]"),
     ].compactMap { pattern, replacement in (try? NSRegularExpression(pattern: pattern)).map { ($0, replacement) } }
 
-    /// Strips injected blocks and base64, trims, cuts to `messageCap`. Nil when
+    /// Strips injected blocks and base64, trims, cuts to `cap` (`messageCap` by default). Nil when
     /// nothing readable is left or the message is agent noise.
-    static func clean(_ raw: String?) -> String? {
+    static func clean(_ raw: String?, cap: Int = messageCap) -> String? {
         guard var text = raw else { return nil }
         for pattern in blockPatterns {
             text = pattern.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "")
@@ -489,8 +505,8 @@ public enum SessionDigest {
         if noisePrefixes.contains(where: { text.hasPrefix($0) }) { return nil }
         // A message that is one injected `<tag>…</tag>` block and nothing else.
         if let wrapped = wholeTagPattern, wrapped.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)) != nil { return nil }
-        if text.utf8.count > messageCap {
-            text = prefix(text, bytes: messageCap) + " …"
+        if text.utf8.count > cap {
+            text = prefix(text, bytes: cap) + " …"
         }
         return text
     }

@@ -279,6 +279,8 @@ extension SessionArchive {
             ] as [String: Any],
             "counts": counts.mapValues { NSNumber(value: $0) },
             "archivedBytes": NSNumber(value: archivedBytes),
+            "textDir": SessionTextIndex.directory(stateDir: SessionPaths.canonical(config.stateDir)).path,
+            "textFiles": NSNumber(value: SessionTextIndex.count(stateDir: config.stateDir)),
             "segments": ["total": referenced.count, "checked": checked, "missing": missing, "unchecked": unchecked, "timedOut": timedOut] as [String: Any],
         ]
     }

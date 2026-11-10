@@ -61,10 +61,11 @@ The `--apply` report adds `archived`, the transcripts this run removed locally a
 {"ok": true, "deviceId": "<uuid>",
  "backend": {"id": "fakecloud", "type": "rclone", "reachable": true, "latencyMs": 120, "error": ""},
  "counts": {"archived": 12, "remote": 3, "restored": 1, "keptLocal": 0, "pendingDelete": 0},
- "archivedBytes": 1048576, "segments": {"total": 5, "checked": 5, "missing": [], "unchecked": [], "timedOut": false}}
+ "archivedBytes": 1048576, "textDir": "/home/me/.local/share/disklessly/sessions/text", "textFiles": 12,
+ "segments": {"total": 5, "checked": 5, "missing": [], "unchecked": [], "timedOut": false}}
 ```
 
-`reachable` is the same `repo.json` check as above; `error` gives the reason when it is false. `archivedBytes` sums the sizes of rows in state `archived`. `segments.total` counts the objects referenced by `archived` and `remote` rows; with `--check-segments` and a reachable backend each one is stat'ed and the ones the backend says are absent are listed in `missing` (otherwise `checked` is 0). A stat that fails (timeout, 5xx, dropped connection) is not proof of absence: that path goes to `unchecked`. The whole check stops after 60 s; paths not reached by then are also `unchecked` and `timedOut` is true. `checked` counts the paths that answered.
+`reachable` is the same `repo.json` check as above; `error` gives the reason when it is false. `archivedBytes` sums the sizes of rows in state `archived`. `segments.total` counts the objects referenced by `archived` and `remote` rows; with `--check-segments` and a reachable backend each one is stat'ed and the ones the backend says are absent are listed in `missing` (otherwise `checked` is 0). A stat that fails (timeout, 5xx, dropped connection) is not proof of absence: that path goes to `unchecked`. The whole check stops after 60 s; paths not reached by then are also `unchecked` and `timedOut` is true. `checked` counts the paths that answered. `textDir` is the absolute path of the plain-text session index (see below) and `textFiles` the number of `.jsonl` files in it.
 
 ## What is cold
 
@@ -161,6 +162,39 @@ words from it) and written as `stateDir/sessions/digests/<entryId>.md` with the 
 sha256. It is never uploaded and it never replaces the transcript: the segment holds the original
 bytes, and `sessions restore` puts those back. A failed `.md` write does not stop the run.
 
+## Plain-text index
+
+Every transcript of this device that is archived also gets a plain-text file,
+`stateDir/sessions/text/<entryId>.jsonl`, so other tools can search archived sessions with ordinary
+file tools without the backend. `stateDir` is `DISKLESSLY_STATE_DIR` or `--state-dir`, by default
+`~/Library/Application Support/Disklessly` on macOS and `$XDG_DATA_HOME/disklessly` (else
+`~/.local/share/disklessly`) on Linux. The directory is mode 0700 and each file 0600; a file is written
+to a temporary name, fsynced, and renamed into place. It is never uploaded.
+
+The first line is a header:
+
+```json
+{"type":"disklessly-archive","version":1,"entryId":"<12 hex>","deviceId":"<uuid>","sessionId":"<id>",
+ "tool":"claude","path":"/abs/original.jsonl","cwd":"/work/demo","title":"…","firstPrompt":"…",
+ "mtime":"2024-11-22T00:00:00Z","archivedAt":"2025-01-01T00:00:00Z","bytes":1234,
+ "segment":"sessions/<device>/claude/<project>/<yyyy-MM>/<…>.tar.zst"}
+```
+
+Each following line is one user or assistant message, in transcript order:
+`{"type":"user"|"assistant","timestamp":"<RFC 3339 or empty>","text":"…"}`. The same extractors and
+filters as the digest are used (tool calls and results, reasoning, images, `data:` URIs and long base64
+runs, and injected blocks are dropped), but every message is kept: one message is cut at 32 KiB, and
+when the message text of a file passes 1 MiB, whole messages are kept from the head (up to half) and
+the tail, with `{"type":"omitted","bytes":N}` between them. Cuts fall on Unicode scalar boundaries.
+
+The file is written from the snapshot bytes before anything is uploaded (with `segment` and
+`archivedAt` empty) and rewritten with them once the segment is committed, before the local delete. If
+the first write fails, that transcript is skipped with reason `text index failed`: nothing is uploaded
+for it and the local file stays. A `pendingDelete` row left by an earlier run without a text file gets
+one from the local file before the delete, or stays pending. `sessions restore` leaves the text file
+in place (a consumer sees the session is back because the original path exists again). Rows of other
+devices (from `reindex`) have no text file.
+
 ## Layout
 
 Each Mac has its own device id. One apply holds `stateDir/locks/sessions.lock`. Cold files are grouped by tool, project, and month, ordered by path, and packed into one or more segments:
@@ -197,7 +231,7 @@ Write-once rules for both the segment and the sidecar:
 
 For each segment:
 
-1. Snapshot the file (stat, read, stat again). A change skips it as `changed while reading`.
+1. Snapshot the file (stat, read, stat again). A change skips it as `changed while reading`. Write the plain-text index from those bytes; a failure skips it as `text index failed`.
 2. Upload the segment and sidecar.
 3. Commit the segment and its entries in SQLite with state `pendingDelete`.
 4. Only then consider deleting the local file.

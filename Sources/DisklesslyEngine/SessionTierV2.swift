@@ -24,17 +24,17 @@ enum SessionTierV2 {
         let wantsEncryption = encrypt || config.sessionEncryption == "aes-gcm"
         let key = try encryptionKey(secrets: store, enabled: wantsEncryption)
         var extraSkipped = skipped
-        var drafts = try snapshot(cold: cold, config: config, skipped: &extraSkipped)
-        // A transcript already in a stored segment (restored or kept local, then
-        // unchanged) is settled against that segment instead of being uploaded again,
-        // so no orphan copy is left behind.
-        drafts = try reuseStored(drafts, deviceId: device.deviceId, database: database, backend: backend, config: config, secrets: store, isOpen: isOpen, beforeDelete: beforeDelete, referenced: referenced, kept: &kept, archived: &archived)
-        // Digests come from the snapshot bytes, before anything is written to the
-        // repo, so a slow or failing digest cannot leave an unindexed segment.
+        let snapped = try snapshot(cold: cold, config: config, skipped: &extraSkipped)
+        // Digests, titles and the plain-text index come from the snapshot bytes,
+        // before anything is written to the repo, so a slow or failing digest cannot
+        // leave an unindexed segment. A transcript whose text index cannot be
+        // written is neither uploaded nor deleted, so every archived session of this
+        // device stays searchable locally.
         var digests: [String: String] = [:]
         var titles: [String: String] = [:]
-        var described: [Snap] = []
-        for var draft in drafts {
+        var texts: [String: [SessionDigest.Message]] = [:]
+        var drafts: [Snap] = []
+        for var draft in snapped {
             digests[draft.member.path] = SessionDigest.digest(tool: draft.tool, path: draft.member.path, data: draft.member.bytes)
             // The row's preview holds the session title, so the list can show what each one was about.
             let title = SessionDigest.title(tool: draft.tool, path: draft.member.path, data: draft.member.bytes)
@@ -42,8 +42,26 @@ enum SessionTierV2 {
             draft.member.title = title
             draft.member.cwd = SessionDigest.workingDirectory(draft.member.bytes) ?? ""
             draft.member.firstPrompt = SessionDigest.firstPrompt(tool: draft.tool, path: draft.member.path, data: draft.member.bytes)
-            described.append(draft)
+            draft.member.entryId = SegmentWriter.entryId(deviceId: device.deviceId, path: draft.member.path, sha256: draft.member.sha256)
+            let messages = SessionText.messages(tool: draft.tool, path: draft.member.path, data: draft.member.bytes)
+            do {
+                try SessionTextIndex.write(header: textHeader(draft.member, deviceId: device.deviceId, segment: "", archivedAt: ""), messages: messages, stateDir: config.stateDir)
+            } catch {
+                extraSkipped.append((draft.member.path, "text index failed"))
+                continue
+            }
+            texts[draft.member.path] = messages
+            drafts.append(draft)
         }
+        // Fills in the segment and archive time once known, still before the
+        // delete. The file written above already exists, so a failure here keeps it.
+        let retext: (SessionMemberDraft, String, String) -> Void = { member, segment, archivedAt in
+            try? SessionTextIndex.write(header: textHeader(member, deviceId: device.deviceId, segment: segment, archivedAt: archivedAt), messages: texts[member.path] ?? [], stateDir: config.stateDir)
+        }
+        // A transcript already in a stored segment (restored or kept local, then
+        // unchanged) is settled against that segment instead of being uploaded again,
+        // so no orphan copy is left behind.
+        let described = try reuseStored(drafts, deviceId: device.deviceId, database: database, backend: backend, config: config, secrets: store, isOpen: isOpen, beforeDelete: beforeDelete, referenced: referenced, retext: retext, kept: &kept, archived: &archived)
         let groups = pack(described, deviceId: device.deviceId, config: config, encrypted: key != nil)
         var segments: [String] = []
         for group in groups {
@@ -67,6 +85,7 @@ enum SessionTierV2 {
             segments.append(built.relativePath)
             if let afterIndexCommit { try afterIndexCommit() }
             for member in group.members {
+                retext(member, built.relativePath, created)
                 beforeDelete?(member.path)
                 if let reason = try settle(member, database: database, isOpen: isOpen, txid: String(built.sha256.prefix(8)), referenced: referenced) {
                     kept.append((member.path, reason))
@@ -80,6 +99,10 @@ enum SessionTierV2 {
         return SessionReport(cold: cold.map(\.path), skipped: extraSkipped, applied: true, keptLocal: kept, segments: segments, archived: archived, uploadedBytes: uploadedBytes)
     }
 
+    static func textHeader(_ member: SessionMemberDraft, deviceId: String, segment: String, archivedAt: String) -> SessionText.Header {
+        SessionText.Header(entryId: member.entryId, deviceId: deviceId, sessionId: SessionIdentity.sessionId(tool: member.tool, path: member.path), tool: member.tool, path: member.path, cwd: member.cwd, title: member.title, firstPrompt: member.firstPrompt, mtime: SessionTextIndex.rfc3339(mtimeNs: member.mtimeNs), archivedAt: archivedAt, bytes: member.size, segment: segment)
+    }
+
     private static func archivedItem(_ member: SessionMemberDraft) -> SessionArchivedItem {
         SessionArchivedItem(id: member.entryId, path: member.path, sessionId: SessionIdentity.sessionId(tool: member.tool, path: member.path), bytes: member.size)
     }
@@ -87,7 +110,7 @@ enum SessionTierV2 {
     /// Settles drafts whose entry id already has a row in a stored segment and
     /// returns the rest. The stored segment is checked first; one that cannot be
     /// read is skipped here and the draft is uploaded again as usual.
-    private static func reuseStored(_ drafts: [Snap], deviceId: String, database: SessionIndexDB, backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore, isOpen: (String) -> Bool, beforeDelete: ((String) -> Void)?, referenced: (String, String) -> Bool, kept: inout [(String, String)], archived: inout [SessionArchivedItem]) throws -> [Snap] {
+    private static func reuseStored(_ drafts: [Snap], deviceId: String, database: SessionIndexDB, backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore, isOpen: (String) -> Bool, beforeDelete: ((String) -> Void)?, referenced: (String, String) -> Bool, retext: (SessionMemberDraft, String, String) -> Void, kept: inout [(String, String)], archived: inout [SessionArchivedItem]) throws -> [Snap] {
         let rows = Dictionary(try database.allEntries().map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let paths = try database.segmentPaths()
         var good = Set<String>()
@@ -115,6 +138,7 @@ enum SessionTierV2 {
             var member = draft.member
             member.entryId = id
             try database.setState(id: id, state: "pendingDelete")
+            retext(member, relative, row.archivedAt)
             beforeDelete?(member.path)
             if let reason = try settle(member, database: database, isOpen: isOpen, txid: String(segmentId.prefix(8)), referenced: referenced) {
                 kept.append((member.path, reason))
@@ -422,7 +446,14 @@ enum SessionTierV2 {
             }
         }
         for row in pending {
-            let member = SessionMemberDraft(entryId: row.id, path: row.path, sha256: row.sha256, size: row.size, mtimeNs: row.mtimeNs, ino: row.ino ?? 0, preview: row.preview, bytes: Data(), tool: row.tool)
+            let member = SessionMemberDraft(entryId: row.id, path: row.path, sha256: row.sha256, size: row.size, mtimeNs: row.mtimeNs, ino: row.ino ?? 0, preview: row.preview, bytes: Data(), tool: row.tool, cwd: row.cwd, title: row.preview, firstPrompt: row.firstPrompt)
+            // A row left by a run that had no text index gets one from the local
+            // file before it is deleted; when that fails the file stays and the row
+            // stays pending for the next run.
+            if !textIndexed(member, row: row, paths: paths, stateDir: config.stateDir) {
+                kept.append((row.path, "text index failed"))
+                continue
+            }
             if let reason = try settle(member, database: database, isOpen: isOpen, txid: String(row.id.prefix(8)), referenced: referenced) {
                 kept.append((row.path, reason))
             } else {
@@ -430,6 +461,23 @@ enum SessionTierV2 {
             }
         }
         return (kept, archived)
+    }
+
+    /// True when the row's text index exists or was just written from the local
+    /// file, or when there is no local file (or it changed) to write it from.
+    private static func textIndexed(_ member: SessionMemberDraft, row: SessionEntryRow, paths: [String: String], stateDir: String) -> Bool {
+        let fm = FileManager.default
+        guard row.deviceId.isEmpty == false, fm.fileExists(atPath: row.path),
+              !fm.fileExists(atPath: SessionTextIndex.url(stateDir: stateDir, id: row.id).path) else { return true }
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: row.path)), SHA256Digest.hex(data) == row.sha256 else { return true }
+        let segment = row.segmentId.flatMap { paths[$0] } ?? row.legacyArchive ?? ""
+        let messages = SessionText.messages(tool: row.tool, path: row.path, data: data)
+        do {
+            try SessionTextIndex.write(header: textHeader(member, deviceId: row.deviceId, segment: segment, archivedAt: row.archivedAt), messages: messages, stateDir: stateDir)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Returns a kept-local reason, or nil when the file was removed and marked archived.
