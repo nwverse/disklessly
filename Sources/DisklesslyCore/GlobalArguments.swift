@@ -138,7 +138,7 @@ public struct UnpackArguments: Equatable {
 }
 
 public struct SessionsArguments: Equatable {
-    public enum Command: Equatable { case tier, search, restore, reindex, migrate, verify, keyInit, keyStatus }
+    public enum Command: Equatable { case tier, search, restore, reindex, migrate, verify, keyInit, keyStatus, list, status }
     public var command: Command
     public var apply: Bool
     public var days: Int?
@@ -148,8 +148,15 @@ public struct SessionsArguments: Equatable {
     public var limit: Int?
     public var to: String?
     public var legacy: Bool
+    /// `sessions --exclude-from FILE|-`: `-` reads standard input.
+    public var excludeFrom: String?
+    /// `sessions list --state`: a row state or `all`.
+    public var state: String
+    public var tool: String?
+    public var digest: Bool
+    public var checkSegments: Bool
 
-    public init(command: Command, apply: Bool = false, days: Int? = nil, home: String? = nil, encrypt: Bool = false, query: String? = nil, limit: Int? = nil, to: String? = nil, legacy: Bool = false) {
+    public init(command: Command, apply: Bool = false, days: Int? = nil, home: String? = nil, encrypt: Bool = false, query: String? = nil, limit: Int? = nil, to: String? = nil, legacy: Bool = false, excludeFrom: String? = nil, state: String = "all", tool: String? = nil, digest: Bool = false, checkSegments: Bool = false) {
         self.command = command
         self.apply = apply
         self.days = days
@@ -159,6 +166,11 @@ public struct SessionsArguments: Equatable {
         self.limit = limit
         self.to = to
         self.legacy = legacy
+        self.excludeFrom = excludeFrom
+        self.state = state
+        self.tool = tool
+        self.digest = digest
+        self.checkSegments = checkSegments
     }
 
     public static func parse(_ args: [String]) throws -> SessionsArguments {
@@ -174,11 +186,16 @@ public struct SessionsArguments: Equatable {
             var days: Int?
             var home: String?
             var encrypt = false
+            var excludeFrom: String?
             while let flag = rest.first {
                 rest.removeFirst()
                 switch flag {
                 case "--apply": apply = true
                 case "--encrypt": encrypt = true
+                case "--exclude-from":
+                    guard let next = rest.first, next == "-" || !next.hasPrefix("-") else { throw DisklesslyError.usage("invalid --exclude-from") }
+                    rest.removeFirst()
+                    excludeFrom = next
                 case "--days":
                     let raw = try value("--days")
                     guard let number = Int(raw) else { throw DisklesslyError.usage("invalid --days \(raw)") }
@@ -187,7 +204,7 @@ public struct SessionsArguments: Equatable {
                 default: throw DisklesslyError.usage("unknown sessions option \(flag)")
                 }
             }
-            return SessionsArguments(command: .tier, apply: apply, days: days, home: home, encrypt: encrypt)
+            return SessionsArguments(command: .tier, apply: apply, days: days, home: home, encrypt: encrypt, excludeFrom: excludeFrom)
         }
         rest.removeFirst()
         switch head {
@@ -218,6 +235,37 @@ public struct SessionsArguments: Equatable {
                 else { throw DisklesslyError.usage("unknown sessions option \(flag)") }
             }
             return SessionsArguments(command: .restore, query: query, to: to)
+        case "list":
+            var state = "all"
+            var tool: String?
+            var limit: Int?
+            var digest = false
+            while let flag = rest.first {
+                rest.removeFirst()
+                switch flag {
+                case "--state":
+                    state = try value("--state")
+                    guard state == "all" || ["archived", "remote", "restored", "keptLocal", "pendingDelete"].contains(state) else {
+                        throw DisklesslyError.usage("invalid --state \(state)")
+                    }
+                case "--tool": tool = try value("--tool")
+                case "--limit":
+                    let raw = try value("--limit")
+                    guard let number = Int(raw), number > 0 else { throw DisklesslyError.usage("invalid --limit \(raw)") }
+                    limit = number
+                case "--digest": digest = true
+                default: throw DisklesslyError.usage("unknown sessions option \(flag)")
+                }
+            }
+            return SessionsArguments(command: .list, limit: limit, state: state, tool: tool, digest: digest)
+        case "status":
+            var check = false
+            while let flag = rest.first {
+                rest.removeFirst()
+                if flag == "--check-segments" { check = true }
+                else { throw DisklesslyError.usage("unknown sessions option \(flag)") }
+            }
+            return SessionsArguments(command: .status, checkSegments: check)
         case "reindex":
             guard rest.isEmpty else { throw DisklesslyError.usage("unknown sessions option \(rest[0])") }
             return SessionsArguments(command: .reindex)

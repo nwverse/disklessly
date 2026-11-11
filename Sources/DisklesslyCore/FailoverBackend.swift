@@ -66,6 +66,17 @@ public final class FailoverBackend: StorageBackend {
         }
     }
 
+    /// Stats `path` on each mirror in order and returns the first that has it.
+    /// Read-only callers use it to learn whether a mirror can serve what the
+    /// primary does not have.
+    public func statOnMirrors(_ path: String) -> BackendStat? {
+        for index in openers.indices {
+            guard let backend = mirror(index) else { continue }
+            if let found = try? backend.stat(path) { return found }
+        }
+        return nil
+    }
+
     public func list(_ path: String) throws -> [String] { try read { try $0.list(path) } }
     public func entries(_ path: String) throws -> [BackendEntry] { try read { try $0.entries(path) } }
     public func stat(_ path: String) throws -> BackendStat? { try read { try $0.stat(path) } }

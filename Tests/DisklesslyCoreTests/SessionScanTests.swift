@@ -367,7 +367,7 @@ final class SessionScanTests: XCTestCase {
 
     // MARK: schema
 
-    func testSchemaTwoIndexMigratesToThree() throws {
+    func testSchemaTwoIndexMigratesThroughThreeToFour() throws {
         let stateDir = root.appendingPathComponent("state")
         let directory = stateDir.appendingPathComponent("sessions")
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -389,8 +389,10 @@ final class SessionScanTests: XCTestCase {
         XCTAssertEqual(process.terminationStatus, 0)
 
         let database = try SessionIndexDB(stateDir: stateDir.path)
-        XCTAssertEqual(try database.userVersion(), 3)
+        XCTAssertEqual(try database.userVersion(), 4)
         XCTAssertEqual(try database.allEntries().map(\.digest), [""])
+        XCTAssertEqual(try database.allEntries().map(\.cwd), [""])
+        XCTAssertEqual(try database.allEntries().map(\.firstPrompt), [""])
         XCTAssertEqual(try database.search(query: "oldpreviewword", limit: 5), ["old1"])
         try database.insert(entries: [SessionEntryRow(id: "new1", segmentId: nil, legacyArchive: nil, member: "m/new1.jsonl", deviceId: "dev", tool: "claude", path: "/h/new.jsonl", sha256: "cd", size: 4, mtimeNs: 2, ino: nil, preview: "p", archivedAt: "2026-01-01T00:00:00Z", state: "archived", digest: "**User:** zebracorn question")])
         XCTAssertEqual(try database.search(query: "zebracorn", limit: 5), ["new1"])
@@ -398,9 +400,9 @@ final class SessionScanTests: XCTestCase {
         XCTAssertEqual(try database.search(query: "zebracorn", limit: 5), ["new1"])
         XCTAssertEqual(try database.digest(id: "new1"), "**User:** zebracorn question")
 
-        // Opening again is a no-op at version 3.
+        // Opening again is a no-op at version 4.
         let reopened = try SessionIndexDB(stateDir: stateDir.path)
-        XCTAssertEqual(try reopened.userVersion(), 3)
+        XCTAssertEqual(try reopened.userVersion(), 4)
         XCTAssertEqual(try reopened.allEntries().count, 2)
     }
 

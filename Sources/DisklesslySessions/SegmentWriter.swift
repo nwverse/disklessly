@@ -12,7 +12,12 @@ public struct SessionMemberDraft: Equatable {
     public var preview: String
     public var bytes: Data
     public var tool: String
-    public init(entryId: String, path: String, sha256: String, size: Int64, mtimeNs: Int64, ino: Int64, preview: String, bytes: Data, tool: String) {
+    /// Working directory, title, and first prompt, recorded in the segment index
+    /// and sidecar so another device can list the session without the transcript.
+    public var cwd: String
+    public var title: String
+    public var firstPrompt: String
+    public init(entryId: String, path: String, sha256: String, size: Int64, mtimeNs: Int64, ino: Int64, preview: String, bytes: Data, tool: String, cwd: String = "", title: String = "", firstPrompt: String = "") {
         self.entryId = entryId
         self.path = path
         self.sha256 = sha256
@@ -22,6 +27,9 @@ public struct SessionMemberDraft: Equatable {
         self.preview = preview
         self.bytes = bytes
         self.tool = tool
+        self.cwd = cwd
+        self.title = title
+        self.firstPrompt = firstPrompt
     }
 }
 
@@ -61,7 +69,9 @@ public enum SegmentWriter {
     /// Build one write-once segment. The in-tar index omits `sha256`, `bytes`, and `segment`:
     /// the object name contains the sha8 of the stored bytes, so it cannot also live inside them.
     /// Encrypted AAD is the same relative path with the `-sha8` token removed, for the same reason.
-    public static func build(deviceId: String, tool: String, now: Date, members: [SessionMemberDraft], key: SymmetricKey?) throws -> BuiltSegment {
+    /// With `project` and `month` the segment goes to `sessions/<device>/<tool>/<project>/<month>/`;
+    /// without them, to the flat `sessions/<device>/<tool>/` layout of earlier versions.
+    public static func build(deviceId: String, tool: String, now: Date, members: [SessionMemberDraft], key: SymmetricKey?, project: String? = nil, month: String? = nil) throws -> BuiltSegment {
         let created = createdAt(now)
         let stamp = stamp(now)
         let encryption = key == nil ? "none" : "aes-256-gcm"
@@ -77,6 +87,9 @@ public enum SegmentWriter {
                 "size": member.size,
                 "mtimeNs": member.mtimeNs,
                 "preview": member.preview,
+                "cwd": member.cwd,
+                "title": member.title,
+                "firstPrompt": member.firstPrompt,
             ])
             let when = Date(timeIntervalSince1970: Double(member.mtimeNs) / 1_000_000_000)
             files.append((name: "m/\(member.entryId).jsonl", data: member.bytes, mtime: when))
@@ -90,12 +103,22 @@ public enum SegmentWriter {
             "encryption": encryption,
             "members": listed,
         ]
+        if let project, let month {
+            index["project"] = project
+            index["month"] = month
+        }
         if let keyId { index["keyId"] = keyId } else { index["keyId"] = NSNull() }
         let indexData = try JSONSerialization.data(withJSONObject: index, options: [.sortedKeys])
         files.insert((name: "index.json", data: indexData, mtime: now), at: 0)
         let tar = try TarWriter.archive(files)
         let compressed = try Zstd.compress(tar, level: 3)
-        let plainName = "sessions/\(deviceId)/\(tool)/\(stamp)"
+        let folder: String
+        if let project, let month {
+            folder = "sessions/\(deviceId)/\(tool)/\(project)/\(month)"
+        } else {
+            folder = "sessions/\(deviceId)/\(tool)"
+        }
+        let plainName = "\(folder)/\(stamp)"
         let stored: Data
         let suffix: String
         if let key {

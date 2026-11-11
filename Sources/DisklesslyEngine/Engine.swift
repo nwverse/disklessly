@@ -361,6 +361,34 @@ public struct DisklesslyEngine {
         return try LocalFolderBackend(root: root)
     }
     public var repo: any StorageBackend { get throws { try openBackend() } }
+
+    /// The folder of a local or iCloud repo by id; nil for remote backends.
+    public func localRepoRoot(id: String) -> URL? {
+        if id == RuntimeConfig.defaultRepoId { return URL(fileURLWithPath: config.repoPath) }
+        guard let endpoint = config.backends.first(where: { $0.id == id }), endpoint.type == "local" || endpoint.type == "icloud" else { return nil }
+        let path = endpoint.mountPoint ?? endpoint.root
+        return path.isEmpty ? nil : URL(fileURLWithPath: path)
+    }
+
+    /// Like `openRepo`, but a local or iCloud repo whose folder is missing (a disk
+    /// that is not mounted) throws instead of being created empty.
+    public func openExistingRepo(id: String) throws -> any StorageBackend {
+        if let root = localRepoRoot(id: id), !FileManager.default.fileExists(atPath: root.path) {
+            throw DisklesslyError.backend("repo folder \(root.path) does not exist (is its disk mounted?)")
+        }
+        return try openRepo(id: id)
+    }
+
+    /// The active repo, with mirror failover, for the sessions commands: opening
+    /// it never creates a missing local repo folder (see `openExistingRepo`).
+    public func openExistingBackend() throws -> any StorageBackend {
+        let primary: any StorageBackend
+        if let backendOverride { primary = backendOverride } else { primary = try openExistingRepo(id: config.activeRepoId) }
+        let mirrors = config.mirrorBackendIds.filter { $0 != config.activeRepoId }
+        guard !mirrors.isEmpty else { return primary }
+        let engine = self
+        return FailoverBackend(primary: primary, mirrors: mirrors.map { id in (id: id, open: { try engine.openExistingRepo(id: id) }) })
+    }
     public func saveConfig() throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

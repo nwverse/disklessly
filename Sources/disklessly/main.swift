@@ -71,7 +71,9 @@ Encrypted images
   images encrypt on|off           encrypt new packs before upload (pack --encrypt overrides)
 
 Coding-agent sessions
-  sessions [--apply] [--days N] [--home DIR] [--encrypt] | sessions search QUERY [--limit N]
+  sessions [--apply] [--days N] [--home DIR] [--encrypt] [--exclude-from FILE|-]
+  sessions list [--state archived|remote|restored|keptLocal|pendingDelete|all] [--tool ID] [--limit N] [--digest]
+  sessions status [--check-segments] | sessions search QUERY [--limit N]
   sessions restore ID|PATH [--to PATH] | sessions reindex | sessions migrate | sessions verify [--legacy]
   sessions key init | sessions key status
 
@@ -106,7 +108,9 @@ Container images (Docker, Podman)
   containers restore RECORD | containers clean ENGINE/ID | containers forget RECORD
 
 Coding-agent sessions
-  sessions [--apply] [--days N] [--home DIR] [--encrypt] | sessions search QUERY [--limit N]
+  sessions [--apply] [--days N] [--home DIR] [--encrypt] [--exclude-from FILE|-]
+  sessions list [--state archived|remote|restored|keptLocal|pendingDelete|all] [--tool ID] [--limit N] [--digest]
+  sessions status [--check-segments] | sessions search QUERY [--limit N]
   sessions restore ID|PATH [--to PATH] | sessions reindex | sessions migrate | sessions verify [--legacy]
   sessions key init | sessions key status
 
@@ -594,19 +598,51 @@ do {
     case "sessions":
         let parsed = try SessionsArguments.parse(args)
         let secrets = engine.secrets
+        /// The repo for apply, restore, and reindex. One that cannot even be opened is unreachable (exit 4).
+        func sessionRepo() throws -> any StorageBackend { try engine.openSessionRepo() }
         switch parsed.command {
         case .tier:
-            let report = try SessionArchive.tier(config: config, backend: engine.repo, apply: parsed.apply, coldDays: parsed.days, home: parsed.home, isOpen: liveSessionOpen, secrets: secrets, encrypt: parsed.encrypt)
+            var exclusions: (() -> SessionExclusions)?
+            if let source = parsed.excludeFrom {
+                // A file is read again before each local delete; stdin can be read once.
+                if source == "-" {
+                    let list = SessionExclusions.parse(String(decoding: FileHandle.standardInput.readDataToEndOfFile(), as: UTF8.self))
+                    exclusions = { list }
+                } else {
+                    guard let data = FileManager.default.contents(atPath: source) else { throw DisklesslyError.usage("cannot read --exclude-from \(source)") }
+                    let first = SessionExclusions.parse(String(decoding: data, as: UTF8.self))
+                    exclusions = {
+                        guard let again = FileManager.default.contents(atPath: source) else { return first }
+                        var merged = SessionExclusions.parse(String(decoding: again, as: UTF8.self))
+                        merged.paths.formUnion(first.paths)
+                        merged.ids.formUnion(first.ids)
+                        return merged
+                    }
+                }
+            }
+            let report = try SessionArchive.tier(config: config, backend: parsed.apply ? sessionRepo() : engine.repo, apply: parsed.apply, coldDays: parsed.days, home: parsed.home, isOpen: liveSessionOpen, secrets: secrets, encrypt: parsed.encrypt, exclusions: exclusions, requireRepoMarker: true)
             emit(report.jsonObject())
+        case .list:
+            emit(try SessionArchive.listSessions(config: config, state: parsed.state, tool: parsed.tool, limit: parsed.limit, includeDigest: parsed.digest))
+        case .status:
+            let id = config.activeRepoId
+            let type = config.backends.first(where: { $0.id == id })?.type ?? config.backend
+            let current = engine
+            emit(try SessionArchive.sessionStatus(config: config, backendId: id, backendType: type, checkSegments: parsed.checkSegments, open: { try current.openExistingBackend() }))
         case .search:
             let hits = try SessionArchive.search(config: config, query: parsed.query ?? "")
             let limited = parsed.limit.map { Array(hits.prefix($0)) } ?? hits
-            emit(limited.map { ["id": $0.id, "tool": $0.tool, "path": $0.path, "preview": $0.preview, "title": ManagementUI.sessionTitle($0)] })
+            let details = try SessionArchive.searchDetails(config: config)
+            emit(limited.map { hit -> [String: Any] in
+                var object: [String: Any] = ["id": hit.id, "tool": hit.tool, "path": hit.path, "preview": hit.preview, "title": ManagementUI.sessionTitle(hit)]
+                for (key, value) in details[hit.id] ?? [:] { object[key] = value }
+                return object
+            })
         case .restore:
-            let path = try SessionArchive.restore(config: config, backend: engine.repo, query: parsed.query ?? "", to: parsed.to, secrets: secrets)
-            emit(["ok": true, "path": path])
+            let restored = try SessionArchive.restoreSession(config: config, open: { try sessionRepo() }, query: parsed.query ?? "", to: parsed.to, secrets: secrets, requireRepoMarker: true)
+            emit(["ok": true, "path": restored.path, "id": restored.id, "sessionId": restored.sessionId])
         case .reindex:
-            let added = try SessionArchive.reindex(config: config, backend: engine.repo, secrets: secrets)
+            let added = try SessionArchive.reindex(config: config, backend: sessionRepo(), secrets: secrets, requireRepoMarker: true)
             emit(["ok": true, "added": added])
         case .migrate:
             _ = try SessionArchive.search(config: config, query: " ")

@@ -85,7 +85,7 @@ final class SessionsV2CoreTests: XCTestCase {
         let path = directory.appendingPathComponent("index.sqlite").path
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/sqlite3")
-        process.arguments = [path, "PRAGMA user_version = 4;"]
+        process.arguments = [path, "PRAGMA user_version = 5;"]
         try process.run()
         process.waitUntilExit()
         XCTAssertEqual(process.terminationStatus, 0)

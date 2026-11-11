@@ -43,8 +43,12 @@ public struct SessionEntryRow: Equatable {
     /// Short text digest of the transcript (user prompts and final answers). Empty
     /// for rows archived before schema 3 or imported from another Mac.
     public var digest: String
+    /// Working directory the session ran in (schema 4). Empty when unknown.
+    public var cwd: String
+    /// First prompt the user typed, at most 500 characters (schema 4).
+    public var firstPrompt: String
 
-    public init(id: String, segmentId: String?, legacyArchive: String?, member: String, deviceId: String, tool: String, path: String, sha256: String, size: Int64, mtimeNs: Int64, ino: Int64?, preview: String, archivedAt: String, state: String, digest: String = "") {
+    public init(id: String, segmentId: String?, legacyArchive: String?, member: String, deviceId: String, tool: String, path: String, sha256: String, size: Int64, mtimeNs: Int64, ino: Int64?, preview: String, archivedAt: String, state: String, digest: String = "", cwd: String = "", firstPrompt: String = "") {
         self.id = id
         self.segmentId = segmentId
         self.legacyArchive = legacyArchive
@@ -60,12 +64,15 @@ public struct SessionEntryRow: Equatable {
         self.archivedAt = archivedAt
         self.state = state
         self.digest = digest
+        self.cwd = cwd
+        self.firstPrompt = firstPrompt
     }
 }
 
 public final class SessionIndexDB {
-    /// Schema 3 added `entries.digest` and the `digest` FTS column.
-    public static let schemaVersion: Int64 = 3
+    /// Schema 3 added `entries.digest` and the `digest` FTS column; schema 4 added
+    /// `entries.cwd` and `entries.first_prompt`.
+    public static let schemaVersion: Int64 = 4
     private var db: OpaquePointer?
     private var compiledFTS = false
     public var ftsAvailable = false
@@ -90,6 +97,10 @@ public final class SessionIndexDB {
         var fts = false
         if version == 2 {
             try migrateV2toV3()
+            version = 3
+        }
+        if version == 3 {
+            try migrateV3toV4()
             version = Self.schemaVersion
         }
         if version == 0 {
@@ -143,6 +154,26 @@ public final class SessionIndexDB {
         }
     }
 
+    /// v3 → v4: add `entries.cwd` and `entries.first_prompt` in one transaction.
+    private func migrateV3toV4() throws {
+        try exec("BEGIN IMMEDIATE")
+        do {
+            if try pragma("user_version") == 3 {
+                if !columnExists(table: "entries", column: "cwd") {
+                    try exec("ALTER TABLE entries ADD COLUMN cwd TEXT NOT NULL DEFAULT ''")
+                }
+                if !columnExists(table: "entries", column: "first_prompt") {
+                    try exec("ALTER TABLE entries ADD COLUMN first_prompt TEXT NOT NULL DEFAULT ''")
+                }
+                try exec("PRAGMA user_version = 4")
+            }
+            try exec("COMMIT")
+        } catch {
+            _ = try? exec("ROLLBACK")
+            throw error
+        }
+    }
+
     private func columnExists(table: String, column: String) -> Bool {
         guard let statement = try? prepare("PRAGMA table_info(\(table))") else { return false }
         defer { sqlite3_finalize(statement) }
@@ -178,7 +209,7 @@ public final class SessionIndexDB {
     }
 
     public func allEntries() throws -> [SessionEntryRow] {
-        let sql = "SELECT id, segment_id, legacy_archive, member, device_id, tool, path, sha256, size, mtime_ns, ino, preview, archived_at, state, digest FROM entries"
+        let sql = "SELECT id, segment_id, legacy_archive, member, device_id, tool, path, sha256, size, mtime_ns, ino, preview, archived_at, state, digest, cwd, first_prompt FROM entries"
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
         var rows: [SessionEntryRow] = []
@@ -226,6 +257,17 @@ public final class SessionIndexDB {
     public func commit(segment: SessionSegmentRow, entries: [SessionEntryRow]) throws {
         try exec("BEGIN IMMEDIATE")
         do {
+            // The segment id is the hash of the stored bytes. A row with the same id
+            // and path is the same object (written again within one second, so
+            // `writeOnce` found it in place); keep it and only add the entries.
+            if try segmentPaths()[segment.id] == segment.path {
+                for entry in entries {
+                    try deleteEntry(id: entry.id)
+                    try insertOne(entry)
+                }
+                try exec("COMMIT")
+                return
+            }
             let statement = try prepare("""
             INSERT INTO segments(id, path, device_id, tool, created_at, bytes, codec, encrypted, key_id)
             VALUES(?,?,?,?,?,?,?,?,?)
@@ -244,12 +286,49 @@ public final class SessionIndexDB {
                 throw DisklesslyError.failure("session segment insert failed: \(message())")
             }
             for entry in entries {
+                // The entry id is a hash of device, path, and content. A row with the
+                // same id is the same transcript archived before (then restored, or
+                // kept local); the new segment replaces it.
+                try deleteEntry(id: entry.id)
                 try insertOne(entry)
             }
             try exec("COMMIT")
         } catch {
             _ = try? exec("ROLLBACK")
             throw error
+        }
+    }
+
+    /// Every segment row, keyed by id.
+    public func segments() throws -> [String: SessionSegmentRow] {
+        let statement = try prepare("SELECT id, path, device_id, tool, created_at, bytes, codec, encrypted, key_id FROM segments")
+        defer { sqlite3_finalize(statement) }
+        var rows: [String: SessionSegmentRow] = [:]
+        while sqlite3_step(statement) == SQLITE_ROW {
+            func text(_ index: Int32) -> String? {
+                guard let raw = sqlite3_column_text(statement, index) else { return nil }
+                return String(cString: raw)
+            }
+            let row = SessionSegmentRow(id: text(0) ?? "", path: text(1) ?? "", deviceId: text(2) ?? "", tool: text(3) ?? "", createdAt: text(4) ?? "", bytes: sqlite3_column_int64(statement, 5), codec: text(6) ?? "", encrypted: sqlite3_column_int64(statement, 7) != 0, keyId: text(8))
+            rows[row.id] = row
+        }
+        return rows
+    }
+
+    private func deleteEntry(id: String) throws {
+        let statement = try prepare("DELETE FROM entries WHERE id = ?")
+        defer { sqlite3_finalize(statement) }
+        bind(statement, 1, id)
+        guard sqlite3_step(statement) == SQLITE_DONE else {
+            throw DisklesslyError.failure("session index delete failed: \(message())")
+        }
+        if ftsAvailable && compiledFTS {
+            let fts = try prepare("DELETE FROM entries_fts WHERE id = ?")
+            defer { sqlite3_finalize(fts) }
+            bind(fts, 1, id)
+            guard sqlite3_step(fts) == SQLITE_DONE else {
+                throw DisklesslyError.failure("session index fts delete failed: \(message())")
+            }
         }
     }
 
@@ -274,7 +353,9 @@ public final class SessionIndexDB {
             preview: text(11) ?? "",
             archivedAt: text(12) ?? "",
             state: text(13) ?? "",
-            digest: text(14) ?? ""
+            digest: text(14) ?? "",
+            cwd: text(15) ?? "",
+            firstPrompt: text(16) ?? ""
         )
     }
 
@@ -296,15 +377,15 @@ public final class SessionIndexDB {
         CREATE TABLE entries(id TEXT PRIMARY KEY, segment_id TEXT, legacy_archive TEXT, member TEXT NOT NULL,
           device_id TEXT NOT NULL, tool TEXT NOT NULL, path TEXT NOT NULL, sha256 TEXT NOT NULL, size INTEGER NOT NULL,
           mtime_ns INTEGER NOT NULL, ino INTEGER, preview TEXT NOT NULL, archived_at TEXT NOT NULL, state TEXT NOT NULL,
-          digest TEXT NOT NULL DEFAULT '')
+          digest TEXT NOT NULL DEFAULT '', cwd TEXT NOT NULL DEFAULT '', first_prompt TEXT NOT NULL DEFAULT '')
         """)
         try exec("CREATE INDEX entries_path ON entries(path)")
     }
 
     private func insertOne(_ entry: SessionEntryRow) throws {
         let sql = """
-        INSERT INTO entries(id, segment_id, legacy_archive, member, device_id, tool, path, sha256, size, mtime_ns, ino, preview, archived_at, state, digest)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        INSERT INTO entries(id, segment_id, legacy_archive, member, device_id, tool, path, sha256, size, mtime_ns, ino, preview, archived_at, state, digest, cwd, first_prompt)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """
         let statement = try prepare(sql)
         defer { sqlite3_finalize(statement) }
@@ -323,6 +404,8 @@ public final class SessionIndexDB {
         bind(statement, 13, entry.archivedAt)
         bind(statement, 14, entry.state)
         bind(statement, 15, entry.digest)
+        bind(statement, 16, entry.cwd)
+        bind(statement, 17, entry.firstPrompt)
         guard sqlite3_step(statement) == SQLITE_DONE else {
             throw DisklesslyError.failure("session index insert failed: \(message())")
         }

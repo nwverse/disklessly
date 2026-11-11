@@ -70,7 +70,10 @@ D devices >/dev/null || fail "devices"
 D license | grep -qi 'free\|licen' || fail "license"
 
 # Dashboard: status says linux, app routes answer 501, usage scan finishes.
-D ui --json > ui.json & UI=$!
+# Start the binary itself (not through the D function) so $! is the server's pid; backgrounding
+# a function forks a subshell, and killing that left the server running with this script's stdout.
+"$BIN" ui --json > ui.json & UI=$!
+trap 'kill "$UI" 2>/dev/null || true' EXIT
 for _ in $(seq 50); do [ -s ui.json ] && break; sleep 0.1; done
 url="$(sed -E 's/.*"url":"([^"]+)".*/\1/' ui.json)"
 base="${url%%/?token=*}"; token="${url##*token=}"

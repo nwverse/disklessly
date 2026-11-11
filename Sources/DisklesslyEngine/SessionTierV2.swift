@@ -4,7 +4,7 @@ import DisklesslyCore
 import DisklesslySessions
 
 enum SessionTierV2 {
-    static func apply(config: RuntimeConfig, backend: any StorageBackend, now: Date, cold: [SessionCandidate], skipped: [(String, String)], secrets: (any SecretStore)?, encrypt: Bool, isOpen: (String) -> Bool, beforeDelete: ((String) -> Void)?, afterIndexCommit: (() throws -> Void)?) throws -> SessionReport {
+    static func apply(config: RuntimeConfig, backend: any StorageBackend, now: Date, cold: [SessionCandidate], skipped: [(String, String)], secrets: (any SecretStore)?, encrypt: Bool, isOpen: (String) -> Bool, beforeDelete: ((String) -> Void)?, afterIndexCommit: (() throws -> Void)?, referenced: @escaping (String, String) -> String? = { _, _ in nil }) throws -> SessionReport {
         let lockURL = URL(fileURLWithPath: config.stateDir).appendingPathComponent("locks/sessions.lock")
         try FileManager.default.createDirectory(at: lockURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         var lock = FileLock(path: lockURL.path)
@@ -14,26 +14,67 @@ enum SessionTierV2 {
         let device = try LocalDeviceStore.loadOrCreate(stateDir: URL(fileURLWithPath: config.stateDir), suggestedName: "mac")
         let database = try SessionIndexDB(stateDir: config.stateDir)
         _ = try SessionMigration.migrateIfNeeded(stateDir: config.stateDir, deviceId: device.deviceId, database: database)
+        // Runs last, also when the run throws: text files of transcripts that did
+        // not end up indexed, or of an older version of the same session, are
+        // removed, and headers still without a segment are filled in.
+        defer { pruneTextIndex(database: database, deviceId: device.deviceId, stateDir: config.stateDir) }
         let store = secrets ?? MemorySecretStore()
-        var kept = try finishPending(database: database, isOpen: isOpen, backend: backend, config: config, secrets: store)
+        // `referenced` (exclusion list and reference scan) is asked again before
+        // each local delete, so a session referenced after the run started is kept.
+        let settled = try finishPending(database: database, isOpen: isOpen, backend: backend, config: config, secrets: store, referenced: referenced)
+        var kept = settled.kept
+        var archived = settled.archived
         let wantsEncryption = encrypt || config.sessionEncryption == "aes-gcm"
         let key = try encryptionKey(secrets: store, enabled: wantsEncryption)
         var extraSkipped = skipped
-        let drafts = try snapshot(cold: cold, config: config, skipped: &extraSkipped)
-        // Digests come from the snapshot bytes, before anything is written to the
-        // repo, so a slow or failing digest cannot leave an unindexed segment.
+        let snapped = try snapshot(cold: cold, config: config, skipped: &extraSkipped)
+        // Digests, titles and the plain-text index come from the snapshot bytes,
+        // before anything is written to the repo, so a slow or failing digest cannot
+        // leave an unindexed segment. A transcript whose text index cannot be
+        // written is neither uploaded nor deleted, so every archived session of this
+        // device stays searchable locally.
         var digests: [String: String] = [:]
         var titles: [String: String] = [:]
-        for draft in drafts {
+        var texts: [String: [SessionDigest.Message]] = [:]
+        var drafts: [Snap] = []
+        for var draft in snapped {
             digests[draft.member.path] = SessionDigest.digest(tool: draft.tool, path: draft.member.path, data: draft.member.bytes)
             // The row's preview holds the session title, so the list can show what each one was about.
             let title = SessionDigest.title(tool: draft.tool, path: draft.member.path, data: draft.member.bytes)
             if !title.isEmpty { titles[draft.member.path] = title }
+            draft.member.title = title
+            draft.member.cwd = SessionDigest.workingDirectory(draft.member.bytes) ?? ""
+            draft.member.firstPrompt = SessionDigest.firstPrompt(tool: draft.tool, path: draft.member.path, data: draft.member.bytes)
+            draft.member.entryId = SegmentWriter.entryId(deviceId: device.deviceId, path: draft.member.path, sha256: draft.member.sha256)
+            let messages = SessionText.messages(tool: draft.tool, path: draft.member.path, data: draft.member.bytes)
+            // The entry id covers the bytes, so an existing file already holds this
+            // text; it is left as it is (its header may carry the segment of a
+            // stored copy that reuseStored settles against).
+            do {
+                if !SessionTextIndex.exists(stateDir: config.stateDir, id: draft.member.entryId) {
+                    try SessionTextIndex.write(header: textHeader(draft.member, deviceId: device.deviceId, segment: "", archivedAt: ""), messages: messages, stateDir: config.stateDir)
+                }
+            } catch {
+                extraSkipped.append((draft.member.path, "text index failed"))
+                continue
+            }
+            texts[draft.member.path] = messages
+            drafts.append(draft)
         }
-        let groups = pack(drafts, deviceId: device.deviceId, config: config)
+        // Fills in the segment and archive time once known, still before the
+        // delete. The file written above already exists, so a failure here does not
+        // block the delete; pruneTextIndex fills the header in on this or a later run.
+        let retext: (SessionMemberDraft, String, String) -> Void = { member, segment, archivedAt in
+            try? SessionTextIndex.write(header: textHeader(member, deviceId: device.deviceId, segment: segment, archivedAt: archivedAt), messages: texts[member.path] ?? [], stateDir: config.stateDir)
+        }
+        // A transcript already in a stored segment (restored or kept local, then
+        // unchanged) is settled against that segment instead of being uploaded again,
+        // so no orphan copy is left behind.
+        let described = try reuseStored(drafts, deviceId: device.deviceId, database: database, backend: backend, config: config, secrets: store, isOpen: isOpen, beforeDelete: beforeDelete, referenced: referenced, retext: retext, kept: &kept, archived: &archived)
+        let groups = pack(described, deviceId: device.deviceId, config: config, encrypted: key != nil)
         var segments: [String] = []
         for group in groups {
-            let built = try SegmentWriter.build(deviceId: device.deviceId, tool: group.tool, now: now, members: group.members, key: key)
+            let built = try SegmentWriter.build(deviceId: device.deviceId, tool: group.tool, now: now, members: group.members, key: key, project: group.project, month: group.month)
             try publish(built, backend: backend)
             // Round-trip the stored object before the index says pendingDelete.
             // A later finishPending settles that state, so a failed check must
@@ -43,7 +84,7 @@ enum SessionTierV2 {
             let row = SessionSegmentRow(id: built.sha256, path: built.relativePath, deviceId: device.deviceId, tool: group.tool, createdAt: created, bytes: Int64(built.stored.count), codec: built.codec, encrypted: key != nil, keyId: built.keyId)
             // The transcript itself is what was packed; the digest only goes into the index.
             let entries = group.members.map { member in
-                SessionEntryRow(id: member.entryId, segmentId: built.sha256, legacyArchive: nil, member: "m/\(member.entryId).jsonl", deviceId: device.deviceId, tool: member.tool, path: member.path, sha256: member.sha256, size: member.size, mtimeNs: member.mtimeNs, ino: member.ino, preview: titles[member.path] ?? member.preview, archivedAt: created, state: "pendingDelete", digest: digests[member.path] ?? "")
+                SessionEntryRow(id: member.entryId, segmentId: built.sha256, legacyArchive: nil, member: "m/\(member.entryId).jsonl", deviceId: device.deviceId, tool: member.tool, path: member.path, sha256: member.sha256, size: member.size, mtimeNs: member.mtimeNs, ino: member.ino, preview: titles[member.path] ?? member.preview, archivedAt: created, state: "pendingDelete", digest: digests[member.path] ?? "", cwd: member.cwd, firstPrompt: member.firstPrompt)
             }
             try database.commit(segment: row, entries: entries)
             for entry in entries {
@@ -53,13 +94,133 @@ enum SessionTierV2 {
             segments.append(built.relativePath)
             if let afterIndexCommit { try afterIndexCommit() }
             for member in group.members {
+                retext(member, built.relativePath, created)
                 beforeDelete?(member.path)
-                if let reason = try settle(member, database: database, isOpen: isOpen, txid: String(built.sha256.prefix(8))) {
+                if let reason = try settle(member, database: database, isOpen: isOpen, txid: String(built.sha256.prefix(8)), referenced: referenced) {
                     kept.append((member.path, reason))
+                } else {
+                    archived.append(archivedItem(member))
                 }
             }
         }
-        return SessionReport(cold: cold.map(\.path), skipped: extraSkipped, applied: true, keptLocal: kept, segments: segments)
+        // Original size of what this run archived, so a member kept local is not counted.
+        let uploadedBytes = archived.reduce(Int64(0)) { $0 + $1.bytes }
+        return SessionReport(cold: cold.map(\.path), skipped: extraSkipped, applied: true, keptLocal: kept, segments: segments, archived: archived, uploadedBytes: uploadedBytes)
+    }
+
+    static func textHeader(_ member: SessionMemberDraft, deviceId: String, segment: String, archivedAt: String) -> SessionText.Header {
+        SessionText.Header(entryId: member.entryId, deviceId: deviceId, sessionId: SessionIdentity.sessionId(tool: member.tool, path: member.path), tool: member.tool, path: member.path, cwd: member.cwd, title: member.title, firstPrompt: member.firstPrompt, mtime: SessionTextIndex.rfc3339(mtimeNs: member.mtimeNs), archivedAt: archivedAt, bytes: member.size, segment: segment)
+    }
+
+    /// Keeps one text file per session of this device: the one of the newest
+    /// index row for its path (a row that is not restored before a restored one).
+    /// Files with no index row (a run that failed or stopped after the first
+    /// write), files of older versions of a path, and leftover temp files are
+    /// removed. A kept file whose header still lacks the segment or archive time
+    /// gets them from the row. Failures are ignored; the next run tries again.
+    static func pruneTextIndex(database: SessionIndexDB, deviceId: String, stateDir: String) {
+        let (ids, temps) = SessionTextIndex.listing(stateDir: stateDir)
+        let dir = SessionTextIndex.directory(stateDir: stateDir)
+        for name in temps { try? FileManager.default.removeItem(at: dir.appendingPathComponent(name)) }
+        guard !ids.isEmpty, let rows = try? database.allEntries(), let paths = try? database.segmentPaths() else { return }
+        let mine = rows.filter { $0.deviceId == deviceId }
+        var current: [String: SessionEntryRow] = [:]
+        for row in mine {
+            guard let other = current[row.path] else { current[row.path] = row; continue }
+            let rank = { (r: SessionEntryRow) in (r.state == "restored" ? 0 : 1, r.archivedAt, r.mtimeNs, r.id) }
+            if rank(other) < rank(row) { current[row.path] = row }
+        }
+        let keep = Dictionary(current.values.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for id in ids {
+            guard let row = keep[id] else {
+                try? FileManager.default.removeItem(at: SessionTextIndex.url(stateDir: stateDir, id: id))
+                continue
+            }
+            let segment = row.segmentId.flatMap { paths[$0] } ?? row.legacyArchive ?? ""
+            guard !segment.isEmpty, var header = SessionTextIndex.header(stateDir: stateDir, id: id),
+                  header.segment.isEmpty || header.archivedAt.isEmpty else { continue }
+            header.segment = segment
+            header.archivedAt = row.archivedAt
+            try? SessionTextIndex.rewriteHeader(header, stateDir: stateDir)
+        }
+    }
+
+    private static func archivedItem(_ member: SessionMemberDraft) -> SessionArchivedItem {
+        SessionArchivedItem(id: member.entryId, path: member.path, sessionId: SessionIdentity.sessionId(tool: member.tool, path: member.path), bytes: member.size)
+    }
+
+    /// Settles drafts whose entry id already has a row in a stored segment and
+    /// returns the rest. The stored segment is checked first; one that cannot be
+    /// read is skipped here and the draft is uploaded again as usual.
+    private static func reuseStored(_ drafts: [Snap], deviceId: String, database: SessionIndexDB, backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore, isOpen: (String) -> Bool, beforeDelete: ((String) -> Void)?, referenced: (String, String) -> String?, retext: (SessionMemberDraft, String, String) -> Void, kept: inout [(String, String)], archived: inout [SessionArchivedItem]) throws -> [Snap] {
+        let rows = Dictionary(try database.allEntries().map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let paths = try database.segmentPaths()
+        var good = Set<String>()
+        var bad = Set<String>()
+        var rest: [Snap] = []
+        for draft in drafts {
+            let id = SegmentWriter.entryId(deviceId: deviceId, path: draft.member.path, sha256: draft.member.sha256)
+            guard let row = rows[id], row.state == "restored" || row.state == "keptLocal",
+                  row.sha256 == draft.member.sha256, let segmentId = row.segmentId, let relative = paths[segmentId], !bad.contains(segmentId) else {
+                rest.append(draft)
+                continue
+            }
+            if !good.contains(segmentId) {
+                do {
+                    try verifyIndexedSegment(relative: relative, segmentId: segmentId, database: database, backend: backend, config: config, secrets: secrets)
+                    good.insert(segmentId)
+                } catch let error as DisklesslyError where error.exitCode == 4 {
+                    throw error
+                } catch {
+                    bad.insert(segmentId)
+                    rest.append(draft)
+                    continue
+                }
+            }
+            var member = draft.member
+            member.entryId = id
+            try database.setState(id: id, state: "pendingDelete")
+            retext(member, relative, row.archivedAt)
+            beforeDelete?(member.path)
+            if let reason = try settle(member, database: database, isOpen: isOpen, txid: String(segmentId.prefix(8)), referenced: referenced) {
+                kept.append((member.path, reason))
+            } else {
+                archived.append(archivedItem(member))
+            }
+        }
+        return rest
+    }
+
+    /// Paths of transcripts restored less than `days` ago (by the file's status
+    /// change time, which the restore sets) and unchanged since: same size and
+    /// mtime as the restored row. pi and Codex get their old mtime back on
+    /// restore, so without this the next run would archive them again at once.
+    static func recentlyRestored(config: RuntimeConfig, candidates: [SessionCandidate], now: Date, days: Int) -> Set<String> {
+        let sqlite = URL(fileURLWithPath: config.stateDir).appendingPathComponent("sessions/index.sqlite")
+        guard FileManager.default.fileExists(atPath: sqlite.path),
+              let database = try? SessionIndexDB(stateDir: config.stateDir),
+              let rows = try? database.allEntries() else { return [] }
+        let restored = Dictionary(grouping: rows.filter { $0.state == "restored" }, by: \.path)
+        guard !restored.isEmpty else { return [] }
+        var held = Set<String>()
+        for candidate in candidates {
+            guard let mine = restored[candidate.path],
+                  let print = try? FileFingerprint.of(url: URL(fileURLWithPath: candidate.path)),
+                  mine.contains(where: { $0.size == Int64(print.size) && $0.mtimeNs == print.mtimeNs }) else { continue }
+            guard let changed = statusChangeTime(candidate.path) else { held.insert(candidate.path); continue }
+            if now.timeIntervalSince(changed) < Double(days) * 86_400 { held.insert(candidate.path) }
+        }
+        return held
+    }
+
+    static func statusChangeTime(_ path: String) -> Date? {
+        var info = stat()
+        guard stat(path, &info) == 0 else { return nil }
+        #if os(Linux)
+        return Date(timeIntervalSince1970: Double(info.st_ctim.tv_sec) + Double(info.st_ctim.tv_nsec) / 1_000_000_000)
+        #else
+        return Date(timeIntervalSince1970: Double(info.st_ctimespec.tv_sec) + Double(info.st_ctimespec.tv_nsec) / 1_000_000_000)
+        #endif
     }
 
     /// `stateDir/sessions/digests/<entryId>.md`.
@@ -80,7 +241,16 @@ enum SessionTierV2 {
         return SessionIndex(entries: entries).search(query)
     }
 
-    static func restore(config: RuntimeConfig, backend: any StorageBackend, query: String, to: String?, secrets: (any SecretStore)?) throws -> String {
+    /// The backend is opened only when the transcript has to be downloaded. With
+    /// `requireRepoMarker`, the marker may answer from a mirror: reads fail over to
+    /// mirrors, so a primary without `repo.json` does not block a mirror's copy.
+    static func restore(config: RuntimeConfig, backend open: () throws -> any StorageBackend, query: String, to: String?, secrets: (any SecretStore)?, requireRepoMarker: Bool = false) throws -> SessionRestoreResult {
+        // The same lock as apply, so a restore and an archive run never race on one path.
+        let lockURL = URL(fileURLWithPath: config.stateDir).appendingPathComponent("locks/sessions.lock")
+        try FileManager.default.createDirectory(at: lockURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var lock = FileLock(path: lockURL.path)
+        guard try lock.tryLock() else { throw DisklesslyError.busy("sessions are being tiered; try the restore again later") }
+        defer { lock.unlock() }
         let device = try LocalDeviceStore.loadOrCreate(stateDir: URL(fileURLWithPath: config.stateDir), suggestedName: "mac")
         let database = try SessionIndexDB(stateDir: config.stateDir)
         _ = try SessionMigration.migrateIfNeeded(stateDir: config.stateDir, deviceId: device.deviceId, database: database)
@@ -88,48 +258,89 @@ enum SessionTierV2 {
         let paths = try database.segmentPaths()
         let entries = rows.map { indexEntry($0, paths: paths) }
         let matches = SessionIndex(entries: entries).matches(query)
-        guard let entry = matches.first else { throw DisklesslyError.usage("no cold session matches \(query)") }
-        guard matches.count == 1 else { throw DisklesslyError.usage("session query \(query) matches \(matches.count) entries") }
-        guard let row = rows.first(where: { $0.id == entry.id }) else { throw DisklesslyError.usage("no cold session matches \(query)") }
+        guard !matches.isEmpty else { throw DisklesslyError.usage("no cold session matches \(query)") }
+        let byId = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let candidates = matches.compactMap { byId[$0.id] }
+        let row: SessionEntryRow
+        if candidates.count == 1 {
+            row = candidates[0]
+        } else if let exact = candidates.first(where: { $0.id == query }) {
+            row = exact
+        } else if candidates.count > 1, Set(candidates.map(\.path)).count == 1 {
+            // One path archived more than once (restored, changed, archived again):
+            // this device's newest row that is not already restored.
+            row = preferredRow(candidates, localDevice: device.deviceId)
+        } else {
+            throw DisklesslyError.usage("session query \(query) matches \(matches.count) entries")
+        }
+        guard let entry = entries.first(where: { $0.id == row.id }) else { throw DisklesslyError.usage("no cold session matches \(query)") }
         if row.deviceId != device.deviceId && to == nil {
             throw DisklesslyError.usage("session belongs to another Mac; pass --to PATH")
         }
         let destination = to ?? row.path
         if FileManager.default.fileExists(atPath: destination) {
             let existing = try SHA256Digest.hexFile(URL(fileURLWithPath: destination))
-            if existing != row.sha256 {
-                throw DisklesslyError.busy("move \(destination) aside before restoring; its bytes differ from the archived session")
-            }
+            if existing != row.sha256 { throw differentBytes(destination) }
         } else if let legacy = row.legacyArchive {
+            let backend = try open()
+            if requireRepoMarker { try SessionBackendCheck.require(backend, mirrors: true) }
             try restoreLegacyArchive(legacy, member: row.member, sha256: row.sha256, tool: row.tool, modified: entry.modified, destination: destination, backend: backend)
         } else if let segmentId = row.segmentId, let relative = paths[segmentId] {
+            let backend = try open()
+            if requireRepoMarker { try SessionBackendCheck.require(backend, mirrors: true) }
             try restoreSegment(relative, member: row.member, sha256: row.sha256, tool: row.tool, modified: entry.modified, destination: destination, backend: backend, config: config, secrets: secrets)
         } else {
             throw DisklesslyError.integrity("session \(row.id) has no archive")
         }
         try database.setState(id: row.id, state: "restored")
-        return SessionPaths.canonical(destination)
+        return SessionRestoreResult(path: SessionPaths.canonical(destination), id: row.id, sessionId: SessionIdentity.sessionId(tool: row.tool, path: row.path))
     }
 
-    static func reindex(config: RuntimeConfig, backend: any StorageBackend, secrets: (any SecretStore)?) throws -> Int {
+    /// This device first, then rows not yet restored, then the newest archive.
+    static func preferredRow(_ rows: [SessionEntryRow], localDevice: String) -> SessionEntryRow {
+        rows.max { lhs, rhs in
+            let left = (lhs.deviceId == localDevice ? 1 : 0, lhs.state == "restored" ? 0 : 1, lhs.archivedAt, lhs.mtimeNs)
+            let right = (rhs.deviceId == localDevice ? 1 : 0, rhs.state == "restored" ? 0 : 1, rhs.archivedAt, rhs.mtimeNs)
+            return left < right
+        } ?? rows[0]
+    }
+
+    static func reindex(config: RuntimeConfig, backend: any StorageBackend, secrets: (any SecretStore)?, requireRepoMarker: Bool = false) throws -> Int {
+        if requireRepoMarker { try SessionBackendCheck.require(backend) }
         let device = try LocalDeviceStore.loadOrCreate(stateDir: URL(fileURLWithPath: config.stateDir), suggestedName: "mac")
         let database = try SessionIndexDB(stateDir: config.stateDir)
         let names = try listOrEmpty(backend, "sessions")
         var added = 0
         let keyring = try secrets.map { try SessionKeyStore.keyring(secrets: $0) } ?? [:]
         for name in names where isUUID(name) {
-            let tools = try listOrEmpty(backend, "sessions/\(name)")
-            for tool in tools {
-                let files = try listOrEmpty(backend, "sessions/\(name)/\(tool)")
-                for file in files where file.hasSuffix(".json") || file.hasSuffix(".json.enc") {
-                    let relative = "sessions/\(name)/\(tool)/\(file)"
-                    let raw = try backend.get(relative, range: nil)
-                    let json = try sidecarJSON(raw, path: relative, keyring: keyring)
-                    added += try importSidecar(json, database: database, localDevice: device.deviceId)
-                }
+            // Both the flat layout (`<uuid>/<tool>/*.json`) and the partitioned one
+            // (`<uuid>/<tool>/<project>/<yyyy-MM>/*.json`) are read.
+            for relative in try sidecars(backend, under: "sessions/\(name)", depth: 0) {
+                let raw = try backend.get(relative, range: nil)
+                let json = try sidecarJSON(raw, path: relative, keyring: keyring)
+                added += try importSidecar(json, database: database, localDevice: device.deviceId)
             }
         }
         return added
+    }
+
+    /// Sidecar paths (`.json`, `.json.enc`) under `path`, at most four folders deep.
+    private static func sidecars(_ backend: any StorageBackend, under path: String, depth: Int) throws -> [String] {
+        guard depth <= 4 else { return [] }
+        let children: [BackendEntry]
+        do { children = try backend.entries(path) }
+        catch let error as DisklesslyError where error.exitCode == 4 { throw error }
+        catch { return [] }
+        var found: [String] = []
+        for child in children {
+            let relative = "\(path)/\(child.name)"
+            if child.isDirectory {
+                found += try sidecars(backend, under: relative, depth: depth + 1)
+            } else if child.name.hasSuffix(".json") || child.name.hasSuffix(".json.enc") {
+                found.append(relative)
+            }
+        }
+        return found.sorted()
     }
 
     static func verifyLegacy(config: RuntimeConfig, backend: any StorageBackend) throws -> [String] {
@@ -162,6 +373,8 @@ enum SessionTierV2 {
 
     private struct Group {
         var tool: String
+        var project: String
+        var month: String
         var members: [SessionMemberDraft]
     }
 
@@ -188,15 +401,29 @@ enum SessionTierV2 {
         return drafts
     }
 
-    private static func pack(_ drafts: [Snap], deviceId: String, config: RuntimeConfig) -> [Group] {
-        let byTool = Dictionary(grouping: drafts) { $0.tool }
+    /// Segments are grouped by (tool, project, month), then cut by size.
+    private static func pack(_ drafts: [Snap], deviceId: String, config: RuntimeConfig, encrypted: Bool) -> [Group] {
+        struct Partition: Hashable, Comparable {
+            var tool: String
+            var project: String
+            var month: String
+            static func < (lhs: Partition, rhs: Partition) -> Bool {
+                (lhs.tool, lhs.project, lhs.month) < (rhs.tool, rhs.project, rhs.month)
+            }
+        }
+        let byPartition = Dictionary(grouping: drafts) { snap in
+            Partition(tool: snap.tool,
+                      project: SessionIdentity.projectKey(cwd: snap.member.cwd, encrypted: encrypted),
+                      month: SessionIdentity.month(mtimeNs: snap.member.mtimeNs))
+        }
         var groups: [Group] = []
-        for tool in byTool.keys.sorted() {
-            let ordered = (byTool[tool] ?? []).sorted { $0.member.path < $1.member.path }
+        for partition in byPartition.keys.sorted() {
+            let tool = partition.tool
+            let ordered = (byPartition[partition] ?? []).sorted { $0.member.path < $1.member.path }
             var current: [SessionMemberDraft] = []
             var used: UInt64 = 0
             func flush() {
-                if !current.isEmpty { groups.append(Group(tool: tool, members: current)) }
+                if !current.isEmpty { groups.append(Group(tool: tool, project: partition.project, month: partition.month, members: current)) }
                 current = []
                 used = 0
             }
@@ -204,7 +431,7 @@ enum SessionTierV2 {
                 let size = UInt64(max(0, snap.member.size))
                 if size > config.sessionSoloBytes {
                     flush()
-                    groups.append(Group(tool: tool, members: [snap.member]))
+                    groups.append(Group(tool: tool, project: partition.project, month: partition.month, members: [snap.member]))
                     continue
                 }
                 if !current.isEmpty && used + size > config.sessionSegmentMaxBytes { flush() }
@@ -214,7 +441,7 @@ enum SessionTierV2 {
             flush()
         }
         return groups.map { group in
-            Group(tool: group.tool, members: group.members.map { member in
+            Group(tool: group.tool, project: group.project, month: group.month, members: group.members.map { member in
                 var copy = member
                 copy.entryId = SegmentWriter.entryId(deviceId: deviceId, path: member.path, sha256: member.sha256)
                 return copy
@@ -245,8 +472,11 @@ enum SessionTierV2 {
         }
     }
 
-    private static func finishPending(database: SessionIndexDB, isOpen: (String) -> Bool, backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore) throws -> [(String, String)] {
+    /// Settles rows an earlier run left in pendingDelete. What it removes locally
+    /// is reported as archived by this run.
+    private static func finishPending(database: SessionIndexDB, isOpen: (String) -> Bool, backend: any StorageBackend, config: RuntimeConfig, secrets: any SecretStore, referenced: (String, String) -> String?) throws -> (kept: [(String, String)], archived: [SessionArchivedItem]) {
         var kept: [(String, String)] = []
+        var archived: [SessionArchivedItem] = []
         let pending = try database.allEntries().filter { $0.state == "pendingDelete" }
         let paths = try database.segmentPaths()
         var verified = Set<String>()
@@ -262,16 +492,49 @@ enum SessionTierV2 {
             }
         }
         for row in pending {
-            let member = SessionMemberDraft(entryId: row.id, path: row.path, sha256: row.sha256, size: row.size, mtimeNs: row.mtimeNs, ino: row.ino ?? 0, preview: row.preview, bytes: Data(), tool: row.tool)
-            if let reason = try settle(member, database: database, isOpen: isOpen, txid: String(row.id.prefix(8))) {
+            let member = SessionMemberDraft(entryId: row.id, path: row.path, sha256: row.sha256, size: row.size, mtimeNs: row.mtimeNs, ino: row.ino ?? 0, preview: row.preview, bytes: Data(), tool: row.tool, cwd: row.cwd, title: row.preview, firstPrompt: row.firstPrompt)
+            // A row left by a run that had no text index gets one from the local
+            // file before it is deleted; when that fails the file stays and the row
+            // stays pending for the next run.
+            // The run that wrote the row renamed the file with the segment id's prefix.
+            let txid = String((row.segmentId ?? row.id).prefix(8))
+            if !textIndexed(member, row: row, paths: paths, txid: txid, stateDir: config.stateDir) {
+                kept.append((row.path, "text index failed"))
+                continue
+            }
+            if let reason = try settle(member, database: database, isOpen: isOpen, txid: txid, referenced: referenced) {
                 kept.append((row.path, reason))
+            } else {
+                archived.append(archivedItem(member))
             }
         }
-        return kept
+        return (kept, archived)
+    }
+
+    /// True when the row's text index exists or was just written from the local
+    /// bytes (the file, or the `.disklessly-deleting-<txid>` copy an interrupted
+    /// delete left), or when there are no matching local bytes, so settle will
+    /// not delete anything.
+    private static func textIndexed(_ member: SessionMemberDraft, row: SessionEntryRow, paths: [String: String], txid: String, stateDir: String) -> Bool {
+        let fm = FileManager.default
+        guard !row.deviceId.isEmpty, !SessionTextIndex.exists(stateDir: stateDir, id: row.id) else { return true }
+        let source = fm.fileExists(atPath: row.path) ? row.path : row.path + ".disklessly-deleting-\(txid)"
+        guard fm.fileExists(atPath: source) else { return true }
+        // settle deletes only bytes whose hash matches the row, so other bytes need no text.
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: source)) else { return false }
+        guard SHA256Digest.hex(data) == row.sha256 else { return true }
+        let segment = row.segmentId.flatMap { paths[$0] } ?? row.legacyArchive ?? ""
+        let messages = SessionText.messages(tool: row.tool, path: row.path, data: data)
+        do {
+            try SessionTextIndex.write(header: textHeader(member, deviceId: row.deviceId, segment: segment, archivedAt: row.archivedAt), messages: messages, stateDir: stateDir)
+            return true
+        } catch {
+            return false
+        }
     }
 
     /// Returns a kept-local reason, or nil when the file was removed and marked archived.
-    private static func settle(_ member: SessionMemberDraft, database: SessionIndexDB, isOpen: (String) -> Bool, txid: String) throws -> String? {
+    private static func settle(_ member: SessionMemberDraft, database: SessionIndexDB, isOpen: (String) -> Bool, txid: String, referenced: (String, String) -> String? = { _, _ in nil }) throws -> String? {
         let url = URL(fileURLWithPath: member.path)
         let fm = FileManager.default
         let deleting = member.path + ".disklessly-deleting-\(txid)"
@@ -285,6 +548,10 @@ enum SessionTierV2 {
             }
             try database.setState(id: member.entryId, state: "archived")
             return nil
+        }
+        if let reason = referenced(member.tool, member.path) {
+            try database.setState(id: member.entryId, state: "keptLocal")
+            return reason
         }
         guard let again = try? FileFingerprint.of(url: url) else {
             try database.setState(id: member.entryId, state: "keptLocal")
@@ -426,14 +693,35 @@ enum SessionTierV2 {
         }
     }
 
+    static func differentBytes(_ destination: String) -> DisklesslyError {
+        DisklesslyError.busy("move \(destination) aside before restoring; its bytes differ from the archived session")
+    }
+
+    /// Test seam: runs after the download, right before the restored file is placed.
+    nonisolated(unsafe) static var beforePlaceForTesting: ((String) -> Void)?
+
     private static func place(_ extracted: URL, sha256: String, tool: String, modified: Date, destination: String) throws {
         guard try SHA256Digest.hexFile(extracted) == sha256 else {
             throw DisklesslyError.integrity("restored session hash does not match the index")
         }
+        beforePlaceForTesting?(destination)
         let dest = URL(fileURLWithPath: destination)
-        let held = extracted.deletingLastPathComponent().appendingPathComponent("held-\(UUID().uuidString)")
+        let folder = dest.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        // Staged next to the destination (hidden, so a scan skips it) and published
+        // without replacing: a file that appeared while the segment was downloaded wins.
+        let held = folder.appendingPathComponent(".\(dest.lastPathComponent).disklessly-restore-\(UUID().uuidString)")
         try ChunkedIO.copyFile(from: extracted, to: held)
-        try ChunkedIO.replaceFile(dest, with: held)
+        do {
+            try ChunkedIO.publishExclusive(temp: held, dest: dest)
+        } catch is WriteOnceConflict {
+            try? FileManager.default.removeItem(at: held)
+            if (try? SHA256Digest.hexFile(dest)) != sha256 { throw differentBytes(destination) }
+            return
+        } catch {
+            try? FileManager.default.removeItem(at: held)
+            throw error
+        }
         let restoredDate = tool == "claude" ? Date() : modified
         try FileManager.default.setAttributes([.modificationDate: restoredDate], ofItemAtPath: SessionPaths.canonical(dest.path))
     }
@@ -488,9 +776,11 @@ enum SessionTierV2 {
                     size: (member["size"] as? NSNumber)?.int64Value ?? 0,
                     mtimeNs: (member["mtimeNs"] as? NSNumber)?.int64Value ?? 0,
                     ino: nil,
-                    preview: member["preview"] as? String ?? "",
+                    preview: (member["title"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? member["preview"] as? String ?? "",
                     archivedAt: created,
-                    state: device == localDevice ? "archived" : "remote"
+                    state: device == localDevice ? "archived" : "remote",
+                    cwd: member["cwd"] as? String ?? "",
+                    firstPrompt: member["firstPrompt"] as? String ?? ""
                 ))
             }
             if try database.segmentPaths()[sha] == nil {
