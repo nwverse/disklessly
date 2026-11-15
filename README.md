@@ -31,14 +31,29 @@ is inside it at `/Applications/Disklessly.app/Contents/MacOS/disklessly`:
 sudo ln -s /Applications/Disklessly.app/Contents/MacOS/disklessly /usr/local/bin/disklessly
 ```
 
-**Homebrew.** `brew install --cask disklessly` installs the app and links the
-CLI. `brew install disklessly-cli` installs only the CLI. Both come from the project tap;
-the templates are in `packaging/homebrew/`.
+**Homebrew.** The CLI comes from the project tap:
+
+```sh
+brew tap nwverse/tap
+brew install disklessly-cli
+```
+
+That installs `disklessly` and the `dkl` alias from the release tarball. On macOS it
+also installs `disklessly-stub`. The macOS binary is not signed with a Developer ID
+and is not notarized, so Gatekeeper blocks the first run; `brew install` prints the
+`xattr` command that clears the quarantine flag. On Linux the same formula installs
+the matching build (x86_64 or aarch64), which needs glibc 2.34 or newer plus
+`libsqlite3`, `libcurl`, and `libxml2`.
+
+`brew install --cask disklessly` will install the menu-bar app and link the CLI once
+an Apple Developer ID certificate is available. The cask is not published yet. The
+formula and cask templates are in `packaging/homebrew/`.
 
 **Tarball.** `disklessly-<version>-macos-universal.tar.gz` holds `bin/disklessly`,
 `bin/disklessly-stub`, and `share/disklessly/web`. Keep that layout: the CLI looks
 for the stub launcher beside itself and for the dashboard in `../share/disklessly/web`.
-Check downloads against `SHA256SUMS`.
+Linux builds are `disklessly-<version>-linux-x86_64.tar.gz` and
+`disklessly-<version>-linux-aarch64.tar.gz`. Check downloads against `SHA256SUMS`.
 
 Requires macOS 13 or later, on Apple silicon or Intel.
 
