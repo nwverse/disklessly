@@ -1,37 +1,74 @@
 # Homebrew formula template for the disklessly CLI.
-# The release workflow fills in VERSION and SHA256 from SHA256SUMS. Copy the result
-# into a tap (for example nwverse/homebrew-tap/Formula/disklessly-cli.rb).
+# Copy the result into a tap (for example nwverse/homebrew-tap/Formula/disklessly-cli.rb)
+# and fill in the sha256 of each release archive. `brew audit` rejects `url` and
+# `sha256` directly inside `on_macos` or `on_linux`, so each one is nested under
+# `on_arm` and `on_intel`. The macOS archive is universal, so both architectures
+# point at the same file.
 class DisklesslyCli < Formula
   desc "Offload rarely used Mac apps to a repo and launch them on demand"
   homepage "https://github.com/nwverse/disklessly"
-  version "@VERSION@"
-  url "https://github.com/nwverse/disklessly/releases/download/v#{version}/disklessly-#{version}-macos-universal.tar.gz"
-  sha256 "@SHA256_TARBALL@"
   license :cannot_represent
 
-  depends_on :macos
+  on_macos do
+    on_arm do
+      url "https://github.com/nwverse/disklessly/releases/download/v@VERSION@/disklessly-@VERSION@-macos-universal.tar.gz"
+      sha256 "@SHA256_MACOS_UNIVERSAL@"
+    end
+    on_intel do
+      url "https://github.com/nwverse/disklessly/releases/download/v@VERSION@/disklessly-@VERSION@-macos-universal.tar.gz"
+      sha256 "@SHA256_MACOS_UNIVERSAL@"
+    end
+  end
+
+  on_linux do
+    on_arm do
+      url "https://github.com/nwverse/disklessly/releases/download/v@VERSION@/disklessly-@VERSION@-linux-aarch64.tar.gz"
+      sha256 "@SHA256_LINUX_AARCH64@"
+    end
+    on_intel do
+      url "https://github.com/nwverse/disklessly/releases/download/v@VERSION@/disklessly-@VERSION@-linux-x86_64.tar.gz"
+      sha256 "@SHA256_LINUX_X86_64@"
+    end
+  end
 
   def install
-    # disklessly looks for disklessly-stub beside itself and for the page at ../share/disklessly/web.
-    bin.install "bin/disklessly", "bin/disklessly-stub"
+    # disklessly looks for the dashboard page at ../share/disklessly/web.
+    bin.install "bin/disklessly"
     bin.install_symlink "disklessly" => "dkl"
     (share/"disklessly").install "share/disklessly/web"
-    doc.install "README.md", "CHANGELOG.md", "PRIVACY.md", "THIRD_PARTY_NOTICES.md"
+    # The stub launcher is macOS only; the Linux build has no disklessly-stub.
+    bin.install "bin/disklessly-stub" if OS.mac?
+    if OS.mac?
+      doc.install "README.md", "CHANGELOG.md", "PRIVACY.md", "THIRD_PARTY_NOTICES.md"
+    else
+      doc.install Dir["share/doc/disklessly/*"]
+    end
   end
 
   def caveats
-    <<~EOS
-      Stubs exec a stable copy of the engine under
-        ~/Library/Application Support/Disklessly/bin/disklessly
-      After installing or upgrading, refresh that copy and your stubs:
-        disklessly install-engine
-        disklessly stub refresh --app <bundle id>   # once per packed app; see `disklessly list`
+    on_macos do
+      <<~EOS
+        The macOS build in this release is not signed with an Apple Developer ID and is
+        not notarized, so Gatekeeper blocks it the first time it runs. Clear the
+        quarantine flag Homebrew sets:
+          xattr -dr com.apple.quarantine "#{opt_bin}/disklessly" "#{opt_bin}/disklessly-stub"
 
-      Replacing apps in /Applications needs App Management permission for your
-      terminal (System Settings > Privacy & Security > App Management).
+        Stubs exec a stable copy of the engine under
+          ~/Library/Application Support/Disklessly/bin/disklessly
+        After installing or upgrading, refresh that copy and your stubs:
+          disklessly install-engine
+          disklessly stub refresh --app <bundle id>   # once per packed app; see `disklessly list`
 
-      The menu-bar app is a separate cask: brew install --cask disklessly
-    EOS
+        Replacing apps in /Applications needs App Management permission for your
+        terminal (System Settings > Privacy & Security > App Management).
+      EOS
+    end
+    on_linux do
+      <<~EOS
+        The binary needs glibc 2.34 or newer, plus libsqlite3, libcurl, and libxml2.
+        Offloading apps (pack, launch, unpack, stubs) is macOS only.
+      EOS
+    end
   end
 
   test do
