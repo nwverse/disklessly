@@ -6,6 +6,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-14
+
 - Every session archive path (CLI apply, dashboard apply, settling pending rows) scans the user's
   running processes and herdr's saved layout for referenced session ids and `.jsonl` paths, at plan
   time and again before each local delete. A failed process listing keeps every local file of the
@@ -38,8 +40,5 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   A repo with images or manifests but no `repo.json` still counts as reachable.
 - `sessions status --check-segments` reports failed stats as `unchecked` (never `missing`) and stops
   after 60 s.
-
-## 0.3.0
-
 - First release under the proprietary license (copyright Shengtao Lin, all rights reserved).
   The repository history before this release was squashed into a single commit.
