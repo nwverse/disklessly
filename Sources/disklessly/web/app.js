@@ -3302,19 +3302,27 @@ function renderUsage() {
   crumbs.hidden = false;
   crumbs.replaceChildren();
   trail.forEach((step, depth) => {
-    if (depth) crumbs.append(el("span", "usage-sep", "›"));
+    if (depth) { const sep = el("span", "usage-sep"); sep.setAttribute("aria-hidden", "true"); crumbs.append(sep); }
     const last = depth === trail.length - 1;
     const label = depth === 0 ? usageLabel(step.node, null) : usageLabel(step.node, step.parent);
     const item = el(last ? "span" : "button", last ? "usage-crumb current" : "usage-crumb", label);
     if (!last) {
       item.type = "button";
-      item.addEventListener("click", () => { usageFocus = usageFocus.slice(0, depth); renderUsage(); });
+      item.addEventListener("click", (event) => {
+        const byKeyboard = event.detail === 0;
+        usageFocus = usageFocus.slice(0, depth);
+        usageAnimate = true;
+        renderUsage();
+        if (byKeyboard) focusFirstUsageBox();
+      });
     }
     crumbs.append(item);
   });
 
   const focus = trail[trail.length - 1].node;
   chart.hidden = false;
+  chart.setAttribute("role", "group");
+  chart.setAttribute("aria-label", t("usage"));
   drawUsageMap();
 
   renderUsageTips(focus, trail.length === 1);
@@ -3375,7 +3383,22 @@ function usageSquarify(children, x, y, w, h) {
 }
 
 const USAGE_MAP_DEPTH = 3; // nested levels drawn below the focused node
-const USAGE_HEADER = 18; // title strip of a box whose children are drawn inside it
+const USAGE_HEADER = 22; // title strip of a box whose children are drawn inside it
+let usageAnimate = false; // the next map redraw is a zoom step, so its boxes fade in
+let usageMeasure = null;
+
+/// Width in pixels of a line of text in the page's font, so labels are only drawn where they fit whole.
+function usageTextWidth(text, weight, px) {
+  if (!usageMeasure) usageMeasure = document.createElement("canvas").getContext("2d");
+  usageMeasure.font = `${weight} ${px}px ${getComputedStyle(document.body).fontFamily}`;
+  return Math.ceil(usageMeasure.measureText(text).width);
+}
+
+/// Keyboard users keep their place after a zoom: focus the first box of the redrawn map.
+function focusFirstUsageBox() {
+  const first = document.querySelector("#usage-chart .usage-box");
+  if (first) first.focus({ preventScroll: true });
+}
 
 /// Draws the focused node as a nested treemap: each box's area is its size, boxes with room show their
 /// children inside under a title strip, and a box with children zooms in when clicked.
@@ -3386,17 +3409,27 @@ function drawUsageMap() {
   const trail = usageNodeAt(usageFocus);
   const focus = trail[trail.length - 1].node;
   const width = Math.floor(chart.getBoundingClientRect().width) || 640;
-  const height = Math.round(Math.min(520, Math.max(220, (width * 9) / 16)));
+  // Narrow windows get a taller map and one level less nesting, so the boxes keep room for their labels.
+  const narrow = width < 560;
+  const maxDepth = narrow ? 2 : USAGE_MAP_DEPTH;
+  const height = Math.round(narrow ? Math.min(440, Math.max(300, width * 1.05)) : Math.min(520, Math.max(260, (width * 9) / 16)));
   chart.style.height = `${height}px`;
   chart.replaceChildren();
+  chart.classList.toggle("is-zooming", usageAnimate);
+  usageAnimate = false;
   const box = (node, parent, rect, path, depth) => {
-    // Each box's card-coloured border separates it from its neighbours.
-    const { x, y, w, h } = rect;
-    if (w < 2 || h < 2) return;
+    // Edges snap to whole pixels, so neighbouring boxes share one border line.
+    const x = Math.round(rect.x);
+    const y = Math.round(rect.y);
+    const w = Math.round(rect.x + rect.w) - x;
+    const h = Math.round(rect.y + rect.h) - y;
+    if (w < 4 || h < 4) return;
     const kids = node.children && node.children.length ? node.children : null;
-    const nested = Boolean(kids) && depth < USAGE_MAP_DEPTH && w >= 64 && h >= USAGE_HEADER + 30;
-    const item = el("button", `usage-box u-${node.kind}${nested ? " frame" : ""}`);
+    const nested = Boolean(kids) && depth < maxDepth && w >= (depth >= 2 ? 96 : 72) && h >= USAGE_HEADER + (depth >= 2 ? 50 : 28);
+    const big = !nested && w >= 160 && h >= 72;
+    const item = el("button", `usage-box u-${node.kind} d${depth}${nested ? " frame" : ""}`);
     item.type = "button";
+    if (big) item.classList.add("big");
     item.style.left = `${x}px`;
     item.style.top = `${y}px`;
     item.style.width = `${w}px`;
@@ -3404,10 +3437,20 @@ function drawUsageMap() {
     const label = usageLabel(node, parent);
     const share = focus.bytes ? node.bytes / focus.bytes : 0;
     const pct = focus.bytes ? `${(share * 100).toFixed(share < 0.1 ? 1 : 0)}%` : "";
-    if (nested ? w >= 40 : w >= 44 && h >= 16) {
-      item.append(el("span", "usage-name", label));
-      // The size goes beside a title, or under a leaf's name when the leaf is tall enough.
-      if (nested ? w >= 120 : h >= 34) item.append(el("span", "usage-size", bytes(node.bytes)));
+    // A name or size is drawn only when it fits whole; a cut-off size is worse than none.
+    const size = bytes(node.bytes);
+    const nameW = usageTextWidth(label, 600, (nested && depth === 1) || big ? 13 : 12);
+    const sizeW = usageTextWidth(size, 400, 11.5);
+    const inner = w - (big ? 22 : 14);
+    const name = () => item.append(el("span", "usage-name", label));
+    const sizeEl = () => item.append(el("span", "usage-size", size));
+    if (nested) {
+      if (w >= 48) { name(); if (nameW + 6 + sizeW <= inner) sizeEl(); }
+    } else if (h >= 22 && inner >= Math.min(nameW, 28)) {
+      name();
+      // The size sits under the name in a tall leaf, or beside it in a short one.
+      if (h >= 42 && sizeW <= inner) sizeEl();
+      else if (nameW + 6 + sizeW <= inner) { item.classList.add("inline"); sizeEl(); }
     }
     const full = usageLabelBoth(node, parent);
     const named = node.key && ["bundle", "cache", "data"].includes(node.key) && parent && parent.name && parent.key == null ? `${parent.name} · ${full}` : full;
@@ -3415,10 +3458,18 @@ function drawUsageMap() {
     item.setAttribute("aria-label", item.title);
     if (kids) {
       item.classList.add("zoomable");
-      item.addEventListener("click", () => { usageFocus = path; renderUsage(); });
+      item.addEventListener("click", (event) => {
+        // A click from the keyboard (detail 0) keeps focus on the map after the redraw.
+        const byKeyboard = event.detail === 0;
+        usageFocus = path;
+        usageAnimate = true;
+        renderUsage();
+        if (byKeyboard) focusFirstUsageBox();
+      });
     }
     const show = () => { tip.hidden = false; tip.textContent = item.title; };
     item.addEventListener("mouseenter", show);
+    item.addEventListener("pointerdown", show);
     item.addEventListener("focus", show);
     if (node.path) item.addEventListener("contextmenu", (event) => { event.preventDefault(); usageContextMenu(event, node, label); });
     chart.append(item);
@@ -3429,12 +3480,24 @@ function drawUsageMap() {
       }
     }
   };
+  // Free space gets a strip along one edge, so the used boxes stay together and the free strip reads as one piece.
+  const layoutTop = (children) => {
+    const fi = children.findIndex((c) => c.key === "free" && c.bytes > 0);
+    const total = children.reduce((s, c) => s + (c.bytes || 0), 0);
+    const share = fi >= 0 && total ? children[fi].bytes / total : 0;
+    const strip = Math.round((narrow ? height : width) * share);
+    if (fi < 0 || strip < 28 || share > 0.9) return usageSquarify(children, 0, 0, width, height);
+    const rest = children.map((c, i) => (i === fi ? { bytes: 0 } : c));
+    return narrow
+      ? [...usageSquarify(rest, 0, 0, width, height - strip), { child: children[fi], index: fi, x: 0, y: height - strip, w: width, h: strip }]
+      : [...usageSquarify(rest, 0, 0, width - strip, height), { child: children[fi], index: fi, x: width - strip, y: 0, w: strip, h: height }];
+  };
   // The focused node fills the whole map (the path above names it); its children are the top boxes.
   const parent = trail.length > 1 ? trail[trail.length - 2].node : null;
   if (focus.children && focus.children.length) {
-    for (const cell of usageSquarify(focus.children, 0, 0, width, height)) box(cell.child, focus, cell, [...usageFocus, cell.index], 1);
+    for (const cell of layoutTop(focus.children)) box(cell.child, focus, cell, [...usageFocus, cell.index], 1);
   } else {
-    box(focus, parent, { x: 0, y: 0, w: width, h: height }, usageFocus, USAGE_MAP_DEPTH);
+    box(focus, parent, { x: 0, y: 0, w: width, h: height }, usageFocus, maxDepth);
   }
 }
 
@@ -3442,6 +3505,14 @@ let usageResizeTimer = null;
 window.addEventListener("resize", () => {
   clearTimeout(usageResizeTimer);
   usageResizeTimer = setTimeout(drawUsageMap, 120);
+});
+// Escape from the map zooms out one level, as a keyboard stand-in for the breadcrumbs.
+document.querySelector("#usage-chart").addEventListener("keydown", (event) => {
+  if (event.key !== "Escape" || !usageFocus.length || document.querySelector(".usage-menu")) return;
+  event.preventDefault();
+  usageFocus = usageFocus.slice(0, -1);
+  renderUsage();
+  focusFirstUsageBox();
 });
 
 /// Right-click on a box that is one folder: offload it (a cloud-badged link stays) or move it to the Trash.
@@ -3470,8 +3541,16 @@ function usageContextMenu(event, node, label) {
     menu.append(item);
   }
   if (node.refusal) menu.append(el("div", "usage-menu-note small muted", t("usageMenuRefused", node.refusal)));
-  menu.style.left = `${Math.min(event.clientX, window.innerWidth - 280)}px`;
-  menu.style.top = `${Math.min(event.clientY, window.innerHeight - 180)}px`;
+  let x = event.clientX;
+  let y = event.clientY;
+  // A keyboard-opened menu reports no pointer position, so it opens at the top-left of its box.
+  if (x === 0 && y === 0 && event.currentTarget && event.currentTarget.getBoundingClientRect) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    x = rect.left + 8;
+    y = rect.top + 8;
+  }
+  menu.style.left = `${Math.min(x, window.innerWidth - 280)}px`;
+  menu.style.top = `${Math.min(y, window.innerHeight - 180)}px`;
   document.body.append(menu);
   const first = menu.querySelector(".menuitem:not([disabled])");
   if (first) first.focus();

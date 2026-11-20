@@ -10,6 +10,9 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   instead of a four-row flame chart: each box's area is its size, boxes with room show their
   children under a title strip, and the map keeps about a 16:9 shape and redraws when the window
   is resized. Click to zoom, the path above, the hover line and the right-click menu work as before.
+- The usage map is polished: labels and sizes are drawn only when they fit whole, free space sits in one
+  strip along an edge, boxes snap to whole pixels, keyboard focus survives a zoom (Escape zooms out), and
+  narrow windows get a taller map with one less nesting level.
 
 ## [0.3.0] - 2026-11-14
 
