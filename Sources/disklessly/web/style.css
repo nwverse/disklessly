@@ -428,7 +428,6 @@ img.avatar { background: transparent; }
 @keyframes spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) {
   .btn.is-busy .spinner, .sk-line, .sk-avatar, .state-loading .spinner-inline { animation: none; }
-  .usage-chart.is-zooming .usage-box { animation: none; }
 }
 
 .more { position: relative; }
@@ -652,7 +651,7 @@ img.avatar { background: transparent; }
 .usage-crumb:hover { background: var(--accent-bg); }
 .usage-crumb.current { color: var(--text); font-weight: 600; cursor: default; }
 .usage-sep { width: 6px; height: 6px; margin: 0 4px 0 2px; border-top: 1.5px solid var(--faint); border-right: 1.5px solid var(--faint); transform: rotate(45deg); }
-.usage-crumb:focus-visible { background: var(--accent-bg); outline: none; }
+.usage-crumb:focus-visible { background: var(--accent-bg); }
 .usage-chart { position: relative; width: 100%; margin: 8px 0 6px; border-radius: 10px; overflow: hidden; }
 .usage-box { --u: #75757d; --u-ink: #fff; position: absolute; display: flex; flex-direction: column; align-items: flex-start; gap: 0; padding: 4px 6px; overflow: hidden; white-space: nowrap; border: 1px solid var(--card); border-radius: 4px; background: var(--u); color: var(--u-ink); font: inherit; font-size: 12px; line-height: 16px; text-align: left; cursor: default; box-sizing: border-box; }
 .usage-box.d1 { border-radius: 8px; }
@@ -670,6 +669,8 @@ img.avatar { background: transparent; }
 .usage-chart.is-zooming .usage-box { animation: usage-in 160ms ease-out both; }
 .usage-box.big { padding: 8px 10px; font-size: 13px; line-height: 18px; }
 @keyframes usage-in { from { opacity: 0; transform: scale(0.985); } to { opacity: 1; transform: none; } }
+/* After the animation rule, so it wins at equal specificity. */
+@media (prefers-reduced-motion: reduce) { .usage-chart.is-zooming .usage-box { animation: none; } }
 .usage-tip { min-height: 1.4em; margin: 4px 0 0; font-size: 12.5px; }
 .usage-legend { display: flex; flex-wrap: wrap; gap: 6px 16px; list-style: none; margin: 10px 0 0; padding: 0; font-size: 12.5px; }
 .usage-legend-item { display: inline-flex; align-items: center; gap: 6px; }

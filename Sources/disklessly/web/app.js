@@ -3386,11 +3386,13 @@ const USAGE_MAP_DEPTH = 3; // nested levels drawn below the focused node
 const USAGE_HEADER = 22; // title strip of a box whose children are drawn inside it
 let usageAnimate = false; // the next map redraw is a zoom step, so its boxes fade in
 let usageMeasure = null;
+let usageFontFamily = ""; // read once per redraw: getComputedStyle after each appended box would force a style recalc
 
 /// Width in pixels of a line of text in the page's font, so labels are only drawn where they fit whole.
 function usageTextWidth(text, weight, px) {
   if (!usageMeasure) usageMeasure = document.createElement("canvas").getContext("2d");
-  usageMeasure.font = `${weight} ${px}px ${getComputedStyle(document.body).fontFamily}`;
+  if (!usageFontFamily) usageFontFamily = getComputedStyle(document.body).fontFamily;
+  usageMeasure.font = `${weight} ${px}px ${usageFontFamily}`;
   return Math.ceil(usageMeasure.measureText(text).width);
 }
 
@@ -3414,6 +3416,7 @@ function drawUsageMap() {
   const maxDepth = narrow ? 2 : USAGE_MAP_DEPTH;
   const height = Math.round(narrow ? Math.min(440, Math.max(300, width * 1.05)) : Math.min(520, Math.max(260, (width * 9) / 16)));
   chart.style.height = `${height}px`;
+  usageFontFamily = getComputedStyle(document.body).fontFamily;
   chart.replaceChildren();
   chart.classList.toggle("is-zooming", usageAnimate);
   usageAnimate = false;
