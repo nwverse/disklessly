@@ -685,6 +685,7 @@ img.avatar { background: transparent; }
 .active-job-phase { flex: 0 0 auto; font-size: 12px; color: var(--accent, #0a6cdf); font-weight: 500; }
 .active-job-bar { position: relative; height: 6px; border-radius: 999px; background: var(--line, rgba(127,127,127,0.22)); overflow: hidden; }
 .active-job-fill { position: absolute; top: 0; bottom: 0; width: 38%; border-radius: 999px; background: var(--accent, #0a6cdf); animation: active-job-slide 1.3s ease-in-out infinite; }
+.active-job-fill.determinate { left: 0; animation: none; transition: width 260ms ease-out; }
 @keyframes active-job-slide { 0% { left: -38%; } 100% { left: 100%; } }
 .usage-menu-list { margin: 6px 8px 4px; padding: 6px 8px; border-radius: 6px; background: var(--card-2); font-size: 12px; display: grid; gap: 4px; max-height: 180px; overflow-y: auto; }
 .usage-menu-list-row { display: flex; justify-content: space-between; gap: 10px; }

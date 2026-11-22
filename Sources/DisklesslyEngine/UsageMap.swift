@@ -193,6 +193,22 @@ public enum UsageMap {
         let rest = UsageNode(name: "\(tail.count)", key: "rest", kind: .other, bytes: tail.reduce(0) { $0 + $1.bytes })
         return head + [rest]
     }
+
+    /// Scans one directory's direct children on demand for treemap drill-down.
+    public static func scanDirectory(_ path: String, kind: UsageNode.Kind = .personal, refusal: (String) -> String?) -> [UsageNode] {
+        let dir = URL(fileURLWithPath: path).standardizedFileURL.path
+        let scan = UsageScan.sizes(of: dir, timeout: 12)
+        let prefix = dir.hasSuffix("/") ? dir : dir + "/"
+        var nodes: [UsageNode] = []
+        for (entryPath, bytes) in scan.sizes where entryPath != dir && bytes > 0 {
+            let rel = entryPath.hasPrefix(prefix) ? String(entryPath.dropFirst(prefix.count)) : URL(fileURLWithPath: entryPath).lastPathComponent
+            if rel.isEmpty || rel.contains("/") { continue }
+            var node = UsageNode(name: rel, kind: kind, bytes: bytes)
+            node.path = entryPath
+            nodes.append(node)
+        }
+        return annotate(UsageNode.group(name: URL(fileURLWithPath: dir).lastPathComponent, kind: kind, merged(nodes, kind: kind)), refusal: refusal).children
+    }
 }
 
 // MARK: - Measuring

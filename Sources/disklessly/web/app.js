@@ -2270,8 +2270,8 @@ async function pollJob(name, kind, jobId) {
     }
     const current = pending.get(name);
     if (job.state === "running") {
-      if (current && current.phase !== job.phase) {
-        pending.set(name, { kind, jobId, phase: job.phase });
+      if (!current || current.phase !== job.phase || current.doneBytes !== job.doneBytes || current.totalBytes !== job.totalBytes) {
+        pending.set(name, { kind, jobId, phase: job.phase, doneBytes: job.doneBytes, totalBytes: job.totalBytes });
         rerenderApps();
       }
       continue;
@@ -2290,7 +2290,7 @@ async function pollJob(name, kind, jobId) {
 function adoptServerJobs(status) {
   for (const job of (status && status.jobs) || []) {
     if (!job.app || pending.has(job.app)) continue;
-    pending.set(job.app, { kind: job.kind, jobId: job.id, phase: job.phase });
+    pending.set(job.app, { kind: job.kind, jobId: job.id, phase: job.phase, doneBytes: job.doneBytes, totalBytes: job.totalBytes });
     pollJob(job.app, job.kind, job.id);
   }
 }
@@ -2305,14 +2305,21 @@ function renderActiveJobs() {
     const label = key.includes("/") ? key.split("/").filter(Boolean).pop() || key : key;
     const action = tl(primary, "action" + job.kind) || job.kind;
     const phase = tl(primary, "phase" + (job.phase || "queued")) || job.phase || "";
+    const hasBytes = typeof job.totalBytes === "number" && job.totalBytes > 0 && typeof job.doneBytes === "number";
+    const pct = hasBytes ? Math.min(99, Math.max(1, Math.round((job.doneBytes / job.totalBytes) * 100))) : null;
+    const phaseText = hasBytes
+      ? `${phase} · ${bytes(job.doneBytes)} / ${bytes(job.totalBytes)} (${pct}%)`
+      : (phase ? `${phase}…` : "…");
     const row = el("div", "active-job");
     const head = el("div", "active-job-head");
     head.append(
       el("span", "active-job-name", `${label} · ${action}`),
-      el("span", "active-job-phase", phase ? `${phase}…` : "…"),
+      el("span", "active-job-phase mono", phaseText),
     );
     const bar = el("div", "active-job-bar");
-    bar.append(el("div", "active-job-fill"));
+    const fill = el("div", hasBytes ? "active-job-fill determinate" : "active-job-fill");
+    if (hasBytes) fill.style.width = `${pct}%`;
+    bar.append(fill);
     row.append(head, bar);
     host.append(row);
   }
@@ -3521,11 +3528,28 @@ function drawUsageMap() {
     const named = node.key && ["bundle", "cache", "data"].includes(node.key) && parent && parent.name && parent.key == null ? `${parent.name} · ${full}` : full;
     item.title = `${named} · ${bytes(node.bytes)} · ${pct}`;
     item.setAttribute("aria-label", item.title);
-    if (kids) {
+    const canLazyDrill = !kids && Boolean(node.path && !node.path.endsWith(".app") && !node._drilledEmpty);
+    if (kids || canLazyDrill) {
       item.classList.add("zoomable");
-      item.addEventListener("click", (event) => {
+      item.addEventListener("click", async (event) => {
         // A click from the keyboard (detail 0) keeps focus on the map after the redraw.
         const byKeyboard = event.detail === 0;
+        if (!kids && canLazyDrill) {
+          item.classList.add("is-busy");
+          try {
+            const res = await api(`/api/usage/dir?path=${encodeURIComponent(node.path)}&kind=${encodeURIComponent(node.kind || "personal")}`);
+            if (res && Array.isArray(res.children) && res.children.length) {
+              node.children = res.children;
+            } else {
+              node._drilledEmpty = true;
+              item.classList.remove("is-busy", "zoomable");
+              return;
+            }
+          } catch (_) {
+            item.classList.remove("is-busy");
+            return;
+          }
+        }
         usageFocus = path;
         usageAnimate = true;
         renderUsage();

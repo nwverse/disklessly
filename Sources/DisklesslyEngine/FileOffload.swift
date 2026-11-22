@@ -40,7 +40,7 @@ extension DisklesslyEngine {
 
     /// Moves a file or folder into the repo and leaves `Name.disklessly` in its place.
     /// The original is deleted only after the repo object reads back with the same SHA-256.
-    public func offloadFile(_ path: String, progress: (String) -> Void = { _ in }) throws -> FileOffloadResult {
+    public func offloadFile(_ path: String, progress: (String) -> Void = { _ in }, onBytes: (UInt64, UInt64) -> Void = { _, _ in }) throws -> FileOffloadResult {
         let source = URL(fileURLWithPath: path).standardizedFileURL
         if let why = fileOffloadRefusal(source.path) { throw DisklesslyError.usage("\(source.path) \(why)") }
         let isFolder = (try? source.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
@@ -71,7 +71,8 @@ extension DisklesslyEngine {
         if isFolder {
             try backend.ensureCollection("files/staging")
             progress("upload")
-            streamed = try streamArchive(source, to: staging, backend: backend)
+            onBytes(0, logical)
+            streamed = try streamArchive(source, to: staging, backend: backend, onBytes: { sent in onBytes(sent, logical) })
         }
         let sha: String
         let stored: UInt64
@@ -300,10 +301,10 @@ extension DisklesslyEngine {
 
     /// Streams a folder's tar+zstd archive into the repo at `staging`, hashing it as it is written.
     /// Returns nil when the backend cannot stream, so the caller archives into the cache instead.
-    func streamArchive(_ folder: URL, to staging: String, backend: any StorageBackend) throws -> (sha256: String, stored: UInt64)? {
+    func streamArchive(_ folder: URL, to staging: String, backend: any StorageBackend, onBytes: (UInt64) -> Void = { _ in }) throws -> (sha256: String, stored: UInt64)? {
         var sha = ""
         do {
-            try backend.putStream(staging) { handle in sha = try FolderArchive.stream(folder: folder, to: handle) }
+            try backend.putStream(staging) { handle in sha = try FolderArchive.stream(folder: folder, to: handle, onBytes: onBytes) }
         } catch DisklesslyError.unsupported(_) {
             return nil
         } catch {
@@ -453,7 +454,7 @@ enum FolderArchive {
     /// Writes the same tar+zstd archive as `create` straight to `output`, without a local file, and returns
     /// the SHA-256 of the bytes written. Compressed bytes are read back from a pipe on the way out, so a
     /// write failure drains the rest instead of breaking the pipe.
-    static func stream(folder: URL, to output: FileHandle) throws -> String {
+    static func stream(folder: URL, to output: FileHandle, onBytes: (UInt64) -> Void = { _ in }) throws -> String {
         let tar = Process()
         tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         tar.arguments = ["-cf", "-", "-C", folder.deletingLastPathComponent().path, folder.lastPathComponent]
@@ -476,12 +477,17 @@ enum FolderArchive {
         }
         var hasher = SHA256Digest.Stream()
         var writeError: Error?
+        var written: UInt64 = 0
         while true {
             let chunk = compressed.fileHandleForReading.readData(ofLength: 1 << 20)
             if chunk.isEmpty { break }
             hasher.update(chunk)
             if writeError == nil {
-                do { try output.write(contentsOf: chunk) } catch { writeError = error; tar.terminate() }
+                do {
+                    try output.write(contentsOf: chunk)
+                    written += UInt64(chunk.count)
+                    onBytes(written)
+                } catch { writeError = error; tar.terminate() }
             }
         }
         try? compressed.fileHandleForReading.close()

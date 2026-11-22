@@ -297,6 +297,24 @@ public enum ManagementUI {
             return UIResponse(status: 200, contentType: "image/png", body: AppIcon.genericPNG)
             #endif
         }
+        if request.method == "GET", request.path == "/api/usage/dir" {
+            guard let raw = request.query["path"], !raw.isEmpty else {
+                return failure(code: "bad_request", message: "path is required", status: 400)
+            }
+            let dir = URL(fileURLWithPath: raw).standardizedFileURL.path
+            let home = URL(fileURLWithPath: engine.homeDirectory).standardizedFileURL.path
+            let allowed = dir == home || dir.hasPrefix(home + "/") || dir == "/Applications" || dir.hasPrefix("/Applications/") || dir == "/Library" || dir.hasPrefix("/Library/")
+            guard allowed else {
+                return failure(code: "forbidden", message: "path outside allowed roots", status: 403)
+            }
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else {
+                return .json(["ok": true, "children": []])
+            }
+            let kind = UsageNode.Kind(rawValue: request.query["kind"] ?? "") ?? .personal
+            let children = UsageMap.scanDirectory(dir, kind: kind, refusal: engine.fileOffloadRefusal)
+            return .json(["ok": true, "path": dir, "children": children.map { $0.jsonObject() }])
+        }
         if request.method == "GET", request.path.hasPrefix("/api/jobs/") {
             let id = String(request.path.dropFirst("/api/jobs/".count))
             guard let job = context.jobs.job(id) else {
@@ -784,6 +802,8 @@ public struct UIJobSnapshot {
     public var app: String
     public var state: UIJobState
     public var phase: String
+    public var doneBytes: UInt64?
+    public var totalBytes: UInt64?
     public var errorCode: String?
     public var errorMessage: String?
     public var startedAt: Date
@@ -799,17 +819,24 @@ public struct UIJobSnapshot {
             "phase": phase,
             "startedAt": formatter.string(from: startedAt),
         ]
+        if let doneBytes { object["doneBytes"] = NSNumber(value: doneBytes) }
+        if let totalBytes { object["totalBytes"] = NSNumber(value: totalBytes) }
         if let finishedAt { object["finishedAt"] = formatter.string(from: finishedAt) }
         if let errorCode { object["error"] = ["code": errorCode, "message": errorMessage ?? ""] }
         return object
     }
 }
 
-/// Lets a running action report its phase (`resolve`, `download`, `open`, ...).
+/// Lets a running action report its phase (`resolve`, `download`, `open`, ...) and byte progress.
 public final class UIJobProgress {
-    private let update: (String) -> Void
-    init(_ update: @escaping (String) -> Void) { self.update = update }
-    public func phase(_ name: String) { update(name) }
+    private let updatePhase: (String) -> Void
+    private let updateBytes: (UInt64, UInt64) -> Void
+    init(_ updatePhase: @escaping (String) -> Void, bytes updateBytes: @escaping (UInt64, UInt64) -> Void = { _, _ in }) {
+        self.updatePhase = updatePhase
+        self.updateBytes = updateBytes
+    }
+    public func phase(_ name: String) { updatePhase(name) }
+    public func bytes(_ done: UInt64, total: UInt64) { updateBytes(done, total) }
 }
 
 public final class UIJobStore {
@@ -844,7 +871,15 @@ public final class UIJobStore {
         lock.unlock()
         let id = job.id
         queue.async { [self] in
-            let progress = UIJobProgress { [weak self] phase in self?.mutate(id) { $0.phase = phase } }
+            let progress = UIJobProgress(
+                { [weak self] phase in self?.mutate(id) { $0.phase = phase } },
+                bytes: { [weak self] done, total in
+                    self?.mutate(id) {
+                        $0.doneBytes = done
+                        $0.totalBytes = total
+                    }
+                }
+            )
             do {
                 try work(progress)
                 mutate(id) {
@@ -957,7 +992,7 @@ public struct ManagementActions {
             }
             if kind == .offloadfile {
                 guard let path = options.path else { throw DisklesslyError.usage("offload needs the file path") }
-                _ = try engine.offloadFile(path) { progress.phase($0) }
+                _ = try engine.offloadFile(path, progress: { progress.phase($0) }, onBytes: { done, total in progress.bytes(done, total: total) })
                 MirrorAutoSync.kick(engine)
                 return
             }
