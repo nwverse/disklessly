@@ -178,6 +178,14 @@ const copy = {
     manageContainers: "管理容器镜像",
     containerImagesHead: (n) => `包含 ${n} 个容器镜像：`,
     containerImagesNone: "当前没有可列出的本地镜像（或引擎未运行）。",
+    linkToApp: "关联到应用组合…",
+    linkPrompt: (name) => `将「${name}」关联到哪个应用？（输入应用名称或 .app 路径，例如 vphone 或 /Applications/vphone.app）`,
+    linkGroupBadge: (app, count) => `联动组合：${app} + ${count} 个关联路径`,
+    linkOffloadGroup: "组合一起上云",
+    linkRestoreGroup: "组合一起还原",
+    linkUnlink: "取消联动",
+    "actionlinks/offload": "组合上云",
+    "actionlinks/restore": "组合还原",
     revealInFinder: "在访达中显示",
     revealFailed: "无法在访达中显示",
     bigDataWaiting: "已开启数据上云，但数据还在这台 Mac 上；应用退出后会自动搬走，也可以现在就搬",
@@ -755,6 +763,14 @@ const copy = {
     manageContainers: "Manage container images",
     containerImagesHead: (n) => `${n} container image${n === 1 ? "" : "s"} inside:`,
     containerImagesNone: "No local images listed (or the engine is stopped).",
+    linkToApp: "Link to an app group…",
+    linkPrompt: (name) => `Which app should "${name}" be linked with? (Enter app name or .app path, e.g. vphone or /Applications/vphone.app)`,
+    linkGroupBadge: (app, count) => `Linked group: ${app} + ${count} path${count === 1 ? "" : "s"}`,
+    linkOffloadGroup: "Offload linked group",
+    linkRestoreGroup: "Restore linked group",
+    linkUnlink: "Unlink from group",
+    "actionlinks/offload": "offload group",
+    "actionlinks/restore": "restore group",
     revealInFinder: "Show in Finder",
     revealFailed: "Could not show it in Finder",
     bigDataWaiting: "Data offload is on but the data is still on this Mac; it moves after the app quits, or you can move it now",
@@ -3665,6 +3681,58 @@ function usageContextMenu(event, node, label) {
     menu.append(el("div", "usage-menu-note small muted", t("picturesHint")));
   } else if (!isApp && node.refusal) {
     menu.append(el("div", "usage-menu-note small muted", t("usageMenuRefused", node.refusal)));
+  }
+  const linked = ((lastStatus && lastStatus.linkedBundles) || []).find(
+    (b) => b.appPath === node.path || (Array.isArray(b.paths) && b.paths.includes(node.path)),
+  );
+  if (linked) {
+    menu.append(el("div", "usage-menu-note small", t("linkGroupBadge", linked.name, (linked.paths || []).length)));
+    const groupOffload = el("button", "menuitem", t("linkOffloadGroup"));
+    groupOffload.type = "button";
+    groupOffload.setAttribute("role", "menuitem");
+    groupOffload.disabled = Boolean(pending.get(linked.id));
+    groupOffload.addEventListener("click", () => { closeUsageMenu(); startJob("links/offload", { name: linked.id }); });
+    const groupRestore = el("button", "menuitem", t("linkRestoreGroup"));
+    groupRestore.type = "button";
+    groupRestore.setAttribute("role", "menuitem");
+    groupRestore.disabled = Boolean(pending.get(linked.id));
+    groupRestore.addEventListener("click", () => { closeUsageMenu(); startJob("links/restore", { name: linked.id }); });
+    menu.append(groupOffload, groupRestore);
+    if (!isApp) {
+      const unlinkBtn = el("button", "menuitem", t("linkUnlink"));
+      unlinkBtn.type = "button";
+      unlinkBtn.setAttribute("role", "menuitem");
+      unlinkBtn.addEventListener("click", async () => {
+        closeUsageMenu();
+        try {
+          const res = await api("/api/links/remove", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ appPath: linked.appPath, path: node.path }) });
+          if (lastStatus && res.linkedBundles) lastStatus.linkedBundles = res.linkedBundles;
+        } catch (err) {
+          toast({ title: biPair(err.message || "Unlink failed"), tone: "error" });
+        }
+      });
+      menu.append(unlinkBtn);
+    }
+  } else if (!isApp && !node.refusal) {
+    const linkBtn = el("button", "menuitem", t("linkToApp"));
+    linkBtn.type = "button";
+    linkBtn.setAttribute("role", "menuitem");
+    linkBtn.addEventListener("click", async () => {
+      closeUsageMenu();
+      const raw = window.prompt(t("linkPrompt", label), label.replace(/^\.+/, ""));
+      if (!raw || !raw.trim()) return;
+      const trimmed = raw.trim();
+      const appPath = trimmed.includes("/") ? trimmed : `/Applications/${trimmed.endsWith(".app") ? trimmed : trimmed + ".app"}`;
+      const appName = appPath.split("/").pop().replace(/\.app$/i, "");
+      try {
+        const res = await api("/api/links/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ appPath, appName, path: node.path }) });
+        if (lastStatus && res.linkedBundles) lastStatus.linkedBundles = res.linkedBundles;
+        toast({ title: biPair(t("linkGroupBadge", res.bundle.name, (res.bundle.paths || []).length)), tone: "ok" });
+      } catch (err) {
+        toast({ title: biPair(err.message || "Link failed"), tone: "error" });
+      }
+    });
+    menu.append(linkBtn);
   }
   let x = event.clientX;
   let y = event.clientY;

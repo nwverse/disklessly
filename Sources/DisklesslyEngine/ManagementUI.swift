@@ -149,6 +149,7 @@ public enum ManagementUI {
             "backend": backendInfo(engine, health: health),
             "cache": cache,
             "apps": apps,
+            "linkedBundles": engine.linkedBundleStore.load().map { $0.jsonObject() },
             "appsError": appsError,
             "appsErrorCode": appsErrorCode,
             "devices": deviceRows.map { device in
@@ -314,6 +315,38 @@ public enum ManagementUI {
             let kind = UsageNode.Kind(rawValue: request.query["kind"] ?? "") ?? .personal
             let children = UsageMap.scanDirectory(dir, kind: kind, refusal: engine.fileOffloadRefusal)
             return .json(["ok": true, "path": dir, "children": children.map { $0.jsonObject() }])
+        }
+        if request.method == "POST", request.path == "/api/links/add" {
+            guard let body = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any],
+                  let rawApp = body["appPath"] as? String,
+                  let validApp = validPackPath(rawApp),
+                  let rawPath = body["path"] as? String, !rawPath.isEmpty else {
+                return failure(code: "bad_request", message: "appPath (in /Applications or ~/Applications) and path are required", status: 400)
+            }
+            let normPath = URL(fileURLWithPath: rawPath).standardizedFileURL.path
+            if let why = engine.fileOffloadRefusal(normPath) {
+                return failure(code: "bad_request", message: "\(normPath) \(why)", status: 400)
+            }
+            let appName = (body["appName"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            do {
+                let bundle = try engine.linkedBundleStore.link(appPath: validApp, appName: appName, extraPath: normPath)
+                return .json(["ok": true, "bundle": bundle.jsonObject(), "linkedBundles": engine.linkedBundleStore.load().map { $0.jsonObject() }])
+            } catch {
+                return failure(error, status: 500)
+            }
+        }
+        if request.method == "POST", request.path == "/api/links/remove" {
+            guard let body = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any],
+                  let rawApp = body["appPath"] as? String, !rawApp.isEmpty,
+                  let rawPath = body["path"] as? String, !rawPath.isEmpty else {
+                return failure(code: "bad_request", message: "appPath and path are required", status: 400)
+            }
+            do {
+                try engine.linkedBundleStore.unlink(appPath: rawApp, extraPath: rawPath)
+                return .json(["ok": true, "linkedBundles": engine.linkedBundleStore.load().map { $0.jsonObject() }])
+            } catch {
+                return failure(error, status: 500)
+            }
         }
         if request.method == "GET", request.path.hasPrefix("/api/jobs/") {
             let id = String(request.path.dropFirst("/api/jobs/".count))
@@ -767,6 +800,9 @@ public enum UIJobKind: String, CaseIterable {
     /// `app` is a label only ("backups"); the job covers every leftover backup.
     case backupsCleanup = "backups/cleanup"
 
+    /// Linked app + extra paths group (`vphone.app` + `~/.vphone`). `app` is the linked bundle id.
+    case linksOffload = "links/offload", linksRestore = "links/restore"
+
     public var isDev: Bool { rawValue.hasPrefix("dev/") }
     public var isContainers: Bool { rawValue.hasPrefix("containers/") }
 
@@ -990,6 +1026,15 @@ public struct ManagementActions {
                 try engine.trashPath(path)
                 return
             }
+            if kind == .linksOffload {
+                try engine.offloadLinkedBundle(id: name, progress: { progress.phase($0) }, onBytes: { done, total in progress.bytes(done, total: total) })
+                MirrorAutoSync.kick(engine)
+                return
+            }
+            if kind == .linksRestore {
+                try engine.restoreLinkedBundle(id: name, progress: { progress.phase($0) })
+                return
+            }
             if kind == .offloadfile {
                 guard let path = options.path else { throw DisklesslyError.usage("offload needs the file path") }
                 _ = try engine.offloadFile(path, progress: { progress.phase($0) }, onBytes: { done, total in progress.bytes(done, total: total) })
@@ -1064,7 +1109,7 @@ public struct ManagementActions {
             case .dataDisable:
                 try engine.appDataDisable(manifest) { progress.phase($0) }
             case .backupsCleanup, .pack, .offloadfile, .trashpath, .devOffloadRuntime, .devRestoreRuntime, .devOffloadSimulator, .devRestoreSimulator, .devForget, .devCleanDerivedData, .devShutdownSimulator,
-                 .containersOffload, .containersClean, .containersRestore, .containersForget:
+                 .containersOffload, .containersClean, .containersRestore, .containersForget, .linksOffload, .linksRestore:
                 break
             }
         })

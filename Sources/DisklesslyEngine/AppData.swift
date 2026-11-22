@@ -633,6 +633,7 @@ extension DisklesslyEngine {
 
     /// Called by every launch under the app lock: marks the launch, then brings data back.
     func appDataBeforeLaunch(_ manifest: ImageManifest) throws {
+        try restoreLinkedPathsIfNeeded(forAppPath: manifest.app.originalPath)
         let record = appDataStore.record(manifest.bundleId)
         guard record.enabled || record.state == .offloaded else { return }
         try appDataStore.update(manifest.bundleId) { $0.launchedAt = Date() }
