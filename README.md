@@ -42,6 +42,8 @@ sudo ln -s /Applications/Disklessly.app/Contents/MacOS/disklessly /usr/local/bin
 ```sh
 brew tap nwverse/tap
 brew install disklessly-cli
+# or upgrade an existing install:
+brew update && brew upgrade disklessly-cli
 ```
 
 That installs `disklessly` and the `dkl` alias from the release tarball. On macOS it
@@ -112,12 +114,13 @@ command for machine-readable output.
 The menu-bar app opens the dashboard in its own window. From a terminal,
 `disklessly ui --open` serves the same page and opens it in your browser
 (`disklessly ui --json` prints `url`, `port`, and `token` for scripts). The page
-shows the backend, cache use against the quota, packed apps with icons and sizes,
-pins, other Macs that share the repo, and the recommend list. From each app row you
-can open, prefetch, pin or unpin, evict, and unpack; packing a new app is
-`disklessly pack`. The page is bilingual (Chinese and English) and follows the
-system light or dark appearance. It listens only on `127.0.0.1` and needs the
-random token in the URL.
+shows an interactive nested treemap of disk usage (click any box to zoom in,
+press Escape to zoom out, right-click for actions), the backend, cache use
+against the quota, packed apps with icons and sizes, pins, other Macs that share
+the repo, and the recommend list. From each app row you can open, prefetch, pin
+or unpin, evict, and unpack; packing a new app is `disklessly pack`. The page is
+bilingual (Chinese and English) and follows the system light or dark appearance.
+It listens only on `127.0.0.1` and needs the random token in the URL.
 
 The menu-bar item has **Open Dashboard**, **Copy Dashboard URL**, the version, and
 **Quit**. The app has no Dock icon; reopening it shows the dashboard window again.

@@ -6,6 +6,12 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-11-21
+
+- Offloading (`pack`, file/folder offload, app data offload, container image offload, and upload
+  verification) now caps its transient staging space reserve at 256 MiB instead of applying the full
+  15 GiB download floor (`minFreeBytes`), so users can still offload items to free space when their
+  disk is already below 15 GiB free. Downloads and restores still enforce the full `minFreeBytes` floor.
 - The dashboard's disk usage map is now a nested treemap (squarified, like WinDirStat or WizTree)
   instead of a four-row flame chart: each box's area is its size, boxes with room show their
   children under a title strip, and the map keeps about a 16:9 shape and redraws when the window
