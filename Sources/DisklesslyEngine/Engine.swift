@@ -618,7 +618,8 @@ public struct DisklesslyEngine {
         let repoDevice = PackPreflight.deviceID(config.repoPath)
         let localRoot = (try? openBackend().localRoot()) != nil
         let repoOnSameVolume = localRoot && cacheDevice != nil && cacheDevice == repoDevice
-        let room = PackPreflight.space(appAllocated: allocated, free: free, cloneSupported: cloneSupported, repoOnSameVolume: repoOnSameVolume, minFree: config.minFreeBytes, volume: config.cacheDir)
+        let offloadFloor = SpaceFloor.offloadFloor(config.minFreeBytes)
+        let room = PackPreflight.space(appAllocated: allocated, free: free, cloneSupported: cloneSupported, repoOnSameVolume: repoOnSameVolume, minFree: offloadFloor, volume: config.cacheDir)
         if let blocked = room.error { throw blocked }
         let staging=URL(fileURLWithPath:config.cacheDir).appendingPathComponent("pack-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at:staging.appendingPathComponent("src"),withIntermediateDirectories:true); defer { try? FileManager.default.removeItem(at:staging) }
@@ -632,7 +633,7 @@ public struct DisklesslyEngine {
                 if errno == EEXIST {
                     throw DisklesslyError.failure("refusing to replace an existing staged copy at \(stagedApp.path)")
                 }
-                let again = PackPreflight.space(appAllocated: allocated, free: free, cloneSupported: false, repoOnSameVolume: repoOnSameVolume, minFree: config.minFreeBytes, volume: config.cacheDir)
+                let again = PackPreflight.space(appAllocated: allocated, free: free, cloneSupported: false, repoOnSameVolume: repoOnSameVolume, minFree: offloadFloor, volume: config.cacheDir)
                 if let blocked = again.error { throw blocked }
                 try run("/usr/bin/ditto",[app.path,stagedApp.path])
             }

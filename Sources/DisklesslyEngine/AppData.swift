@@ -400,9 +400,10 @@ extension DisklesslyEngine {
             // Snapshot by clone (APFS: instant), so a late write cannot tear the archive.
             let rootBytes = roots.reduce(UInt64(0)) { $0 + AllocatedSize.tree($1) }
             let homeFree = try VolumeSpace.availableBytes(at: AppDataPaths.supportDir(home: homeDirectory).path)
+            let offloadFloor = SpaceFloor.offloadFloor(config.minFreeBytes)
             if !Self.cloneSupported(at: AppDataPaths.supportDir(home: homeDirectory)),
-               !SpaceFloor.admits(freeBytes: homeFree, incoming: rootBytes, floor: config.minFreeBytes) {
-                throw DisklesslyError.noSpace("a snapshot of \(manifest.name)'s data needs \(rootBytes) bytes; \(homeFree) are free above the \(config.minFreeBytes) byte floor")
+               !SpaceFloor.admits(freeBytes: homeFree, incoming: rootBytes, floor: offloadFloor) {
+                throw DisklesslyError.noSpace("a snapshot of \(manifest.name)'s data needs \(rootBytes) bytes; \(homeFree) are free above the \(offloadFloor) byte reserve")
             }
             progress("snapshot")
             let snapshot = tx.appendingPathComponent("data", isDirectory: true)
@@ -438,8 +439,8 @@ extension DisklesslyEngine {
             } else {
                 try FileManager.default.createDirectory(atPath: config.cacheDir, withIntermediateDirectories: true)
                 let free = try VolumeSpace.availableBytes(at: config.cacheDir)
-                guard SpaceFloor.admits(freeBytes: free, incoming: logical, floor: config.minFreeBytes) else {
-                    throw DisklesslyError.noSpace("archiving \(manifest.name)'s data needs up to \(logical) bytes in \(config.cacheDir), which has \(free) free above the \(config.minFreeBytes) byte floor")
+                guard SpaceFloor.admits(freeBytes: free, incoming: logical, floor: offloadFloor) else {
+                    throw DisklesslyError.noSpace("archiving \(manifest.name)'s data needs up to \(logical) bytes in \(config.cacheDir), which has \(free) free above the \(offloadFloor) byte reserve")
                 }
                 progress("archive")
                 let archive = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("appdata-\(txid).tar.zst")

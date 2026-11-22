@@ -369,7 +369,7 @@ extension DisklesslyEngine {
         let (state, image) = try liveImage(key, tools: tools)
         try FileManager.default.createDirectory(at: containersDir, withIntermediateDirectories: true)
         let free = try VolumeSpace.availableBytes(at: containersDir.path)
-        guard SpaceFloor.admits(freeBytes: free, incoming: image.bytes, floor: config.minFreeBytes) else {
+        guard SpaceFloor.admits(freeBytes: free, incoming: image.bytes, floor: SpaceFloor.offloadFloor(config.minFreeBytes)) else {
             throw DisklesslyError.noSpace("Saving \(image.title) needs about \(image.bytes) bytes free in \(containersDir.path); \(free) are free")
         }
         let staging = containersDir.appendingPathComponent("save-\(UUID().uuidString).tar")

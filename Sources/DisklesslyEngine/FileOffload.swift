@@ -88,8 +88,9 @@ extension DisklesslyEngine {
                 try FileManager.default.createDirectory(atPath: config.cacheDir, withIntermediateDirectories: true)
                 let free = try VolumeSpace.availableBytes(at: config.cacheDir)
                 let need = AllocatedSize.tree(source)
-                guard SpaceFloor.admits(freeBytes: free, incoming: need, floor: config.minFreeBytes) else {
-                    throw DisklesslyError.noSpace("archiving \(source.lastPathComponent) needs up to \(need) bytes in \(config.cacheDir), which has \(free) free above the \(config.minFreeBytes) byte floor")
+                let offloadFloor = SpaceFloor.offloadFloor(config.minFreeBytes)
+                guard SpaceFloor.admits(freeBytes: free, incoming: need, floor: offloadFloor) else {
+                    throw DisklesslyError.noSpace("archiving \(source.lastPathComponent) needs up to \(need) bytes in \(config.cacheDir), which has \(free) free above the \(offloadFloor) byte reserve")
                 }
                 progress("archive")
                 let archive = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("offload-\(UUID().uuidString).tar.zst")
@@ -286,8 +287,9 @@ extension DisklesslyEngine {
             return try SHA256Digest.hexFile(file)
         }
         let free = try VolumeSpace.availableBytes(at: config.cacheDir)
-        guard SpaceFloor.admits(freeBytes: free, incoming: size, floor: config.minFreeBytes) else {
-            throw DisklesslyError.noSpace("checking the repo copy needs \(size) bytes in \(config.cacheDir), which has \(free) free above the \(config.minFreeBytes) byte floor; the original was not changed")
+        let offloadFloor = SpaceFloor.offloadFloor(config.minFreeBytes)
+        guard SpaceFloor.admits(freeBytes: free, incoming: size, floor: offloadFloor) else {
+            throw DisklesslyError.noSpace("checking the repo copy needs \(size) bytes in \(config.cacheDir), which has \(free) free above the \(offloadFloor) byte reserve; the original was not changed")
         }
         try FileManager.default.createDirectory(atPath: config.cacheDir, withIntermediateDirectories: true)
         let temp = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("verify-\(UUID().uuidString)")

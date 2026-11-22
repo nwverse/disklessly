@@ -59,6 +59,15 @@ public enum SigningIdentity {
 }
 
 public enum SpaceFloor {
+    /// Maximum free-space reserve kept during transient offload staging.
+    /// Offload reclaims disk space once finished, so enforcing the full download floor
+    /// (default 15 GiB) would block users from freeing space precisely when their disk is low.
+    public static let maxOffloadReserveBytes: UInt64 = 256 * 1024 * 1024
+
+    public static func offloadFloor(_ configuredFloor: UInt64) -> UInt64 {
+        min(configuredFloor, maxOffloadReserveBytes)
+    }
+
     public static func admits(freeBytes: UInt64, incoming: UInt64, floor: UInt64) -> Bool {
         freeBytes >= incoming && freeBytes &- incoming >= floor
     }

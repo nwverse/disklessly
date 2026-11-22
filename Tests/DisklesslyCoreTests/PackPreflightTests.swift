@@ -31,6 +31,21 @@ final class PackPreflightTests: XCTestCase {
         XCTAssertEqual(copied.need - cloned.need, allocated)
     }
 
+    func testOffloadFloorAllowsPackingWhenDiskBelowDownloadFloor() {
+        let appAllocated: UInt64 = 759_795_712
+        let free: UInt64 = 14_883_495_936 // ~13.86 GiB, below the 15 GiB download floor
+        let configuredFloor: UInt64 = 15 * 1024 * 1024 * 1024
+        let verdict = PackPreflight.space(
+            appAllocated: appAllocated,
+            free: free,
+            cloneSupported: true,
+            repoOnSameVolume: false,
+            minFree: SpaceFloor.offloadFloor(configuredFloor)
+        )
+        XCTAssertNil(verdict.error)
+        XCTAssertLessThan(verdict.need, free)
+    }
+
     func testRunningUnknownIsBusy() {
         XCTAssertEqual(PackPreflight.running(.unknown)?.exitCode, 9)
         XCTAssertEqual(PackPreflight.running(.busy)?.exitCode, 9)
