@@ -173,6 +173,11 @@ const copy = {
     dataEnable: "数据也放云端",
     dataOffloadNow: "现在放到云端",
     usageMenuRefused: (why) => `不能在这里操作：${why}`,
+    packAppMenu: "上云（打包为替身）",
+    picturesHint: "系统「图片」目录包含照片图库（Photos Library），不建议整目录直接上云。可在「照片 → 设置 → iCloud」开启「优化 Mac 储存空间」，或打开目录单独清理其它子文件夹。",
+    manageContainers: "管理容器镜像",
+    containerImagesHead: (n) => `包含 ${n} 个容器镜像：`,
+    containerImagesNone: "当前没有可列出的本地镜像（或引擎未运行）。",
     revealInFinder: "在访达中显示",
     revealFailed: "无法在访达中显示",
     bigDataWaiting: "已开启数据上云，但数据还在这台 Mac 上；应用退出后会自动搬走，也可以现在就搬",
@@ -745,6 +750,11 @@ const copy = {
     dataEnable: "Move its data too",
     dataOffloadNow: "Offload now",
     usageMenuRefused: (why) => `Not available here: ${why}`,
+    packAppMenu: "Offload app to cloud",
+    picturesHint: "Your Pictures folder holds Photos Library. Instead of offloading the whole folder, enable Photos → Settings → iCloud → Optimize Mac Storage, or open it in Finder to offload other subfolders.",
+    manageContainers: "Manage container images",
+    containerImagesHead: (n) => `${n} container image${n === 1 ? "" : "s"} inside:`,
+    containerImagesNone: "No local images listed (or the engine is stopped).",
     revealInFinder: "Show in Finder",
     revealFailed: "Could not show it in Finder",
     bigDataWaiting: "Data offload is on but the data is still on this Mac; it moves after the app quits, or you can move it now",
@@ -2285,7 +2295,32 @@ function adoptServerJobs(status) {
   }
 }
 
+function renderActiveJobs() {
+  const host = document.querySelector("#active-jobs");
+  if (!host) return;
+  host.replaceChildren();
+  if (!pending.size) { host.hidden = true; return; }
+  host.hidden = false;
+  for (const [key, job] of pending.entries()) {
+    const label = key.includes("/") ? key.split("/").filter(Boolean).pop() || key : key;
+    const action = tl(primary, "action" + job.kind) || job.kind;
+    const phase = tl(primary, "phase" + (job.phase || "queued")) || job.phase || "";
+    const row = el("div", "active-job");
+    const head = el("div", "active-job-head");
+    head.append(
+      el("span", "active-job-name", `${label} · ${action}`),
+      el("span", "active-job-phase", phase ? `${phase}…` : "…"),
+    );
+    const bar = el("div", "active-job-bar");
+    bar.append(el("div", "active-job-fill"));
+    row.append(head, bar);
+    host.append(row);
+  }
+}
+
 function rerenderApps() {
+  renderActiveJobs();
+  if (usageData && usageData.tree) drawUsageMap();
   if (lastRecommend && !recommendLoading) renderRecommend(lastRecommend, null);
   if (filesData) renderFiles();
   if (lastStatus) renderApps(lastStatus.apps || [], lastStatus.appsError ? { code: appsErrorCode(lastStatus), message: lastStatus.appsError } : null);
@@ -3433,6 +3468,8 @@ function drawUsageMap() {
     const item = el("button", `usage-box u-${node.kind} d${depth}${nested ? " frame" : ""}`);
     item.type = "button";
     if (big) item.classList.add("big");
+    const isBusy = Boolean((node.path && pending.has(node.path)) || (node.name && pending.has(node.name)));
+    if (isBusy) item.classList.add("is-busy");
     item.style.left = `${x}px`;
     item.style.top = `${y}px`;
     item.style.width = `${w}px`;
@@ -3442,13 +3479,38 @@ function drawUsageMap() {
     const pct = focus.bytes ? `${(share * 100).toFixed(share < 0.1 ? 1 : 0)}%` : "";
     // A name or size is drawn only when it fits whole; a cut-off size is worse than none.
     const size = bytes(node.bytes);
+    const isAppTile = !nested && Boolean(node.path && node.path.endsWith(".app"));
+    const iconPx = isAppTile ? (w >= 88 && h >= 68 ? 28 : w >= 44 && h >= 44 ? 24 : w >= 24 && h >= 24 ? 18 : 0) : 0;
     const nameW = usageTextWidth(label, 600, (nested && depth === 1) || big ? 13 : 12);
     const sizeW = usageTextWidth(size, 400, 11.5);
     const inner = w - (big ? 22 : 14);
     const name = () => item.append(el("span", "usage-name", label));
     const sizeEl = () => item.append(el("span", "usage-size", size));
+    const appendAppIcon = (px) => {
+      const img = document.createElement("img");
+      img.className = "usage-app-icon";
+      img.width = px;
+      img.height = px;
+      img.loading = "lazy";
+      img.alt = "";
+      img.src = String(url("/api/app-icon?path=" + encodeURIComponent(node.path)));
+      img.addEventListener("error", () => { img.remove(); }, { once: true });
+      item.append(img);
+    };
     if (nested) {
       if (w >= 48) { name(); if (nameW + 6 + sizeW <= inner) sizeEl(); }
+    } else if (iconPx > 0) {
+      // Finviz-style app tile: show the app logo even when the box is too small for text.
+      const fitsText = h >= iconPx + 24 && inner >= Math.min(nameW, 36);
+      if (fitsText) {
+        item.classList.add("has-icon");
+        appendAppIcon(iconPx);
+        name();
+        if (h >= iconPx + 42 && sizeW <= inner) sizeEl();
+      } else {
+        item.classList.add("icon-only");
+        appendAppIcon(iconPx);
+      }
     } else if (h >= 22 && inner >= Math.min(nameW, 28)) {
       name();
       // The size sits under the name in a tall leaf, or beside it in a short one.
@@ -3527,23 +3589,59 @@ function usageContextMenu(event, node, label) {
   const head = el("div", "usage-menu-head");
   head.append(el("strong", "", label), el("span", "mono small muted", node.path));
   menu.append(head);
-  const target = { name: node.path, label, path: node.path, cachedBytes: node.bytes };
-  const busy = Boolean(pending.get(node.path));
-  const entries = [
-    ["revealInFinder", () => revealInFinder(node.path), true],
-    ["bigUpload", () => confirmAction("offloadfile", target), false],
-    ["bigDelete", () => confirmAction("trashpath", target), false],
-  ];
+  const isApp = Boolean(node.path && node.path.endsWith(".app"));
+  const isPictures = Boolean(node.path && (/\/Pictures$/i.test(node.path) || /\.photoslibrary$/i.test(node.path)));
+  const isContainerDir = Boolean(node.name && /com\.apple\.container|docker|orbstack|colima/i.test(node.name));
+  const busy = Boolean(pending.get(node.path) || pending.get(label));
+  const entries = isApp
+    ? [
+        ["revealInFinder", () => revealInFinder(node.path), true],
+        ["packAppMenu", () => confirmAction("pack", { name: label, path: node.path, cachedBytes: node.bytes }), false],
+      ]
+    : [
+        ["revealInFinder", () => revealInFinder(node.path), true],
+        ["bigUpload", () => confirmAction("offloadfile", { name: node.path, label, path: node.path, cachedBytes: node.bytes }), false],
+        ["bigDelete", () => confirmAction("trashpath", { name: node.path, label, path: node.path, cachedBytes: node.bytes }), false],
+      ];
   for (const [key, run, always] of entries) {
     const item = el("button", "menuitem", t(key));
     item.type = "button";
     item.setAttribute("role", "menuitem");
     // Showing it in Finder changes nothing, so the safety rules do not apply to it.
-    item.disabled = !always && (Boolean(node.refusal) || busy);
+    item.disabled = !always && ((!isApp && Boolean(node.refusal)) || busy);
     item.addEventListener("click", () => { closeUsageMenu(); run(); });
     menu.append(item);
   }
-  if (node.refusal) menu.append(el("div", "usage-menu-note small muted", t("usageMenuRefused", node.refusal)));
+  if (isContainerDir) {
+    const engineKey = /com\.apple\.container/i.test(node.name) ? "apple" : /orbstack/i.test(node.name) ? "orbstack" : /colima/i.test(node.name) ? "colima" : "docker";
+    const imgs = (ctrData && ctrData.images ? ctrData.images : []).filter((i) => i.engine === engineKey);
+    const listBox = el("div", "usage-menu-list");
+    if (imgs.length) {
+      listBox.append(el("div", "small muted", t("containerImagesHead", imgs.length)));
+      for (const img of imgs.slice(0, 8)) {
+        const row = el("div", "usage-menu-list-row");
+        row.append(el("span", "mono", img.title || img.shortId), el("span", "muted", bytes(img.bytes || 0)));
+        listBox.append(row);
+      }
+    } else {
+      listBox.append(el("div", "small muted", t("containerImagesNone")));
+    }
+    menu.append(listBox);
+    const jump = el("button", "menuitem", t("manageContainers"));
+    jump.type = "button";
+    jump.setAttribute("role", "menuitem");
+    jump.addEventListener("click", () => {
+      closeUsageMenu();
+      const sec = document.querySelector("#ctr-section");
+      if (sec) sec.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+    menu.append(jump);
+  }
+  if (isPictures) {
+    menu.append(el("div", "usage-menu-note small muted", t("picturesHint")));
+  } else if (!isApp && node.refusal) {
+    menu.append(el("div", "usage-menu-note small muted", t("usageMenuRefused", node.refusal)));
+  }
   let x = event.clientX;
   let y = event.clientY;
   // A keyboard-opened menu reports no pointer position, so it opens at the top-left of its box.

@@ -59,8 +59,9 @@ public struct UsageInputs {
         public var bundleBytes: UInt64
         public var cacheBytes: UInt64
         public var dataBytes: UInt64
-        public init(name: String, bundleBytes: UInt64, cacheBytes: UInt64 = 0, dataBytes: UInt64 = 0) {
-            self.name = name; self.bundleBytes = bundleBytes; self.cacheBytes = cacheBytes; self.dataBytes = dataBytes
+        public var path: String?
+        public init(name: String, bundleBytes: UInt64, cacheBytes: UInt64 = 0, dataBytes: UInt64 = 0, path: String? = nil) {
+            self.name = name; self.bundleBytes = bundleBytes; self.cacheBytes = cacheBytes; self.dataBytes = dataBytes; self.path = path
         }
     }
     public struct Offloaded {
@@ -111,10 +112,14 @@ public enum UsageMap {
     /// so the root always equals the disk and the free box.
     public static func assemble(_ input: UsageInputs) -> UsageNode {
         let appNodes: [UsageNode] = input.apps.map { app in
-            var parts: [UsageNode] = [UsageNode(name: app.name, key: "bundle", kind: .bundle, bytes: app.bundleBytes)]
+            var bundle = UsageNode(name: app.name, key: "bundle", kind: .bundle, bytes: app.bundleBytes)
+            bundle.path = app.path
+            var parts: [UsageNode] = [bundle]
             if app.cacheBytes > 0 { parts.append(UsageNode(name: app.name, key: "cache", kind: .cache, bytes: app.cacheBytes)) }
             if app.dataBytes > 0 { parts.append(UsageNode(name: app.name, key: "data", kind: .data, bytes: app.dataBytes)) }
-            return UsageNode.group(name: app.name, kind: .apps, parts)
+            var group = UsageNode.group(name: app.name, kind: .apps, parts)
+            group.path = app.path
+            return group
         }
         let apps = UsageNode.group(name: "Apps", key: "apps", kind: .apps, merged(appNodes, kind: .apps))
 
@@ -294,7 +299,7 @@ public enum UsageScan {
                     if let v = support[key], !usedSupport.contains(key) { data += v; usedSupport.insert(key) }
                     if let v = containers[key], !usedContainers.contains(key) { data += v; usedContainers.insert(key) }
                 }
-                input.apps.append(.init(name: display, bundleBytes: bytes, cacheBytes: cache, dataBytes: data))
+                input.apps.append(.init(name: display, bundleBytes: bytes, cacheBytes: cache, dataBytes: data, path: root + "/" + name))
             }
         }
 

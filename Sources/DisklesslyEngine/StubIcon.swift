@@ -9,6 +9,29 @@ enum StubIcon {
     static let resourceName = "AppIcon.icns"
 
     #if os(macOS)
+    /// Best-effort 64×64 PNG icon for a local `.app` bundle, cached under `<stateDir>/app-icons/`.
+    static func bundleIconPNG(appPath: String, stateDir: String) -> Data {
+        let key = SHA256Digest.hex(Data(appPath.utf8)).prefix(24)
+        let dir = URL(fileURLWithPath: stateDir, isDirectory: true).appendingPathComponent("app-icons", isDirectory: true)
+        let cached = dir.appendingPathComponent("\(key).png")
+        if let data = try? Data(contentsOf: cached), data.count <= 512 * 1024, data.starts(with: Data([0x89, 0x50, 0x4E, 0x47])) {
+            return data
+        }
+        let appURL = URL(fileURLWithPath: appPath)
+        let info = readPlist(appURL.appendingPathComponent("Contents/Info.plist")) ?? [:]
+        let keys = AppIcon.plistKeys(info)
+        let image: NSImage
+        if let file = keys.file, let icns = AppIcon.icnsURL(app: appURL, fileKey: file), let loaded = NSImage(contentsOf: icns) {
+            image = loaded
+        } else {
+            image = NSWorkspace.shared.icon(forFile: appPath)
+        }
+        guard let png = pngData(image, pixels: 64) else { return AppIcon.genericPNG }
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? png.write(to: cached, options: .atomic)
+        return png
+    }
+
     /// Writes the PNG cache without a stub bundle. A failure is a warning.
     static func cacheOnly(from app: URL, imageId: String, stateDir: String, publish: (Data) -> Void) {
         let info = readPlist(app.appendingPathComponent("Contents/Info.plist")) ?? [:]

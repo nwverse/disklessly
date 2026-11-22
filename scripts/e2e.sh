@@ -627,7 +627,7 @@ FILE_SHA="$(shasum -a 256 "$FILES_HOME/Downloads/movie.mov" | cut -d' ' -f1)"
 TREE_BEFORE="$(cd "$FILES_HOME/Downloads/Old Project" && find . -type f -exec shasum -a 256 {} + | sort)"
 export DISKLESSLY_HOME="$FILES_HOME"
 DISKLESSLY_MIN_FREE_BYTES=0 run_cli offload "$FILES_HOME/Downloads/movie.mov" "$FILES_HOME/Downloads/Old Project" || fail 'offload a file and a folder'
-[[ ! -e "$FILES_HOME/Downloads/movie.mov" && ! -e "$FILES_HOME/Downloads/Old Project" ]] || fail 'offload left the originals in place'
+[[ ! -e "$FILES_HOME/Downloads/movie.mov" && -L "$FILES_HOME/Downloads/Old Project" ]] || fail 'offload left the originals in place'
 assert_file "$FILES_HOME/Downloads/movie.mov.disklessly" 'offload leaves a file placeholder'
 assert_file "$FILES_HOME/Downloads/Old Project.disklessly" 'offload leaves a folder placeholder'
 xattr -p com.apple.metadata:_kMDItemUserTags "$FILES_HOME/Downloads/movie.mov.disklessly" >/dev/null 2>&1 || fail 'placeholder has no Finder tag'

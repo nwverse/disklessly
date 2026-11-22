@@ -285,6 +285,18 @@ public enum ManagementUI {
             let body = AppIcon.png(stateDir: engine.config.stateDir, repoPath: engine.config.repoPath, imageId: imageId)
             return UIResponse(status: 200, contentType: "image/png", body: body)
         }
+        if request.method == "GET", request.path == "/api/app-icon" {
+            #if os(macOS)
+            guard let raw = request.query["path"], let valid = validPackPath(raw),
+                  FileManager.default.fileExists(atPath: valid) else {
+                return .text(404, "not found")
+            }
+            let body = StubIcon.bundleIconPNG(appPath: valid, stateDir: engine.config.stateDir)
+            return UIResponse(status: 200, contentType: "image/png", body: body)
+            #else
+            return UIResponse(status: 200, contentType: "image/png", body: AppIcon.genericPNG)
+            #endif
+        }
         if request.method == "GET", request.path.hasPrefix("/api/jobs/") {
             let id = String(request.path.dropFirst("/api/jobs/".count))
             guard let job = context.jobs.job(id) else {
