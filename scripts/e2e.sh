@@ -3,6 +3,7 @@
 # E2E_ENCRYPT_IMAGES=1 runs every pack with image encryption on; keys go to a
 # throwaway file store (DISKLESSLY_TEST_SECRETS_DIR), never the login keychain.
 set -euo pipefail
+export DISKLESSLY_NO_PROMPT=1
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/disklessly-e2e.XXXXXX")"

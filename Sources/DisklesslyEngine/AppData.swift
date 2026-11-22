@@ -151,6 +151,7 @@ enum AppDataQuitPrompt {
 
     /// Runs the dialog. If osascript cannot start, the data goes back as it always did.
     static func ask(app: String) -> QuitChoice {
+        if ProcessInfo.processInfo.environment["DISKLESSLY_NO_PROMPT"] == "1" { return .putBack }
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script(app: app)]
