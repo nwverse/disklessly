@@ -196,18 +196,74 @@ public enum UsageMap {
 
     /// Scans one directory's direct children on demand for treemap drill-down.
     public static func scanDirectory(_ path: String, kind: UsageNode.Kind = .personal, refusal: (String) -> String?) -> [UsageNode] {
+        scanDirectoryDetailed(path, kind: kind, refusal: refusal).children
+    }
+
+    /// Scans one directory's direct children in parallel for treemap drill-down, reporting whether a timeout left it partial.
+    public static func scanDirectoryDetailed(_ path: String, kind: UsageNode.Kind = .personal, timeout: TimeInterval = 20, refusal: (String) -> String?) -> (children: [UsageNode], partial: Bool) {
         let dir = URL(fileURLWithPath: path).standardizedFileURL.path
-        let scan = UsageScan.sizes(of: dir, timeout: 12)
-        let prefix = dir.hasSuffix("/") ? dir : dir + "/"
-        var nodes: [UsageNode] = []
-        for (entryPath, bytes) in scan.sizes where entryPath != dir && bytes > 0 {
-            let rel = entryPath.hasPrefix(prefix) ? String(entryPath.dropFirst(prefix.count)) : URL(fileURLWithPath: entryPath).lastPathComponent
-            if rel.isEmpty || rel.contains("/") { continue }
-            var node = UsageNode(name: rel, kind: kind, bytes: bytes)
-            node.path = entryPath
-            nodes.append(node)
+        guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
+            return ([], false)
         }
-        return annotate(UsageNode.group(name: URL(fileURLWithPath: dir).lastPathComponent, kind: kind, merged(nodes, kind: kind)), refusal: refusal).children
+        let prefix = dir.hasSuffix("/") ? dir : dir + "/"
+        let collector = LockedDirScan()
+        var subdirs: [(name: String, path: String)] = []
+        for name in entries where !name.isEmpty {
+            let entryPath = prefix + name
+            var info = stat()
+            guard lstat(entryPath, &info) == 0 else { continue }
+            let fileKind = info.st_mode & S_IFMT
+            if fileKind == S_IFDIR {
+                subdirs.append((name, entryPath))
+            } else if fileKind == S_IFREG || fileKind == S_IFLNK {
+                let bytes = UInt64(max(0, info.st_blocks)) * 512
+                if bytes > 0 {
+                    var node = UsageNode(name: name, kind: kind, bytes: bytes)
+                    node.path = entryPath
+                    collector.append(node)
+                }
+            }
+        }
+        let group = DispatchGroup()
+        let sem = DispatchSemaphore(value: 8)
+        let deadline = Date().addingTimeInterval(timeout)
+        for sub in subdirs {
+            if deadline.timeIntervalSinceNow <= 0.1 {
+                collector.markPartial()
+                break
+            }
+            sem.wait()
+            let remaining = deadline.timeIntervalSinceNow
+            if remaining <= 0.1 {
+                sem.signal()
+                collector.markPartial()
+                break
+            }
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { sem.signal(); group.leave() }
+                let (bytes, complete) = UsageScan.singleSize(of: sub.path, timeout: remaining)
+                if !complete { collector.markPartial() }
+                if bytes > 0 {
+                    var node = UsageNode(name: sub.name, kind: kind, bytes: bytes)
+                    node.path = sub.path
+                    collector.append(node)
+                }
+            }
+        }
+        group.wait()
+        let (nodes, partial) = collector.snapshot()
+        let grouped = UsageNode.group(name: URL(fileURLWithPath: dir).lastPathComponent, kind: kind, merged(nodes, kind: kind))
+        return (annotate(grouped, refusal: refusal).children, partial)
+    }
+
+    private final class LockedDirScan: @unchecked Sendable {
+        private let lock = NSLock()
+        private var nodes: [UsageNode] = []
+        private var partial = false
+        func append(_ node: UsageNode) { lock.lock(); nodes.append(node); lock.unlock() }
+        func markPartial() { lock.lock(); partial = true; lock.unlock() }
+        func snapshot() -> ([UsageNode], Bool) { lock.lock(); defer { lock.unlock() }; return (nodes, partial) }
     }
 }
 
@@ -220,14 +276,32 @@ public enum UsageScan {
     /// system at ~/Library/Developer/CoreDevice/DeviceFS, and mounted images
     /// would otherwise count again on top of where they really live.
     static func sizes(of path: String, timeout: TimeInterval) -> (sizes: [String: UInt64], complete: Bool) {
+        let (raw, complete) = runDU(arguments: ["-x", "-k", "-d", "1", path], timeout: timeout)
+        var result: [String: UInt64] = [:]
+        for line in raw.split(separator: "\n") {
+            guard let tab = line.firstIndex(of: "\t"), let kb = UInt64(line[line.startIndex..<tab]) else { continue }
+            result[String(line[line.index(after: tab)...])] = kb * 1024
+        }
+        return (result, complete)
+    }
+
+    static func singleSize(of path: String, timeout: TimeInterval) -> (bytes: UInt64, complete: Bool) {
+        let (raw, complete) = runDU(arguments: ["-x", "-k", "-s", path], timeout: timeout)
+        for line in raw.split(separator: "\n") {
+            guard let tab = line.firstIndex(of: "\t"), let kb = UInt64(line[line.startIndex..<tab]) else { continue }
+            return (kb * 1024, complete)
+        }
+        return (0, complete)
+    }
+
+    private static func runDU(arguments: [String], timeout: TimeInterval) -> (output: String, complete: Bool) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/du")
-        // -x: stay on this volume, so mounted disk images (Disklessly's own, simulator runtimes) are not counted.
-        process.arguments = ["-x", "-k", "-d", "1", path]
+        process.arguments = arguments
         let pipe = Pipe()
         process.standardOutput = pipe
         process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return ([:], false) }
+        do { try process.run() } catch { return ("", false) }
         let output = LockedData()
         let reader = DispatchGroup()
         reader.enter()
@@ -243,12 +317,7 @@ public enum UsageScan {
             _ = reader.wait(timeout: .now() + 2)
         }
         process.waitUntilExit()
-        var result: [String: UInt64] = [:]
-        for line in String(decoding: output.get(), as: UTF8.self).split(separator: "\n") {
-            guard let tab = line.firstIndex(of: "\t"), let kb = UInt64(line[line.startIndex..<tab]) else { continue }
-            result[String(line[line.index(after: tab)...])] = kb * 1024
-        }
-        return (result, complete)
+        return (String(decoding: output.get(), as: UTF8.self), complete)
     }
 
     private final class LockedData: @unchecked Sendable {
@@ -632,6 +701,11 @@ public final class UsageScanner {
             lock.unlock()
         }
         return true
+    }
+
+    public var scannedAt: Date? {
+        lock.lock(); defer { lock.unlock() }
+        return result?.at
     }
 
     public func snapshot() -> [String: Any] {

@@ -447,6 +447,9 @@ const copy = {
     usageIntro: "看看 256G 都被谁占了：应用的包体、缓存和数据，以及 Disklessly 自己的缓存。只读取大小，不会改动任何文件。",
     usagePartial: "部分目录超时没有读完，没读完的部分计入“系统及其他”。",
     usageFailed: "无法读取占用",
+    usageDrilling: (name) => `正在扫描 ${name}…`,
+    usageDrillEmpty: (name) => `${name} 里没有可展开的子项`,
+    usageDrillFailed: (name) => `无法扫描 ${name}`,
     usageHint: "点击方块放大，点击上方路径返回。",
     usageTotal: (used, free, total) => `共 ${total} · 已用 ${used} · 可用 ${free}`,
     usage_disk: "整块磁盘",
@@ -1032,6 +1035,9 @@ const copy = {
     usageIntro: "See what takes up your 256G: each app's bundle, cache and data, plus Disklessly's own cache. It only reads sizes and changes nothing.",
     usagePartial: "Some folders timed out and were not fully read; what is missing is counted as System & other.",
     usageFailed: "Could not read disk usage",
+    usageDrilling: (name) => `Scanning ${name}…`,
+    usageDrillEmpty: (name) => `No subfolders or measurable items in ${name}`,
+    usageDrillFailed: (name) => `Could not scan ${name}`,
     usageHint: "Click a box to zoom in; click the path above to go back.",
     usageTotal: (used, free, total) => `${total} total · ${used} used · ${free} free`,
     usage_disk: "Whole disk",
@@ -3296,6 +3302,11 @@ let usageData = null;
 let usageFocus = []; // child indexes from the root
 let usageTimer = null;
 let usageAutoStarted = false;
+const usageDirCache = new Map(); // path -> { children, partial }
+const usageDrilledEmpty = new Set(); // paths confirmed empty by a complete scan
+let usageDirCacheStamp = null; // usageData.scannedAt for cache invalidation
+let usageDrillingPath = null;
+let usageDrillingLabel = "";
 
 const USAGE_LEGEND = ["bundle", "cache", "data", "offloaded", "personal", "library", "system", "free"];
 const usageKindText = { bundle: "usage_bundle", cache: "usage_cache", data: "usage_data", offloaded: "usage_disklessly", personal: "usage_personal", library: "usage_library", system: "usage_system", free: "usage_free" };
@@ -3327,6 +3338,33 @@ function usageNodeAt(path) {
     node = child;
   }
   return trail;
+}
+
+/// Re-attaches previously fetched directory children after /api/usage replaces the top-level tree.
+function hydrateUsageTree(node) {
+  if (!node) return;
+  if (node.path) {
+    if ((!node.children || !node.children.length) && usageDirCache.has(node.path)) {
+      const entry = usageDirCache.get(node.path);
+      if (entry && Array.isArray(entry.children) && entry.children.length) {
+        node.children = entry.children;
+      }
+    }
+    if (usageDrilledEmpty.has(node.path)) node._drilledEmpty = true;
+  }
+  for (const child of node.children || []) hydrateUsageTree(child);
+}
+
+/// Finds the live index path in `node` whose filesystem path equals `targetPath`.
+function findUsagePathByFSPath(node, targetPath, prefix = []) {
+  if (!node) return null;
+  if (node.path === targetPath) return prefix;
+  const kids = node.children || [];
+  for (let i = 0; i < kids.length; i++) {
+    const found = findUsagePathByFSPath(kids[i], targetPath, [...prefix, i]);
+    if (found) return found;
+  }
+  return null;
 }
 
 function renderUsage() {
@@ -3491,7 +3529,7 @@ function drawUsageMap() {
     const item = el("button", `usage-box u-${node.kind} d${depth}${nested ? " frame" : ""}`);
     item.type = "button";
     if (big) item.classList.add("big");
-    const isBusy = Boolean((node.path && pending.has(node.path)) || (node.name && pending.has(node.name)));
+    const isBusy = Boolean((node.path && (pending.has(node.path) || usageDrillingPath === node.path)) || (node.name && pending.has(node.name)));
     if (isBusy) item.classList.add("is-busy");
     item.style.left = `${x}px`;
     item.style.top = `${y}px`;
@@ -3544,26 +3582,66 @@ function drawUsageMap() {
     const named = node.key && ["bundle", "cache", "data"].includes(node.key) && parent && parent.name && parent.key == null ? `${parent.name} · ${full}` : full;
     item.title = `${named} · ${bytes(node.bytes)} · ${pct}`;
     item.setAttribute("aria-label", item.title);
-    const canLazyDrill = !kids && Boolean(node.path && !node.path.endsWith(".app") && !node._drilledEmpty);
+    const canLazyDrill = !kids && Boolean(node.path && !node.path.endsWith(".app") && !node._drilledEmpty && !usageDrilledEmpty.has(node.path));
     if (kids || canLazyDrill) {
       item.classList.add("zoomable");
       item.addEventListener("click", async (event) => {
         // A click from the keyboard (detail 0) keeps focus on the map after the redraw.
         const byKeyboard = event.detail === 0;
         if (!kids && canLazyDrill) {
+          const targetPath = node.path;
+          const targetKind = node.kind || "personal";
+          if (usageDrillingPath === targetPath) return;
+          const cached = usageDirCache.get(targetPath);
+          if (cached && Array.isArray(cached.children) && cached.children.length) {
+            if (usageData && usageData.tree) hydrateUsageTree(usageData.tree);
+            const livePath = (usageData && usageData.tree && findUsagePathByFSPath(usageData.tree, targetPath)) || path;
+            usageFocus = livePath;
+            usageAnimate = true;
+            renderUsage();
+            if (byKeyboard) focusFirstUsageBox();
+            return;
+          }
+          usageDrillingPath = targetPath;
+          usageDrillingLabel = label;
           item.classList.add("is-busy");
+          tip.hidden = false;
+          tip.textContent = t("usageDrilling", label);
           try {
-            const res = await api(`/api/usage/dir?path=${encodeURIComponent(node.path)}&kind=${encodeURIComponent(node.kind || "personal")}`);
+            const res = await api(`/api/usage/dir?path=${encodeURIComponent(targetPath)}&kind=${encodeURIComponent(targetKind)}`);
             if (res && Array.isArray(res.children) && res.children.length) {
-              node.children = res.children;
-            } else {
-              node._drilledEmpty = true;
-              item.classList.remove("is-busy", "zoomable");
+              usageDirCache.set(targetPath, { children: res.children, partial: Boolean(res.partial) });
+              usageDrilledEmpty.delete(targetPath);
+              if (usageData && usageData.tree) hydrateUsageTree(usageData.tree);
+              const livePath = (usageData && usageData.tree && findUsagePathByFSPath(usageData.tree, targetPath)) || path;
+              usageFocus = livePath;
+              usageAnimate = true;
+              renderUsage();
+              if (byKeyboard) focusFirstUsageBox();
               return;
             }
-          } catch (_) {
-            item.classList.remove("is-busy");
+            if (res && res.partial) {
+              toast({ title: biPair(t("usageDrillFailed", label)), tone: "error" });
+              drawUsageMap();
+              return;
+            }
+            usageDrilledEmpty.add(targetPath);
+            node._drilledEmpty = true;
+            tip.hidden = false;
+            tip.textContent = t("usageDrillEmpty", label);
+            drawUsageMap();
             return;
+          } catch (err) {
+            if (err && err.code !== "unauthorized") {
+              toast({ title: biPair(t("usageDrillFailed", label)), error: { code: err.code || "failed", message: err.message || "" }, tone: "error" });
+            }
+            drawUsageMap();
+            return;
+          } finally {
+            if (usageDrillingPath === targetPath) {
+              usageDrillingPath = null;
+              usageDrillingLabel = "";
+            }
           }
         }
         usageFocus = path;
@@ -3603,6 +3681,10 @@ function drawUsageMap() {
     for (const cell of layoutTop(focus.children)) box(cell.child, focus, cell, [...usageFocus, cell.index], 1);
   } else {
     box(focus, parent, { x: 0, y: 0, w: width, h: height }, usageFocus, maxDepth);
+  }
+  if (usageDrillingPath) {
+    tip.hidden = false;
+    tip.textContent = t("usageDrilling", usageDrillingLabel || usageDrillingPath);
   }
 }
 
@@ -3910,6 +3992,14 @@ async function loadUsage() {
     document.querySelector("#usage-summary").replaceChildren(bi("usageFailed"), errorBlock(error.code, error.message));
     return;
   }
+  if (usageData && usageData.scannedAt) {
+    if (usageDirCacheStamp && usageData.scannedAt !== usageDirCacheStamp) {
+      usageDirCache.clear();
+      usageDrilledEmpty.clear();
+    }
+    usageDirCacheStamp = usageData.scannedAt;
+  }
+  if (usageData && usageData.tree) hydrateUsageTree(usageData.tree);
   // Nothing measured since the app started: analyze right away, it only reads sizes.
   if (usageData.state === "idle" && !usageAutoStarted) {
     usageAutoStarted = true;
@@ -3930,6 +4020,10 @@ async function loadUsage() {
 
 async function startUsageScan() {
   try {
+    usageDirCache.clear();
+    usageDrilledEmpty.clear();
+    usageDrillingPath = null;
+    usageDrillingLabel = "";
     usageData = await api("/api/usage/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
     usageFocus = [];
     renderUsage();

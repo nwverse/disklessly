@@ -310,11 +310,20 @@ public enum ManagementUI {
             }
             var isDir: ObjCBool = false
             guard FileManager.default.fileExists(atPath: dir, isDirectory: &isDir), isDir.boolValue else {
-                return .json(["ok": true, "children": []])
+                return .json(["ok": true, "path": dir, "partial": false, "children": []])
             }
             let kind = UsageNode.Kind(rawValue: request.query["kind"] ?? "") ?? .personal
-            let children = UsageMap.scanDirectory(dir, kind: kind, refusal: engine.fileOffloadRefusal)
-            return .json(["ok": true, "path": dir, "children": children.map { $0.jsonObject() }])
+            let rescan = ["1", "true", "yes"].contains((request.query["rescan"] ?? "").lowercased())
+            let scan = context.scanDirectory(path: dir, kind: kind, rescan: rescan) {
+                UsageMap.scanDirectoryDetailed(dir, kind: kind, timeout: 20, refusal: engine.fileOffloadRefusal)
+            }
+            return .json([
+                "ok": true,
+                "path": dir,
+                "partial": scan.partial,
+                "cached": scan.cached,
+                "children": scan.children.map { $0.jsonObject() },
+            ])
         }
         if request.method == "POST", request.path == "/api/links/add" {
             guard let body = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any],
@@ -1185,11 +1194,21 @@ public final class ManagementUIContext {
     public let sessionTask = CloudTaskRunner()
     /// SSH remote machines scan and error state (`/api/machines`).
     public let machines = RemoteMachinesState()
+    private struct DirScanEntry {
+        let children: [UsageNode]
+        let partial: Bool
+        let usageScannedAt: Date?
+        let scannedAt: Date
+    }
+
     private var savedConfig: RuntimeConfig?
     private let now: () -> Date
     private let lock = NSLock()
     private let scanLock = NSLock()
     private var recommendCache: [String: (report: [String: Any], scannedAt: Date)] = [:]
+    private let dirLock = NSLock()
+    private var dirCache: [String: DirScanEntry] = [:]
+    private var dirInflight: [String: DispatchGroup] = [:]
 
     /// Linux serves sessions, usage, devices, and license; the app routes answer 501.
     public let platform: HostPlatform
@@ -1212,6 +1231,46 @@ public final class ManagementUIContext {
 
     public func configChanged(_ config: RuntimeConfig) {
         lock.lock(); savedConfig = config; lock.unlock()
+    }
+
+    /// Cached directory drill-down scan, deduplicating concurrent requests and invalidating when a new usage scan completes.
+    public func scanDirectory(path: String, kind: UsageNode.Kind, rescan: Bool = false, compute: () -> (children: [UsageNode], partial: Bool)) -> (children: [UsageNode], partial: Bool, cached: Bool) {
+        let key = "\(path)|\(kind.rawValue)"
+        let usageStamp = usage.scannedAt
+        let isValid: (DirScanEntry) -> Bool = { entry in
+            !entry.partial && entry.usageScannedAt == usageStamp && self.now().timeIntervalSince(entry.scannedAt) < 120
+        }
+        dirLock.lock()
+        if !rescan, let hit = dirCache[key], isValid(hit) {
+            dirLock.unlock()
+            return (hit.children, hit.partial, true)
+        }
+        if !rescan, let running = dirInflight[key] {
+            dirLock.unlock()
+            running.wait()
+            dirLock.lock()
+            let hit = dirCache[key]
+            dirLock.unlock()
+            if let hit, isValid(hit) {
+                return (hit.children, hit.partial, true)
+            }
+            return (hit?.children ?? [], hit?.partial ?? false, false)
+        }
+        let group = DispatchGroup()
+        group.enter()
+        dirInflight[key] = group
+        dirLock.unlock()
+
+        let result = compute()
+        let stamp = now()
+        dirLock.lock()
+        if !result.partial || !result.children.isEmpty {
+            dirCache[key] = DirScanEntry(children: result.children, partial: result.partial, usageScannedAt: usageStamp, scannedAt: stamp)
+        }
+        dirInflight.removeValue(forKey: key)
+        dirLock.unlock()
+        group.leave()
+        return (result.children, result.partial, false)
     }
 
     /// Returns the cached scan for `key` unless `rescan` is set. One scan runs at a time.
