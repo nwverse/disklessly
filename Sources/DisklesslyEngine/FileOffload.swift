@@ -730,6 +730,11 @@ enum FolderArchive {
         tar.standardInput = pipe
         tar.standardError = errors
         tar.standardOutput = FileHandle.nullDevice
+        // bsdtar exits as soon as it reads the end-of-archive blocks, so the record padding after them
+        // may still be unwritten. Writing it then must fail with EPIPE, not kill this process (SIGPIPE).
+        #if canImport(Darwin)
+        _ = fcntl(pipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+        #endif
         try tar.run()
         let collected = Collected()
         let reader = DispatchGroup()
@@ -740,10 +745,21 @@ enum FolderArchive {
         try? pipe.fileHandleForWriting.close()
         tar.waitUntilExit()
         reader.wait()
-        if let failure { throw failure }
+        // tar succeeded and stopped reading early: the rest was padding after the end-of-archive marker
+        // (the archive's SHA-256 was checked before extraction).
+        if let failure, !(tar.terminationStatus == 0 && Self.isBrokenPipe(failure)) { throw failure }
         guard tar.terminationStatus == 0 else {
             throw DisklesslyError.integrity("tar could not extract \(archive.lastPathComponent) (exit \(tar.terminationStatus)): \(String(decoding: collected.get(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))")
         }
+    }
+
+    static func isBrokenPipe(_ error: Error) -> Bool {
+        var current: NSError? = error as NSError
+        while let e = current {
+            if e.domain == NSPOSIXErrorDomain && e.code == Int(EPIPE) { return true }
+            current = e.userInfo[NSUnderlyingErrorKey] as? NSError
+        }
+        return false
     }
 
     private final class Failure: @unchecked Sendable {
