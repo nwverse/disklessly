@@ -9,7 +9,8 @@
 //
 //   node scripts/ui-screenshots.mjs --serve [port]   # keep the fixture server running
 //
-// Without playwright the script still checks the zh and en text tables, then stops.
+// Without playwright the script still checks the zh and en text tables and the usage map math, then stops.
+// UI_SHOT_ONLY=usage runs only the split usage map checks and screenshots.
 // UI_SHOT_DIR picks the output folder.
 
 import http from "node:http";
@@ -48,6 +49,75 @@ async function checkKeyParity() {
   }
   if (/\/Applications…|\/Applications for good/.test(source.replace(/\$\{dir\}/g, ""))) throw new Error("unpack label hard-codes /Applications");
   console.log(`i18n: zh and en share ${en.size} keys`);
+}
+
+// The split usage map's layout and selection math lives between markers in app.js, so it is checked here
+// without a browser: one scale for both sides, the 120 px clamp, the 45 % compression, the goal picker
+// and the "what if" sums.
+async function checkUsageMath() {
+  const source = await readFile(path.join(webRoot, "app.js"), "utf8");
+  const start = source.indexOf("// usage-math:begin");
+  const end = source.indexOf("// usage-math:end");
+  if (start < 0 || end < 0) throw new Error("app.js lost its usage-math markers");
+  const block = source.slice(source.indexOf("\n", start), end);
+  const m = vm.runInNewContext(`${block}\n({ usageScale, usageAgeStep, usagePickForGoal, usageWhatIf, usageTopPaths, usageNearest, usageRatioText })`, {});
+  const fail = (what) => { throw new Error(`usage math: ${what}`); };
+  const near = (a, b, tol = 1.5) => Math.abs(a - b) <= tol;
+  // Equal pixels per byte on both sides.
+  const even = m.usageScale({ width: 1024, height: 500, diskBytes: 300, cloudBytes: 100, hasCloud: true });
+  if (even.compressed || even.clamped) fail("a 25 % cloud side is neither clamped nor compressed");
+  if (!near(even.local.w + even.cloud.w, 1000)) fail(`widths ${even.local.w} + ${even.cloud.w} do not fill the row minus the channel`);
+  if (!near((even.local.w * even.local.h) / 300, (even.cloud.w * even.cloud.h) / 100, 3)) fail("pixels per byte differ between the sides");
+  // A thin cloud side keeps 120 px and gets shorter so its area stays true.
+  const thin = m.usageScale({ width: 1024, height: 500, diskBytes: 1000, cloudBytes: 10, hasCloud: true });
+  if (!thin.clamped || thin.cloud.w !== 120 || !(thin.cloud.h < 500)) fail(`clamp: ${JSON.stringify(thin)}`);
+  if (!near((thin.local.w * thin.local.h) / 1000, (thin.cloud.w * thin.cloud.h) / 10, ((thin.local.w * thin.local.h) / 1000) * 0.03)) fail("the clamped side's area is not true");
+  // Above 45 % it is compressed and says the ratio.
+  const big = m.usageScale({ width: 1024, height: 500, diskBytes: 100, cloudBytes: 300, hasCloud: true });
+  if (!big.compressed || !near(big.cloud.w, 1000 * 0.45) || !(big.ratio > 1)) fail(`compression: ${JSON.stringify(big)}`);
+  const expected = (300 * ((big.local.w * 500) / 100)) / (big.cloud.w * 500);
+  if (!near(big.ratio, expected, 0.05)) fail(`ratio ${big.ratio} != ${expected}`);
+  if (m.usageRatioText(3.04) !== "3" || m.usageRatioText(2.46) !== "2.5" || m.usageRatioText(12.4) !== "12") fail("ratio text");
+  // Stacked: the same rule on heights.
+  const stacked = m.usageScale({ width: 375, height: 600, diskBytes: 300, cloudBytes: 100, hasCloud: true, stacked: true });
+  if (stacked.local.w !== 375 || !near(stacked.local.h + stacked.cloud.h, 576)) fail(`stacked: ${JSON.stringify(stacked)}`);
+  const none = m.usageScale({ width: 800, height: 400, diskBytes: 1, cloudBytes: 0, hasCloud: false });
+  if (none.cloud || none.local.w !== 800) fail("without a cloud side the local map keeps the whole width");
+  const empty = m.usageScale({ width: 800, height: 400, diskBytes: 1, cloudBytes: 0, hasCloud: true });
+  if (!empty.empty || empty.cloud.w !== 120) fail("an empty cloud side keeps its minimum width for its message");
+  // Age steps.
+  const now = Date.UTC(2026, 0, 1);
+  const ago = (days) => (now - days * 86400000) / 1000;
+  if ([ago(1), ago(90), ago(300), ago(800), 0].map((s) => m.usageAgeStep(s, now)).join() !== "1,2,3,4,0") fail("age steps");
+  // Goal: caches first, then bytes x age; it stops once the goal is met.
+  const picks = m.usagePickForGoal([
+    { key: "fresh-big", bytes: 50, ageDays: 1 },
+    { key: "cold-mid", bytes: 20, ageDays: 400 },
+    { key: "cache", bytes: 5, ageDays: 1, cache: true },
+    { key: "warm", bytes: 10, ageDays: 60 },
+  ], 22);
+  if (picks.keys.join() !== "cache,cold-mid" || picks.bytes !== 25) fail(`goal picks ${JSON.stringify(picks)}`);
+  if (m.usagePickForGoal([{ key: "a", bytes: 1, ageDays: 1 }], 0).keys.length) fail("a zero goal selects nothing");
+  // Bytes count only up to what is missing: a colder box that covers the rest wins over a huge warm one,
+  // and a pick the goal no longer needs is dropped.
+  const capped = m.usagePickForGoal([{ key: "huge-warm", bytes: 100, ageDays: 20 }, { key: "cold-fits", bytes: 12, ageDays: 300 }], 10);
+  if (capped.keys.join() !== "cold-fits") fail(`capped goal picks ${JSON.stringify(capped)}`);
+  const pruned = m.usagePickForGoal([{ key: "cold-small", bytes: 15, ageDays: 900 }, { key: "warm-big", bytes: 25, ageDays: 10 }], 20);
+  if (pruned.keys.join() !== "warm-big" || pruned.bytes !== 25) fail(`unneeded picks are dropped: ${JSON.stringify(pruned)}`);
+  const kept = m.usagePickForGoal([{ key: "c1", bytes: 3, ageDays: 1, cache: true }, { key: "cold", bytes: 30, ageDays: 900 }], 20);
+  if (kept.keys.join() !== "c1,cold") fail(`caches stay first: ${JSON.stringify(kept)}`);
+  // What if: nested selections count once; only offloadable items move to the cloud.
+  const what = m.usageWhatIf([
+    { path: "/u/Movies", bytes: 40, canOffload: true },
+    { path: "/u/Movies/Raw", bytes: 30, canOffload: true },
+    { path: "/u/Library/Caches/x", bytes: 5, canOffload: false },
+  ], 100);
+  if (what.freed !== 45 || what.freeAfter !== 145 || what.incoming !== 40 || what.count !== 2) fail(`what if ${JSON.stringify(what)}`);
+  if (m.usageTopPaths([{ path: "/a/b" }, { path: "/a/bc" }]).length !== 2) fail("a sibling with the same prefix is not inside");
+  // Arrow keys go to the nearest box in that direction.
+  const rects = [{ x: 0, y: 0, w: 10, h: 10 }, { x: 20, y: 0, w: 10, h: 10 }, { x: 0, y: 20, w: 10, h: 10 }, { x: 20, y: 25, w: 10, h: 10 }];
+  if (m.usageNearest(rects, 0, "right") !== 1 || m.usageNearest(rects, 0, "down") !== 2 || m.usageNearest(rects, 0, "left") !== -1) fail("nearest box");
+  console.log("usage math: scale, clamp, compression, age, goal, what-if and arrow checks pass");
 }
 
 // ---- fixtures -------------------------------------------------------------
@@ -127,6 +197,59 @@ function status({ usedGiB = 12.4, health = "ok", list = apps, appsError = "", ap
   };
 }
 
+// The disk usage map and its cloud side (a fixture tree; paths under /Users/me).
+const secs = (days) => Math.round((Date.now() - days * 86400000) / 1000);
+const dir = (name, gib, days, extra = {}) => ({ name, kind: "personal", bytes: gib * GiB, path: `/Users/me/${name}`, canTrash: true, modified: secs(days), ...extra });
+function usageFixture() {
+  const apps = [
+    // Real scans put the file rule's refusal on apps too (they are outside ~); it must not block packing.
+    { name: "Xcode", kind: "apps", bytes: 12 * GiB, path: "/Applications/Xcode.app", refusal: "is outside your home folder", canTrash: false, modified: secs(20), children: [{ name: "Xcode", key: "bundle", kind: "bundle", bytes: 12 * GiB, path: "/Applications/Xcode.app", canTrash: false }] },
+    { name: "Final Cut Pro", kind: "apps", bytes: 6.1 * GiB, path: "/Applications/Final Cut Pro.app", refusal: "is outside your home folder", canTrash: false, modified: secs(200), children: [{ name: "Final Cut Pro", key: "bundle", kind: "bundle", bytes: 6.1 * GiB, path: "/Applications/Final Cut Pro.app", canTrash: false }] },
+    { name: "Logic Pro", kind: "apps", bytes: 0.02 * GiB, path: "/Applications/Logic Pro.app", offloaded: true, canTrash: false, offloadedCount: 1, children: [{ name: "Logic Pro", key: "bundle", kind: "bundle", bytes: 0.02 * GiB, path: "/Applications/Logic Pro.app", offloaded: true, canTrash: false }] },
+  ];
+  const personal = [dir("Movies", 60, 500, { offloadedCount: 2 }), dir("code", 25, 3, { offloadedCount: 1 }), dir("Downloads", 14, 90), dir("Documents", 20, 10, { refusal: "is a standard folder", canTrash: false })];
+  const library = [
+    { name: "Caches", kind: "cache", bytes: 8 * GiB, path: "/Users/me/Library/Caches", canTrash: true, refusal: "holds caches apps rebuild", modified: secs(1) },
+    { name: "Application Support", kind: "library", bytes: 22 * GiB, path: "/Users/me/Library/Application Support", canTrash: false, refusal: "is app data", modified: secs(2) },
+  ];
+  const sum = (list) => list.reduce((s, n) => s + n.bytes, 0);
+  const total = 256 * GiB;
+  const free = 30 * GiB;
+  const groups = [
+    { name: "Apps", key: "apps", kind: "apps", bytes: sum(apps), children: apps },
+    { name: "Personal files", key: "personal", kind: "personal", bytes: sum(personal), children: personal },
+    { name: "Library", key: "library", kind: "library", bytes: sum(library), children: library },
+  ];
+  const used = total - free - sum(groups);
+  groups.push({ name: "System & other", key: "system", kind: "system", bytes: used }, { name: "Free", key: "free", kind: "free", bytes: free });
+  return { ok: true, state: "ready", scannedAt: new Date().toISOString(), partial: false, tree: { name: "Disk", key: "disk", kind: "root", bytes: total, children: groups }, cleanup: { state: "idle" } };
+}
+
+function cloudFixture(reachable = true) {
+  const leaf = (id, name, gib, origin, restore, extra = {}) => ({ id, name, kind: "offloaded", bytes: gib * GiB, storedBytes: gib * 0.7 * GiB, originPath: origin, restore, restoreId: name, offloadedAt: secs(60), modified: secs(120), ...extra });
+  const apps = [
+    leaf("img-logic", "Logic Pro", 1.2, "/Applications/Logic Pro.app", "unpack", { stubPath: "/Applications/Logic Pro.app", otherDevice: "Studio Mini" }),
+    { ...leaf("img-blender", "Blender Studio", 3.1, "/Applications/Blender Studio.app", "unpack"), bytes: 4.0 * GiB, children: [
+      leaf("img-blender#image", "Blender Studio", 3.1, "/Applications/Blender Studio.app", "unpack", { key: "bundle" }),
+      leaf("linked:b1", "Blender assets", 0.9, "/Users/me/.blender", "links/restore", { key: "linked" }),
+    ] },
+  ];
+  const files = [
+    leaf("f-raw", "Raw", 18, "/Users/me/Movies/Raw", "fetch", { stubPath: "/Users/me/Movies/Raw.disklessly", modified: secs(700) }),
+    leaf("f-2019", "2019", 9, "/Users/me/Movies/2019", "fetch", { stubPath: "/Users/me/Movies/2019.disklessly", modified: secs(1200) }),
+    leaf("f-old", "old-projects", 6, "/Users/me/code/old-projects", "fetch", { stubPath: "/Users/me/code/old-projects.disklessly", modified: secs(400) }),
+  ];
+  const sessions = [{ name: "claude", kind: "offloaded", bytes: 0.4 * GiB, children: [leaf("s-1", "a.jsonl", 0.4, "/Users/me/.claude/projects/a.jsonl", "sessions/restore")] }];
+  const sum = (list) => list.reduce((s, n) => s + n.bytes, 0);
+  const groups = [
+    { name: "Files and folders", key: "files", kind: "offloaded", bytes: sum(files), children: files },
+    { name: "Apps", key: "apps", kind: "offloaded", bytes: sum(apps), children: apps },
+    { name: "Sessions", key: "sessions", kind: "offloaded", bytes: sum(sessions), children: sessions },
+  ];
+  const tree = { name: "Cloud", key: "cloud", kind: "root", bytes: sum(groups), children: groups };
+  return { ok: true, generatedAt: new Date().toISOString(), reachable, health: reachable ? "ok" : "offline", totalBytes: tree.bytes, storedBytes: tree.bytes * 0.7, tree };
+}
+
 const fixtures = {
   main: () => status(),
   near: () => status({ usedGiB: 55 }),
@@ -186,6 +309,9 @@ function startServer(port = 0) {
       return json(200, (fixtures[fixture] || fixtures.main)());
     }
     if (target.pathname === "/api/health") return json(200, { ok: true, ...backend(fixture === "offline" ? "offline" : "ok") });
+    if (target.pathname === "/api/usage") return json(200, usageFixture());
+    if (target.pathname === "/api/usage/cloud") return json(200, cloudFixture(fixture !== "offline"));
+    if (target.pathname === "/api/usage/dir") return json(200, { ok: true, path: target.searchParams.get("path"), partial: false, children: [] });
     if (target.pathname === "/api/recommend") return json(200, { ...recommend, cached: !target.searchParams.get("rescan") });
     if (target.pathname.startsWith("/api/icon/")) return json(404, { ok: false });
     if (target.pathname.startsWith("/api/jobs/")) {
@@ -218,6 +344,7 @@ function startServer(port = 0) {
 
 async function main() {
   await checkKeyParity();
+  await checkUsageMath();
   const serveIndex = process.argv.indexOf("--serve");
   if (serveIndex >= 0) {
     const { port } = await startServer(Number(process.argv[serveIndex + 1] || 0));
@@ -271,6 +398,86 @@ async function main() {
   const expectText = async (page, text) => page.waitForSelector(`text=${text}`, { timeout: 5000 });
 
   try {
+    // Split usage map: this Mac and the cloud at one scale, badges, ribbons, selection with its "what if", the tray.
+    for (const [theme, viewport, width] of [["light", desktop, 1194], ["dark", desktop, 1194], ["light", phone, 375]]) {
+      const view = await open(`usage-split-${theme}-${width}`, { theme, viewport });
+      const { page } = view;
+      const section = page.locator("#usage-section");
+      await page.locator("#usage-cloud .usage-box").first().waitFor();
+      await expectText(page, "云端 · ");
+      const movies = page.locator("#usage-chart .usage-box[data-path='/Users/me/Movies']");
+      if ((await movies.locator(".usage-badge").innerText()).trim() !== "2") throw new Error("Movies lacks its cloud badge of 2");
+      const tabStops = await page.locator("#usage-chart .usage-box[tabindex='0']").count();
+      if (tabStops !== 1) throw new Error(`the local map has ${tabStops} Tab stops`);
+      const stacked = await page.locator("#usage-split.is-stacked").count();
+      if ((width === 375) !== Boolean(stacked)) throw new Error(`stacked layout at ${width}px: ${stacked}`);
+      // Keyboard selection: Space on Movies previews the outcome; nothing is posted.
+      const before = fixtureServer.log.length;
+      await movies.focus();
+      await page.keyboard.press(" ");
+      await page.locator("#usage-chart .usage-box.is-ghost[data-path='/Users/me/Movies']").waitFor();
+      await page.locator("#usage-cloud .usage-box.is-incoming").first().waitFor();
+      await page.locator("#usage-chart .usage-box.u-free.is-growing").waitFor();
+      if (!(await page.locator("#usage-tray-free").innerText()).includes("之后可用")) throw new Error("the tray does not say free after");
+      if (await page.locator("#usage-ribbons path").count() < 1) throw new Error("no ribbon for the selected pair");
+      if (fixtureServer.log.length !== before) throw new Error("selecting started a job");
+      if (width === 375) {
+        const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+        if (overflow > 1) throw new Error(`375 px usage map scrolls sideways by ${overflow}px`);
+      }
+      await section.screenshot({ path: path.join(outDir, `usage-split-${theme}-${width}.png`) });
+      shots.push(path.join(outDir, `usage-split-${theme}-${width}.png`));
+      if (theme === "light" && width === 1194) {
+        // The tray's Offload opens the existing confirmation; Escape changes nothing.
+        await page.locator("#usage-tray-offload").click();
+        await page.locator("#confirm").waitFor({ state: "visible" });
+        await page.keyboard.press("Escape");
+        await page.locator("#confirm").waitFor({ state: "hidden" });
+        if (fixtureServer.log.length !== before) throw new Error("cancelled offload started a job");
+        await page.locator("#usage-tray-clear").click();
+        // The goal slider only selects.
+        await page.locator("#usage-goal").evaluate((input) => { input.value = "10"; input.dispatchEvent(new Event("input", { bubbles: true })); });
+        await page.locator("#usage-chart .usage-box.is-ghost").first().waitFor();
+        if (fixtureServer.log.length !== before) throw new Error("the goal slider started a job");
+        // Last-used tint.
+        await page.locator("#usage-tint [data-tint='age']").click();
+        await page.locator("#usage-chart .usage-box.usage-age-4").first().waitFor();
+        await section.screenshot({ path: path.join(outDir, "usage-split-age-light-1194.png") });
+        shots.push(path.join(outDir, "usage-split-age-light-1194.png"));
+        await page.locator("#usage-tint [data-tint='kind']").click();
+        // Drag across the channel opens the same confirmation as the menu; cancelling changes nothing.
+        await page.locator("#usage-tray-clear").click();
+        await page.locator("#usage-chart .usage-box[data-path='/Users/me/Downloads']").dragTo(page.locator("#usage-cloud"));
+        await page.locator("#confirm").waitFor({ state: "visible" });
+        if (!(await page.locator("#confirm").innerText()).includes("Downloads")) throw new Error("drop to offload does not name the folder");
+        await page.keyboard.press("Escape");
+        await page.locator("#confirm").waitFor({ state: "hidden" });
+        await page.locator("#usage-chart .usage-box[data-path='/Applications/Final Cut Pro.app']").first().dragTo(page.locator("#usage-cloud"));
+        await page.locator("#confirm").waitFor({ state: "visible" });
+        if (!(await page.locator("#confirm").innerText()).includes("Final Cut Pro")) throw new Error("drop of an app does not open its pack dialog");
+        await page.keyboard.press("Escape");
+        await page.locator("#confirm").waitFor({ state: "hidden" });
+        await page.locator("#usage-cloud .usage-box[data-origin='/Users/me/Movies/Raw']").dragTo(page.locator("#usage-chart"));
+        await page.locator("#confirm").waitFor({ state: "visible" });
+        await page.keyboard.press("Escape");
+        await page.locator("#confirm").waitFor({ state: "hidden" });
+        if (fixtureServer.log.length !== before) throw new Error("a cancelled drop started a job");
+        // A badge zooms the cloud side to what came from there.
+        await movies.locator(".usage-badge").click();
+        await page.locator("#usage-cloud-crumbs:not([hidden])").waitFor();
+        await page.locator("#usage-cloud .usage-box[data-origin='/Users/me/Movies/Raw']").waitFor();
+      }
+      await view.finish();
+    }
+    // Unreachable repo: the cloud side keeps the last catalog, dimmed, and says why.
+    const offlineMap = await open("usage-split-offline-light-1194", { fixture: "offline" });
+    await offlineMap.page.locator("#usage-cloud-side.is-offline").waitFor();
+    await offlineMap.page.locator("#usage-cloud-note:not([hidden])").waitFor();
+    await offlineMap.finish();
+
+    // UI_SHOT_ONLY=usage stops after the usage map (the rest checks the app list and states).
+    if (process.env.UI_SHOT_ONLY === "usage") return;
+
     for (const theme of ["light", "dark"]) {
       for (const [viewport, width] of [[desktop, 1194], [phone, 375]]) {
         const view = await open(`main-${theme}-${width}`, { theme, viewport });

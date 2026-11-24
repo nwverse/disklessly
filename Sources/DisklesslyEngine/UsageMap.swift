@@ -28,6 +28,34 @@ public struct UsageNode: Equatable {
     public var trashRefusal: String?
     /// True when this app node represents an already-offloaded stub launcher on disk.
     public var offloaded: Bool = false
+    /// Newest modification time under this box. A folder sized by `du` carries its own mtime
+    /// (which changes when entries are added or removed directly in it), not the newest file deep inside.
+    public var modified: Date?
+    /// How many offloaded items came from this box's path or below it (cloud badge on the local map).
+    public var offloadedCount = 0
+    /// Set on the boxes of the cloud side (`CloudUsage`): what the repo holds and how it comes back.
+    public var cloud: CloudInfo?
+
+    /// One offloaded item as the cloud side shows it. `bytes` of the node is the size it had on disk.
+    public struct CloudInfo: Equatable {
+        public var id: String
+        public var storedBytes: UInt64?
+        /// Where it was on this Mac (the box it links to on the local side).
+        public var originPath: String?
+        /// The stub app or `.disklessly` placeholder left on this Mac.
+        public var stubPath: String?
+        /// What of it is on this Mac now (a prefetched image is in both places).
+        public var localBytes: UInt64 = 0
+        public var offloadedAt: Date?
+        public var lastUsed: Date?
+        /// How it comes back: `unpack`, `fetch`, `data/disable`, `links/restore`, `sessions/restore`.
+        public var restore: String?
+        /// What the restore takes as its `app` or `id` (app name, linked bundle id, session id, placeholder path).
+        public var restoreId: String?
+        /// Another device that holds it too ("Also on ...").
+        public var otherDevice: String?
+        public init(id: String) { self.id = id }
+    }
 
     public init(name: String, key: String? = nil, kind: Kind, bytes: UInt64 = 0, children: [UsageNode] = [], action: String? = nil) {
         self.name = name
@@ -40,7 +68,10 @@ public struct UsageNode: Equatable {
 
     /// A box that is the sum of its children.
     static func group(name: String, key: String? = nil, kind: Kind, _ children: [UsageNode]) -> UsageNode {
-        UsageNode(name: name, key: key, kind: kind, bytes: children.reduce(0) { $0 + $1.bytes }, children: children)
+        var node = UsageNode(name: name, key: key, kind: kind, bytes: children.reduce(0) { $0 + $1.bytes }, children: children)
+        node.modified = children.compactMap(\.modified).max()
+        node.offloadedCount = children.reduce(0) { $0 + $1.offloadedCount }
+        return node
     }
 
     public func jsonObject() -> [String: Any] {
@@ -48,6 +79,20 @@ public struct UsageNode: Equatable {
         if let key { object["key"] = key }
         if let action { object["action"] = action }
         if offloaded { object["offloaded"] = true }
+        if let modified { object["modified"] = NSNumber(value: Int64(modified.timeIntervalSince1970)) }
+        if offloadedCount > 0 { object["offloadedCount"] = NSNumber(value: offloadedCount) }
+        if let cloud {
+            object["id"] = cloud.id
+            if let stored = cloud.storedBytes { object["storedBytes"] = NSNumber(value: stored) }
+            if let origin = cloud.originPath { object["originPath"] = origin }
+            if let stub = cloud.stubPath { object["stubPath"] = stub }
+            if cloud.localBytes > 0 { object["localBytes"] = NSNumber(value: cloud.localBytes) }
+            if let at = cloud.offloadedAt { object["offloadedAt"] = NSNumber(value: Int64(at.timeIntervalSince1970)) }
+            if let used = cloud.lastUsed { object["lastUsed"] = NSNumber(value: Int64(used.timeIntervalSince1970)) }
+            if let restore = cloud.restore { object["restore"] = restore }
+            if let restoreId = cloud.restoreId { object["restoreId"] = restoreId }
+            if let other = cloud.otherDevice { object["otherDevice"] = other }
+        }
         if let path {
             object["path"] = path
             if let refusal { object["refusal"] = refusal }
@@ -69,6 +114,8 @@ public struct UsageInputs {
         public var offloaded: Bool
         public var cachePath: String?
         public var dataPath: String?
+        /// The bundle's modification time (install or update; macOS has no cheap last-launch date here).
+        public var modified: Date?
         public init(name: String, bundleBytes: UInt64, cacheBytes: UInt64 = 0, dataBytes: UInt64 = 0, path: String? = nil, offloaded: Bool = false, cachePath: String? = nil, dataPath: String? = nil) {
             self.name = name; self.bundleBytes = bundleBytes; self.cacheBytes = cacheBytes; self.dataBytes = dataBytes; self.path = path
             self.offloaded = offloaded; self.cachePath = cachePath; self.dataPath = dataPath
@@ -90,6 +137,8 @@ public struct UsageInputs {
         public var action: String?
         /// The folder on disk, when the entry is exactly one folder.
         public var path: String?
+        /// Its modification time (the folder's own mtime when `du` measured it).
+        public var modified: Date?
         public init(name: String, bytes: UInt64, kind: UsageNode.Kind = .other, children: [Entry] = [], key: String? = nil, action: String? = nil) {
             self.name = name; self.bytes = bytes; self.kind = kind; self.children = children; self.key = key; self.action = action
         }
@@ -125,6 +174,7 @@ public enum UsageMap {
             var bundle = UsageNode(name: app.name, key: "bundle", kind: .bundle, bytes: app.bundleBytes)
             bundle.path = app.path
             bundle.offloaded = app.offloaded
+            bundle.modified = app.modified
             var parts: [UsageNode] = [bundle]
             if app.cacheBytes > 0 {
                 var cacheNode = UsageNode(name: app.name, key: "cache", kind: .cache, bytes: app.cacheBytes)
@@ -154,6 +204,7 @@ public enum UsageMap {
         let personal = UsageNode.group(name: "Personal files", key: "personal", kind: .personal, merged(input.personal.map { entry in
             var node = UsageNode(name: entry.name, kind: entry.kind == .other ? .personal : entry.kind, bytes: entry.bytes)
             node.path = entry.path
+            node.modified = entry.modified
             return node
         }, kind: .personal))
         let library = UsageNode.group(name: input.libraryKey == "library" ? "Library" : "App data", key: input.libraryKey, kind: .library, merged(input.library.map(libraryNode), kind: .library))
@@ -184,6 +235,7 @@ public enum UsageMap {
         guard !entry.children.isEmpty else {
             var leaf = UsageNode(name: entry.name, key: entry.key, kind: kind, bytes: entry.bytes, action: entry.action)
             leaf.path = entry.path
+            leaf.modified = entry.modified
             return leaf
         }
         let inside = merged(entry.children.map { entryNode($0, kind: kind) }, kind: kind)
@@ -193,6 +245,7 @@ public enum UsageMap {
         var node = UsageNode.group(name: entry.name, key: entry.key, kind: kind, parts)
         node.action = entry.action
         node.path = entry.path
+        if let own = entry.modified { node.modified = max(own, node.modified ?? own) }
         return node
     }
 
@@ -211,13 +264,34 @@ public enum UsageMap {
         return out
     }
 
+    /// Fills `offloadedCount` from the places offloaded items came from: a box counts every origin at
+    /// its path or below it; a group box without a path sums its children.
+    public static func countOffloaded(_ node: UsageNode, originPaths: [String]) -> UsageNode {
+        let origins = originPaths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        guard !origins.isEmpty else { return node }
+        func walk(_ node: UsageNode) -> UsageNode {
+            var out = node
+            out.children = node.children.map(walk)
+            if let path = node.path {
+                let prefix = path.hasSuffix("/") ? path : path + "/"
+                out.offloadedCount = origins.filter { $0 == path || $0.hasPrefix(prefix) }.count
+            } else {
+                out.offloadedCount = out.children.reduce(0) { $0 + $1.offloadedCount }
+            }
+            return out
+        }
+        return walk(node)
+    }
+
     /// Largest first; the tail past `maxListed` becomes one "Other" box.
     static func merged(_ nodes: [UsageNode], kind: UsageNode.Kind) -> [UsageNode] {
         let sorted = nodes.filter { $0.bytes > 0 }.sorted { $0.bytes != $1.bytes ? $0.bytes > $1.bytes : $0.name < $1.name }
         guard sorted.count > maxListed else { return sorted }
         let head = Array(sorted.prefix(maxListed))
         let tail = sorted.dropFirst(maxListed)
-        let rest = UsageNode(name: "\(tail.count)", key: "rest", kind: .other, bytes: tail.reduce(0) { $0 + $1.bytes })
+        var rest = UsageNode(name: "\(tail.count)", key: "rest", kind: .other, bytes: tail.reduce(0) { $0 + $1.bytes })
+        rest.modified = tail.compactMap(\.modified).max()
+        rest.offloadedCount = tail.reduce(0) { $0 + $1.offloadedCount }
         return head + [rest]
     }
 
@@ -234,19 +308,22 @@ public enum UsageMap {
         }
         let prefix = dir.hasSuffix("/") ? dir : dir + "/"
         let collector = LockedDirScan()
-        var subdirs: [(name: String, path: String)] = []
+        var subdirs: [(name: String, path: String, modified: Date)] = []
         for name in entries where !name.isEmpty {
             let entryPath = prefix + name
             var info = stat()
             guard lstat(entryPath, &info) == 0 else { continue }
             let fileKind = info.st_mode & S_IFMT
+            let modified = mtime(info)
             if fileKind == S_IFDIR {
-                subdirs.append((name, entryPath))
+                // du sizes the folder; its age is the folder's own mtime (no second walk).
+                subdirs.append((name, entryPath, modified))
             } else if fileKind == S_IFREG || fileKind == S_IFLNK {
                 let bytes = UInt64(max(0, info.st_blocks)) * 512
                 if bytes > 0 {
                     var node = UsageNode(name: name, kind: kind, bytes: bytes)
                     node.path = entryPath
+                    node.modified = modified
                     collector.append(node)
                 }
             }
@@ -274,6 +351,7 @@ public enum UsageMap {
                 if bytes > 0 {
                     var node = UsageNode(name: sub.name, kind: kind, bytes: bytes)
                     node.path = sub.path
+                    node.modified = sub.modified
                     collector.append(node)
                 }
             }
@@ -285,6 +363,22 @@ public enum UsageMap {
             return (annotate(grouped, refusal: refusal, trashRefusal: trashRefusal).children, partial)
         }
         return (annotate(grouped, refusal: refusal).children, partial)
+    }
+
+    static func mtime(_ info: stat) -> Date {
+        #if canImport(Darwin)
+        let spec = info.st_mtimespec
+        #else
+        let spec = info.st_mtim
+        #endif
+        return Date(timeIntervalSince1970: TimeInterval(spec.tv_sec) + TimeInterval(spec.tv_nsec) / 1e9)
+    }
+
+    /// The modification time of `path` itself (lstat), or nil when it is gone.
+    static func modified(_ path: String) -> Date? {
+        var info = stat()
+        guard lstat(path, &info) == 0 else { return nil }
+        return mtime(info)
     }
 
     private final class LockedDirScan: @unchecked Sendable {
@@ -450,6 +544,7 @@ public enum UsageScan {
                     cachePath: bestCachePath,
                     dataPath: bestDataPath
                 ))
+                input.apps[input.apps.count - 1].modified = UsageMap.modified(appPath)
             }
         }
 
@@ -480,6 +575,7 @@ public enum UsageScan {
         input.personal = homeEntries.map { item in
             var entry = UsageInputs.Entry(name: item.key, bytes: item.value, kind: .personal)
             entry.path = home + "/" + item.key
+            entry.modified = UsageMap.modified(home + "/" + item.key)
             return entry
         }
 
@@ -522,8 +618,11 @@ public enum UsageScan {
         for index in input.library.indices {
             let folder = library + "/" + input.library[index].name
             input.library[index].path = folder
+            input.library[index].modified = UsageMap.modified(folder)
             for child in input.library[index].children.indices where input.library[index].children[child].key == nil && input.library[index].children[child].name != "other" {
-                input.library[index].children[child].path = folder + "/" + input.library[index].children[child].name
+                let childPath = folder + "/" + input.library[index].children[child].name
+                input.library[index].children[child].path = childPath
+                input.library[index].children[child].modified = UsageMap.modified(childPath)
             }
         }
         input.system = systemParts(children: children, total: total)
@@ -771,6 +870,12 @@ public final class UsageScanner {
     public var scannedAt: Date? {
         lock.lock(); defer { lock.unlock() }
         return result?.at
+    }
+
+    /// The last finished tree, if any.
+    public var tree: UsageNode? {
+        lock.lock(); defer { lock.unlock() }
+        return result?.tree
     }
 
     public func snapshot() -> [String: Any] {

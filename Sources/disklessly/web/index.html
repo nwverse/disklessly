@@ -102,9 +102,43 @@
       </div>
       <p id="usage-summary" class="muted"></p>
       <div id="active-jobs" class="active-jobs" aria-live="polite" hidden></div>
-      <nav id="usage-crumbs" class="usage-crumbs" aria-label="path" hidden></nav>
-      <div id="usage-chart" class="usage-chart" hidden></div>
+      <div id="usage-tint" class="usage-tint segmented" role="group" hidden>
+        <button type="button" class="seg" data-tint="kind" aria-pressed="true"><span data-t="usageTintKind"></span></button>
+        <button type="button" class="seg" data-tint="age" aria-pressed="false"><span data-t="usageTintAge"></span></button>
+      </div>
+      <div id="usage-split" class="usage-split">
+        <div id="usage-local-side" class="usage-side usage-side-local">
+          <nav id="usage-crumbs" class="usage-crumbs" aria-label="path" hidden></nav>
+          <div id="usage-chart" class="usage-chart" hidden></div>
+        </div>
+        <div id="usage-channel" class="usage-channel" aria-hidden="true" hidden></div>
+        <div id="usage-cloud-side" class="usage-side usage-side-cloud" hidden>
+          <div class="usage-cloud-head">
+            <h3 id="usage-cloud-title" class="usage-cloud-title"></h3>
+            <nav id="usage-cloud-crumbs" class="usage-crumbs" aria-label="path"></nav>
+            <span id="usage-scale-chip" class="usage-scale-chip" hidden></span>
+          </div>
+          <div id="usage-cloud" class="usage-chart usage-chart-cloud"></div>
+          <p id="usage-cloud-note" class="usage-cloud-note muted small" hidden></p>
+        </div>
+        <svg id="usage-ribbons" class="usage-ribbons" aria-hidden="true" focusable="false"></svg>
+      </div>
       <p id="usage-tip" class="usage-tip muted" aria-live="polite" hidden></p>
+      <div id="usage-tray" class="usage-tray" hidden>
+        <div class="usage-tray-head">
+          <strong id="usage-tray-free" class="usage-tray-free"></strong>
+          <div class="usage-tray-actions">
+            <button id="usage-tray-offload" type="button" class="btn primary"></button>
+            <button id="usage-tray-trash" type="button" class="btn danger-outline"></button>
+            <button id="usage-tray-clear" type="button" class="btn quiet"><span data-t="usageTrayClear"></span></button>
+          </div>
+        </div>
+        <ul id="usage-tray-list" class="usage-tray-list"></ul>
+        <label class="usage-goal">
+          <span id="usage-goal-label" class="usage-goal-label"></span>
+          <input id="usage-goal" type="range" min="0" max="0" step="1" value="0">
+        </label>
+      </div>
       <ul id="usage-legend" class="usage-legend" hidden></ul>
       <div id="usage-clean" class="usage-clean" hidden></div>
       <p id="usage-caches" class="usage-caches muted" hidden>

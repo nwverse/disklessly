@@ -226,6 +226,12 @@ disklessly devices forget DEVICEID --yes   # 永久不再使用的 Mac
 仪表盘显示后端状态、缓存用量和配额、已卸载应用（图标、大小、状态）、固定、共享仓库的其他 Mac，
 以及推荐列表；可以直接在页面上打开、预取、固定、清除缓存、放回应用（卸载新应用目前请用 `disklessly pack`）。界面为中英双语，随系统切换浅色/深色。
 
+“磁盘占用”图把本机（左）和云端（右）画在同一个比例上：右边是已经卸载到仓库的应用、文件和文件夹、组合、应用数据和会话，
+本机方块上的云朵数字表示从这里卸载了几项，悬停会用一条带子连到云端对应的方块。按空格、⌘ 点击或右键“选中”可以挑选方块，
+图上会预览结果（选中的方块变成斜线虚影，“可用”变宽，云端出现虚线方块），下方托盘可以一起“卸载”或“移到废纸篓”，
+“目标腾出”滑块会自动挑选（先挑可清的缓存，再按大小 × 闲置时间）。把方块拖到另一边同样是卸载或还原。所有操作都要先确认。
+“按上次使用”把方块按改动时间分四档上色（30 天、180 天、一年、更久）。仓库连不上时，云端一侧变暗，显示上次的目录。
+
 命令行也能打开同一个页面：`disklessly ui --open`（在浏览器中打开）或 `disklessly ui --json`（打印 `url`、`port`、`token`）。
 仪表盘只监听 `127.0.0.1`，并且每次启动都使用新的随机令牌，局域网中的其他机器无法访问。
 
@@ -439,6 +445,13 @@ Disklessly.app lives in the menu bar (no Dock icon) with **Open Dashboard**,
 cache use against the quota, packed apps, pins, other Macs, and recommendations,
 and can open, prefetch, pin, evict, and unpack apps (packing a new app is `disklessly pack` for now). It listens only on `127.0.0.1` with a fresh
 random token.
+
+The disk usage map shows this Mac (left) and what is already offloaded to the repo (right) at one scale. A cloud
+badge on a local box counts the items offloaded from there; hovering links the pair with a ribbon. Select boxes with
+Space, ⌘-click or the menu's Select to preview the outcome (hatched ghosts, a wider free strip, dashed twins in the
+cloud), then Offload or Move to Trash from the tray; the Free up slider picks for you (clearable caches first, then
+size × idle time). Dragging a box to the other side offloads or restores it. Every action asks first. **Last used**
+tints boxes by age in four steps. With the repo offline the cloud side shows the last known catalog, dimmed.
 
 ### Coding-agent sessions
 

@@ -63,3 +63,13 @@ one remote-only; three archived sessions; `DISKLESSLY_SCAN_ROOTS` pointing at a 
 [`ui/actual-light-1194.png`](ui/actual-light-1194.png), [`ui/actual-dark-1194.png`](ui/actual-dark-1194.png),
 [`ui/actual-light-375.png`](ui/actual-light-375.png), [`ui/actual-dark-375.png`](ui/actual-dark-375.png).
 The Error state was checked against an unreachable WebDAV endpoint, and Empty against an empty repo.
+
+## Usage map: this Mac and the cloud
+
+Spec: [`usage-map-cloud.md`](usage-map-cloud.md). The 磁盘占用 Disk usage card draws two nested treemaps at one
+scale: this Mac (`/api/usage`) and what the repo holds for it (`/api/usage/cloud`), joined by a 24 px channel with
+ribbons for the hovered, focused or selected pair. A tray under the map shows free space after the selection, its
+rows, Offload N / Move to Trash / Clear and the Free up goal slider; a Kind | Last used control switches the tint.
+Below 560 px the sides stack. Screenshots (fixture data from `scripts/ui-screenshots.mjs`, `UI_SHOT_ONLY=usage`):
+[`ui/usage-split-light-1194.png`](ui/usage-split-light-1194.png), [`ui/usage-split-dark-1194.png`](ui/usage-split-dark-1194.png),
+[`ui/usage-split-light-375.png`](ui/usage-split-light-375.png), [`ui/usage-split-age-light-1194.png`](ui/usage-split-age-light-1194.png).

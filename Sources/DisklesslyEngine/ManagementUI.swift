@@ -62,6 +62,7 @@ public enum ManagementUI {
         let localApps = LocalAppIndex(folders: Array(Set([engine.config.stubDir, "/Applications", home + "/Applications"])))
         let ownImageIds = Set(deviceRows.first { $0.deviceId == listing?.localDeviceId }?.images.map(\.imageId) ?? [])
         let dataRecords = engine.appDataStore.load()
+        var cloudApps: [CloudUsageInputs.App] = []
         for manifest in manifests {
                 let cached = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
                 let exists = FileManager.default.fileExists(atPath: cached.path)
@@ -105,6 +106,14 @@ public enum ManagementUI {
                 }
                 if let used = record?.lastUsed { row["lastUsed"] = isoFormatter.string(from: used) }
                 apps.append(row)
+                let presence = localApps.presence(bundleId: manifest.bundleId, imageId: manifest.imageId, ownImageIds: ownImageIds)
+                if let cloudApp = CloudUsage.appItem(manifest, presence: presence, cachedBytes: size, lastUsed: record?.lastUsed, holders: holders) {
+                    cloudApps.append(cloudApp)
+                }
+        }
+        // Only a listing that worked replaces the catalog the cloud side of the usage map reads.
+        if appsErrorCode.isEmpty, health.status != "offline" {
+            context.setCloudCatalog(CloudAppCatalog(apps: cloudApps, listedAt: Date()))
         }
         let archived = ((try? SessionArchive.archivedEntries(config: engine.config)) ?? []).sorted { $0.modified > $1.modified }
         let formatter = ISO8601DateFormatter()
@@ -173,6 +182,26 @@ public enum ManagementUI {
             ] as [String: Any],
             "generatedAt": formatter.string(from: now),
         ]
+    }
+
+    /// The cloud side of the usage map: what the repo holds for this Mac, from the local catalog and
+    /// state only. `reachable` is the last health result; nothing here waits on the backend.
+    static func cloudUsageObject(_ engine: DisklesslyEngine, context: ManagementUIContext) -> [String: Any] {
+        let catalog = context.cloudCatalog()
+        let tree = CloudUsage.assemble(CloudUsage.inputs(engine: engine, apps: catalog?.apps ?? []))
+        let health = context.health.last(engine)
+        let formatter = ISO8601DateFormatter()
+        var object: [String: Any] = [
+            "ok": true,
+            "generatedAt": formatter.string(from: Date()),
+            "reachable": health.map { $0.status != "offline" } ?? true,
+            "health": health?.status ?? "unknown",
+            "totalBytes": NSNumber(value: tree.bytes),
+            "storedBytes": NSNumber(value: CloudUsage.storedBytes(tree)),
+            "tree": tree.jsonObject(),
+        ]
+        if let catalog { object["appsListedAt"] = formatter.string(from: catalog.listedAt) }
+        return object
     }
 
     /// Backend card data: kind, where it lives, health with latency, and every endpoint with its state.
@@ -314,6 +343,7 @@ public enum ManagementUI {
             }
             let kind = UsageNode.Kind(rawValue: request.query["kind"] ?? "") ?? .personal
             let rescan = ["1", "true", "yes"].contains((request.query["rescan"] ?? "").lowercased())
+            let origins = CloudUsage.inputs(engine: engine, apps: context.cloudCatalog()?.apps ?? [], readPlaceholders: false).originPaths
             let scan = context.scanDirectory(path: dir, kind: kind, rescan: rescan) {
                 UsageMap.scanDirectoryDetailed(dir, kind: kind, timeout: 20, refusal: engine.fileOffloadRefusal, trashRefusal: engine.trashPathRefusal)
             }
@@ -322,7 +352,7 @@ public enum ManagementUI {
                 "path": dir,
                 "partial": scan.partial,
                 "cached": scan.cached,
-                "children": scan.children.map { $0.jsonObject() },
+                "children": scan.children.map { UsageMap.countOffloaded($0, originPaths: origins).jsonObject() },
             ])
         }
         if request.method == "GET", request.path == "/api/links/apps" {
@@ -495,7 +525,14 @@ public enum ManagementUI {
         case ("GET", "/api/usage"):
             var object = context.usage.snapshot()
             object["cleanup"] = context.cleaner.snapshot()
+            if let tree = context.usage.tree {
+                // Cloud badges: how many offloaded items came from each box (local catalog only).
+                let origins = CloudUsage.inputs(engine: engine, apps: context.cloudCatalog()?.apps ?? [], readPlaceholders: false).originPaths
+                object["tree"] = UsageMap.countOffloaded(tree, originPaths: origins).jsonObject()
+            }
             return .json(object)
+        case ("GET", "/api/usage/cloud"):
+            return .json(cloudUsageObject(engine, context: context))
         case ("GET", "/api/permissions"):
             // Full Disk Access can be probed by reading the TCC database, which only an allowed app can open.
             // App Management has no public probe; the page asks the user to confirm it.
@@ -1280,6 +1317,18 @@ public final class ManagementUIContext {
         self.now = now
     }
 
+    private var cloudApps: CloudAppCatalog?
+
+    /// Packed apps from the last successful `/api/status` listing (the cloud side of the usage map).
+    public func cloudCatalog() -> CloudAppCatalog? {
+        lock.lock(); defer { lock.unlock() }
+        return cloudApps
+    }
+
+    public func setCloudCatalog(_ catalog: CloudAppCatalog) {
+        lock.lock(); cloudApps = catalog; lock.unlock()
+    }
+
     /// The config the page saved last (after a repo switch or a new backend), if any.
     public func updatedConfig() -> RuntimeConfig? {
         lock.lock(); defer { lock.unlock() }
@@ -1417,6 +1466,13 @@ public final class BackendHealthProbe: @unchecked Sendable {
     public static func repoCheck(_ engine: DisklesslyEngine) throws -> String? {
         let backend = try engine.openBackend()
         return try backend.stat("repo.json") != nil ? nil : "repo.json is not in the backend"
+    }
+
+    /// The last result for this repo, however old, without starting or waiting for a probe.
+    public func last(_ engine: DisklesslyEngine) -> Result? {
+        let key = [engine.config.backend, engine.config.activeBackendId ?? "", engine.config.repoPath].joined(separator: "|")
+        lock.lock(); defer { lock.unlock() }
+        return results[key]
     }
 
     /// `fresh` skips the cache. With a probe already hung past `timeout`, it

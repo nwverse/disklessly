@@ -500,6 +500,55 @@ const copy = {
     usage_files: "散落文件",
     usage_rest: (n) => `其余 ${n} 项`,
     usage_other: "其他",
+    usage_cloud: "云端",
+    usage_cloud_apps: "应用",
+    usage_cloud_files: "文件和文件夹",
+    usage_cloud_linked: "组合",
+    usage_cloud_data: "应用数据",
+    usage_cloud_sessions: "会话",
+    usageCloudTitle: (size) => `云端 · ${size}`,
+    usageCloudEmpty: "还没有卸载任何东西。把左边的方块拖到这里，或选中后点“卸载”。",
+    usageCloudOffline: (state) => `仓库现在连不上（${state}），显示的是上次的目录。`,
+    usageScaleChip: (n) => `1 : ${n}`,
+    usageTintLabel: "方块颜色",
+    usageTintKind: "按类别",
+    usageTintAge: "按上次使用",
+    usageAge0: "时间未知",
+    usageAge1: "30 天内",
+    usageAge2: "180 天内",
+    usageAge3: "一年内",
+    usageAge4: "一年以上",
+    usageAgeChanged: (when) => `改动于 ${when}`,
+    usageLinkedCount: (n) => `${n} 项已卸载到云端`,
+    usageOffloadedFrom: (path) => `卸载自 ${path}`,
+    usageStored: (size) => `仓库里占 ${size}`,
+    usageAlsoHere: (size) => `本机也缓存了 ${size}`,
+    usageAlsoOn: (name) => `也在 ${name}`,
+    usageIncoming: "预览：会移到云端",
+    usageSelectedState: "已选中",
+    usageTrayFreeNow: (free) => `可用 ${free}`,
+    usageTrayFreeAfter: (after, plus) => `之后可用 ${after}（+${plus}）`,
+    usageTrayOffload: (n) => `卸载 ${n} 项…`,
+    usageTrayTrash: (n) => `移到废纸篓 ${n} 项…`,
+    usageTrayClear: "清空选择",
+    usageTrayOffloadConfirm: (n, size) => `卸载 ${n} 项（${size}）？`,
+    usageTrayOffloadBody: "应用会打包进仓库并留下启动器；文件和文件夹会移进仓库并留下同名的 .disklessly 占位文件。每一项各自作为一个任务运行，确认之前什么都不会改动。",
+    usageTrayTrashConfirm: (n, size) => `把 ${n} 项（${size}）移到废纸篓？`,
+    usageTrayTrashBody: "它们会进入废纸篓，清倒废纸篓之前都还能放回去。",
+    usageGoal: (size) => `目标腾出 ${size}`,
+    usageSelect: (name) => `选中 ${name}`,
+    usageDeselect: (name) => `取消选中 ${name}`,
+    usageShowInCloud: (n) => `在云端查看（${n} 项）`,
+    usageDropOffload: (name) => `松开以卸载 ${name}`,
+    usageDropRestore: (name) => `松开以把 ${name} 还原到本机`,
+    usageRestoreTitle: (name) => `把 ${name} 还原到本机？`,
+    usageRestoreBody: (size) => `会从仓库下载约 ${size} 放回原处。`,
+    usageRestoreOk: "还原",
+    usageFetchBody: "文件要从它的 .disklessly 占位文件取回：会在访达中显示它，双击即可取回。",
+    usageMenuRestore: "还原到本机…",
+    usageNoRestore: "这一项不能从这里还原",
+    usageAlreadyOffloaded: "已经卸载过了",
+    usageNoPack: "只有 /Applications 和 ~/Applications 里的应用可以从这里卸载",
     cachesLine: (size, n) => `已卸载的 ${n} 个应用还留着 ${size} 缓存，可以清掉。`,
     cachesNone: "已卸载的应用没有留下缓存。",
     cachesRunning: (names) => `运行中的应用会跳过：${names}`,
@@ -1101,6 +1150,55 @@ const copy = {
     usage_files: "Loose files",
     usage_rest: (n) => `${n} more`,
     usage_other: "Other",
+    usage_cloud: "In the cloud",
+    usage_cloud_apps: "Apps",
+    usage_cloud_files: "Files and folders",
+    usage_cloud_linked: "Linked bundles",
+    usage_cloud_data: "App data",
+    usage_cloud_sessions: "Sessions",
+    usageCloudTitle: (size) => `In the cloud · ${size}`,
+    usageCloudEmpty: "Nothing is offloaded yet. Drag a box from the left onto this side, or select it and choose Offload.",
+    usageCloudOffline: (state) => `The repo is not reachable (${state}); this is the last known catalog.`,
+    usageScaleChip: (n) => `1 : ${n}`,
+    usageTintLabel: "Box colour",
+    usageTintKind: "Kind",
+    usageTintAge: "Last used",
+    usageAge0: "Age unknown",
+    usageAge1: "Under 30 days",
+    usageAge2: "Under 180 days",
+    usageAge3: "Under a year",
+    usageAge4: "Over a year",
+    usageAgeChanged: (when) => `changed ${when}`,
+    usageLinkedCount: (n) => `${n} offloaded to the cloud`,
+    usageOffloadedFrom: (path) => `Offloaded from ${path}`,
+    usageStored: (size) => `${size} in the repo`,
+    usageAlsoHere: (size) => `${size} also cached here`,
+    usageAlsoOn: (name) => `Also on ${name}`,
+    usageIncoming: "Preview: would move to the cloud",
+    usageSelectedState: "selected",
+    usageTrayFreeNow: (free) => `Free: ${free}`,
+    usageTrayFreeAfter: (after, plus) => `Free after: ${after} (+${plus})`,
+    usageTrayOffload: (n) => `Offload ${n}…`,
+    usageTrayTrash: (n) => `Move ${n} to Trash…`,
+    usageTrayClear: "Clear",
+    usageTrayOffloadConfirm: (n, size) => `Offload ${n} items (${size})?`,
+    usageTrayOffloadBody: "Apps are packed into your repo and leave a launcher; files and folders move into the repo and leave a .disklessly placeholder with the same name. Each runs as its own job; nothing changes until you confirm.",
+    usageTrayTrashConfirm: (n, size) => `Move ${n} items (${size}) to the Trash?`,
+    usageTrayTrashBody: "They go to the Trash and can be put back until it is emptied.",
+    usageGoal: (size) => `Free up ${size}`,
+    usageSelect: (name) => `Select ${name}`,
+    usageDeselect: (name) => `Deselect ${name}`,
+    usageShowInCloud: (n) => `Show in the cloud (${n})`,
+    usageDropOffload: (name) => `Drop to offload ${name}`,
+    usageDropRestore: (name) => `Drop to bring ${name} back to this Mac`,
+    usageRestoreTitle: (name) => `Bring ${name} back to this Mac?`,
+    usageRestoreBody: (size) => `About ${size} is downloaded from your repo and put back where it was.`,
+    usageRestoreOk: "Restore",
+    usageFetchBody: "A file comes back from its .disklessly placeholder: Finder shows it, and a double-click brings the file back.",
+    usageMenuRestore: "Bring back to this Mac…",
+    usageNoRestore: "This item cannot be restored from here",
+    usageAlreadyOffloaded: "Already offloaded",
+    usageNoPack: "Only apps in /Applications or ~/Applications can be offloaded from here",
     cachesLine: (size, n) => `${n} offloaded ${n === 1 ? "app still leaves" : "apps still leave"} ${size} of caches you can clear.`,
     cachesNone: "Offloaded apps left no caches behind.",
     cachesRunning: (names) => `Running apps are skipped: ${names}`,
@@ -2238,6 +2336,11 @@ function appRow(app, quota) {
 // ---- jobs -----------------------------------------------------------------
 
 function confirmAction(kind, app) {
+  askConfirm(confirmSpec(kind, app), () => startJob(kind, app));
+}
+
+/// The confirmation each job kind asks for; the menus, the usage map's tray and its drag and drop share it.
+function confirmSpec(kind, app) {
   const dir = installDir(app);
   const size = bytes(app.cachedBytes || app.imageBytes);
   const spec = {
@@ -2250,7 +2353,7 @@ function confirmAction(kind, app) {
     "data/disable": { title: ["confirmDataDisableTitle", app.name], body: ["confirmDataDisableBody"], ok: "dataDisable", danger: false },
     unpack: { title: ["confirmUnpackTitle", app.name, dir], body: ["confirmUnpackBody", app.installPath || `${dir}/${app.name}.app`], ok: "confirmUnpackOk", danger: true },
   }[kind];
-  askConfirm(spec, () => startJob(kind, app));
+  return spec;
 }
 
 /// The shared confirm dialog. `spec` holds [key, ...args] for title and body.
@@ -3522,6 +3625,286 @@ function findUsagePathByFSPath(node, targetPath, prefix = []) {
   return null;
 }
 
+// usage-math:begin — pure layout and selection math for the split map (checked by scripts/ui-screenshots.mjs).
+const USAGE_CHANNEL = 24; // px between the local and the cloud side; carries the ribbons
+const USAGE_MIN_SIDE = 120; // the cloud side never gets narrower; it gets shorter instead
+const USAGE_MAX_SHARE = 0.45; // above this the cloud side is compressed and says "1 : N"
+
+/// One scale for both sides: pixels per byte are equal, so the cloud side's share of the width is
+/// cloud / (disk + cloud). Stacked layouts share the height the same way. Returns pixel sizes.
+function usageScale({ width, height, diskBytes, cloudBytes, hasCloud, stacked, channel = USAGE_CHANNEL, minSide = USAGE_MIN_SIDE, maxShare = USAGE_MAX_SHARE }) {
+  const out = { stacked: Boolean(stacked), compressed: false, clamped: false, empty: false, ratio: 1, local: { w: Math.floor(width), h: Math.floor(height) }, cloud: null };
+  if (!hasCloud) return out;
+  const along = stacked ? height : width;
+  const across = stacked ? width : height;
+  const avail = Math.max(0, along - channel);
+  const disk = Math.max(1, diskBytes || 0);
+  const cloud = Math.max(0, cloudBytes || 0);
+  const share = cloud / (disk + cloud);
+  let localAlong;
+  let cloudAlong;
+  let cloudAcross = across;
+  if (!cloud) {
+    out.empty = true;
+    cloudAlong = Math.min(minSide, avail / 2);
+    localAlong = avail - cloudAlong;
+  } else if (share > maxShare) {
+    out.compressed = true;
+    localAlong = avail * (1 - maxShare);
+    cloudAlong = avail - localAlong;
+    const perByte = (localAlong * across) / disk;
+    out.ratio = (cloud * perByte) / (cloudAlong * across);
+  } else if (avail * share < minSide) {
+    out.clamped = true;
+    cloudAlong = Math.min(minSide, avail / 2);
+    localAlong = avail - cloudAlong;
+    const perByte = (localAlong * across) / disk;
+    cloudAcross = Math.min(across, (cloud * perByte) / cloudAlong);
+  } else {
+    cloudAlong = avail * share;
+    localAlong = avail - cloudAlong;
+  }
+  const size = (a, b) => (stacked ? { w: Math.floor(b), h: Math.floor(a) } : { w: Math.floor(a), h: Math.floor(b) });
+  out.local = size(localAlong, across);
+  out.cloud = size(cloudAlong, Math.max(cloudAcross, 8));
+  return out;
+}
+
+/// The four last-used steps: under 30 days, under 180 days, under a year, older. 0 = unknown.
+function usageAgeStep(modifiedSeconds, nowMs) {
+  if (!modifiedSeconds) return 0;
+  const days = (nowMs - modifiedSeconds * 1000) / 86400000;
+  if (days < 30) return 1;
+  if (days < 180) return 2;
+  if (days < 365) return 3;
+  return 4;
+}
+
+/// Paths of a selection without the ones inside another selected path, so nothing counts twice.
+function usageTopPaths(items) {
+  const sorted = [...items].sort((a, b) => a.path.length - b.path.length);
+  const kept = [];
+  for (const item of sorted) {
+    if (!kept.some((k) => item.path === k.path || item.path.startsWith(k.path.endsWith("/") ? k.path : k.path + "/"))) kept.push(item);
+  }
+  return kept;
+}
+
+/// "What if": free space after the selection goes, and what moves to the cloud.
+function usageWhatIf(items, freeBytes) {
+  const top = usageTopPaths(items);
+  const freed = top.reduce((sum, item) => sum + (item.bytes || 0), 0);
+  const incoming = top.filter((item) => item.canOffload).reduce((sum, item) => sum + (item.bytes || 0), 0);
+  return { freed, incoming, freeAfter: (freeBytes || 0) + freed, count: top.length };
+}
+
+/// The free-up goal: clearable caches first (largest first), then the rest by bytes × age in days,
+/// until the goal is met. Bytes count only up to what is still missing, so a huge box does not win
+/// over a colder one that already covers the rest; non-cache picks the goal no longer needs are dropped.
+/// It only picks; nothing runs until the user confirms.
+function usagePickForGoal(candidates, goal) {
+  if (!(goal > 0)) return { keys: [], bytes: 0 };
+  const usable = candidates.filter((c) => c.bytes > 0);
+  const picked = [];
+  let bytes = 0;
+  for (const c of usable.filter((c) => c.cache).sort((a, b) => b.bytes - a.bytes)) {
+    if (bytes >= goal) break;
+    picked.push(c);
+    bytes += c.bytes;
+  }
+  const rest = usable.filter((c) => !c.cache);
+  while (bytes < goal && rest.length) {
+    const missing = goal - bytes;
+    const score = (c) => Math.min(c.bytes, missing) * Math.max(1, c.ageDays || 0);
+    let best = 0;
+    for (let i = 1; i < rest.length; i++) {
+      if (score(rest[i]) > score(rest[best]) || (score(rest[i]) === score(rest[best]) && rest[i].bytes < rest[best].bytes)) best = i;
+    }
+    const [c] = rest.splice(best, 1);
+    picked.push(c);
+    bytes += c.bytes;
+  }
+  // Caches stay picked (they come first by the rule); other picks the goal no longer needs are dropped.
+  for (let i = picked.length - 1; i >= 0; i--) {
+    if (!picked[i].cache && bytes - picked[i].bytes >= goal) { bytes -= picked[i].bytes; picked.splice(i, 1); }
+  }
+  return { keys: picked.map((c) => c.key), bytes };
+}
+
+/// Index of the box nearest to `from` in direction `dir` (left, right, up, down), or -1.
+function usageNearest(rects, from, dir) {
+  const a = rects[from];
+  if (!a) return -1;
+  const ax = a.x + a.w / 2;
+  const ay = a.y + a.h / 2;
+  let best = -1;
+  let bestScore = Infinity;
+  rects.forEach((r, i) => {
+    if (i === from) return;
+    const dx = r.x + r.w / 2 - ax;
+    const dy = r.y + r.h / 2 - ay;
+    const primary = dir === "left" ? -dx : dir === "right" ? dx : dir === "up" ? -dy : dy;
+    const secondary = dir === "left" || dir === "right" ? Math.abs(dy) : Math.abs(dx);
+    if (primary <= 0.5) return;
+    const score = primary + secondary * 2;
+    if (score < bestScore) { bestScore = score; best = i; }
+  });
+  return best;
+}
+
+/// "1 : 3" ratio text for a compressed cloud side.
+function usageRatioText(ratio) {
+  return ratio < 10 ? String(Math.round(ratio * 10) / 10) : String(Math.round(ratio));
+}
+// usage-math:end
+
+let cloudUsage = null; // GET /api/usage/cloud
+let cloudUsageSignature = "";
+let usageCloudFocus = [];
+let usageCloudOrigins = []; // origin paths of everything offloaded, for the badges on the local side
+const usageSelected = new Map(); // fs path -> { path, bytes, label, isApp, canOffload, canTrash, cache, modified }
+let usageHover = null; // { side, el } the box under the pointer or keyboard focus
+let usageDrag = null; // { side, node, label }
+let usageGoal = 0; // GiB
+let usageTint = (() => { try { return localStorage.getItem("disklessly.usageTint") === "age" ? "age" : "kind"; } catch { return "kind"; } })();
+const usageActive = { local: "", cloud: "" }; // the box each map's Tab stop is on
+
+// The cloud side's colour per group, from the local palette.
+const USAGE_CLOUD_COLOR = { apps: "bundle", files: "personal", linked: "apps", data: "data", sessions: "repo" };
+
+function usageCloudLabel(node, parent, depth) {
+  const key = node.key;
+  if (depth === 0) return t("usage_cloud");
+  if (key === "rest") return t("usage_rest", node.name);
+  if (depth === 1 && key && has("usage_cloud_" + key)) return t("usage_cloud_" + key);
+  if (key === "bundle") return t("usage_bundle");
+  if (key === "data" && parent && parent.key !== "data") return t("usage_data");
+  return node.name;
+}
+
+function usageCloudTrail(path) {
+  let node = usageCloudTree();
+  const trail = [{ node, parent: null }];
+  for (const index of path) {
+    const child = node && node.children && node.children[index];
+    if (!child) break;
+    trail.push({ node: child, parent: node });
+    node = child;
+  }
+  return trail;
+}
+
+function usageHome() {
+  return (usageData && usageData.tree && (findHome(usageData.tree) || "")) || "";
+}
+
+function findHome(tree) {
+  const personal = (tree.children || []).find((c) => c.key === "personal");
+  const first = personal && (personal.children || []).find((c) => c.path);
+  return first ? first.path.replace(/\/[^/]+$/, "") : "";
+}
+
+function usageDisplayPath(path) {
+  const home = usageHome();
+  if (home && path && (path === home || path.startsWith(home + "/"))) return "~" + path.slice(home.length);
+  return path || "";
+}
+
+/// The cloud tree as drawn: with a selection, the items that would move there appear as dashed twins.
+function usageCloudTree() {
+  const tree = cloudUsage && cloudUsage.tree;
+  if (!tree) return null;
+  const incoming = usageTopPaths([...usageSelected.values()]).filter((item) => item.canOffload);
+  if (!incoming.length) return tree;
+  const groups = (tree.children || []).slice();
+  let added = 0;
+  for (const item of incoming) {
+    const key = item.isApp ? "apps" : "files";
+    let index = groups.findIndex((g) => g.key === key);
+    if (index < 0) { groups.push({ name: key, key, kind: "offloaded", bytes: 0, children: [] }); index = groups.length - 1; }
+    const group = groups[index];
+    groups[index] = Object.assign({}, group, {
+      bytes: (group.bytes || 0) + item.bytes,
+      children: [...(group.children || []), { name: item.label, kind: "offloaded", bytes: item.bytes, originPath: item.path, _incoming: true }],
+    });
+    added += item.bytes;
+  }
+  return Object.assign({}, tree, { bytes: (tree.bytes || 0) + added, children: groups });
+}
+
+function usageOffloadedUnder(node) {
+  if (!node || !node.path) return 0;
+  if (!cloudUsage) return node.offloadedCount || 0;
+  const prefix = node.path.endsWith("/") ? node.path : node.path + "/";
+  return usageCloudOrigins.filter((o) => o === node.path || o.startsWith(prefix)).length;
+}
+
+function usageIsSelected(path) {
+  if (!path || !usageSelected.size) return false;
+  for (const key of usageSelected.keys()) {
+    if (path === key || path.startsWith(key + "/")) return true;
+  }
+  return false;
+}
+
+/// What the rules allow for a local box: offload (pack an app, offload a file or folder) and Trash.
+/// An app's `refusal` is the file rule (apps live outside the home folder), so it does not apply to packing;
+/// pack takes a top-level app in /Applications or ~/Applications that is not a stub (the server checks again).
+function usageAllowed(node) {
+  const isApp = Boolean(node.path && node.path.endsWith(".app"));
+  const canTrash = !isApp && (typeof node.canTrash === "boolean" ? node.canTrash : !node.refusal);
+  let canOffload = !node.refusal;
+  if (isApp) {
+    const parent = node.path.replace(/\/[^/]+$/, "");
+    const home = usageHome();
+    const packable = parent === "/Applications" || (home && parent === home + "/Applications") || /^\/(Users|home)\/[^/]+\/Applications$/.test(parent);
+    canOffload = packable && !node.offloaded;
+  }
+  return { isApp, canTrash, canOffload };
+}
+
+function usageSelectionItem(node, label) {
+  const allowed = usageAllowed(node);
+  return { path: node.path, bytes: node.bytes || 0, label, isApp: allowed.isApp, canOffload: allowed.canOffload, canTrash: allowed.canTrash, cache: node.kind === "cache" && allowed.canTrash, modified: node.modified || 0 };
+}
+
+function usageToggleSelect(node, label) {
+  if (!node || !node.path) return;
+  if (usageSelected.has(node.path)) usageSelected.delete(node.path);
+  else {
+    const item = usageSelectionItem(node, label);
+    if (!item.canOffload && !item.canTrash) {
+      showUsageTip(item.isApp ? t(node.offloaded ? "usageAlreadyOffloaded" : "usageNoPack") : t("usageMenuRefused", node.refusal || ""));
+      return;
+    }
+    usageSelected.set(node.path, item);
+  }
+  renderUsage();
+}
+
+/// Boxes the free-up goal may pick: the highest box on each branch the rules allow.
+function usageGoalCandidates(node, parent, out = []) {
+  if (!node) return out;
+  const usable = node.path && node.key !== "bundle" && !(node.path.endsWith(".app") && node.offloaded);
+  if (usable) {
+    const allowed = usageAllowed(node);
+    if (allowed.canOffload || allowed.canTrash) {
+      const label = usageLabel(node, parent);
+      const ageDays = node.modified ? Math.max(0, (Date.now() - node.modified * 1000) / 86400000) : 30;
+      out.push({ key: node.path, bytes: node.bytes || 0, ageDays, cache: node.kind === "cache" && allowed.canTrash, node, label });
+      return out;
+    }
+  }
+  for (const child of node.children || []) usageGoalCandidates(child, node, out);
+  return out;
+}
+
+function showUsageTip(text) {
+  const tip = document.querySelector("#usage-tip");
+  tip.hidden = false;
+  tip.textContent = text;
+}
+
 function renderUsage() {
   const chart = document.querySelector("#usage-chart");
   const crumbs = document.querySelector("#usage-crumbs");
@@ -3530,6 +3913,7 @@ function renderUsage() {
   const scanned = document.querySelector("#usage-scanned");
   const button = document.querySelector("#usage-scan");
   const tip = document.querySelector("#usage-tip");
+  const tint = document.querySelector("#usage-tint");
   summary.replaceChildren();
   scanned.replaceChildren();
   const scanning = usageData && usageData.state === "scanning";
@@ -3537,7 +3921,8 @@ function renderUsage() {
   button.firstElementChild.replaceChildren(bi(usageData && usageData.tree ? "usageRescan" : "usageScan"));
   if (scanning) button.setAttribute("aria-busy", "true"); else button.removeAttribute("aria-busy");
   if (!usageData || !usageData.tree) {
-    chart.hidden = crumbs.hidden = legend.hidden = tip.hidden = document.querySelector("#usage-tips").hidden = true;
+    chart.hidden = crumbs.hidden = legend.hidden = tip.hidden = tint.hidden = document.querySelector("#usage-tips").hidden = true;
+    document.querySelector("#usage-cloud-side").hidden = document.querySelector("#usage-channel").hidden = document.querySelector("#usage-tray").hidden = true;
     summary.append(bi(scanning ? "usageScanning" : "usageIntro"));
     return;
   }
@@ -3550,44 +3935,63 @@ function renderUsage() {
   summary.append(el("br"), bi("usageHint"));
 
   const trail = usageNodeAt(usageFocus);
-  crumbs.hidden = false;
-  crumbs.replaceChildren();
-  trail.forEach((step, depth) => {
-    if (depth) { const sep = el("span", "usage-sep"); sep.setAttribute("aria-hidden", "true"); crumbs.append(sep); }
-    const last = depth === trail.length - 1;
-    const label = depth === 0 ? usageLabel(step.node, null) : usageLabel(step.node, step.parent);
-    const item = el(last ? "span" : "button", last ? "usage-crumb current" : "usage-crumb", label);
-    if (!last) {
-      item.type = "button";
-      item.addEventListener("click", (event) => {
-        const byKeyboard = event.detail === 0;
-        usageFocus = usageFocus.slice(0, depth);
-        usageAnimate = true;
-        renderUsage();
-        if (byKeyboard) focusFirstUsageBox();
-      });
-    }
-    crumbs.append(item);
-  });
+  renderUsageCrumbs("local", trail);
 
   const focus = trail[trail.length - 1].node;
   chart.hidden = false;
   chart.setAttribute("role", "group");
   chart.setAttribute("aria-label", t("usage"));
+  tint.hidden = false;
+  tint.setAttribute("aria-label", t("usageTintLabel"));
+  for (const seg of tint.querySelectorAll("[data-tint]")) seg.setAttribute("aria-pressed", String(seg.dataset.tint === usageTint));
   drawUsageMap();
 
   renderUsageTips(focus, trail.length === 1);
 
   legend.hidden = false;
   legend.replaceChildren();
-  for (const kind of USAGE_LEGEND) {
-    const item = el("li", "usage-legend-item");
-    // Linux names the "library" box App data (the dot folders under ~).
-    const text = kind === "library" && !appsSupported() ? "usage_appdata" : usageKindText[kind];
-    item.append(el("span", `usage-swatch u-${kind}`), bi(text));
-    legend.append(item);
+  if (usageTint === "age") {
+    for (const step of [1, 2, 3, 4, 0]) {
+      const item = el("li", "usage-legend-item");
+      item.append(el("span", `usage-swatch usage-age-${step}`), bi(`usageAge${step}`));
+      legend.append(item);
+    }
+  } else {
+    for (const kind of USAGE_LEGEND) {
+      const item = el("li", "usage-legend-item");
+      // Linux names the "library" box App data (the dot folders under ~).
+      const text = kind === "library" && !appsSupported() ? "usage_appdata" : usageKindText[kind];
+      item.append(el("span", `usage-swatch u-${kind}`), bi(text));
+      legend.append(item);
+    }
   }
+  renderUsageTray();
   renderCleanups(root);
+}
+
+function renderUsageCrumbs(side, trail) {
+  const crumbs = document.querySelector(side === "cloud" ? "#usage-cloud-crumbs" : "#usage-crumbs");
+  // The cloud side's title names its root, so its path shows only once it is zoomed in.
+  crumbs.hidden = side === "cloud" && trail.length < 2;
+  crumbs.replaceChildren();
+  trail.forEach((step, depth) => {
+    if (depth) { const sep = el("span", "usage-sep"); sep.setAttribute("aria-hidden", "true"); crumbs.append(sep); }
+    const last = depth === trail.length - 1;
+    const label = side === "cloud" ? usageCloudLabel(step.node, step.parent, depth) : depth === 0 ? usageLabel(step.node, null) : usageLabel(step.node, step.parent);
+    const item = el(last ? "span" : "button", last ? "usage-crumb current" : "usage-crumb", label);
+    if (!last) {
+      item.type = "button";
+      item.addEventListener("click", (event) => {
+        const byKeyboard = event.detail === 0;
+        if (side === "cloud") usageCloudFocus = usageCloudFocus.slice(0, depth);
+        else usageFocus = usageFocus.slice(0, depth);
+        usageAnimate = true;
+        renderUsage();
+        if (byKeyboard) focusFirstUsageBox(side);
+      });
+    }
+    crumbs.append(item);
+  });
 }
 
 // Squarified treemap (Bruls, Huizing, van Wijk): lays the children of one node into a rectangle so that
@@ -3648,30 +4052,83 @@ function usageTextWidth(text, weight, px) {
 }
 
 /// Keyboard users keep their place after a zoom: focus the first box of the redrawn map.
-function focusFirstUsageBox() {
-  const first = document.querySelector("#usage-chart .usage-box");
+function focusFirstUsageBox(side = "local") {
+  const first = document.querySelector(`${side === "cloud" ? "#usage-cloud" : "#usage-chart"} .usage-box`);
   if (first) first.focus({ preventScroll: true });
 }
 
-/// Draws the focused node as a nested treemap: each box's area is its size, boxes with room show their
-/// children inside under a title strip, and a box with children zooms in when clicked.
+function usageCloudShown() {
+  return Boolean(cloudUsage && cloudUsage.tree);
+}
+
+/// Draws both sides at one scale: the local disk on the left (or on top when narrow), the cloud on the right.
 function drawUsageMap() {
   const chart = document.querySelector("#usage-chart");
-  const tip = document.querySelector("#usage-tip");
   if (!usageData || !usageData.tree || chart.hidden) return;
-  const trail = usageNodeAt(usageFocus);
+  const split = document.querySelector("#usage-split");
+  const localSide = document.querySelector("#usage-local-side");
+  const cloudSide = document.querySelector("#usage-cloud-side");
+  const channel = document.querySelector("#usage-channel");
+  const width = Math.floor(split.getBoundingClientRect().width) || 640;
+  const stacked = width < 560;
+  const base = Math.round(stacked ? Math.min(440, Math.max(300, width * 1.05)) : Math.min(520, Math.max(260, (width * 9) / 16)));
+  const cloudTree = usageCloudTree();
+  const hasCloud = usageCloudShown();
+  const scale = usageScale({ width, height: stacked ? base + 220 : base, diskBytes: usageData.tree.bytes, cloudBytes: cloudTree ? cloudTree.bytes : 0, hasCloud, stacked });
+  split.classList.toggle("is-stacked", stacked);
+  split.classList.toggle("has-cloud", hasCloud);
+  localSide.style.width = hasCloud && !stacked ? `${scale.local.w}px` : "";
+  cloudSide.hidden = !hasCloud;
+  channel.hidden = !hasCloud;
+  usageFontFamily = getComputedStyle(document.body).fontFamily;
+  const animate = usageAnimate;
+  usageAnimate = false;
+  drawUsageSide("local", { w: stacked || !hasCloud ? width : scale.local.w, h: scale.local.h }, animate);
+  if (hasCloud) {
+    const offline = cloudUsage.reachable === false;
+    cloudSide.classList.toggle("is-offline", offline);
+    const cloudChart = document.querySelector("#usage-cloud");
+    cloudChart.setAttribute("role", "group");
+    cloudChart.setAttribute("aria-label", t("usage_cloud"));
+    cloudSide.style.width = stacked ? "" : `${scale.cloud.w}px`;
+    document.querySelector("#usage-cloud-title").textContent = t("usageCloudTitle", bytes((cloudUsage.tree && cloudUsage.tree.bytes) || 0));
+    const chip = document.querySelector("#usage-scale-chip");
+    chip.hidden = !scale.compressed;
+    chip.textContent = scale.compressed ? t("usageScaleChip", usageRatioText(scale.ratio)) : "";
+    const note = document.querySelector("#usage-cloud-note");
+    const empty = !(cloudUsage.tree.bytes > 0);
+    note.hidden = !(offline || empty);
+    note.textContent = offline ? t("usageCloudOffline", cloudUsage.health || "offline") : empty ? t("usageCloudEmpty") : "";
+    renderUsageCrumbs("cloud", usageCloudTrail(usageCloudFocus));
+    drawUsageSide("cloud", { w: stacked ? scale.cloud.w : scale.cloud.w, h: scale.cloud.h }, animate);
+  }
+  drawUsageRibbons();
+  if (usageDrillingPath) showUsageTip(t("usageDrilling", usageDrillingLabel || usageDrillingPath));
+}
+
+/// One side as a nested treemap: each box's area is its size, boxes with room show their children inside
+/// under a title strip, and a box with children zooms in when clicked.
+function drawUsageSide(side, size, animate) {
+  const cloud = side === "cloud";
+  const chart = document.querySelector(cloud ? "#usage-cloud" : "#usage-chart");
+  const tip = document.querySelector("#usage-tip");
+  const trail = cloud ? usageCloudTrail(usageCloudFocus) : usageNodeAt(usageFocus);
+  const focusPath = cloud ? usageCloudFocus : usageFocus;
   const focus = trail[trail.length - 1].node;
-  const width = Math.floor(chart.getBoundingClientRect().width) || 640;
-  // Narrow windows get a taller map and one level less nesting, so the boxes keep room for their labels.
+  if (!focus) { chart.replaceChildren(); return; }
+  const width = Math.max(40, size.w);
+  const height = Math.max(8, size.h);
+  // Narrow sides get one level less nesting, so the boxes keep room for their labels.
   const narrow = width < 560;
   const maxDepth = narrow ? 2 : USAGE_MAP_DEPTH;
-  const height = Math.round(narrow ? Math.min(440, Math.max(300, width * 1.05)) : Math.min(520, Math.max(260, (width * 9) / 16)));
   chart.style.height = `${height}px`;
-  usageFontFamily = getComputedStyle(document.body).fontFamily;
+  chart.style.width = cloud ? `${width}px` : "";
   chart.replaceChildren();
-  chart.classList.toggle("is-zooming", usageAnimate);
-  usageAnimate = false;
-  const box = (node, parent, rect, path, depth) => {
+  chart.classList.toggle("is-zooming", animate);
+  chart.classList.toggle("tint-age", usageTint === "age");
+  const now = Date.now();
+  const freed = cloud ? 0 : usageWhatIf([...usageSelected.values()], 0).freed;
+  const box = (node, parent, rect, path, depth, group) => {
     // Edges snap to whole pixels, so neighbouring boxes share one border line.
     const x = Math.round(rect.x);
     const y = Math.round(rect.y);
@@ -3681,27 +4138,39 @@ function drawUsageMap() {
     const kids = node.children && node.children.length ? node.children : null;
     const nested = Boolean(kids) && depth < maxDepth && w >= (depth >= 2 ? 96 : 72) && h >= USAGE_HEADER + (depth >= 2 ? 50 : 28);
     const big = !nested && w >= 160 && h >= 72;
-    const item = el("button", `usage-box u-${node.kind} d${depth}${nested ? " frame" : ""}`);
+    const colour = cloud ? (node.kind === "free" ? "free" : USAGE_CLOUD_COLOR[group] || "other") : node.kind;
+    const item = el("button", `usage-box u-${colour} d${depth}${nested ? " frame" : ""}`);
     item.type = "button";
+    item.tabIndex = -1;
     if (big) item.classList.add("big");
-    const isBusy = Boolean((node.path && (pending.has(node.path) || usageDrillingPath === node.path)) || (node.name && pending.has(node.name)));
+    const isBusy = !cloud && Boolean((node.path && (pending.has(node.path) || usageDrillingPath === node.path)) || (node.name && pending.has(node.name)));
     if (isBusy) item.classList.add("is-busy");
+    const age = usageAgeStep(cloud ? node.lastUsed || node.modified || node.offloadedAt : node.modified, now);
+    if (usageTint === "age" && node.kind !== "free") item.classList.add(`usage-age-${age}`);
     item.style.left = `${x}px`;
     item.style.top = `${y}px`;
     item.style.width = `${w}px`;
     item.style.height = `${h}px`;
-    const label = usageLabel(node, parent);
+    const key = cloud ? `c:${node.id || path.join(".")}` : `l:${node.path || path.join(".")}`;
+    item.dataset.key = key;
+    if (!cloud && node.path) item.dataset.path = node.path;
+    if (cloud && node.originPath) item.dataset.origin = node.originPath;
+    const ghost = !cloud && usageIsSelected(node.path);
+    if (ghost) item.classList.add("is-ghost");
+    if (cloud && node._incoming) item.classList.add("is-incoming");
+    if (cloud && node.otherDevice) item.classList.add("is-shared");
+    const label = cloud ? usageCloudLabel(node, parent, depth) : usageLabel(node, parent);
     const share = focus.bytes ? node.bytes / focus.bytes : 0;
     const pct = focus.bytes ? `${(share * 100).toFixed(share < 0.1 ? 1 : 0)}%` : "";
     // A name or size is drawn only when it fits whole; a cut-off size is worse than none.
-    const size = bytes(node.bytes);
-    const isAppTile = !nested && Boolean(node.path && node.path.endsWith(".app"));
+    const sizeText = bytes(node.bytes);
+    const isAppTile = !cloud && !nested && Boolean(node.path && node.path.endsWith(".app"));
     const iconPx = isAppTile ? (w >= 88 && h >= 68 ? 28 : w >= 44 && h >= 44 ? 24 : w >= 24 && h >= 24 ? 18 : 0) : 0;
     const nameW = usageTextWidth(label, 600, (nested && depth === 1) || big ? 13 : 12);
-    const sizeW = usageTextWidth(size, 400, 11.5);
+    const sizeW = usageTextWidth(sizeText, 400, 11.5);
     const inner = w - (big ? 22 : 14);
     const name = () => item.append(el("span", "usage-name", label));
-    const sizeEl = () => item.append(el("span", "usage-size", size));
+    const sizeEl = () => item.append(el("span", "usage-size", sizeText));
     const appendAppIcon = (px) => {
       const img = document.createElement("img");
       img.className = "usage-app-icon";
@@ -3733,96 +4202,90 @@ function drawUsageMap() {
       if (h >= 42 && sizeW <= inner) sizeEl();
       else if (nameW + 6 + sizeW <= inner) { item.classList.add("inline"); sizeEl(); }
     }
-    const full = usageLabelBoth(node, parent);
-    const named = node.key && ["bundle", "cache", "data"].includes(node.key) && parent && parent.name && parent.key == null ? `${parent.name} · ${full}` : full;
-    item.title = `${named} · ${bytes(node.bytes)} · ${pct}`;
-    item.setAttribute("aria-label", item.title);
-    const canLazyDrill = !kids && Boolean(node.path && !node.path.endsWith(".app") && !node._drilledEmpty && !usageDrilledEmpty.has(node.path));
-    if (kids || canLazyDrill) {
-      item.classList.add("zoomable");
-      item.addEventListener("click", async (event) => {
-        // A click from the keyboard (detail 0) keeps focus on the map after the redraw.
-        const byKeyboard = event.detail === 0;
-        if (!kids && canLazyDrill) {
-          const targetPath = node.path;
-          const targetKind = node.kind || "personal";
-          if (usageDrillingPath === targetPath) return;
-          const cached = usageDirCache.get(targetPath);
-          if (cached && Array.isArray(cached.children) && cached.children.length) {
-            if (usageData && usageData.tree) hydrateUsageTree(usageData.tree);
-            const livePath = (usageData && usageData.tree && findUsagePathByFSPath(usageData.tree, targetPath)) || path;
-            usageFocus = livePath;
-            usageAnimate = true;
-            renderUsage();
-            if (byKeyboard) focusFirstUsageBox();
-            return;
-          }
-          usageDrillingPath = targetPath;
-          usageDrillingLabel = label;
-          item.classList.add("is-busy");
-          tip.hidden = false;
-          tip.textContent = t("usageDrilling", label);
-          try {
-            const res = await api(`/api/usage/dir?path=${encodeURIComponent(targetPath)}&kind=${encodeURIComponent(targetKind)}`);
-            if (res && Array.isArray(res.children) && res.children.length) {
-              usageDirCache.set(targetPath, { children: res.children, partial: Boolean(res.partial) });
-              usageDrilledEmpty.delete(targetPath);
-              if (usageData && usageData.tree) hydrateUsageTree(usageData.tree);
-              const livePath = (usageData && usageData.tree && findUsagePathByFSPath(usageData.tree, targetPath)) || path;
-              usageFocus = livePath;
-              usageAnimate = true;
-              renderUsage();
-              if (byKeyboard) focusFirstUsageBox();
-              return;
-            }
-            if (res && res.partial) {
-              toast({ title: biPair(t("usageDrillFailed", label)), tone: "error" });
-              drawUsageMap();
-              return;
-            }
-            usageDrilledEmpty.add(targetPath);
-            node._drilledEmpty = true;
-            tip.hidden = false;
-            tip.textContent = t("usageDrillEmpty", label);
-            drawUsageMap();
-            return;
-          } catch (err) {
-            if (err && err.code !== "unauthorized") {
-              toast({ title: biPair(t("usageDrillFailed", label)), error: { code: err.code || "failed", message: err.message || "" }, tone: "error" });
-            }
-            drawUsageMap();
-            return;
-          } finally {
-            if (usageDrillingPath === targetPath) {
-              usageDrillingPath = null;
-              usageDrillingLabel = "";
-            }
-          }
-        }
-        usageFocus = path;
-        usageAnimate = true;
-        renderUsage();
-        if (byKeyboard) focusFirstUsageBox();
-      });
+    // Cloud badge: how many offloaded items came from here; activating it shows them on the cloud side.
+    const linkedCount = cloud ? 0 : usageOffloadedUnder(node);
+    if (linkedCount && w >= 44 && h >= 22) {
+      const badge = el("span", "usage-badge");
+      badge.append(cloudGlyph(), document.createTextNode(String(linkedCount)));
+      badge.title = t("usageLinkedCount", linkedCount);
+      badge.addEventListener("click", (event) => { event.stopPropagation(); usageShowInCloud(node.path); });
+      item.append(badge);
     }
-    const show = () => { tip.hidden = false; tip.textContent = item.title; };
+    const full = cloud ? label : usageLabelBoth(node, parent);
+    const named = !cloud && node.key && ["bundle", "cache", "data"].includes(node.key) && parent && parent.name && parent.key == null ? `${parent.name} · ${full}` : full;
+    const facts = [named, bytes(node.bytes), pct];
+    const ageSeconds = cloud ? node.lastUsed || node.modified : node.modified;
+    if (ageSeconds) facts.push(`${t(`usageAge${age}`)} (${t("usageAgeChanged", relativeTime(new Date(ageSeconds * 1000).toISOString()))})`);
+    if (linkedCount) facts.push(t("usageLinkedCount", linkedCount));
+    if (ghost) facts.push(t("usageSelectedState"));
+    if (cloud) {
+      if (node._incoming) facts.push(t("usageIncoming"));
+      if (node.originPath) facts.push(t("usageOffloadedFrom", usageDisplayPath(node.originPath)));
+      if (node.storedBytes) facts.push(t("usageStored", bytes(node.storedBytes)));
+      if (node.localBytes) facts.push(t("usageAlsoHere", bytes(node.localBytes)));
+      if (node.otherDevice) facts.push(t("usageAlsoOn", node.otherDevice));
+    }
+    item.title = facts.filter(Boolean).join(" · ");
+    item.setAttribute("aria-label", item.title);
+    if (ghost) item.setAttribute("aria-pressed", "true");
+    const canLazyDrill = !cloud && !kids && Boolean(node.path && !node.path.endsWith(".app") && !node._drilledEmpty && !usageDrilledEmpty.has(node.path));
+    if (kids || canLazyDrill) item.classList.add("zoomable");
+    item.addEventListener("click", async (event) => {
+      // ⌘-click or Ctrl-click selects instead of zooming.
+      if (!cloud && (event.metaKey || event.ctrlKey) && node.path) { usageToggleSelect(node, label); return; }
+      if (!kids && !canLazyDrill) return;
+      // A click from the keyboard (detail 0) keeps focus on the map after the redraw.
+      const byKeyboard = event.detail === 0;
+      if (!kids && canLazyDrill) {
+        await usageDrill(node, label, path, item, byKeyboard);
+        return;
+      }
+      if (cloud) usageCloudFocus = path; else usageFocus = path;
+      usageAnimate = true;
+      renderUsage();
+      if (byKeyboard) focusFirstUsageBox(side);
+    });
+    const show = () => { showUsageTip(item.title); usageHover = { side, el: item, node }; drawUsageRibbons(); };
     item.addEventListener("mouseenter", show);
     item.addEventListener("pointerdown", show);
-    item.addEventListener("focus", show);
-    if (node.path) item.addEventListener("contextmenu", (event) => { event.preventDefault(); usageContextMenu(event, node, label); });
+    item.addEventListener("focus", () => { usageActive[side] = key; for (const other of chart.querySelectorAll(".usage-box[tabindex='0']")) other.tabIndex = -1; item.tabIndex = 0; show(); });
+    item.addEventListener("mouseleave", () => { if (usageHover && usageHover.el === item) { usageHover = null; drawUsageRibbons(); } });
+    item.addEventListener("keydown", (event) => {
+      if (event.key === " " && !cloud && node.path) { event.preventDefault(); usageToggleSelect(node, label); focusUsageKey(side, key); }
+    });
+    item.addEventListener("keyup", (event) => { if (event.key === " ") event.preventDefault(); });
+    if (!cloud && node.path) item.addEventListener("contextmenu", (event) => { event.preventDefault(); usageContextMenu(event, node, label); });
+    if (cloud && !node._incoming && (node.restore || node.stubPath)) item.addEventListener("contextmenu", (event) => { event.preventDefault(); usageCloudMenu(event, node, label); });
+    // Drag across the channel: local to cloud offloads, cloud to local restores. Both ask first.
+    if ((!cloud && node.path) || (cloud && node.restore && !node._incoming)) {
+      item.draggable = true;
+      item.addEventListener("dragstart", (event) => {
+        usageDrag = { side, node, label };
+        event.dataTransfer.effectAllowed = "move";
+        event.dataTransfer.setData("text/plain", node.path || node.originPath || label);
+        item.classList.add("is-dragging");
+      });
+      item.addEventListener("dragend", () => {
+        usageDrag = null;
+        item.classList.remove("is-dragging");
+        for (const target of document.querySelectorAll(".usage-chart.is-drop")) target.classList.remove("is-drop");
+      });
+    }
     chart.append(item);
     // Children are later siblings in the DOM, so they sit on top of the frame and take their own clicks.
     if (nested) {
       for (const cell of usageSquarify(kids, x + 2, y + USAGE_HEADER, w - 4, h - USAGE_HEADER - 2)) {
-        box(cell.child, node, cell, [...path, cell.index], depth + 1);
+        box(cell.child, node, cell, [...path, cell.index], depth + 1, group);
       }
     }
   };
   // Free space gets a strip along one edge, so the used boxes stay together and the free strip reads as one piece.
+  // With a selection the strip grows by what it would free ("what if"); the selected boxes stay as ghosts.
   const layoutTop = (children) => {
     const fi = children.findIndex((c) => c.key === "free" && c.bytes > 0);
     const total = children.reduce((s, c) => s + (c.bytes || 0), 0);
-    const share = fi >= 0 && total ? children[fi].bytes / total : 0;
+    const freeBytes = fi >= 0 ? children[fi].bytes + freed : 0;
+    const share = fi >= 0 && total ? Math.min(0.9, freeBytes / total) : 0;
     const strip = Math.round((narrow ? height : width) * share);
     if (fi < 0 || strip < 28 || share > 0.9) return usageSquarify(children, 0, 0, width, height);
     const rest = children.map((c, i) => (i === fi ? { bytes: 0 } : c));
@@ -3832,15 +4295,185 @@ function drawUsageMap() {
   };
   // The focused node fills the whole map (the path above names it); its children are the top boxes.
   const parent = trail.length > 1 ? trail[trail.length - 2].node : null;
+  // On the cloud side every box takes the colour of its top group (apps, files, ...).
+  const rootGroup = cloud && focusPath.length ? ((usageCloudTree().children || [])[focusPath[0]] || {}).key : null;
   if (focus.children && focus.children.length) {
-    for (const cell of layoutTop(focus.children)) box(cell.child, focus, cell, [...usageFocus, cell.index], 1);
+    for (const cell of layoutTop(focus.children)) {
+      box(cell.child, focus, cell, [...focusPath, cell.index], 1, cloud ? rootGroup || cell.child.key : null);
+    }
   } else {
-    box(focus, parent, { x: 0, y: 0, w: width, h: height }, usageFocus, maxDepth);
+    box(focus, parent, { x: 0, y: 0, w: width, h: height }, focusPath, maxDepth, rootGroup);
   }
-  if (usageDrillingPath) {
-    tip.hidden = false;
-    tip.textContent = t("usageDrilling", usageDrillingLabel || usageDrillingPath);
+  if (freed && !cloud) {
+    const strip = chart.querySelector(".usage-box.u-free");
+    if (strip) strip.classList.add("is-growing");
   }
+  // One Tab stop per map; arrow keys move between its boxes.
+  const stop = (usageActive[side] && [...chart.querySelectorAll(".usage-box")].find((b) => b.dataset.key === usageActive[side])) || chart.querySelector(".usage-box");
+  if (stop) stop.tabIndex = 0;
+}
+
+function focusUsageKey(side, key) {
+  const chart = document.querySelector(side === "cloud" ? "#usage-cloud" : "#usage-chart");
+  const target = [...chart.querySelectorAll(".usage-box")].find((b) => b.dataset.key === key);
+  if (target) target.focus({ preventScroll: true });
+}
+
+function cloudGlyph() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  svg.setAttribute("class", "usage-badge-icon");
+  const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  p.setAttribute("d", "M7 18a5 5 0 0 1-.6-10A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9H7z");
+  svg.append(p);
+  return svg;
+}
+
+/// Lazy drill-down into a folder the overview did not list inside.
+async function usageDrill(node, label, path, item, byKeyboard) {
+  const targetPath = node.path;
+  const targetKind = node.kind || "personal";
+  if (usageDrillingPath === targetPath) return;
+  const cached = usageDirCache.get(targetPath);
+  if (cached && Array.isArray(cached.children) && cached.children.length) {
+    if (usageData && usageData.tree) hydrateUsageTree(usageData.tree);
+    usageFocus = (usageData && usageData.tree && findUsagePathByFSPath(usageData.tree, targetPath)) || path;
+    usageAnimate = true;
+    renderUsage();
+    if (byKeyboard) focusFirstUsageBox();
+    return;
+  }
+  usageDrillingPath = targetPath;
+  usageDrillingLabel = label;
+  item.classList.add("is-busy");
+  showUsageTip(t("usageDrilling", label));
+  try {
+    const res = await api(`/api/usage/dir?path=${encodeURIComponent(targetPath)}&kind=${encodeURIComponent(targetKind)}`);
+    if (res && Array.isArray(res.children) && res.children.length) {
+      usageDirCache.set(targetPath, { children: res.children, partial: Boolean(res.partial) });
+      usageDrilledEmpty.delete(targetPath);
+      if (usageData && usageData.tree) hydrateUsageTree(usageData.tree);
+      usageFocus = (usageData && usageData.tree && findUsagePathByFSPath(usageData.tree, targetPath)) || path;
+      usageAnimate = true;
+      renderUsage();
+      if (byKeyboard) focusFirstUsageBox();
+      return;
+    }
+    if (res && res.partial) {
+      toast({ title: biPair(t("usageDrillFailed", label)), tone: "error" });
+      drawUsageMap();
+      return;
+    }
+    usageDrilledEmpty.add(targetPath);
+    node._drilledEmpty = true;
+    showUsageTip(t("usageDrillEmpty", label));
+    drawUsageMap();
+  } catch (err) {
+    if (err && err.code !== "unauthorized") {
+      toast({ title: biPair(t("usageDrillFailed", label)), error: { code: err.code || "failed", message: err.message || "" }, tone: "error" });
+    }
+    drawUsageMap();
+  } finally {
+    if (usageDrillingPath === targetPath) {
+      usageDrillingPath = null;
+      usageDrillingLabel = "";
+    }
+  }
+}
+
+/// The partner boxes of a box: a local folder's offloaded items on the cloud side, or the local box
+/// an offloaded item came from (the deepest one drawn).
+function usagePartners(side, node) {
+  if (!node) return [];
+  if (side === "local") {
+    if (!node.path) return [];
+    const prefix = node.path + "/";
+    return [...document.querySelectorAll("#usage-cloud .usage-box[data-origin]")].filter((b) => b.dataset.origin === node.path || b.dataset.origin.startsWith(prefix));
+  }
+  const origin = node.originPath;
+  if (!origin) return [];
+  let best = null;
+  for (const b of document.querySelectorAll("#usage-chart .usage-box[data-path]")) {
+    const p = b.dataset.path;
+    if ((origin === p || origin.startsWith(p + "/")) && (!best || p.length > best.dataset.path.length)) best = b;
+  }
+  return best ? [best] : [];
+}
+
+/// Ribbons across the channel for the hovered or focused pair and for selected items and their twins only.
+function drawUsageRibbons() {
+  const svg = document.querySelector("#usage-ribbons");
+  const split = document.querySelector("#usage-split");
+  if (!svg || !split) return;
+  for (const lit of document.querySelectorAll(".usage-box.is-linked")) lit.classList.remove("is-linked");
+  svg.replaceChildren();
+  if (!usageCloudShown()) return;
+  const pairs = [];
+  if (usageHover && usageHover.el && usageHover.el.isConnected) {
+    const partners = usagePartners(usageHover.side, usageHover.node);
+    for (const p of partners) p.classList.add("is-linked");
+    if (partners[0]) pairs.push(usageHover.side === "local" ? [usageHover.el, partners[0]] : [partners[0], usageHover.el]);
+  }
+  for (const twin of document.querySelectorAll("#usage-cloud .usage-box.is-incoming[data-origin]")) {
+    const local = [...document.querySelectorAll("#usage-chart .usage-box[data-path]")].find((b) => b.dataset.path === twin.dataset.origin);
+    if (local) pairs.push([local, twin]);
+  }
+  if (!pairs.length) return;
+  const base = split.getBoundingClientRect();
+  svg.setAttribute("viewBox", `0 0 ${Math.max(1, base.width)} ${Math.max(1, base.height)}`);
+  const stacked = split.classList.contains("is-stacked");
+  // A ribbon leaves the local map at its edge, level with the box (which is outlined), so it never
+  // covers other local boxes; it lands on the cloud map's edge level with its partner.
+  const localEdge = document.querySelector("#usage-chart").getBoundingClientRect();
+  // Stacked, the ribbon lands above the cloud side's title so it never covers the text.
+  const cloudEdge = document.querySelector(stacked ? "#usage-cloud-side" : "#usage-cloud").getBoundingClientRect();
+  const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
+  for (const [a, b] of pairs.slice(0, 12)) {
+    const r1 = a.getBoundingClientRect();
+    const r2 = b.getBoundingClientRect();
+    const L = stacked
+      ? { x: clamp(r1.left, localEdge.left, localEdge.right) - base.left, r: clamp(r1.right, localEdge.left, localEdge.right) - base.left, b: localEdge.bottom - base.top }
+      : { y: clamp(r1.top, localEdge.top, localEdge.bottom) - base.top, b: clamp(r1.bottom, localEdge.top, localEdge.bottom) - base.top, r: localEdge.right - base.left };
+    const C = stacked
+      ? { x: r2.left - base.left, r: r2.right - base.left, y: cloudEdge.top - base.top }
+      : { y: r2.top - base.top, b: r2.bottom - base.top, x: cloudEdge.left - base.left };
+    let d;
+    if (stacked) {
+      const my = (L.b + C.y) / 2;
+      d = `M${L.x} ${L.b} C${L.x} ${my} ${C.x} ${my} ${C.x} ${C.y} L${C.r} ${C.y} C${C.r} ${my} ${L.r} ${my} ${L.r} ${L.b} Z`;
+    } else {
+      const mx = (L.r + C.x) / 2;
+      d = `M${L.r} ${L.y} C${mx} ${L.y} ${mx} ${C.y} ${C.x} ${C.y} L${C.x} ${C.b} C${mx} ${C.b} ${mx} ${L.b} ${L.r} ${L.b} Z`;
+    }
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    path.setAttribute("class", "usage-ribbon");
+    svg.append(path);
+  }
+}
+
+/// Zooms the cloud side to the first offloaded item that came from `path` and lights it up.
+function usageShowInCloud(path) {
+  const tree = cloudUsage && cloudUsage.tree;
+  if (!tree || !path) return;
+  const prefix = path + "/";
+  const find = (node, trail) => {
+    for (let i = 0; i < (node.children || []).length; i++) {
+      const child = node.children[i];
+      if (child.originPath && (child.originPath === path || child.originPath.startsWith(prefix))) return [...trail, i];
+      const deeper = find(child, [...trail, i]);
+      if (deeper) return deeper;
+    }
+    return null;
+  };
+  const found = find(tree, []);
+  if (!found) return;
+  usageCloudFocus = found.slice(0, -1);
+  usageAnimate = true;
+  renderUsage();
+  const target = [...document.querySelectorAll("#usage-cloud .usage-box[data-origin]")].find((b) => b.dataset.origin === path || b.dataset.origin.startsWith(prefix));
+  if (target) target.focus({ preventScroll: true });
 }
 
 let usageResizeTimer = null;
@@ -3848,14 +4481,264 @@ window.addEventListener("resize", () => {
   clearTimeout(usageResizeTimer);
   usageResizeTimer = setTimeout(drawUsageMap, 120);
 });
-// Escape from the map zooms out one level, as a keyboard stand-in for the breadcrumbs.
-document.querySelector("#usage-chart").addEventListener("keydown", (event) => {
-  if (event.key !== "Escape" || !usageFocus.length || document.querySelector(".usage-menu")) return;
-  event.preventDefault();
-  usageFocus = usageFocus.slice(0, -1);
-  renderUsage();
-  focusFirstUsageBox();
+
+const USAGE_ARROWS = { ArrowLeft: "left", ArrowRight: "right", ArrowUp: "up", ArrowDown: "down" };
+for (const side of ["local", "cloud"]) {
+  const chart = document.querySelector(side === "cloud" ? "#usage-cloud" : "#usage-chart");
+  chart.addEventListener("keydown", (event) => {
+    if (document.querySelector(".usage-menu")) return;
+    // Escape zooms out one level on this side, as a keyboard stand-in for the breadcrumbs.
+    if (event.key === "Escape") {
+      const trail = side === "cloud" ? usageCloudFocus : usageFocus;
+      if (!trail.length) return;
+      event.preventDefault();
+      if (side === "cloud") usageCloudFocus = usageCloudFocus.slice(0, -1); else usageFocus = usageFocus.slice(0, -1);
+      renderUsage();
+      focusFirstUsageBox(side);
+      return;
+    }
+    const dir = USAGE_ARROWS[event.key];
+    if (!dir) return;
+    const boxes = [...chart.querySelectorAll(".usage-box")];
+    const from = boxes.indexOf(document.activeElement);
+    if (from < 0) return;
+    const rects = boxes.map((b) => ({ x: parseFloat(b.style.left), y: parseFloat(b.style.top), w: parseFloat(b.style.width), h: parseFloat(b.style.height) }));
+    const next = usageNearest(rects, from, dir);
+    event.preventDefault();
+    if (next >= 0) boxes[next].focus({ preventScroll: true });
+  });
+  // A drop from the other side asks to offload (onto the cloud) or restore (onto this Mac).
+  chart.addEventListener("dragover", (event) => {
+    if (!usageDrag || usageDrag.side === side) return;
+    const reason = usageDropRefusal(usageDrag);
+    if (reason) { showUsageTip(reason); return; }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "move";
+    chart.classList.add("is-drop");
+    showUsageTip(t(side === "cloud" ? "usageDropOffload" : "usageDropRestore", usageDrag.label));
+  });
+  chart.addEventListener("dragleave", () => chart.classList.remove("is-drop"));
+  chart.addEventListener("drop", (event) => {
+    chart.classList.remove("is-drop");
+    if (!usageDrag || usageDrag.side === side || usageDropRefusal(usageDrag)) return;
+    event.preventDefault();
+    const { node, label } = usageDrag;
+    usageDrag = null;
+    if (side === "cloud") usageOffload([usageSelectionItem(node, label)]);
+    else usageRestore(node, label);
+  });
+}
+
+for (const seg of document.querySelectorAll("#usage-tint [data-tint]")) {
+  seg.addEventListener("click", () => {
+    usageTint = seg.dataset.tint === "age" ? "age" : "kind";
+    try { localStorage.setItem("disklessly.usageTint", usageTint); } catch {}
+    renderUsage();
+  });
+}
+
+function usageDropRefusal(drag) {
+  if (drag.side === "local") {
+    const allowed = usageAllowed(drag.node);
+    if (allowed.isApp && drag.node.offloaded) return t("usageAlreadyOffloaded");
+    if (allowed.isApp && !allowed.canOffload) return t("usageNoPack");
+    return allowed.canOffload ? "" : t("usageMenuRefused", drag.node.refusal || "");
+  }
+  return drag.node.restore ? "" : t("usageNoRestore");
+}
+
+/// Offload one or more local boxes through the existing jobs: pack for an app, offloadfile otherwise.
+/// One item opens the same dialog as the context menu; several open one dialog for all of them.
+function usageOffload(items) {
+  const list = usageTopPaths(items).filter((i) => i.canOffload);
+  if (!list.length) return;
+  const target = (i) => (i.isApp ? ["pack", { name: i.label, path: i.path, cachedBytes: i.bytes }] : ["offloadfile", { name: i.path, label: i.label, path: i.path, cachedBytes: i.bytes }]);
+  const done = () => { for (const i of list) usageSelected.delete(i.path); renderUsage(); };
+  if (list.length === 1) {
+    const [kind, app] = target(list[0]);
+    askConfirm(confirmSpec(kind, app), () => { done(); startJob(kind, app); });
+    return;
+  }
+  const total = list.reduce((s, i) => s + i.bytes, 0);
+  askConfirm({ title: ["usageTrayOffloadConfirm", list.length, bytes(total)], body: ["usageTrayOffloadBody"], ok: "confirmPackOk", danger: false }, () => {
+    done();
+    for (const i of list) { const [kind, app] = target(i); startJob(kind, app); }
+  });
+}
+
+function usageTrash(items) {
+  const list = usageTopPaths(items).filter((i) => i.canTrash);
+  if (!list.length) return;
+  const done = () => { for (const i of list) usageSelected.delete(i.path); renderUsage(); };
+  const app = (i) => ({ name: i.path, label: i.label, path: i.path, cachedBytes: i.bytes });
+  if (list.length === 1) {
+    askConfirm(confirmSpec("trashpath", app(list[0])), () => { done(); startJob("trashpath", app(list[0])); });
+    return;
+  }
+  const total = list.reduce((s, i) => s + i.bytes, 0);
+  askConfirm({ title: ["usageTrayTrashConfirm", list.length, bytes(total)], body: ["usageTrayTrashBody"], ok: "trashOk", danger: true }, () => {
+    done();
+    for (const i of list) startJob("trashpath", app(i));
+  });
+}
+
+/// Brings an offloaded item back with the job its kind uses; every path asks first.
+function usageRestore(node, label) {
+  const rows = (lastStatus && lastStatus.apps) || [];
+  const row = rows.find((a) => a.name === node.restoreId) || { name: node.restoreId || label, installPath: node.originPath };
+  const generic = (onOk) => askConfirm({ title: ["usageRestoreTitle", label], body: ["usageRestoreBody", bytes(node.bytes)], ok: "usageRestoreOk", danger: false }, onOk);
+  switch (node.restore) {
+    case "unpack":
+    case "data/disable":
+      confirmAction(node.restore, row);
+      return;
+    case "links/restore":
+      generic(() => startJob("links/restore", { name: node.restoreId }));
+      return;
+    case "sessions/restore":
+      generic(() => restoreSession({ id: node.restoreId }));
+      return;
+    case "fetch":
+      // There is no fetch job on the page: bringing a file back starts from its placeholder in Finder.
+      askConfirm({ title: ["usageRestoreTitle", label], body: ["usageFetchBody"], ok: "revealInFinder", danger: false }, () => revealInFinder(node.stubPath || node.originPath));
+      return;
+    default:
+      showUsageTip(t("usageNoRestore"));
+  }
+}
+
+/// The tray under the map: free space after the selection, the selection, its actions, and the goal slider.
+function renderUsageTray() {
+  const tray = document.querySelector("#usage-tray");
+  if (!usageData || !usageData.tree) { tray.hidden = true; return; }
+  tray.hidden = false;
+  const root = usageData.tree;
+  const free = ((root.children || []).find((c) => c.key === "free") || {}).bytes || 0;
+  const items = [...usageSelected.values()];
+  const what = usageWhatIf(items, free);
+  const head = document.querySelector("#usage-tray-free");
+  head.textContent = items.length ? t("usageTrayFreeAfter", bytes(what.freeAfter), bytes(what.freed)) : t("usageTrayFreeNow", bytes(free));
+  const top = usageTopPaths(items);
+  const offload = document.querySelector("#usage-tray-offload");
+  const trash = document.querySelector("#usage-tray-trash");
+  const clear = document.querySelector("#usage-tray-clear");
+  const offloadCount = top.filter((i) => i.canOffload).length;
+  const trashCount = top.filter((i) => i.canTrash).length;
+  offload.textContent = t("usageTrayOffload", offloadCount);
+  trash.textContent = t("usageTrayTrash", trashCount);
+  offload.disabled = !offloadCount;
+  trash.disabled = !trashCount;
+  clear.disabled = !items.length;
+  const list = document.querySelector("#usage-tray-list");
+  list.replaceChildren();
+  list.hidden = !top.length;
+  for (const item of top) {
+    const row = el("li", "usage-tray-row");
+    row.append(el("span", "usage-tray-name", item.label), el("span", "usage-tray-path mono small muted", usageDisplayPath(item.path)), el("span", "usage-tray-size", bytes(item.bytes)));
+    const remove = el("button", "btn quiet usage-tray-remove", "×");
+    remove.type = "button";
+    remove.setAttribute("aria-label", t("usageDeselect", item.label));
+    remove.addEventListener("click", () => { usageSelected.delete(item.path); renderUsage(); });
+    row.append(remove);
+    list.append(row);
+  }
+  const candidates = usageGoalCandidates(root, null);
+  const maxGiB = Math.floor(candidates.reduce((s, c) => s + c.bytes, 0) / 1073741824);
+  const goal = document.querySelector("#usage-goal");
+  goal.max = String(maxGiB);
+  goal.disabled = !maxGiB;
+  if (usageGoal > maxGiB) usageGoal = maxGiB;
+  goal.value = String(usageGoal);
+  const label = t("usageGoal", bytes(usageGoal * 1073741824));
+  document.querySelector("#usage-goal-label").textContent = label;
+  goal.setAttribute("aria-valuetext", label);
+}
+
+document.querySelector("#usage-tray-offload").addEventListener("click", () => usageOffload([...usageSelected.values()]));
+document.querySelector("#usage-tray-trash").addEventListener("click", () => usageTrash([...usageSelected.values()]));
+document.querySelector("#usage-tray-clear").addEventListener("click", () => { usageSelected.clear(); usageGoal = 0; renderUsage(); });
+let usageGoalFrame = 0;
+document.querySelector("#usage-goal").addEventListener("input", (event) => {
+  usageGoal = Number(event.target.value) || 0;
+  cancelAnimationFrame(usageGoalFrame);
+  usageGoalFrame = requestAnimationFrame(() => {
+    if (!usageData || !usageData.tree) return;
+    const candidates = usageGoalCandidates(usageData.tree, null);
+    const picked = new Set(usagePickForGoal(candidates, usageGoal * 1073741824).keys);
+    // The goal only selects: it replaces the selection with its picks and starts nothing.
+    usageSelected.clear();
+    for (const c of candidates) if (picked.has(c.key)) usageSelected.set(c.key, usageSelectionItem(c.node, c.label));
+    renderUsage();
+    document.querySelector("#usage-goal").focus({ preventScroll: true });
+  });
 });
+
+/// Loads the cloud side. Redraws only when it changed, so a periodic refresh keeps hover, focus and selection.
+async function loadCloudUsage() {
+  let next;
+  try {
+    next = await api("/api/usage/cloud");
+  } catch (error) {
+    // An older server has no cloud side; the map stays as it was.
+    if (error.code === "unauthorized") return;
+    if (!cloudUsage) return;
+    next = Object.assign({}, cloudUsage, { reachable: false });
+  }
+  const signature = JSON.stringify([next.reachable, next.health, next.totalBytes, next.tree]);
+  if (signature === cloudUsageSignature) return;
+  cloudUsageSignature = signature;
+  cloudUsage = next;
+  usageCloudOrigins = [];
+  const walk = (node) => {
+    if (!node) return;
+    if (node.originPath && (!node.children || !node.children.length)) usageCloudOrigins.push(node.originPath);
+    for (const child of node.children || []) walk(child);
+  };
+  walk(next.tree);
+  // Keep the cloud side's zoom while it still points at something.
+  if (usageCloudTrail(usageCloudFocus).length !== usageCloudFocus.length + 1) usageCloudFocus = [];
+  if (usageData && usageData.tree) renderUsage();
+}
+
+/// Right-click on a cloud box: bring it back, or show its stub on this Mac.
+function usageCloudMenu(event, node, label) {
+  closeUsageMenu();
+  const menu = el("div", "menu usage-menu");
+  menu.setAttribute("role", "menu");
+  const head = el("div", "usage-menu-head");
+  head.append(el("strong", "", label));
+  if (node.originPath) head.append(el("span", "mono small muted", t("usageOffloadedFrom", usageDisplayPath(node.originPath))));
+  menu.append(head);
+  const entries = [];
+  if (node.restore) entries.push([t("usageMenuRestore"), () => usageRestore(node, label)]);
+  if (node.stubPath) entries.push([t("revealInFinder"), () => revealInFinder(node.stubPath)]);
+  for (const [text, run] of entries) {
+    const item = el("button", "menuitem", text);
+    item.type = "button";
+    item.setAttribute("role", "menuitem");
+    item.addEventListener("click", () => { closeUsageMenu(); run(); });
+    menu.append(item);
+  }
+  placeUsageMenu(menu, event);
+}
+
+function placeUsageMenu(menu, event) {
+  let x = event.clientX;
+  let y = event.clientY;
+  // A keyboard-opened menu reports no pointer position, so it opens at the top-left of its box.
+  if (x === 0 && y === 0 && event.currentTarget && event.currentTarget.getBoundingClientRect) {
+    const rect = event.currentTarget.getBoundingClientRect();
+    x = rect.left + 8;
+    y = rect.top + 8;
+  }
+  menu.style.left = `${Math.max(0, Math.min(x, window.innerWidth - 280))}px`;
+  menu.style.top = `${Math.max(0, Math.min(y, window.innerHeight - 180))}px`;
+  document.body.append(menu);
+  const first = menu.querySelector(".menuitem:not([disabled])");
+  if (first) first.focus();
+  menu.addEventListener("keydown", (e) => { if (e.key === "Escape") closeUsageMenu(); });
+  setTimeout(() => document.addEventListener("click", closeUsageMenu, { once: true }), 0);
+}
 
 /// Right-click on a box that is one folder: offload it (a cloud-badged link stays) or move it to the Trash.
 /// The server applies the same safety rules again; here a refused folder shows why instead.
@@ -3866,6 +4749,22 @@ function usageContextMenu(event, node, label) {
   const head = el("div", "usage-menu-head");
   head.append(el("strong", "", label), el("span", "mono small muted", node.path));
   menu.append(head);
+  // Select (the keyboard path to the tray's Offload and Move to Trash) and the cloud partner.
+  const selectable = usageAllowed(node);
+  if (selectable.canOffload || selectable.canTrash) {
+    const select = el("button", "menuitem", t(usageSelected.has(node.path) ? "usageDeselect" : "usageSelect", label));
+    select.type = "button";
+    select.setAttribute("role", "menuitem");
+    select.addEventListener("click", () => { closeUsageMenu(); usageToggleSelect(node, label); });
+    menu.append(select);
+  }
+  if (usageOffloadedUnder(node)) {
+    const inCloud = el("button", "menuitem", t("usageShowInCloud", usageOffloadedUnder(node)));
+    inCloud.type = "button";
+    inCloud.setAttribute("role", "menuitem");
+    inCloud.addEventListener("click", () => { closeUsageMenu(); usageShowInCloud(node.path); });
+    menu.append(inCloud);
+  }
   const isApp = Boolean(node.path && node.path.endsWith(".app"));
   const isPictures = Boolean(node.path && (/\/Pictures$/i.test(node.path) || /\.photoslibrary$/i.test(node.path)));
   const isContainerDir = Boolean(node.name && /com\.apple\.container|docker|orbstack|colima/i.test(node.name));
@@ -4335,6 +5234,7 @@ async function load() {
   render(status);
   loadLicense();
   loadUsage();
+  loadCloudUsage();
   if (!filesData || filesData.state !== "scanning") loadFiles();
   loadDev();
   if (!sessionBusy()) loadSessionPlan();
