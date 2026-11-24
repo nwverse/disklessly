@@ -63,9 +63,13 @@ public struct CloudUsageInputs {
 
     /// Where every item came from on this Mac (for the cloud badges on the local map).
     public var originPaths: [String] {
-        apps.compactMap(\.item.originPath) + files.compactMap(\.originPath)
-            + linked.flatMap { $0.items.compactMap(\.originPath) }
-            + data.compactMap(\.item.originPath) + sessions.compactMap(\.item.originPath)
+        // Appended step by step: one long `+` chain of key paths times out the Linux type checker.
+        var paths: [String] = apps.compactMap(\.item.originPath)
+        paths.append(contentsOf: files.compactMap(\.originPath))
+        for bundle in linked { paths.append(contentsOf: bundle.items.compactMap(\.originPath)) }
+        paths.append(contentsOf: data.compactMap(\.item.originPath))
+        paths.append(contentsOf: sessions.compactMap(\.item.originPath))
+        return paths
     }
 }
 
