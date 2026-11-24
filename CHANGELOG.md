@@ -6,6 +6,20 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Hidden usage ("对账"): the dashboard's Not measured box is broken into other users' folders, local snapshots and
+  purgeable space (only when snapshots exist), the Spotlight index, and the remainder (likely the Spotlight index or
+  folders the scan could not read). New `disklessly reconcile [--json]` prints the same breakdown and safe next steps.
+- Per-item actions, each with its own confirmation and never part of a bulk clean: thin local snapshots
+  (`tmutil thinlocalsnapshots`), measure the Spotlight index with one administrator prompt, and rebuild it
+  (`mdutil -E`) only when it is abnormally large (over max(20 GB, 5% of used)).
+- AI model folders (Hugging Face, Ollama, LM Studio, PyTorch Hub, Whisper) are listed locally with size, last change and
+  whether their tool is running; idle ones can be offloaded or moved to the Trash. The same list now drives remote
+  machine scans (LM Studio, PyTorch Hub and Whisper added there too).
+- Fixed: remote clean on a Mac host (no `/proc`) now detects files in use with `lsof` instead of deleting them.
+- Fixed: bringing back a chunked offloaded folder failed with "File exists"; concurrent linked-bundle offload and
+  chunked transfers could crash ("closure argument was escaped"); bringing back a folder could kill the process with
+  SIGPIPE when tar stopped reading at the end-of-archive marker; `pack` listed repo manifests three times.
+
 ## [0.3.2] - 2026-11-23
 
 - The app is now shipped as a signed, notarized `Disklessly-<version>.dmg`, and the Homebrew cask is

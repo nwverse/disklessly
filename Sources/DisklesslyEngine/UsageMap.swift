@@ -35,6 +35,11 @@ public struct UsageNode: Equatable {
     public var offloadedCount = 0
     /// Set on the boxes of the cloud side (`CloudUsage`): what the repo holds and how it comes back.
     public var cloud: CloudInfo?
+    /// A `HiddenUsage` action offered on a child of "Not measured" (thin snapshots, measure or rebuild
+    /// Spotlight). Kept apart from `action` so no cleanup list or bulk path ever runs it.
+    public var reconcile: String?
+    /// On the "Not measured" box: the facts its children were computed from (`disklessly reconcile`).
+    public var hidden: HiddenUsageFacts?
 
     /// One offloaded item as the cloud side shows it. `bytes` of the node is the size it had on disk.
     public struct CloudInfo: Equatable {
@@ -78,6 +83,8 @@ public struct UsageNode: Equatable {
         var object: [String: Any] = ["name": name, "kind": kind.rawValue, "bytes": NSNumber(value: bytes)]
         if let key { object["key"] = key }
         if let action { object["action"] = action }
+        if let reconcile { object["reconcile"] = reconcile }
+        if let hidden { object["hidden"] = hidden.jsonObject() }
         if offloaded { object["offloaded"] = true }
         if let modified { object["modified"] = NSNumber(value: Int64(modified.timeIntervalSince1970)) }
         if offloadedCount > 0 { object["offloadedCount"] = NSNumber(value: offloadedCount) }
@@ -127,7 +134,7 @@ public struct UsageInputs {
         public var cachedBytes: UInt64
         public init(name: String, cachedBytes: UInt64) { self.name = name; self.cachedBytes = cachedBytes }
     }
-    public struct Entry {
+    public struct Entry: Equatable {
         public var name: String
         public var bytes: UInt64
         public var kind: UsageNode.Kind
@@ -159,6 +166,8 @@ public struct UsageInputs {
     /// Measured parts of what used to be one "System & other" box: macOS volumes, /Library,
     /// Homebrew, /private/var. The rest stays as "not measured".
     public var system: [Entry] = []
+    /// What explains "not measured" (snapshots, other users, Spotlight); nil keeps it one box.
+    public var hidden: HiddenUsageFacts?
 
     public init(totalBytes: UInt64, freeBytes: UInt64) { self.totalBytes = totalBytes; self.freeBytes = freeBytes }
 }
@@ -218,8 +227,19 @@ public enum UsageMap {
         } else {
             var parts = input.system.map { entryNode($0, kind: .system) }.filter { $0.bytes > 0 }.sorted { $0.bytes > $1.bytes }
             let partsBytes = parts.reduce(0) { $0 + $1.bytes }
-            // Snapshots, purgeable space, other users and folders the scan could not read.
-            if leftover > partsBytes { parts.append(UsageNode(name: "Not measured", key: "unmeasured", kind: .system, bytes: leftover - partsBytes)) }
+            // Snapshots, purgeable space, other users, the Spotlight index and folders the scan could not read.
+            if leftover > partsBytes {
+                let gap = leftover - partsBytes
+                if var hidden = input.hidden {
+                    hidden.usedBytes = used
+                    hidden.gapBytes = gap
+                    var unmeasured = UsageNode.group(name: "Not measured", key: "unmeasured", kind: .system, HiddenUsage.breakdown(gap: gap, facts: hidden).map(HiddenUsage.node))
+                    unmeasured.hidden = hidden
+                    parts.append(unmeasured)
+                } else {
+                    parts.append(UsageNode(name: "Not measured", key: "unmeasured", kind: .system, bytes: gap))
+                }
+            }
             top.append(UsageNode.group(name: "System & other", key: "system", kind: .system, parts))
         }
         top.append(UsageNode(name: "Free", key: "free", kind: .free, bytes: min(input.freeBytes, input.totalBytes)))
@@ -399,8 +419,8 @@ public enum UsageScan {
     /// `-x` stays on this volume: CoreDevice mounts a running simulator's whole
     /// system at ~/Library/Developer/CoreDevice/DeviceFS, and mounted images
     /// would otherwise count again on top of where they really live.
-    static func sizes(of path: String, timeout: TimeInterval) -> (sizes: [String: UInt64], complete: Bool) {
-        let (raw, complete) = runDU(arguments: ["-x", "-k", "-d", "1", path], timeout: timeout)
+    static func sizes(of path: String, timeout: TimeInterval, denied: ((String) -> Void)? = nil) -> (sizes: [String: UInt64], complete: Bool) {
+        let (raw, complete) = runDU(arguments: ["-x", "-k", "-d", "1", path], timeout: timeout, denied: denied)
         var result: [String: UInt64] = [:]
         for line in raw.split(separator: "\n") {
             guard let tab = line.firstIndex(of: "\t"), let kb = UInt64(line[line.startIndex..<tab]) else { continue }
@@ -418,13 +438,15 @@ public enum UsageScan {
         return (0, complete)
     }
 
-    private static func runDU(arguments: [String], timeout: TimeInterval) -> (output: String, complete: Bool) {
+    /// `denied` receives each folder du could not read (permission denied / Full Disk Access).
+    private static func runDU(arguments: [String], timeout: TimeInterval, denied: ((String) -> Void)? = nil) -> (output: String, complete: Bool) {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/du")
         process.arguments = arguments
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
+        let errors = denied == nil ? nil : Pipe()
+        process.standardError = errors ?? FileHandle.nullDevice
         do { try process.run() } catch { return ("", false) }
         let output = LockedData()
         let reader = DispatchGroup()
@@ -432,6 +454,14 @@ public enum UsageScan {
         DispatchQueue.global().async {
             output.set(pipe.fileHandleForReading.readDataToEndOfFile())
             reader.leave()
+        }
+        if let errors, let denied {
+            reader.enter()
+            DispatchQueue.global().async {
+                let text = String(decoding: errors.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+                for path in HiddenUsage.parseDenied(text) { denied(path) }
+                reader.leave()
+            }
         }
         var complete = true
         let deadline = DispatchTime.now() + timeout
@@ -452,11 +482,12 @@ public enum UsageScan {
     }
 
     /// Measures this machine and builds the tree. Slow on a big disk: callers run it off the request thread.
-    public static func run(engine: DisklesslyEngine, timeout: TimeInterval = 240, progress: (String) -> Void = { _ in }) -> (tree: UsageNode, partial: Bool) {
-        HostPlatform.current == .linux ? runLinux(engine: engine, timeout: timeout, progress: progress) : runMac(engine: engine, timeout: timeout, progress: progress)
+    /// `runner` carries every system tool the "Not measured" breakdown asks (`tmutil`, `du` of other users).
+    public static func run(engine: DisklesslyEngine, timeout: TimeInterval = 240, runner: SystemCommandRunner = LiveSystemCommandRunner.shared, progress: (String) -> Void = { _ in }) -> (tree: UsageNode, partial: Bool) {
+        HostPlatform.current == .linux ? runLinux(engine: engine, timeout: timeout, progress: progress) : runMac(engine: engine, timeout: timeout, runner: runner, progress: progress)
     }
 
-    static func runMac(engine: DisklesslyEngine, timeout: TimeInterval, progress: (String) -> Void) -> (tree: UsageNode, partial: Bool) {
+    static func runMac(engine: DisklesslyEngine, timeout: TimeInterval, runner: SystemCommandRunner, progress: (String) -> Void) -> (tree: UsageNode, partial: Bool) {
         let home = NSHomeDirectory()
         let volume = try? URL(fileURLWithPath: "/").resourceValues(forKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey])
         var input = UsageInputs(
@@ -475,11 +506,14 @@ public enum UsageScan {
         ]
         progress("scan")
         let results = LockedResults()
+        let denied = LockedPaths()
         DispatchQueue.concurrentPerform(iterations: jobs.count) { index in
             let (name, path) = jobs[index]
             guard !path.isEmpty, FileManager.default.fileExists(atPath: path) else { return }
-            results.set(name, path: path, sizes(of: path, timeout: timeout))
+            results.set(name, path: path, sizes(of: path, timeout: timeout, denied: denied.add))
         }
+        progress("reconcile")
+        let hidden = HiddenUsage.gather(runner: runner, home: home, stateDir: engine.config.stateDir, unreadable: denied.all)
         progress("assemble")
         let partial = results.anyIncomplete
 
@@ -626,6 +660,7 @@ public enum UsageScan {
             }
         }
         input.system = systemParts(children: children, total: total)
+        input.hidden = hidden
         return (UsageMap.annotate(UsageMap.assemble(input), refusal: engine.fileOffloadRefusal, trashRefusal: engine.trashPathRefusal), partial)
     }
 
@@ -817,6 +852,13 @@ public enum UsageScan {
         #endif
     }
 
+    private final class LockedPaths: @unchecked Sendable {
+        private let lock = NSLock()
+        private var paths: [String] = []
+        func add(_ path: String) { lock.lock(); if paths.count < 2000 { paths.append(path) }; lock.unlock() }
+        var all: [String] { lock.lock(); defer { lock.unlock() }; return paths }
+    }
+
     private final class LockedResults: @unchecked Sendable {
         private let lock = NSLock()
         private var map: [String: (path: String, sizes: [String: UInt64], complete: Bool)] = [:]
@@ -843,10 +885,14 @@ public final class UsageScanner {
     private var startedAt: Date?
     private let run: (DisklesslyEngine, @escaping (String) -> Void) -> (UsageNode, Bool)
 
-    public init(run: @escaping (DisklesslyEngine, @escaping (String) -> Void) -> (UsageNode, Bool) = { engine, progress in
-        let scan = UsageScan.run(engine: engine, progress: progress)
-        return (scan.tree, scan.partial)
-    }) { self.run = run }
+    public init(runner: SystemCommandRunner = LiveSystemCommandRunner.shared) {
+        self.run = { engine, progress in
+            let scan = UsageScan.run(engine: engine, runner: runner, progress: progress)
+            return (scan.tree, scan.partial)
+        }
+    }
+
+    public init(run: @escaping (DisklesslyEngine, @escaping (String) -> Void) -> (UsageNode, Bool)) { self.run = run }
 
     /// Starts a scan unless one is running. Returns false when one already is.
     @discardableResult

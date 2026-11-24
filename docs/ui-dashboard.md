@@ -73,3 +73,20 @@ rows, Offload N / Move to Trash / Clear and the Free up goal slider; a Kind | La
 Below 560 px the sides stack. Screenshots (fixture data from `scripts/ui-screenshots.mjs`, `UI_SHOT_ONLY=usage`):
 [`ui/usage-split-light-1194.png`](ui/usage-split-light-1194.png), [`ui/usage-split-dark-1194.png`](ui/usage-split-dark-1194.png),
 [`ui/usage-split-light-375.png`](ui/usage-split-light-375.png), [`ui/usage-split-age-light-1194.png`](ui/usage-split-age-light-1194.png).
+
+### Hidden usage (Not measured)
+
+System & other → 未能测量 Not measured has children from the same scan (design §4.2): 其他用户 Other users (one box per
+account and `/Users/Shared`), Spotlight 索引 Spotlight index (after it is measured), 本地快照和可清除空间 Local snapshots and
+purgeable space (only when local snapshots exist), and the remainder, 可能是 Spotlight 索引 / 读不到的文件夹 Likely Spotlight
+index / unreadable folders (or 读不到的文件夹和其他系统数据 Unreadable folders and other system data once the index is
+measured). Each box's tooltip adds its explanation (`hiddenWhy_*`). These boxes have no path, so the map never offers
+Offload or Delete on them.
+
+Below the cleanup list, the 隐藏占用 Hidden usage section (`#usage-reconcile`, `GET /api/reconcile`) lists each child with
+its size and explanation and, where safe, one button: 精简快照 Thin snapshots, 测量（需要管理员）Measure (needs admin),
+重建 Spotlight 索引 Rebuild Spotlight index (only above max(20 GB, 5% of used)). A note gives purgeable space and snapshot
+count and the number of unreadable folders (full list in its tooltip). Then 本机 AI 模型 AI models on this Mac: path, size,
+last change, in-use reason, and 卸载到仓库 Offload to repo / 移到废纸篓 Move to Trash (disabled while in use). Every
+button has its own `confirm()` text (the rebuild one says search is degraded for hours) and posts
+`/api/reconcile/action` with `confirm: true`; none is part of a bulk clean.

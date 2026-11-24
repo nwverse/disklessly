@@ -590,6 +590,71 @@ Those skipped backups are not recommendations and not warnings. When any are pre
 
 `--json` prints one object with `ok`, `scan`, `recommendations`, `warnings`, `estimatedFreedBytes`, `leftoverBackups`, and `leftoverBackupBytes`. `disklessly ui` shows the same lists from `GET /api/recommend`.
 
+### 4.2 `reconcile` (hidden usage)
+
+Reconciliation ("对账"): used space minus what the folder scan measured is the gap that cleaners miss. The usage
+scan already shows it as **Not measured** under System & other (`UsageMap.assemble`: `used − measured boxes −
+measured system parts`). `HiddenUsage` breaks that one box into children; it adds no screen and no second full scan
+(the extra facts are read inside the same `UsageScan.runMac`, phase `reconcile`).
+
+Facts (`HiddenUsageFacts`, attached to the Not measured node as `hidden`):
+
+- **Purgeable** = `volumeAvailableCapacityForImportantUsage − volumeAvailableCapacity` of `/` (no root).
+- **Local snapshots**: `tmutil listlocalsnapshots /` (names and count; per-snapshot size is not available).
+- **Other users**: every readable folder in `/Users` except the user's own home, including `/Users/Shared`; at most
+  12, each `du -skx` bounded to 30 s. Unreadable ones are skipped, never sized with admin rights.
+- **Unreadable folders**: `du` stderr `Permission denied` / `Operation not permitted` from the scan, collapsed to the
+  shallowest paths, at most 40. They have no size.
+- **Spotlight index**: `/System/Volumes/Data/.Spotlight-V100` is `root:_mds_stores drwx--x---`, so it is only sized by
+  the explicit Measure action (one `osascript … with administrator privileges` running `du -skx`). The result is
+  cached in `<stateDir>/spotlight-index.json` for 7 days and cleared after a rebuild.
+
+Breakdown (`HiddenUsage.breakdown`, children always sum to the gap; each part is clamped to what is left):
+
+1. `otherusers` (exact, one child per user), 2. `spotlight` when measured (exact), 3. `snapshots` = purgeable,
+   **only when at least one local snapshot exists** (without snapshots purgeable space is mostly caches and iCloud
+   files `du` already counted, so it must not hide the remainder), 4. the remainder: `spotlight-likely` ("likely
+   Spotlight index / unreadable folders") until the index is measured, then `unexplained`.
+
+The Spotlight index is **abnormal** above `max(20 GiB, 5% of used)`; only then is a rebuild offered. A healthy index
+is a few GB; corrupted ones reach 100+ GB.
+
+Actions (`HiddenUsage.perform`; ids are never `UsageCleanup` ids and nodes carry them in `reconcile`, not `action`,
+so `/api/usage/clean`, the cleanup list and every bulk path ignore them; each needs its own confirmation):
+
+| id | Command | Root |
+|---|---|---|
+| `thin-snapshots` (only with snapshots) | `tmutil thinlocalsnapshots / <volume total bytes> 4` | no (tmutil(8) marks only other verbs as root) |
+| `spotlight-measure` | `osascript -e 'do shell script "/usr/bin/du -skx " & quoted form of "/System/Volumes/Data/.Spotlight-V100" with administrator privileges'` | admin prompt |
+| `spotlight-rebuild` (only when abnormal) | same prompt running `/usr/bin/mdutil -E /System/Volumes/Data` | admin prompt |
+| `model-offload:<id>` / `model-trash:<id>` | `offloadFile` / move to Trash, after the in-use check | no |
+
+`mdutil -s -v` reports the same store (same scan base time) for `/` and `/System/Volumes/Data`; the Data volume is the
+one that holds the measured store, so the rebuild targets it (`HiddenUsage.spotlightVolume`). A cancelled admin
+prompt (osascript error -128) is its own outcome; nothing is changed. The prompt needs a GUI session (fails over SSH).
+
+**AI models.** `AIModelLocations` (DisklesslyCore) is the one list used locally and by the remote probe
+(`RemoteScanProbe.combinedScript` generates its `model-*` rows from it; `model-hf` and `model-ollama` rows are
+unchanged): Hugging Face `~/.cache/huggingface`, Ollama `~/.ollama/models`, LM Studio `~/.lmstudio/models` and the
+pre-0.3 `~/.cache/lm-studio`, PyTorch Hub `~/.cache/torch`, Whisper `~/.cache/whisper`. Locally each present folder
+gets its size, last change (newest mtime two levels down) and in-use reasons: an owner process by executable name
+(`ollama`/`Ollama`, `LM Studio`/`lms`), any process whose executable lies inside the folder, or a file under it open
+per `lsof -n -w -F n`. In use → no suggestion, buttons disabled, and `perform` refuses again right before acting.
+Idle ≥ 30 days → suggested for offload. Models are already counted under Personal files / Library; they are listed,
+not part of the gap. They are not `KnownLocations.rebuildableCaches`, so no bulk cleanup reaches them.
+
+**Test isolation.** Every `tmutil`, `mdutil`, `osascript`, `lsof` and other-user `du` goes through an injected
+`SystemCommandRunner` (`UsageScan.run(runner:)`, `UsageScanner(runner:)`, `ManagementUIContext.reconcileRunner`).
+`LiveSystemCommandRunner` additionally refuses, inside any XCTest process, every argv that changes the system
+(`mdutil` other than `-s`/`-v`, `tmutil` other than listing, administrator `osascript`, `sudo`), before launching it.
+
+CLI: `disklessly reconcile [--json]` runs the usage scan and prints the breakdown, purgeable/snapshot facts, unreadable
+folders, model folders and suggested actions. `disklessly reconcile thin-snapshots | measure-spotlight |
+rebuild-spotlight | offload-model ID | delete-model ID` prints what it will do and requires `--yes`. Dashboard:
+`GET /api/reconcile` (from the last scan's tree plus a fresh model listing; reads only) and
+`POST /api/reconcile/action {"action": id, "confirm": true}` (400 `confirm_required` without `confirm`), run on the
+cleanup slot, then rescan.
+
 ---
 
 ## 5. Hook lifecycle

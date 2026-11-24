@@ -15,6 +15,7 @@
 7. [缓存：固定、预取、清除](#缓存固定预取清除)
 8. [把应用放回来 `unpack`](#把应用放回来-unpack)
 9. [卸载大文件和文件夹 `offload`](#卸载大文件和文件夹-offload)
+   - [隐藏占用 `reconcile`](#隐藏占用-reconcile)
 10. [仓库后端：iCloud、SMB/NFS、WebDAV、OpenList](#仓库后端)
 11. [多台 Mac 共用一个仓库](#多台-mac-共用一个仓库)
 12. [菜单栏应用与仪表盘](#菜单栏应用与仪表盘)
@@ -171,6 +172,30 @@ disklessly fetch ~/Downloads/movie.mov.disklessly  # 取回
 - 不会卸载：主文件夹以外的东西、`~/Library`、应用包及其内部的文件、照片/音乐图库、虚拟机磁盘、符号链接，以及 Disklessly 自己的仓库和缓存。
 - 已卸载的文件和应用**一起**计入免费版的数量限制。取回永远免费。
 - 文件还没有加密，详见 [files.md](files.md)。
+
+## 隐藏占用 `reconcile`
+
+清理工具常常漏掉一大块空间：已用空间减去能按文件夹算出来的部分，剩下的就是“对不上账”的隐藏占用。仪表盘的“磁盘占用”里，它是
+“系统及其他 → 未能测量”。Disklessly 会把它拆开：
+
+```sh
+disklessly reconcile                 # 扫描一次磁盘（只读），列出隐藏占用和建议的安全操作
+disklessly reconcile --json
+disklessly reconcile measure-spotlight --yes   # 弹一次管理员密码，测量 Spotlight 索引大小，不改动任何东西
+disklessly reconcile rebuild-spotlight --yes   # 仅当索引异常大时才建议：清空并重建（mdutil -E）
+disklessly reconcile thin-snapshots --yes      # 让 macOS 精简本地时间机器快照
+disklessly reconcile offload-model model-ollama --yes   # 把闲置的模型卸载到仓库（delete-model 则移到废纸篓）
+```
+
+- **其他用户**：这台 Mac 上其他账户的个人文件夹和 `/Users/Shared`，只统计你能读的部分。
+- **本地快照和可清除空间**：只有存在本地快照时才计入。没有快照时，可清除空间多半是已经算过的缓存和 iCloud 文件。
+- **Spotlight 索引**：索引文件夹只有 root 能读，所以先显示为“可能是 Spotlight 索引 / 读不到的文件夹”（剩余部分）。
+  点“测量（需要管理员）”后才知道真实大小。超过 max(20 GB, 已用空间的 5%) 才算异常并建议重建；重建期间（可能数小时）
+  Spotlight、邮件和访达搜索不完整。
+- **读不到的文件夹**：扫描时没有权限的文件夹，列出路径但没有大小。
+- **AI 模型**（Hugging Face、Ollama、LM Studio、PyTorch Hub、Whisper）：显示大小、最后改动时间，以及对应工具是否正在运行。
+  正在使用的模型不会被卸载或删除，请先退出该工具（例如 Ollama）。
+- 每个操作都要单独确认（命令行要加 `--yes`，仪表盘会弹确认框），不会在任何批量清理中运行。
 
 ## 仓库后端
 
@@ -424,6 +449,20 @@ its file back.
 - **Free limit.** Offloaded files count toward the free limit together with apps.
 
 See [files.md](files.md).
+
+### Hidden usage (`reconcile`)
+
+Cleaners often miss a large part of used space: whatever no folder accounts for. On the dashboard it is System & other →
+Not measured. `disklessly reconcile` (or the Hidden usage section under the map) breaks it down: other users' folders
+and `/Users/Shared` (readable parts only), local snapshots and purgeable space (counted only when local snapshots
+exist), the Spotlight index, and folders the scan could not read. The index can only be sized as root, so the remainder
+shows as "likely Spotlight index / unreadable folders" until you run `disklessly reconcile measure-spotlight --yes`
+(one administrator prompt; nothing changes). A rebuild (`rebuild-spotlight`, `mdutil -E`) is suggested only above
+max(20 GB, 5% of used space); search is incomplete for hours while macOS reindexes. `thin-snapshots` asks macOS to thin
+local Time Machine snapshots. AI model folders (Hugging Face, Ollama, LM Studio, PyTorch Hub, Whisper) are listed with
+size, last change and whether their tool is running; idle ones can be offloaded (`offload-model ID`) or moved to the
+Trash (`delete-model ID`), and in-use ones are refused. Every action needs its own `--yes` (or confirmation on the
+dashboard) and never runs as part of a bulk clean.
 
 ### Backends
 

@@ -83,6 +83,11 @@ public final class UsageCleaner {
 
     /// False when a cleanup is already running.
     public func start(_ id: String, volume: String = "/", then: @escaping () -> Void = {}) -> Bool {
+        start(id, volume: volume, work: { try UsageCleanup.run(id) }, then: then)
+    }
+
+    /// Runs `work` (a reconcile action) under the same one-at-a-time slot and status as a cleanup.
+    public func start(_ id: String, volume: String = "/", work: @escaping () throws -> String, then: @escaping () -> Void = {}) -> Bool {
         lock.lock()
         if current["state"] as? String == "running" { lock.unlock(); return false }
         current = ["action": id, "state": "running"]
@@ -91,7 +96,7 @@ public final class UsageCleaner {
             let before = Self.free(volume)
             var result: [String: Any] = ["action": id]
             do {
-                result["output"] = try UsageCleanup.run(id)
+                result["output"] = try work()
                 result["state"] = "done"
             } catch {
                 result["state"] = "failed"

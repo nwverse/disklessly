@@ -654,6 +654,35 @@ public enum ManagementUI {
             var object = context.containers.snapshot()
             object["started"] = started
             return .json(object, status: 202)
+        case ("GET", "/api/reconcile"):
+            // "Not measured" broken down (from the last usage scan) plus the AI model folders. Reads only.
+            var object: [String: Any]
+            if let tree = context.usage.tree, let facts = ReconcileReport.facts(in: tree) {
+                let models = HiddenUsage.models(home: context.home, runner: context.reconcileRunner, processes: context.reconcileProcesses(), sizeTimeout: 20)
+                object = ReconcileReport(facts: facts, models: models).jsonObject(now: context.currentDate())
+            } else {
+                object = ["ok": true, "state": context.usage.tree == nil ? "noscan" : "nogap",
+                          "models": HiddenUsage.models(home: context.home, runner: context.reconcileRunner, processes: context.reconcileProcesses(), sizeTimeout: 20).map { $0.jsonObject() }]
+            }
+            object["cleanup"] = context.cleaner.snapshot()
+            return .json(object)
+        case ("POST", "/api/reconcile/action"):
+            // One action at a time, each confirmed on its own by the page (`confirm: true`). These are never
+            // UsageCleanup ids, so no bulk cleanup can reach them.
+            let body = ((try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any]) ?? [:]
+            let action = body["action"] as? String ?? ""
+            guard HiddenUsage.isAction(action) else { return failure(code: "bad_request", message: "unknown reconcile action", status: 400) }
+            guard body["confirm"] as? Bool == true else { return failure(code: "confirm_required", message: "this action needs its own confirmation", status: 400) }
+            let runner = context.reconcileRunner, processes = context.reconcileProcesses, home = context.home
+            let usage = context.usage
+            let started = context.cleaner.start(action, work: {
+                switch try HiddenUsage.perform(action, engine: engine, runner: runner, processes: processes, home: home) {
+                case .done(let output): return output
+                case .cancelled: throw DisklesslyError.usage("cancelled at the administrator prompt; nothing was changed")
+                }
+            }, then: { _ = usage.start(engine: engine) })
+            guard started else { return failure(code: "busy", message: "a cleanup is already running", status: 409) }
+            return .json(["ok": true, "cleanup": context.cleaner.snapshot()], status: 202)
         case ("POST", "/api/usage/scan"):
             let started = context.usage.start(engine: engine)
             var object = context.usage.snapshot()
@@ -1278,6 +1307,10 @@ public final class ManagementUIContext {
     public let files: LargeFileScanner
     /// Home folder whose `Library/Caches` `/api/caches` looks in. Tests point it at a temp folder.
     public var home: String = NSHomeDirectory()
+    /// Runs `tmutil`, `mdutil`, administrator `osascript` and `lsof` for `/api/reconcile`. Tests inject a fake.
+    public var reconcileRunner: SystemCommandRunner = LiveSystemCommandRunner.shared
+    /// Running processes for the AI-model in-use check. Tests inject a list.
+    public var reconcileProcesses: () -> [(Int32, String)] = HiddenUsage.runningProcesses
     /// Backend reachability with latency; bounded by its timeout and shared across requests.
     public let health: BackendHealthProbe
     /// Replaces the engine-backed actions, for tests.
@@ -1318,6 +1351,9 @@ public final class ManagementUIContext {
     }
 
     private var cloudApps: CloudAppCatalog?
+
+    /// The context's clock (tests inject one).
+    public func currentDate() -> Date { now() }
 
     /// Packed apps from the last successful `/api/status` listing (the cloud side of the usage map).
     public func cloudCatalog() -> CloudAppCatalog? {

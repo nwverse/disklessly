@@ -69,7 +69,7 @@ public enum BundleProcesses {
         return pids(inBundle: bundlePath).isEmpty
     }
 
-    private static func allProcesses() -> [(Int32, String)] {
+    static func allProcesses() -> [(Int32, String)] {
         let needed = proc_listpids(UInt32(PROC_ALL_PIDS), 0, nil, 0)
         guard needed > 0 else { return [] }
         var list = [pid_t](repeating: 0, count: Int(needed) / MemoryLayout<pid_t>.size + 16)

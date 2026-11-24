@@ -809,6 +809,8 @@ img.avatar { background: transparent; }
 .usage-clean-item { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--line); }
 .usage-clean-words { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .usage-clean-words .muted { font-size: 12px; }
+.usage-clean-actions { display: flex; gap: 8px; flex-shrink: 0; }
+.usage-reconcile h4.usage-clean-title { margin-top: 14px; }
 
 .files-head {
   margin-top: 1.5rem;

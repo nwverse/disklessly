@@ -623,7 +623,10 @@ public struct RemoteScanReport: Codable, Equatable, Sendable {
 /// this script collects uname, mounts, df, package caches, logs, AI models, container images/volumes, old kernels/snaps,
 /// and large home folders in ONE SSH round trip.
 public enum RemoteScanProbe {
-    public static let combinedScript: String = #"""
+    /// The model rows come from `AIModelLocations`, shared with the local reconcile scan.
+    public static let combinedScript: String = scriptBeforeModels + "\n" + AIModelLocations.remoteProbeLines + scriptAfterModels
+
+    static let scriptBeforeModels: String = #"""
 export LC_ALL=C
 export LANG=C
 echo "@@SECTION:UNAME"
@@ -681,8 +684,9 @@ probe_dir "cache-typescript" "package-cache" "TypeScript cache" "$HOME/.cache/ty
 probe_dir "cache-brew" "package-cache" "Homebrew cache" "$HOME/Library/Caches/Homebrew" "clean" "false" "Rebuildable Homebrew download cache"
 probe_dir "logs-var" "logs" "System logs (/var/log)" "/var/log" "clean" "false" "Rotated and archived system logs"
 probe_dir "logs-coredump" "logs" "Systemd core dumps" "/var/lib/systemd/coredump" "clean" "false" "Crash core dump files"
-probe_dir "model-hf" "model-cache" "HuggingFace Hub models" "$HOME/.cache/huggingface" "offload" "true" "Large AI model weights; can be offloaded to repo or re-downloaded"
-probe_dir "model-ollama" "model-cache" "Ollama models" "$HOME/.ollama/models" "offload" "true" "Ollama LLM blobs; can be offloaded to repo"
+"""#
+
+    static let scriptAfterModels: String = #"""
 probe_dir "snap-cache" "kernel-snap" "Snapd cache" "/var/lib/snapd/cache" "clean" "false" "Old snap package cache"
 echo "@@SECTION:KERNELS"
 cur_k=$(uname -r 2>/dev/null || true)

@@ -36,6 +36,11 @@ Large files and folders
   offload PATH...                 move a file or folder into the repo; leaves PATH.disklessly in its place
   fetch PLACEHOLDER...            bring back the file or folder of a .disklessly placeholder
 
+Hidden usage (what cleaners miss)
+  reconcile                       explain used space no folder accounts for: snapshots, other users, Spotlight index, AI models
+  reconcile thin-snapshots | measure-spotlight | rebuild-spotlight [--yes]
+  reconcile offload-model ID | delete-model ID [--yes]   each action asks for its own --yes; none runs in a bulk clean
+
 Keep things tidy
   gc [--dry-run] [--include-legacy]
   evict-local | cleanup-backups | doctor [--fix] | reap [--dry-run]
@@ -101,6 +106,7 @@ Large files and folders
   files [--min-size SIZE] [--min-idle-days N] [--limit N]   large items in your home folder not opened lately
   offload PATH...                 move a file or folder into the repo; leaves PATH.disklessly in its place
   fetch PLACEHOLDER...            bring back the file or folder of a .disklessly placeholder
+  reconcile [offload-model ID | delete-model ID [--yes]]   AI model folders with last use and in-use state
 
 Container images (Docker, Podman)
   containers [list]               images, whether a container uses them, volumes, what is in the repo
@@ -514,6 +520,8 @@ do {
         default:
             throw DisklesslyError.usage("Unknown devices command: \(sub)")
         }
+    case "reconcile":
+        try runReconcile(engine: engine, args: args, json: json)
     case "files":
         var options = LargeFileOptions()
         while !args.isEmpty {

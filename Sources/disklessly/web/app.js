@@ -481,7 +481,40 @@ const copy = {
     usage_var: "系统数据 /private/var",
     usage_unmeasured: "未能测量",
     cleanTitle: "可以腾出空间的地方",
-    cleanNote: "“未能测量”包括时间机器本地快照、可清除空间、其他用户的文件，以及没有完全磁盘访问权限时读不到的文件夹。",
+    cleanNote: "“未能测量”包括时间机器本地快照、可清除空间、其他用户的文件、Spotlight 索引，以及读不到的文件夹；下方“隐藏占用”逐项列出。",
+    usage_otherusers: "其他用户",
+    usage_snapshots: "本地快照和可清除空间",
+    usage_spotlight: "Spotlight 索引",
+    "usage_spotlight-likely": "可能是 Spotlight 索引 / 读不到的文件夹",
+    usage_unexplained: "读不到的文件夹和其他系统数据",
+    hiddenWhy_otherusers: "这台 Mac 上其他账户的个人文件夹和 /Users/Shared，只统计可读的部分。",
+    hiddenWhy_snapshots: "估算：存在时间机器本地快照时 macOS 报告的可清除空间。单个快照的大小无法得知。",
+    hiddenWhy_spotlight: (size) => `已用管理员权限测量。超过 ${size} 视为异常（通常是索引损坏）。`,
+    "hiddenWhy_spotlight-likely": "能测量的部分之外剩下的空间。通常是 Spotlight 索引（只有 root 能测量），加上扫描读不到的文件夹。",
+    hiddenWhy_unexplained: "测量 Spotlight 索引之后仍剩下的部分：扫描读不到的文件夹和其他系统数据。",
+    hiddenTitle: "隐藏占用（未能测量）",
+    hiddenSummary: (gap, used) => `已用 ${used}，其中 ${gap} 无法对应到任何文件夹。`,
+    hiddenPurgeable: (size, n) => `可清除空间 ${size}，本地快照 ${n} 个。`,
+    hiddenPurgeableNoSnap: "没有本地快照：可清除空间多半是上面已经算过的缓存和 iCloud 文件。",
+    hiddenUnreadable: (n) => `扫描读不到 ${n} 个文件夹（只有 root 可读，或受隐私保护；完全磁盘访问权限对后者有用）。它们没有大小，算在剩余部分里。`,
+    hiddenSpotlightOk: (size) => `Spotlight 索引大小正常（${size}），无需重建。`,
+    hiddenModels: "本机 AI 模型（已计入个人文件或资源库）",
+    hiddenModelUsed: (when) => `最后改动 ${when}`,
+    hiddenModelInUse: (why) => `正在使用：${why}`,
+    hiddenModelNever: "最后改动时间未知",
+    hiddenNote: "这些操作都要单独确认，不会在批量清理中运行。",
+    reconcileRun_thin_snapshots: "精简快照",
+    reconcileRun_spotlight_measure: "测量（需要管理员）",
+    reconcileRun_spotlight_rebuild: "重建 Spotlight 索引",
+    reconcileRun_model_offload: "卸载到仓库",
+    reconcileRun_model_trash: "移到废纸篓",
+    reconcileConfirm_thin_snapshots: "精简本地时间机器快照？\n\nmacOS 会删除它可以舍弃的本地快照（tmutil thinlocalsnapshots）。你的文件不受影响，但存放在这台 Mac 上的还原点会消失。",
+    reconcileConfirm_spotlight_measure: "测量 Spotlight 索引？\n\nmacOS 会请求一次管理员密码，用 du 读取索引文件夹的大小。不会改动任何东西。",
+    reconcileConfirm_spotlight_rebuild: "重建 Spotlight 索引？\n\n索引会被清空并重建（mdutil -E）。重建期间（可能数小时）Spotlight、邮件和访达的搜索结果不完整。需要管理员密码。",
+    reconcileConfirm_model_offload: (name, path) => `把 ${name} 卸载到仓库？\n\n${path} 会移入仓库，原处留下 .disklessly 占位文件，需要时可取回。`,
+    reconcileConfirm_model_trash: (name, path) => `把 ${name} 移到废纸篓？\n\n${path} 会移到废纸篓；清倒废纸篓后才释放空间。模型可以重新下载。`,
+    reconcileCancelled: "已在管理员提示处取消，没有任何改动。",
+    reconcileFailed: (name) => `${name}：操作失败`,
     cleanRun: "清理",
     cleanRunning: "清理中…",
     cleanDone: (name, freed) => `${name}：腾出 ${freed}`,
@@ -1131,7 +1164,40 @@ const copy = {
     usage_var: "System data /private/var",
     usage_unmeasured: "Not measured",
     cleanTitle: "Where you can free space",
-    cleanNote: "Not measured covers Time Machine local snapshots, purgeable space, other users' files, and folders unreadable without Full Disk Access.",
+    cleanNote: "Not measured covers Time Machine local snapshots, purgeable space, other users' files, the Spotlight index, and folders the scan could not read; Hidden usage below lists them one by one.",
+    usage_otherusers: "Other users",
+    usage_snapshots: "Local snapshots and purgeable space",
+    usage_spotlight: "Spotlight index",
+    "usage_spotlight-likely": "Likely Spotlight index / unreadable folders",
+    usage_unexplained: "Unreadable folders and other system data",
+    hiddenWhy_otherusers: "Home folders of other accounts on this Mac and /Users/Shared, counted where readable.",
+    hiddenWhy_snapshots: "Estimate: the purgeable space macOS reports while local Time Machine snapshots exist. Single snapshot sizes are not available.",
+    hiddenWhy_spotlight: (size) => `Measured with an administrator prompt. Above ${size} counts as abnormal (usually a corrupted index).`,
+    "hiddenWhy_spotlight-likely": "What is left after everything measurable. Usually the Spotlight index (only root can size it) plus folders the scan could not read.",
+    hiddenWhy_unexplained: "Left after the Spotlight index was measured: folders the scan could not read and other system data.",
+    hiddenTitle: "Hidden usage (Not measured)",
+    hiddenSummary: (gap, used) => `${used} used, of which ${gap} matches no folder.`,
+    hiddenPurgeable: (size, n) => `Purgeable space ${size}; ${n} local snapshot(s).`,
+    hiddenPurgeableNoSnap: "No local snapshots: purgeable space is mostly caches and iCloud files already counted above.",
+    hiddenUnreadable: (n) => `The scan could not read ${n} folder(s) (root-only or privacy-protected; Full Disk Access helps for the latter). They have no size and fall into the remainder.`,
+    hiddenSpotlightOk: (size) => `The Spotlight index is a normal size (${size}); no rebuild needed.`,
+    hiddenModels: "AI models on this Mac (already counted under Personal files or Library)",
+    hiddenModelUsed: (when) => `last changed ${when}`,
+    hiddenModelInUse: (why) => `in use: ${why}`,
+    hiddenModelNever: "last change unknown",
+    hiddenNote: "Each action asks for its own confirmation and never runs as part of a bulk clean.",
+    reconcileRun_thin_snapshots: "Thin snapshots",
+    reconcileRun_spotlight_measure: "Measure (needs admin)",
+    reconcileRun_spotlight_rebuild: "Rebuild Spotlight index",
+    reconcileRun_model_offload: "Offload to repo",
+    reconcileRun_model_trash: "Move to Trash",
+    reconcileConfirm_thin_snapshots: "Thin local Time Machine snapshots?\n\nmacOS deletes the local snapshots it can spare (tmutil thinlocalsnapshots). Your files are not touched; restore points stored on this Mac go away.",
+    reconcileConfirm_spotlight_measure: "Measure the Spotlight index?\n\nmacOS asks for an administrator password once and du reads the size of the index folder. Nothing is changed.",
+    reconcileConfirm_spotlight_rebuild: "Rebuild the Spotlight index?\n\nThe index is erased and rebuilt (mdutil -E). Spotlight, Mail and Finder search stay incomplete for hours while macOS reindexes. Needs an administrator password.",
+    reconcileConfirm_model_offload: (name, path) => `Offload ${name} to the repo?\n\n${path} moves into the repo and a .disklessly placeholder stays in its place; bring it back when you need it.`,
+    reconcileConfirm_model_trash: (name, path) => `Move ${name} to the Trash?\n\n${path} goes to the Trash; the space is freed when you empty it. Models can be downloaded again.`,
+    reconcileCancelled: "Cancelled at the administrator prompt; nothing was changed.",
+    reconcileFailed: (name) => `${name}: action failed`,
     cleanRun: "Clean up",
     cleanRunning: "Cleaning…",
     cleanDone: (name, freed) => `${name}: freed ${freed}`,
@@ -3967,6 +4033,7 @@ function renderUsage() {
   }
   renderUsageTray();
   renderCleanups(root);
+  renderReconcile(root);
 }
 
 function renderUsageCrumbs(side, trail) {
@@ -4217,6 +4284,7 @@ function drawUsageSide(side, size, animate) {
     const ageSeconds = cloud ? node.lastUsed || node.modified : node.modified;
     if (ageSeconds) facts.push(`${t(`usageAge${age}`)} (${t("usageAgeChanged", relativeTime(new Date(ageSeconds * 1000).toISOString()))})`);
     if (linkedCount) facts.push(t("usageLinkedCount", linkedCount));
+    if (!cloud && node.key && has("hiddenWhy_" + node.key)) facts.push(hiddenWhy(node));
     if (ghost) facts.push(t("usageSelectedState"));
     if (cloud) {
       if (node._incoming) facts.push(t("usageIncoming"));
@@ -5041,6 +5109,131 @@ function renderCleanups(root) {
     list.append(item);
   }
   box.append(list, el("p", "muted small", t("cleanNote")));
+}
+
+// Hidden usage: the children of "Not measured" with their own actions, plus the AI model folders.
+let reconcileData = null;
+let reconcileFor = null;
+let reconcileLoading = false;
+
+function usageFind(node, key) {
+  if (!node) return null;
+  if (node.key === key) return node;
+  for (const child of node.children || []) {
+    const found = usageFind(child, key);
+    if (found) return found;
+  }
+  return null;
+}
+
+function hiddenWhy(node) {
+  if (node.key !== "spotlight") return t("hiddenWhy_" + node.key);
+  const unmeasured = usageData && usageData.tree ? usageFind(usageData.tree, "unmeasured") : null;
+  const threshold = unmeasured && unmeasured.hidden ? unmeasured.hidden.spotlightThresholdBytes : 0;
+  return t("hiddenWhy_spotlight", bytes(threshold || 0));
+}
+
+async function loadReconcile(stamp) {
+  if (reconcileLoading) return;
+  reconcileLoading = true;
+  try {
+    reconcileData = await api("/api/reconcile");
+    reconcileFor = stamp;
+  } catch (error) {
+    reconcileData = null;
+    reconcileFor = stamp;
+  } finally {
+    reconcileLoading = false;
+  }
+  if (usageData && usageData.tree) renderReconcile(usageData.tree);
+}
+
+function reconcileButton(action, labelKey, confirmText, name) {
+  const cleanup = (usageData && usageData.cleanup) || {};
+  const running = cleanup.state === "running" && cleanup.action === action;
+  const button = el("button", "btn outline", t(running ? "cleanRunning" : labelKey));
+  button.type = "button";
+  button.disabled = cleanup.state === "running";
+  if (running) button.setAttribute("aria-busy", "true");
+  // Every action has its own confirmation; nothing here is part of a bulk clean.
+  button.addEventListener("click", () => { if (window.confirm(confirmText)) runReconcileAction(action, name); });
+  return button;
+}
+
+function renderReconcile(root) {
+  const box = document.querySelector("#usage-reconcile");
+  if (!box) return;
+  const unmeasured = usageFind(root, "unmeasured");
+  const facts = unmeasured && unmeasured.hidden;
+  const stamp = usageData && usageData.scannedAt;
+  if (facts && reconcileFor !== stamp && !reconcileLoading) loadReconcile(stamp);
+  const models = (reconcileData && reconcileData.models) || [];
+  box.hidden = !facts && !models.length;
+  box.replaceChildren();
+  if (box.hidden) return;
+  box.append(el("h3", "usage-clean-title", t("hiddenTitle")));
+  const list = el("ul", "usage-clean-list");
+  if (facts) {
+    box.append(el("p", "muted small", t("hiddenSummary", bytes(facts.gapBytes || 0), bytes(facts.usedBytes || 0))));
+    for (const part of unmeasured.children || []) {
+      const name = usageLabel(part, unmeasured);
+      const item = el("li", "usage-clean-item");
+      const words = el("div", "usage-clean-words");
+      words.append(el("strong", "", `${name} · ${bytes(part.bytes)}`), el("span", "muted", hiddenWhy(part)));
+      if (part.key === "otherusers") words.append(el("span", "muted", (part.children || []).map((c) => `${c.name} ${bytes(c.bytes)}`).join(" · ")));
+      item.append(words);
+      const action = part.reconcile;
+      if (action) item.append(reconcileButton(action, "reconcileRun_" + action.replace(/-/g, "_"), t("reconcileConfirm_" + action.replace(/-/g, "_")), name));
+      else if (part.key === "spotlight") words.append(el("span", "muted", t("hiddenSpotlightOk", bytes(part.bytes))));
+      list.append(item);
+    }
+    const notes = [t("hiddenPurgeable", bytes(facts.purgeableBytes || 0), (facts.snapshots || []).length)];
+    if (!(facts.snapshots || []).length && facts.purgeableBytes > 0) notes.push(t("hiddenPurgeableNoSnap"));
+    if ((facts.unreadable || []).length) notes.push(t("hiddenUnreadable", facts.unreadable.length));
+    box.append(list);
+    const note = el("p", "muted small", notes.join(" "));
+    if ((facts.unreadable || []).length) note.title = facts.unreadable.join("\n");
+    box.append(note);
+  } else {
+    box.append(list);
+  }
+  if (models.length) {
+    box.append(el("h4", "usage-clean-title", t("hiddenModels")));
+    const modelList = el("ul", "usage-clean-list");
+    for (const model of models) {
+      const item = el("li", "usage-clean-item");
+      const words = el("div", "usage-clean-words");
+      const when = model.lastUsed ? t("hiddenModelUsed", relativeTime(new Date(model.lastUsed * 1000).toISOString())) : t("hiddenModelNever");
+      words.append(el("strong", "", `${model.title} · ${bytes(model.bytes)}`), el("span", "muted", `${usageDisplayPath(model.path)} · ${when}`));
+      if (model.inUse) words.append(el("span", "muted", t("hiddenModelInUse", (model.inUseBy || []).join("; "))));
+      item.append(words);
+      const actions = el("div", "usage-clean-actions");
+      for (const kind of ["offload", "trash"]) {
+        const button = reconcileButton(`model-${kind}:${model.id}`, `reconcileRun_model_${kind}`, t(`reconcileConfirm_model_${kind}`, model.title, model.path), model.title);
+        // In use: the server refuses too; the button says why instead of failing later.
+        if (model.inUse) { button.disabled = true; button.title = t("hiddenModelInUse", (model.inUseBy || []).join("; ")); }
+        actions.append(button);
+      }
+      item.append(actions);
+      modelList.append(item);
+    }
+    box.append(modelList);
+  }
+  box.append(el("p", "muted small", t("hiddenNote")));
+}
+
+async function runReconcileAction(action, name) {
+  cleanupName = name;
+  try {
+    const started = await api("/api/reconcile/action", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action, confirm: true }) });
+    usageData = Object.assign({}, usageData, { cleanup: started.cleanup });
+    reconcileFor = null;
+    renderUsage();
+    clearTimeout(usageTimer);
+    usageTimer = setTimeout(loadUsage, 1500);
+  } catch (error) {
+    if (error.code !== "unauthorized") toast({ title: bi("reconcileFailed", name), error: { code: error.code, message: error.message }, tone: "error" });
+  }
 }
 
 let cleanupName = "";
