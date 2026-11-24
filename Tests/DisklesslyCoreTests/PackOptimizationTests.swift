@@ -264,30 +264,29 @@ final class PackOptimizationTests: XCTestCase {
         XCTAssertEqual(decoded.restoreImageFormat, "ULFO")
 
         let store = UIJobStore(retained: 10)
+        // Handshake instead of sleeps: the job holds each phase until the test has seen it.
         let gate = DispatchSemaphore(value: 0)
+        let uploadSeen = DispatchSemaphore(value: 0)
         guard case .started(let job) = store.start(kind: .pack, app: "Demo", work: { progress in
             progress.phase("upload")
             progress.bytes(50, total: 100)
-            Thread.sleep(forTimeInterval: 0.05)
+            _ = uploadSeen.wait(timeout: .now() + 10)
             progress.phase("verify")
-            _ = gate.wait(timeout: .now() + 2)
+            _ = gate.wait(timeout: .now() + 10)
         }) else {
             return XCTFail("expected started")
         }
-        var seenUpload = false
-        for _ in 0..<40 {
-            if let snap = store.job(job.id), snap.phase == "upload", snap.doneBytes == 50 {
-                seenUpload = true
+        func poll(_ until: Date, _ match: (UIJobSnapshotProbe) -> Bool) -> Bool {
+            while Date() < until {
+                if let snap = store.job(job.id), match(UIJobSnapshotProbe(phase: snap.phase, done: snap.doneBytes, total: snap.totalBytes)) { return true }
+                Thread.sleep(forTimeInterval: 0.01)
             }
-            if let snap = store.job(job.id), snap.phase == "verify" {
-                XCTAssertNil(snap.doneBytes)
-                XCTAssertNil(snap.totalBytes)
-                break
-            }
-            Thread.sleep(forTimeInterval: 0.02)
+            return false
         }
+        XCTAssertTrue(poll(Date().addingTimeInterval(10)) { $0.phase == "upload" && $0.done == 50 })
+        uploadSeen.signal()
+        XCTAssertTrue(poll(Date().addingTimeInterval(10)) { $0.phase == "verify" && $0.done == nil && $0.total == nil }, "bytes reset on phase change")
         gate.signal()
-        XCTAssertTrue(seenUpload)
     }
 
     func testTrashRefusalAndUsageAnnotations() throws {
@@ -343,4 +342,10 @@ final class PackOptimizationTests: XCTestCase {
         XCTAssertEqual(context.jobs.wait(jobId, timeout: 5)?.state, .done)
         XCTAssertFalse(FileManager.default.fileExists(atPath: goBuild.path))
     }
+}
+
+private struct UIJobSnapshotProbe {
+    var phase: String?
+    var done: UInt64?
+    var total: UInt64?
 }
