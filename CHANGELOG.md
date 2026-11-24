@@ -6,6 +6,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-11-24
+
 - Hidden usage ("对账"): the dashboard's Not measured box is broken into other users' folders, local snapshots and
   purgeable space (only when snapshots exist), the Spotlight index, and the remainder (likely the Spotlight index or
   folders the scan could not read). New `disklessly reconcile [--json]` prints the same breakdown and safe next steps.

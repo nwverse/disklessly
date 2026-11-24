@@ -138,6 +138,15 @@ remaining space is the app's data and offers to reveal it in Finder or offload i
 and brought back together with that app, and come back automatically when you open
 its stub. Large files and folders are uploaded and downloaded in parallel chunks.
 
+**Hidden usage.** When the disk says it is fuller than everything the scan can see,
+the map's **Not measured** box is split into what explains the gap: other users'
+folders, local Time Machine snapshots and purgeable space, the Spotlight index, and
+AI model caches (Hugging Face, Ollama, LM Studio, PyTorch Hub, Whisper). Each part has
+its own confirmed action, never part of a bulk clean: thin snapshots, measure the
+Spotlight index (one administrator prompt), rebuild it only when it is abnormally
+large, and offload or trash idle models whose tool is not running. From a terminal,
+`disklessly reconcile` (or `--json`) prints the same breakdown and safe next steps.
+
 The menu-bar item has **Open Dashboard**, **Copy Dashboard URL**, the version, and
 **Quit**. The app has no Dock icon; reopening it shows the dashboard window again.
 

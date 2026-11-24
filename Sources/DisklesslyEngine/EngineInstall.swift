@@ -12,7 +12,7 @@ public enum EngineInstall {
     // scripts/gen-version.sh rewrites the lines between the BEGIN/END markers for
     // release builds. Checked-in values describe an unstamped development build.
     // BEGIN GENERATED VERSION
-    public static let version = "0.3.2"
+    public static let version = "0.3.3"
     public static let commit = "unknown"
     public static let buildDate = "unknown"
     // END GENERATED VERSION
