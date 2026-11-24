@@ -18,8 +18,8 @@ export HOME="$(getent passwd "$(id -un)" | cut -d: -f6)"
 cd "$HOME"
 D() { "$BIN" "$@"; }
 
-D version | grep -q '^disklessly ' || fail "version"
-D help | grep -q 'Linux build' || fail "help is not the Linux text"
+D version | grep '^disklessly ' >/dev/null || fail "version"
+D help | grep 'Linux build' >/dev/null || fail "help is not the Linux text"
 D init >/dev/null || fail "init"
 [ -d "$HOME/.local/share/disklessly/repo" ] || fail "repo not under XDG data dir"
 [ ! -e "$HOME/Applications" ] || fail "init created a stub folder"
@@ -28,10 +28,10 @@ D init >/dev/null || fail "init"
 for cmd in pack launch unpack recommend gc doctor "stub refresh --all"; do
   set +e; out="$(D $cmd 2>&1)"; code=$?; set -e
   [ "$code" = 3 ] || fail "$cmd exited $code"
-  echo "$out" | grep -q 'macOS only' || fail "$cmd message: $out"
+  echo "$out" | grep 'macOS only' >/dev/null || fail "$cmd message: $out"
 done
 out="$(D --json pack x.app || true)"
-echo "$out" | grep -q '"EX_UNSUPPORTED"' || fail "pack --json: $out"
+echo "$out" | grep '"EX_UNSUPPORTED"' >/dev/null || fail "pack --json: $out"
 
 # Sessions: an old session is archived, one held open is skipped, then search and restore.
 proj="$HOME/.claude/projects/demo"
@@ -46,7 +46,7 @@ exec 3>&-
 [ ! -e "$proj/old.jsonl" ] || fail "old session was not archived"
 [ -e "$proj/live.jsonl" ] || fail "an open session was archived"
 grep -q 'live.jsonl' apply.json || fail "open session not reported as skipped"
-D sessions search needle-old | grep -q 'old.jsonl' || fail "search"
+D sessions search needle-old | grep 'old.jsonl' >/dev/null || fail "search"
 D sessions restore old.jsonl >/dev/null || fail "restore"
 grep -q needle-old "$proj/old.jsonl" || fail "restored content"
 
@@ -65,9 +65,9 @@ grep -q needle-secret "$proj/enc.jsonl" || fail "encrypted content"
 # Backends and devices.
 mkdir -p "$HOME/share"
 D backend add smb --host nas --share s --mount "$HOME/share" --id nas >/dev/null 2>&1 || true
-D backend list | grep -q '"id"' || echo "smoke: note: backend add smb without a mounted share was refused (expected without a share)"
+D backend list | grep '"id"' >/dev/null || echo "smoke: note: backend add smb without a mounted share was refused (expected without a share)"
 D devices >/dev/null || fail "devices"
-D license | grep -qi 'free\|licen' || fail "license"
+D license | grep -i 'free\|licen' >/dev/null || fail "license"
 
 # Dashboard: status says linux, app routes answer 501, usage scan finishes.
 # Start the binary itself (not through the D function) so $! is the server's pid; backgrounding
@@ -79,13 +79,13 @@ url="$(sed -E 's/.*"url":"([^"]+)".*/\1/' ui.json)"
 base="${url%%/?token=*}"; token="${url##*token=}"
 get() { curl -fsS -H "Authorization: Bearer $token" "$base$1?token=$token" "${@:2}"; }
 code() { curl -s -o /dev/null -w '%{http_code}' "$base$1?token=$token" "${@:2}"; }
-curl -fsS "$url" | grep -q '<html' || fail "index.html"
-get /api/status | grep -q '"platform":"linux"' || fail "status platform"
+curl -fsS "$url" | grep '<html' >/dev/null || fail "index.html"
+get /api/status | grep '"platform":"linux"' >/dev/null || fail "status platform"
 [ "$(code /api/recommend)" = 501 ] || fail "recommend not refused"
 [ "$(code /api/pack -X POST -H 'Content-Type: application/json' -d '{"app":"x"}')" = 501 ] || fail "pack job not refused"
 get /api/usage/scan -X POST -H 'Content-Type: application/json' -d '{}' >/dev/null || fail "usage scan"
-for _ in $(seq 100); do get /api/usage | grep -q '"state":"ready"' && break; sleep 0.2; done
-get /api/usage | grep -q '"appdata"\|"personal"' || fail "usage tree"
+for _ in $(seq 100); do get /api/usage | grep '"state":"ready"' >/dev/null && break; sleep 0.2; done
+get /api/usage | grep '"appdata"\|"personal"' >/dev/null || fail "usage tree"
 kill $UI; wait $UI 2>/dev/null || true
 
 echo "smoke: OK"
