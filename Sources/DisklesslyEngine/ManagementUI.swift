@@ -315,7 +315,7 @@ public enum ManagementUI {
             let kind = UsageNode.Kind(rawValue: request.query["kind"] ?? "") ?? .personal
             let rescan = ["1", "true", "yes"].contains((request.query["rescan"] ?? "").lowercased())
             let scan = context.scanDirectory(path: dir, kind: kind, rescan: rescan) {
-                UsageMap.scanDirectoryDetailed(dir, kind: kind, timeout: 20, refusal: engine.fileOffloadRefusal)
+                UsageMap.scanDirectoryDetailed(dir, kind: kind, timeout: 20, refusal: engine.fileOffloadRefusal, trashRefusal: engine.trashPathRefusal)
             }
             return .json([
                 "ok": true,
@@ -324,6 +324,50 @@ public enum ManagementUI {
                 "cached": scan.cached,
                 "children": scan.children.map { $0.jsonObject() },
             ])
+        }
+        if request.method == "GET", request.path == "/api/links/apps" {
+            #if os(macOS)
+            let roots = ["/Applications", NSHomeDirectory() + "/Applications"]
+            let bundles = engine.linkedBundleStore.load()
+            let fm = FileManager.default
+            var byPath: [String: [String: Any]] = [:]
+            for root in roots where fm.fileExists(atPath: root) {
+                let items = (try? fm.contentsOfDirectory(atPath: root)) ?? []
+                for name in items where name.hasSuffix(".app") {
+                    let candidate = URL(fileURLWithPath: root).appendingPathComponent(name).standardizedFileURL
+                    guard let valid = validPackPath(candidate.path) else { continue }
+                    let plistURL = candidate.appendingPathComponent("Contents/Info.plist")
+                    let info = NSDictionary(contentsOf: plistURL) as? [String: Any]
+                    let stubPath = candidate.appendingPathComponent("Contents/Resources/stub.json").path
+                    let isOffloaded = fm.fileExists(atPath: stubPath)
+                    let displayRaw = (info?["CFBundleDisplayName"] as? String)
+                        ?? (info?["CFBundleName"] as? String)
+                        ?? String(name.dropLast(4))
+                    let display = displayRaw.isEmpty ? String(name.dropLast(4)) : displayRaw
+                    var bundleId = info?["CFBundleIdentifier"] as? String ?? ""
+                    if isOffloaded,
+                       let stubData = fm.contents(atPath: stubPath),
+                       let stubObj = (try? JSONSerialization.jsonObject(with: stubData)) as? [String: Any],
+                       let realId = stubObj["appId"] as? String, !realId.isEmpty {
+                        bundleId = realId
+                    }
+                    let linkedCount = bundles.first(where: { $0.appPath == valid })?.paths.count ?? 0
+                    byPath[valid] = [
+                        "name": display,
+                        "path": valid,
+                        "bundleId": bundleId,
+                        "offloaded": isOffloaded,
+                        "linkedCount": linkedCount,
+                    ]
+                }
+            }
+            let apps = byPath.values.sorted {
+                ($0["name"] as? String ?? "").localizedCaseInsensitiveCompare($1["name"] as? String ?? "") == .orderedAscending
+            }
+            return .json(["ok": true, "apps": apps])
+            #else
+            return .json(["ok": true, "apps": []])
+            #endif
         }
         if request.method == "POST", request.path == "/api/links/add" {
             guard let body = (try? JSONSerialization.jsonObject(with: request.body)) as? [String: Any],
@@ -384,17 +428,22 @@ public enum ManagementUI {
             if kind == .offloadfile || kind == .trashpath {
                 guard let path = packPath(request) else { return failure(code: "bad_request", message: "path is required", status: 400) }
                 let standardized = URL(fileURLWithPath: path).standardizedFileURL.path
-                if let why = engine.fileOffloadRefusal(standardized) {
+                let why = kind == .trashpath ? engine.trashPathRefusal(standardized) : engine.fileOffloadRefusal(standardized)
+                if let why {
                     return failure(code: "bad_request", message: "\(standardized) \(why)", status: 400)
                 }
                 options.path = standardized
             }
             switch context.jobs.start(kind: kind, app: name, work: { progress in
                 try actions.perform(kind, name, options, progress)
-                if kind == .offloadfile || kind == .trashpath, let path = options.path { context.files.forget(path: path) }
+                if kind == .offloadfile || kind == .trashpath, let path = options.path {
+                    context.files.forget(path: path)
+                    context.invalidateDirectoryCache(forPath: path)
+                }
                 if kind == .offloadfile || kind == .trashpath { _ = context.bigItems.start(engine: engine) }
-                // Any job that moves or deletes files changes the disk map, so measure it again.
-                if kind != .pin, kind != .unpin { _ = context.usage.start(engine: engine) }
+                // Any job that moves or deletes apps/containers changes the whole usage tree;
+                // file/folder offload & trash refresh in-place on the frontend via /api/usage/dir.
+                if kind != .pin, kind != .unpin, kind != .trashpath, kind != .offloadfile { _ = context.usage.start(engine: engine) }
             }) {
             case .started(let job):
                 var object = job.jsonObject()
@@ -917,7 +966,15 @@ public final class UIJobStore {
         let id = job.id
         queue.async { [self] in
             let progress = UIJobProgress(
-                { [weak self] phase in self?.mutate(id) { $0.phase = phase } },
+                { [weak self] phase in
+                    self?.mutate(id) {
+                        if $0.phase != phase {
+                            $0.doneBytes = nil
+                            $0.totalBytes = nil
+                        }
+                        $0.phase = phase
+                    }
+                },
                 bytes: { [weak self] done, total in
                     self?.mutate(id) {
                         $0.doneBytes = done
@@ -1013,19 +1070,19 @@ public struct ManagementActions {
                     try BundleProcesses.stop(bundlePath: path)
                     progress.phase("pack")
                     do {
-                        _ = try engine.pack(path)
+                        _ = try engine.pack(path, progress: { progress.phase($0) }, onBytes: { done, total in progress.bytes(done, total: total) })
                     } catch DisklesslyError.busy {
                         // launchd may have started a helper again before the pack looked; once more.
                         progress.phase("stop")
                         try BundleProcesses.stop(bundlePath: path)
                         progress.phase("pack")
-                        _ = try engine.pack(path)
+                        _ = try engine.pack(path, progress: { progress.phase($0) }, onBytes: { done, total in progress.bytes(done, total: total) })
                     }
                     MirrorAutoSync.kick(engine)
                     return
                 }
                 progress.phase("pack")
-                _ = try engine.pack(path)
+                _ = try engine.pack(path, progress: { progress.phase($0) }, onBytes: { done, total in progress.bytes(done, total: total) })
                 MirrorAutoSync.kick(engine)
                 return
             }
@@ -1231,6 +1288,23 @@ public final class ManagementUIContext {
 
     public func configChanged(_ config: RuntimeConfig) {
         lock.lock(); savedConfig = config; lock.unlock()
+    }
+
+    /// Invalidates cached directory drill-down scans affected by a mutation at `changedPath`.
+    public func invalidateDirectoryCache(forPath changedPath: String) {
+        let norm = URL(fileURLWithPath: changedPath).standardizedFileURL.path
+        let normPrefix = norm.hasSuffix("/") ? norm : norm + "/"
+        dirLock.lock()
+        dirCache = dirCache.filter { key, _ in
+            guard let pipe = key.lastIndex(of: "|") else { return true }
+            let cachedDir = URL(fileURLWithPath: String(key[..<pipe])).standardizedFileURL.path
+            let cachedPrefix = cachedDir.hasSuffix("/") ? cachedDir : cachedDir + "/"
+            if cachedDir == norm || norm.hasPrefix(cachedPrefix) || cachedDir.hasPrefix(normPrefix) {
+                return false
+            }
+            return true
+        }
+        dirLock.unlock()
     }
 
     /// Cached directory drill-down scan, deduplicating concurrent requests and invalidating when a new usage scan completes.

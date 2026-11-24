@@ -201,11 +201,11 @@ extension DisklesslyEngine {
     }
     #endif
 
-    public func publish(_ request: PublishRequest, imageFile: URL?, now: Date = Date()) throws -> PublishResult {
+    public func publish(_ request: PublishRequest, imageFile: URL?, now: Date = Date(), prefetchedManifests: [ImageManifest]? = nil, progress: (String) -> Void = { _ in }, onBytes: ((UInt64, UInt64) -> Void)? = nil) throws -> PublishResult {
         let backend = try repo
         // Lists must succeed before any put. A failed manifest listing writes nothing.
         try ensureRepoCollections(backend)
-        let manifests = try readManifests(backend)
+        let manifests = try prefetchedManifests ?? readManifests(backend)
         let decision = PublishPlanner.decide(identity: request.identity, manifests: manifests, evidence: { path in
             self.imageEvidence(backend, path, expectedSize: manifests.first { $0.image.file == path }?.image.size)
         }, inTrash: { id in
@@ -221,7 +221,7 @@ extension DisklesslyEngine {
         case .reuse(let manifest, let disposition):
             try requireImageKey(manifest)
             try register(manifest, backend: backend, now: now, installPath: request.originalPath)
-            try rewriteCatalog(backend, now: now)
+            try rewriteCatalog(backend, now: now, manifests: manifests)
             let kept: String?
             if case .keep(let reason) = disposition { kept = reason } else { kept = nil }
             return PublishResult(manifest: manifest, reused: true, uploaded: false, originalKept: kept)
@@ -242,6 +242,7 @@ extension DisklesslyEngine {
                 guard let current = try ImageKeyStore.current(secrets: secrets) else {
                     throw DisklesslyError.usage("image encryption is on but this Mac has no image key; run disklessly images key init")
                 }
+                progress("encrypt")
                 imageFile = plainFile.appendingPathExtension("dkli")
                 staged = imageFile
                 let sealed = try ImageCrypto.seal(plainFile, to: imageFile, key: current.key)
@@ -258,7 +259,8 @@ extension DisklesslyEngine {
             try manifest.validate()
             // Exclusive publish: a Mac that loses the race for the image path never
             // writes a manifest, so the stub it would install is never created.
-            let imageResult = try WriteOnce.publishFile(backend: backend, path: manifest.image.file, file: imageFile, sha256: sha)
+            progress("upload")
+            let imageResult = try WriteOnce.publishFile(backend: backend, path: manifest.image.file, file: imageFile, sha256: sha, onBytes: onBytes)
             if case .conflict(let message) = imageResult {
                 throw DisklesslyError.integrity("\(message). The original app was not changed; retry the pack to reuse the published image.")
             }
@@ -277,9 +279,10 @@ extension DisklesslyEngine {
                 }
                 manifest = existing
             }
+            progress("verify")
             try WriteOnce.confirmCanonical(backend: backend, imageId: manifest.imageId, imageSha: sha)
             try register(manifest, backend: backend, now: now, installPath: request.originalPath)
-            try rewriteCatalog(backend, now: now)
+            try rewriteCatalog(backend, now: now, manifests: Self.mergingManifest(manifests, with: manifest))
             return PublishResult(manifest: manifest, reused: imageResult == .reused, uploaded: imageResult == .written)
         }
     }
@@ -585,28 +588,73 @@ extension DisklesslyEngine {
     }
 
     private func ensureRepoCollections(_ backend: any StorageBackend) throws {
-        for name in ["images", "manifests", "catalog", "devices", "trash"] {
-            try? backend.ensureCollection(name)
+        let names = ["images", "manifests", "catalog", "devices", "trash"]
+        if backend.localRoot() != nil {
+            for name in names { try? backend.ensureCollection(name) }
+            return
         }
+        let group = DispatchGroup()
+        for name in names {
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { group.leave() }
+                try? backend.ensureCollection(name)
+            }
+        }
+        group.wait()
     }
 
     func readManifests(_ backend: any StorageBackend) throws -> [ImageManifest] {
-        let names = try listRepo(backend, "manifests")
-        var manifests: [ImageManifest] = []
-        for name in names where name.hasSuffix(".json") && !RepoFileNames.isConflictCopy(name) && !RepoFileNames.isPlaceholder(name) {
+        let names = try listRepo(backend, "manifests").filter {
+            $0.hasSuffix(".json") && !RepoFileNames.isConflictCopy($0) && !RepoFileNames.isPlaceholder($0)
+        }
+        if names.isEmpty { return [] }
+        if names.count == 1, let name = names.first {
             let data: Data
             do {
                 data = try backend.get("manifests/\(name)", range: nil)
             } catch {
                 throw DisklesslyError.backend("cannot read manifests/\(name) in the repo; nothing was changed: \(error)")
             }
-            if let manifest = try? ImageManifest.decode(data) {
-                manifests.append(manifest)
-            } else {
-                FileHandle.standardError.write(Data("disklessly: warning: skipping undecodable manifest \(name)\n".utf8))
+            if let manifest = try? ImageManifest.decode(data) { return [manifest] }
+            FileHandle.standardError.write(Data("disklessly: warning: skipping undecodable manifest \(name)\n".utf8))
+            return []
+        }
+        let lock = NSLock()
+        var decoded = Array<ImageManifest?>(repeating: nil, count: names.count)
+        var firstError: Error?
+        let sem = DispatchSemaphore(value: 8)
+        let group = DispatchGroup()
+        for (index, name) in names.enumerated() {
+            lock.lock(); let aborted = firstError != nil; lock.unlock()
+            if aborted { break }
+            sem.wait()
+            lock.lock(); let abortedAfterWait = firstError != nil; lock.unlock()
+            if abortedAfterWait { sem.signal(); break }
+            group.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { sem.signal(); group.leave() }
+                let data: Data
+                do {
+                    data = try backend.get("manifests/\(name)", range: nil)
+                } catch {
+                    lock.lock()
+                    if firstError == nil {
+                        firstError = DisklesslyError.backend("cannot read manifests/\(name) in the repo; nothing was changed: \(error)")
+                    }
+                    lock.unlock()
+                    return
+                }
+                if let manifest = try? ImageManifest.decode(data) {
+                    lock.lock(); decoded[index] = manifest; lock.unlock()
+                } else {
+                    FileHandle.standardError.write(Data("disklessly: warning: skipping undecodable manifest \(name)\n".utf8))
+                }
             }
         }
-        return manifests
+        group.wait()
+        if let firstError { throw firstError }
+        return decoded.compactMap { $0 }
     }
 
     private func loadDeviceFacts(_ backend: any StorageBackend) throws -> [DeviceFileFact] {
@@ -637,10 +685,17 @@ extension DisklesslyEngine {
         return facts
     }
 
-    func rewriteCatalog(_ backend: any StorageBackend, now: Date) throws {
-        let manifests = try readManifests(backend)
+    static func mergingManifest(_ manifests: [ImageManifest], with published: ImageManifest) -> [ImageManifest] {
+        var byId: [String: ImageManifest] = [:]
+        for item in manifests { byId[item.imageId] = item }
+        byId[published.imageId] = published
+        return byId.values.sorted { $0.imageId < $1.imageId }
+    }
+
+    func rewriteCatalog(_ backend: any StorageBackend, now: Date, manifests: [ImageManifest]? = nil) throws {
+        let allManifests = try manifests ?? readManifests(backend)
         let deviceId = LocalDeviceStore.load(stateDir: stateDirectory)?.deviceId ?? ""
-        let data = try CatalogIndex.encode(manifests: manifests, deviceId: deviceId, now: now)
+        let data = try CatalogIndex.encode(manifests: allManifests, deviceId: deviceId, now: now)
         try backend.put("catalog/manifest.json", data: data)
     }
 

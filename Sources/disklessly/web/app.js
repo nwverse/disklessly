@@ -168,17 +168,30 @@ const copy = {
     phasehash: "正在校验",
     phaseextract: "正在解包",
     phaseplace: "正在放回",
+    phasestub: "安装替身",
     "actiondata/enable": "数据放云端",
     "actiondata/disable": "数据留本机",
     dataEnable: "数据也放云端",
     dataOffloadNow: "现在放到云端",
     usageMenuRefused: (why) => `不能在这里操作：${why}`,
     packAppMenu: "上云（打包为替身）",
+    cacheDeleteHint: "缓存目录可直接删除释放空间，无需上传云端",
+    offloadedAppUsageNote: (bundleSize, extraSize) => `应用本体已在云端（替身 ${bundleSize}），其余 ${extraSize} 来自应用数据或缓存`,
+    offloadedAppOnlyStubNote: "应用本体已在云端（当前仅剩替身入口）",
+    revealAppData: "在访达中显示应用数据",
     picturesHint: "系统「图片」目录包含照片图库（Photos Library），不建议整目录直接上云。可在「照片 → 设置 → iCloud」开启「优化 Mac 储存空间」，或打开目录单独清理其它子文件夹。",
     manageContainers: "管理容器镜像",
     containerImagesHead: (n) => `包含 ${n} 个容器镜像：`,
     containerImagesNone: "当前没有可列出的本地镜像（或引擎未运行）。",
     linkToApp: "关联到应用组合…",
+    linkPickerTitle: (name) => `将「${name}」关联到应用`,
+    linkPickerBody: "点击下方列表中的应用，之后可一起上云或还原。",
+    linkPickerSearch: "搜索应用名称…",
+    linkPickerLoading: "正在读取已安装应用…",
+    linkPickerEmpty: "未在 /Applications 或 ~/Applications 找到应用",
+    linkPickerNoMatch: "没有匹配的应用",
+    linkPickerLinkedCount: (n) => `已关联 ${n} 项`,
+    linkPickerOffloaded: "已在云端",
     linkPrompt: (name) => `将「${name}」关联到哪个应用？（输入应用名称或 .app 路径，例如 vphone 或 /Applications/vphone.app）`,
     linkGroupBadge: (app, count) => `联动组合：${app} + ${count} 个关联路径`,
     linkOffloadGroup: "组合一起上云",
@@ -756,17 +769,30 @@ const copy = {
     phasehash: "Checking",
     phaseextract: "Unpacking",
     phaseplace: "Putting back",
+    phasestub: "Installing launcher",
     "actiondata/enable": "Move data to the repo",
     "actiondata/disable": "Keep data here",
     dataEnable: "Move its data too",
     dataOffloadNow: "Offload now",
     usageMenuRefused: (why) => `Not available here: ${why}`,
     packAppMenu: "Offload app to cloud",
+    cacheDeleteHint: "Cache folder — delete directly to free space; no need to upload",
+    offloadedAppUsageNote: (bundleSize, extraSize) => `App bundle is already in the cloud (${bundleSize} launcher); the remaining ${extraSize} is app data or cache`,
+    offloadedAppOnlyStubNote: "App is already in the cloud (launcher only)",
+    revealAppData: "Show app data in Finder",
     picturesHint: "Your Pictures folder holds Photos Library. Instead of offloading the whole folder, enable Photos → Settings → iCloud → Optimize Mac Storage, or open it in Finder to offload other subfolders.",
     manageContainers: "Manage container images",
     containerImagesHead: (n) => `${n} container image${n === 1 ? "" : "s"} inside:`,
     containerImagesNone: "No local images listed (or the engine is stopped).",
     linkToApp: "Link to an app group…",
+    linkPickerTitle: (name) => `Link "${name}" to an app`,
+    linkPickerBody: "Click an app below to offload and restore them together.",
+    linkPickerSearch: "Search installed apps…",
+    linkPickerLoading: "Loading installed apps…",
+    linkPickerEmpty: "No apps found in /Applications or ~/Applications",
+    linkPickerNoMatch: "No matching apps",
+    linkPickerLinkedCount: (n) => `${n} linked`,
+    linkPickerOffloaded: "In cloud",
     linkPrompt: (name) => `Which app should "${name}" be linked with? (Enter app name or .app path, e.g. vphone or /Applications/vphone.app)`,
     linkGroupBadge: (app, count) => `Linked group: ${app} + ${count} path${count === 1 ? "" : "s"}`,
     linkOffloadGroup: "Offload linked group",
@@ -2280,6 +2306,7 @@ async function startJob(kind, app) {
 }
 
 async function pollJob(name, kind, jobId) {
+  let succeeded = false;
   while (!expired) {
     await new Promise((resolve) => setTimeout(resolve, JOB_POLL_MS));
     let job;
@@ -2299,14 +2326,22 @@ async function pollJob(name, kind, jobId) {
       continue;
     }
     pending.delete(name);
-    if (job.state === "done") toast({ title: jobTitle("jobDone", kind, name), tone: "ok" });
-    else toast({ title: jobTitle("jobFailed", kind, name), error: { code: job.error && job.error.code, message: job.error && job.error.message }, tone: "error" });
+    if (job.state === "done") {
+      succeeded = true;
+      toast({ title: jobTitle("jobDone", kind, name), tone: "ok" });
+    } else {
+      toast({ title: jobTitle("jobFailed", kind, name), error: { code: job.error && job.error.code, message: job.error && job.error.message }, tone: "error" });
+    }
     break;
   }
   pending.delete(name);
   await load();
   if (kind === "pack") loadRecommendations(true);
-  if (kind === "offloadfile" || kind === "trashpath") { loadFiles(); loadBig(); startUsageScan(); }
+  if (kind === "offloadfile" || kind === "trashpath") {
+    loadFiles();
+    loadBig();
+    if (succeeded) await refreshUsageAfterMutation(name);
+  }
 }
 
 function adoptServerJobs(status) {
@@ -3304,6 +3339,8 @@ let usageTimer = null;
 let usageAutoStarted = false;
 const usageDirCache = new Map(); // path -> { children, partial }
 const usageDrilledEmpty = new Set(); // paths confirmed empty by a complete scan
+const usageLocalPatches = new Map(); // dirPath -> { children, partial, deletedBytes, wasDirScanned, seq }
+let usagePatchSeq = 0;
 let usageDirCacheStamp = null; // usageData.scannedAt for cache invalidation
 let usageDrillingPath = null;
 let usageDrillingLabel = "";
@@ -3342,17 +3379,135 @@ function usageNodeAt(path) {
 
 /// Re-attaches previously fetched directory children after /api/usage replaces the top-level tree.
 function hydrateUsageTree(node) {
-  if (!node) return;
-  if (node.path) {
-    if ((!node.children || !node.children.length) && usageDirCache.has(node.path)) {
-      const entry = usageDirCache.get(node.path);
-      if (entry && Array.isArray(entry.children) && entry.children.length) {
-        node.children = entry.children;
+  function attach(cur) {
+    if (!cur) return;
+    if (cur.path) {
+      if ((!cur.children || !cur.children.length) && usageDirCache.has(cur.path)) {
+        const entry = usageDirCache.get(cur.path);
+        if (entry && Array.isArray(entry.children) && entry.children.length) {
+          cur.children = entry.children;
+          cur._dirScanned = true;
+        }
       }
+      if (usageDrilledEmpty.has(cur.path)) cur._drilledEmpty = true;
     }
-    if (usageDrilledEmpty.has(node.path)) node._drilledEmpty = true;
+    for (const child of cur.children || []) attach(child);
   }
-  for (const child of node.children || []) hydrateUsageTree(child);
+  attach(node);
+  applyUsageLocalPatches(node);
+}
+
+function updateUsageAncestors(tree, pathIndexes, delta) {
+  if (!delta) return;
+  let cur = tree;
+  for (let i = 0; i < pathIndexes.length; i++) {
+    cur.bytes = Math.max(0, (cur.bytes || 0) + delta);
+    cur = cur.children && cur.children[pathIndexes[i]];
+    if (!cur) break;
+  }
+  const freeNode = (tree.children || []).find((c) => c.key === "free");
+  if (freeNode) {
+    freeNode.bytes = Math.max(0, (freeNode.bytes || 0) - delta);
+    tree.bytes = Math.max(0, (tree.bytes || 0) - delta);
+  }
+}
+
+function applyUsageLocalPatches(tree) {
+  if (!tree || !usageLocalPatches.size) return;
+  for (const [dirPath, patch] of usageLocalPatches.entries()) {
+    const pathIdx = findUsagePathByFSPath(tree, dirPath);
+    if (!pathIdx) continue;
+    let target = tree;
+    for (const idx of pathIdx) {
+      target = target && target.children && target.children[idx];
+    }
+    if (!target || target._localPatchSeq === patch.seq) continue;
+    const oldBytes = target.bytes || 0;
+    const childrenSum = (patch.children || []).reduce((s, c) => s + (c.bytes || 0), 0);
+    let delta = childrenSum - oldBytes;
+    if (!patch.wasDirScanned && delta > 0 && typeof patch.deletedBytes === "number") {
+      delta = -patch.deletedBytes;
+    }
+    const newBytes = Math.max(0, oldBytes + delta);
+    delta = newBytes - oldBytes;
+    target.children = patch.children;
+    target._dirScanned = true;
+    target._localPatchSeq = patch.seq;
+    target.bytes = newBytes;
+    updateUsageAncestors(tree, pathIdx, delta);
+  }
+}
+
+function findUsageNodeByFSPath(node, targetPath) {
+  if (!node) return null;
+  if (node.path === targetPath) return node;
+  for (const child of node.children || []) {
+    const found = findUsageNodeByFSPath(child, targetPath);
+    if (found) return found;
+  }
+  return null;
+}
+
+/// Refreshes the affected directory in place after trash/offload so the treemap keeps the user's current view.
+async function refreshUsageAfterMutation(changedPath) {
+  if (!usageData || !usageData.tree || !changedPath) return;
+  const trail = usageNodeAt(usageFocus);
+  const focusNode = trail[trail.length - 1] && trail[trail.length - 1].node;
+  const normalized = changedPath.replace(/\/+$/, "");
+  const slash = normalized.lastIndexOf("/");
+  const parentDir = slash > 0 ? normalized.slice(0, slash) : (slash === 0 ? "/" : "");
+  let keepPath = (focusNode && focusNode.path) || null;
+  if (keepPath === normalized) keepPath = parentDir || null;
+
+  for (const key of Array.from(usageDirCache.keys())) {
+    if (key === normalized || key.startsWith(normalized + "/") || normalized.startsWith(key + "/")) {
+      usageDirCache.delete(key);
+    }
+  }
+  for (const key of Array.from(usageDrilledEmpty)) {
+    if (key === normalized || key.startsWith(normalized + "/") || normalized.startsWith(key + "/")) {
+      usageDrilledEmpty.delete(key);
+    }
+  }
+  for (const key of Array.from(usageLocalPatches.keys())) {
+    if (key === normalized || key.startsWith(normalized + "/")) {
+      usageLocalPatches.delete(key);
+    }
+  }
+
+  const knownDeleted = findUsageNodeByFSPath(usageData.tree, normalized);
+  const deletedBytes = knownDeleted && typeof knownDeleted.bytes === "number" ? knownDeleted.bytes : null;
+  const targetDir = (parentDir && findUsageNodeByFSPath(usageData.tree, parentDir)) ? parentDir : keepPath;
+  if (targetDir) {
+    const targetNode = findUsageNodeByFSPath(usageData.tree, targetDir);
+    const targetKind = (targetNode && targetNode.kind) || (focusNode && focusNode.kind) || "personal";
+    try {
+      const res = await api(`/api/usage/dir?path=${encodeURIComponent(targetDir)}&kind=${encodeURIComponent(targetKind)}&rescan=1`);
+      const nextChildren = Array.isArray(res && res.children) ? res.children : [];
+      if (nextChildren.length) {
+        usageDirCache.set(targetDir, { children: nextChildren, partial: Boolean(res.partial) });
+        usageDrilledEmpty.delete(targetDir);
+      } else if (!res || !res.partial) {
+        usageDrilledEmpty.add(targetDir);
+      }
+      const wasDirScanned = Boolean(targetNode && (targetNode._dirScanned || targetNode.path === (focusNode && focusNode.path)));
+      usagePatchSeq += 1;
+      usageLocalPatches.set(targetDir, {
+        children: nextChildren,
+        partial: Boolean(res && res.partial),
+        deletedBytes,
+        wasDirScanned,
+        seq: usagePatchSeq,
+      });
+      hydrateUsageTree(usageData.tree);
+    } catch {
+      // Keep the current treemap focus even if the local rescan fails.
+    }
+  }
+  if (keepPath) {
+    usageFocus = findUsagePathByFSPath(usageData.tree, keepPath) || (parentDir && findUsagePathByFSPath(usageData.tree, parentDir)) || [];
+  }
+  renderUsage();
 }
 
 /// Finds the live index path in `node` whose filesystem path equals `targetPath`.
@@ -3715,24 +3870,48 @@ function usageContextMenu(event, node, label) {
   const isPictures = Boolean(node.path && (/\/Pictures$/i.test(node.path) || /\.photoslibrary$/i.test(node.path)));
   const isContainerDir = Boolean(node.name && /com\.apple\.container|docker|orbstack|colima/i.test(node.name));
   const busy = Boolean(pending.get(node.path) || pending.get(label));
+  const matchedApp = isApp
+    ? ((lastStatus && lastStatus.apps) || []).find((a) => a.installPath === node.path || (a.name && a.name.toLowerCase() === label.toLowerCase()))
+    : null;
+  const isOffloadedStub = Boolean(isApp && (node.offloaded || (matchedApp && !fullAppHere(matchedApp) && isOnThisMac(matchedApp))));
+  const appDataChild = isApp ? (node.children || []).find((c) => c.key === "data") : null;
+  const appBundleChild = isApp ? (node.children || []).find((c) => c.key === "bundle") : null;
+  const canOffload = !node.refusal;
+  const canTrash = typeof node.canTrash === "boolean" ? node.canTrash : !node.refusal;
   const entries = isApp
-    ? [
-        ["revealInFinder", () => revealInFinder(node.path), true],
-        ["packAppMenu", () => confirmAction("pack", { name: label, path: node.path, cachedBytes: node.bytes }), false],
-      ]
+    ? (isOffloadedStub
+      ? [
+          ["revealInFinder", () => revealInFinder(node.path), true],
+          ...(appDataChild && appDataChild.path ? [["revealAppData", () => revealInFinder(appDataChild.path), true]] : []),
+          ...(matchedApp && (!matchedApp.data || !matchedApp.data.enabled || matchedApp.data.state === "local")
+            ? [[matchedApp.data && matchedApp.data.enabled ? "dataOffloadNow" : "dataEnable", () => confirmAction("data/enable", matchedApp), true]]
+            : []),
+        ]
+      : [
+          ["revealInFinder", () => revealInFinder(node.path), true],
+          ["packAppMenu", () => confirmAction("pack", { name: label, path: node.path, cachedBytes: node.bytes }), false],
+        ])
     : [
         ["revealInFinder", () => revealInFinder(node.path), true],
-        ["bigUpload", () => confirmAction("offloadfile", { name: node.path, label, path: node.path, cachedBytes: node.bytes }), false],
-        ["bigDelete", () => confirmAction("trashpath", { name: node.path, label, path: node.path, cachedBytes: node.bytes }), false],
+        ["bigUpload", () => confirmAction("offloadfile", { name: node.path, label, path: node.path, cachedBytes: node.bytes }), false, !canOffload || busy],
+        ["bigDelete", () => confirmAction("trashpath", { name: node.path, label, path: node.path, cachedBytes: node.bytes }), false, !canTrash || busy],
       ];
-  for (const [key, run, always] of entries) {
+  for (const [key, run, always, forcedDisabled] of entries) {
     const item = el("button", "menuitem", t(key));
     item.type = "button";
     item.setAttribute("role", "menuitem");
     // Showing it in Finder changes nothing, so the safety rules do not apply to it.
-    item.disabled = !always && ((!isApp && Boolean(node.refusal)) || busy);
+    item.disabled = typeof forcedDisabled === "boolean" ? forcedDisabled : (!always && ((!isApp && Boolean(node.refusal)) || busy));
     item.addEventListener("click", () => { closeUsageMenu(); run(); });
     menu.append(item);
+  }
+  if (isOffloadedStub) {
+    const bundleBytes = (appBundleChild && appBundleChild.bytes) || node.bytes || 0;
+    const extraBytes = Math.max(0, (node.bytes || 0) - ((appBundleChild && appBundleChild.bytes) || 0));
+    const noteText = extraBytes > 1024 * 1024
+      ? t("offloadedAppUsageNote", bytes(bundleBytes), bytes(extraBytes))
+      : t("offloadedAppOnlyStubNote");
+    menu.append(el("div", "usage-menu-note small muted", noteText));
   }
   if (isContainerDir) {
     const engineKey = /com\.apple\.container/i.test(node.name) ? "apple" : /orbstack/i.test(node.name) ? "orbstack" : /colima/i.test(node.name) ? "colima" : "docker";
@@ -3761,6 +3940,8 @@ function usageContextMenu(event, node, label) {
   }
   if (isPictures) {
     menu.append(el("div", "usage-menu-note small muted", t("picturesHint")));
+  } else if (!isApp && !canOffload && canTrash) {
+    menu.append(el("div", "usage-menu-note small muted", t("cacheDeleteHint")));
   } else if (!isApp && node.refusal) {
     menu.append(el("div", "usage-menu-note small muted", t("usageMenuRefused", node.refusal)));
   }
@@ -3795,24 +3976,13 @@ function usageContextMenu(event, node, label) {
       });
       menu.append(unlinkBtn);
     }
-  } else if (!isApp && !node.refusal) {
+  } else if (!isApp && canOffload) {
     const linkBtn = el("button", "menuitem", t("linkToApp"));
     linkBtn.type = "button";
     linkBtn.setAttribute("role", "menuitem");
-    linkBtn.addEventListener("click", async () => {
+    linkBtn.addEventListener("click", () => {
       closeUsageMenu();
-      const raw = window.prompt(t("linkPrompt", label), label.replace(/^\.+/, ""));
-      if (!raw || !raw.trim()) return;
-      const trimmed = raw.trim();
-      const appPath = trimmed.includes("/") ? trimmed : `/Applications/${trimmed.endsWith(".app") ? trimmed : trimmed + ".app"}`;
-      const appName = appPath.split("/").pop().replace(/\.app$/i, "");
-      try {
-        const res = await api("/api/links/add", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ appPath, appName, path: node.path }) });
-        if (lastStatus && res.linkedBundles) lastStatus.linkedBundles = res.linkedBundles;
-        toast({ title: biPair(t("linkGroupBadge", res.bundle.name, (res.bundle.paths || []).length)), tone: "ok" });
-      } catch (err) {
-        toast({ title: biPair(err.message || "Link failed"), tone: "error" });
-      }
+      openLinkAppPicker(node, label);
     });
     menu.append(linkBtn);
   }
@@ -3831,6 +4001,100 @@ function usageContextMenu(event, node, label) {
   if (first) first.focus();
   menu.addEventListener("keydown", (e) => { if (e.key === "Escape") closeUsageMenu(); });
   setTimeout(() => document.addEventListener("click", closeUsageMenu, { once: true }), 0);
+}
+
+async function openLinkAppPicker(node, label) {
+  const dialog = document.querySelector("#link-picker");
+  const title = document.querySelector("#link-picker-title");
+  const body = document.querySelector("#link-picker-body");
+  const search = document.querySelector("#link-picker-search");
+  const list = document.querySelector("#link-picker-list");
+  const cancel = document.querySelector("#link-picker-cancel");
+  if (!dialog || !list) return;
+  title.textContent = t("linkPickerTitle", label);
+  body.textContent = t("linkPickerBody");
+  search.placeholder = t("linkPickerSearch");
+  search.value = "";
+  list.replaceChildren(el("div", "link-picker-empty", t("linkPickerLoading")));
+  const opener = document.activeElement;
+  let allApps = [];
+  let closed = false;
+  const finish = () => {
+    closed = true;
+    search.oninput = null;
+    cancel.onclick = null;
+    dialog.onclose = null;
+    if (dialog.open) dialog.close();
+    if (opener && opener.isConnected) opener.focus();
+  };
+  cancel.onclick = finish;
+  dialog.onclose = () => {
+    closed = true;
+    search.oninput = null;
+    cancel.onclick = null;
+    dialog.onclose = null;
+    if (opener && opener.isConnected) opener.focus();
+  };
+  const renderRows = () => {
+    list.replaceChildren();
+    const q = search.value.trim().toLowerCase();
+    const filtered = q ? allApps.filter((a) => (a.name || "").toLowerCase().includes(q) || (a.path || "").toLowerCase().includes(q)) : allApps;
+    if (!allApps.length) {
+      list.append(el("div", "link-picker-empty", t("linkPickerEmpty")));
+      return;
+    }
+    if (!filtered.length) {
+      list.append(el("div", "link-picker-empty", t("linkPickerNoMatch")));
+      return;
+    }
+    for (const app of filtered) {
+      const btn = el("button", "link-picker-item");
+      btn.type = "button";
+      btn.setAttribute("role", "option");
+      const img = document.createElement("img");
+      img.className = "link-picker-icon";
+      img.alt = "";
+      img.loading = "lazy";
+      img.src = String(url("/api/app-icon?path=" + encodeURIComponent(app.path)));
+      img.addEventListener("error", () => { img.remove(); }, { once: true });
+      const meta = el("div", "link-picker-meta");
+      const titleRow = el("div", "link-picker-title-row");
+      titleRow.append(el("span", "link-picker-name", app.name));
+      if (app.offloaded) titleRow.append(el("span", "link-picker-badge", t("linkPickerOffloaded")));
+      if (app.linkedCount > 0) titleRow.append(el("span", "link-picker-badge", t("linkPickerLinkedCount", app.linkedCount)));
+      meta.append(titleRow, el("span", "link-picker-path mono", app.path));
+      btn.append(img, meta);
+      btn.addEventListener("click", async () => {
+        for (const item of list.querySelectorAll(".link-picker-item")) item.disabled = true;
+        try {
+          const res = await api("/api/links/add", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ appPath: app.path, appName: app.name, path: node.path }),
+          });
+          if (lastStatus && res.linkedBundles) lastStatus.linkedBundles = res.linkedBundles;
+          finish();
+          toast({ title: biPair(t("linkGroupBadge", res.bundle.name, (res.bundle.paths || []).length)), tone: "ok" });
+        } catch (err) {
+          for (const item of list.querySelectorAll(".link-picker-item")) item.disabled = false;
+          toast({ title: biPair(err.message || "Link failed"), tone: "error" });
+        }
+      });
+      list.append(btn);
+    }
+  };
+  search.oninput = renderRows;
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  search.focus();
+  try {
+    const res = await api("/api/links/apps");
+    if (closed) return;
+    allApps = Array.isArray(res && res.apps) ? res.apps : [];
+    renderRows();
+  } catch (err) {
+    if (closed) return;
+    list.replaceChildren(el("div", "link-picker-empty", err.message || t("linkPickerEmpty")));
+  }
 }
 
 async function revealInFinder(path) {
@@ -3996,6 +4260,7 @@ async function loadUsage() {
     if (usageDirCacheStamp && usageData.scannedAt !== usageDirCacheStamp) {
       usageDirCache.clear();
       usageDrilledEmpty.clear();
+      usageLocalPatches.clear();
     }
     usageDirCacheStamp = usageData.scannedAt;
   }
@@ -4022,6 +4287,7 @@ async function startUsageScan() {
   try {
     usageDirCache.clear();
     usageDrilledEmpty.clear();
+    usageLocalPatches.clear();
     usageDrillingPath = null;
     usageDrillingLabel = "";
     usageData = await api("/api/usage/scan", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });

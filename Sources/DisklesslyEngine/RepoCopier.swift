@@ -156,6 +156,7 @@ public struct RepoCopier {
         for prefix in ["manifests/", "catalog/", "devices/", "trash/manifests/", "trash/meta/"] where path.hasPrefix(prefix) {
             return (2, path)
         }
+        if path.hasSuffix(".chunks.json") { return (2, path) }
         return (1, path)
     }
 

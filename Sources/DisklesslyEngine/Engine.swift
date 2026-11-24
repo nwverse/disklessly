@@ -18,8 +18,10 @@ public struct RuntimeConfig: Codable {
     public var quotaBytes: UInt64 = 20 * 1024 * 1024 * 1024
     public var minFreeBytes: UInt64 = 15 * 1024 * 1024 * 1024
     public var detachDelaySeconds: UInt64 = 120
+    /// Image format used when `pack --mode mount` does not pass `--image-format`.
+    public var imageFormat: String = "ULFO"
     /// Image format used when `pack --mode restore` does not pass `--image-format`.
-    public var restoreImageFormat: String = "ULMO"
+    public var restoreImageFormat: String = "ULFO"
     public var backends: [BackendEndpoint] = []
     public var activeBackendId: String?
     /// Extra copies of the repo (`backends` ids, or `default` for the folder at `repoPath`).
@@ -44,7 +46,7 @@ public struct RuntimeConfig: Codable {
     public init(repoPath: String, cacheDir: String, stateDir: String, mountRoot: String, stubDir: String) { self.repoPath=repoPath; self.cacheDir=cacheDir; self.stateDir=stateDir; self.mountRoot=mountRoot; self.stubDir=stubDir }
 
     private enum CodingKeys: String, CodingKey {
-        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, restoreImageFormat, backends, activeBackendId, mirrorBackendIds, signIdentity, sessionColdDays, sessionRoots, sessionHome, sessionSegmentMaxBytes, sessionSoloBytes, sessionMaxFileBytes, sessionEncryption, imageEncryption
+        case schema, backend, repoPath, cacheDir, stateDir, mountRoot, stubDir, quotaBytes, minFreeBytes, detachDelaySeconds, imageFormat, restoreImageFormat, backends, activeBackendId, mirrorBackendIds, signIdentity, sessionColdDays, sessionRoots, sessionHome, sessionSegmentMaxBytes, sessionSoloBytes, sessionMaxFileBytes, sessionEncryption, imageEncryption
     }
 
     public init(from decoder: Decoder) throws {
@@ -59,7 +61,8 @@ public struct RuntimeConfig: Codable {
         quotaBytes = try container.decodeIfPresent(UInt64.self, forKey: .quotaBytes) ?? 20 * 1024 * 1024 * 1024
         minFreeBytes = try container.decodeIfPresent(UInt64.self, forKey: .minFreeBytes) ?? 15 * 1024 * 1024 * 1024
         detachDelaySeconds = try container.decodeIfPresent(UInt64.self, forKey: .detachDelaySeconds) ?? 120
-        restoreImageFormat = try container.decodeIfPresent(String.self, forKey: .restoreImageFormat) ?? "ULMO"
+        imageFormat = try container.decodeIfPresent(String.self, forKey: .imageFormat) ?? "ULFO"
+        restoreImageFormat = try container.decodeIfPresent(String.self, forKey: .restoreImageFormat) ?? "ULFO"
         backends = try container.decodeIfPresent([BackendEndpoint].self, forKey: .backends) ?? []
         activeBackendId = try container.decodeIfPresent(String.self, forKey: .activeBackendId)
         mirrorBackendIds = try container.decodeIfPresent([String].self, forKey: .mirrorBackendIds) ?? []
@@ -86,6 +89,7 @@ public struct RuntimeConfig: Codable {
         try container.encode(quotaBytes, forKey: .quotaBytes)
         try container.encode(minFreeBytes, forKey: .minFreeBytes)
         try container.encode(detachDelaySeconds, forKey: .detachDelaySeconds)
+        try container.encode(imageFormat, forKey: .imageFormat)
         try container.encode(restoreImageFormat, forKey: .restoreImageFormat)
         try container.encode(backends, forKey: .backends)
         try container.encodeIfPresent(activeBackendId, forKey: .activeBackendId)
@@ -118,6 +122,7 @@ public struct RuntimeConfig: Codable {
         if let quota = env["DISKLESSLY_QUOTA_BYTES"].flatMap(UInt64.init) { config.quotaBytes = quota }
         if let floor = env["DISKLESSLY_MIN_FREE_BYTES"].flatMap(UInt64.init) { config.minFreeBytes = floor }
         if let identity = env["DISKLESSLY_SIGN_IDENTITY"], !identity.isEmpty { config.signIdentity = identity }
+        if let format = env["DISKLESSLY_IMAGE_FORMAT"], !format.isEmpty { config.imageFormat = format }
         if let format = env["DISKLESSLY_RESTORE_IMAGE_FORMAT"], !format.isEmpty { config.restoreImageFormat = format }
         if let encryption = env["DISKLESSLY_IMAGE_ENCRYPTION"], !encryption.isEmpty { config.imageEncryption = encryption }
         return config
@@ -138,6 +143,8 @@ public struct RuntimeConfig: Codable {
         var config = RuntimeConfig(repoPath: v("REPO_PATH", "\(stateDefault)/repo"), cacheDir: cacheDir, stateDir: v("STATE_DIR", stateDefault), mountRoot: v("MOUNT_ROOT", "\(cacheDefault)/mnt"), stubDir: v("STUB_DIR", "\(home)/Applications"))
         if let quota = env["DISKLESSLY_QUOTA_BYTES"].flatMap(UInt64.init) { config.quotaBytes = quota }
         if let floor = env["DISKLESSLY_MIN_FREE_BYTES"].flatMap(UInt64.init) { config.minFreeBytes = floor }
+        if let format = env["DISKLESSLY_IMAGE_FORMAT"], !format.isEmpty { config.imageFormat = format }
+        if let format = env["DISKLESSLY_RESTORE_IMAGE_FORMAT"], !format.isEmpty { config.restoreImageFormat = format }
         return config
     }
 
@@ -172,6 +179,8 @@ public struct RuntimeConfig: Codable {
         if env["DISKLESSLY_QUOTA_BYTES"] != nil { merged.quotaBytes = config.quotaBytes }
         if env["DISKLESSLY_MIN_FREE_BYTES"] != nil { merged.minFreeBytes = config.minFreeBytes }
         if let identity = env["DISKLESSLY_SIGN_IDENTITY"], !identity.isEmpty { merged.signIdentity = identity }
+        if let format = env["DISKLESSLY_IMAGE_FORMAT"], !format.isEmpty { merged.imageFormat = format }
+        if let format = env["DISKLESSLY_RESTORE_IMAGE_FORMAT"], !format.isEmpty { merged.restoreImageFormat = format }
         if let encryption = env["DISKLESSLY_IMAGE_ENCRYPTION"], !encryption.isEmpty { merged.imageEncryption = encryption }
         if let stateDirOverride { merged.stateDir = stateDirOverride }
         return merged
@@ -587,16 +596,16 @@ public struct DisklesslyEngine {
         }
     }
 
-    public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false, imageFormat requestedFormat: String? = nil, encrypt requestedEncrypt: Bool? = nil) throws -> PublishResult {
+    public func pack(_ appPath: String, mode: ImageManifest.Mode? = nil, keepOriginal: Bool = false, noStub: Bool = false, imageFormat requestedFormat: String? = nil, encrypt requestedEncrypt: Bool? = nil, progress: (String) -> Void = { _ in }, onBytes: ((UInt64, UInt64) -> Void)? = nil) throws -> PublishResult {
         #if !os(macOS)
-        _ = (requestedFormat, requestedEncrypt)
+        _ = (requestedFormat, requestedEncrypt, progress, onBytes)
         throw DisklesslyError.unsupported("pack requires macOS hdiutil and codesign")
         #else
         let app=URL(fileURLWithPath:appPath).standardizedFileURL, plistURL=app.appendingPathComponent("Contents/Info.plist")
         guard let info=NSDictionary(contentsOf:plistURL) as? [String:Any], let bid=info["CFBundleIdentifier"] as? String else { throw DisklesslyError.usage("Not a valid .app bundle") }
         let name=info["CFBundleName"] as? String ?? app.deletingPathExtension().lastPathComponent, version=info["CFBundleShortVersionString"] as? String ?? "0"
         let selected=mode ?? ((FileManager.default.fileExists(atPath:app.appendingPathComponent("Contents/_MASReceipt/receipt").path) ? .restore : .mount))
-        let requested = requestedFormat ?? (selected == .restore ? config.restoreImageFormat : "ULMO")
+        let requested = requestedFormat ?? (selected == .restore ? config.restoreImageFormat : config.imageFormat)
         let imageFormat = requested.uppercased()
         let encrypt = try requestedEncrypt ?? imageEncryptionDefault()
         if encrypt, try ImageKeyStore.current(secrets: secrets) == nil {
@@ -609,6 +618,7 @@ public struct DisklesslyEngine {
         try License.checkPack(state: License.load(stateDir: config.stateDir), offloaded: try offloadedOverride?() ?? offloadedBundleIds(), packing: bid, files: offloadedFileCount())
         let usage = packUsageOverride?(app.path) ?? ProcessProbe.usage(roots: [app.path])
         if let blocked = PackPreflight.running(usage, name: name) { throw blocked }
+        progress("check")
         let allocated = AllocatedSize.tree(app)
         // A fresh state (first pack on this Mac) has no cache folder yet.
         try FileManager.default.createDirectory(atPath: config.cacheDir, withIntermediateDirectories: true)
@@ -645,6 +655,7 @@ public struct DisklesslyEngine {
         let build = info["CFBundleVersion"] as? String ?? "0"
         _ = try MASReceiptStore.preserve(from: stagedApp, bundleId: bid, stateDir: URL(fileURLWithPath: config.stateDir))
         BundleHasher.removeMachineReceipt(stagedApp)
+        progress("hash")
         let contentHash = try BundleHasher.treeHash(of: stagedApp)
         let architectures = MachArchitectures.slices(at: stagedApp.appendingPathComponent("Contents/MacOS/\(executableName)"))
         let identity = ImageIdentity(bundleId: bid, version: version, build: build, architectures: architectures.isEmpty ? ["unknown"] : architectures, treeHash: contentHash)
@@ -660,6 +671,7 @@ public struct DisklesslyEngine {
             try register(existing, backend: backend, now: Date())
             if EngineInstall.runningExecutable().lastPathComponent == "disklessly" { try installEngine() }
             let forcedKeep = { if case .keep = disposition { return true }; return false }()
+            if !noStub { progress("stub") }
             let stubWarning = noStub ? nil : try installStub(info: info, manifest: existing, path: app.path, keepOriginal: keepOriginal || forcedKeep, cloneFingerprint: cloneFingerprint)
             let kept: String? = { if case .keep(let reason) = disposition { return reason }; return nil }()
             return finishPublished(PublishResult(manifest: existing, reused: true, uploaded: false, originalKept: kept), stubWarning: stubWarning)
@@ -668,6 +680,7 @@ public struct DisklesslyEngine {
             if code == 4 { throw DisklesslyError.backend(message) }
             throw DisklesslyError.integrity(message)
         }
+        progress("archive")
         let dmg=staging.appendingPathComponent("image.dmg")
         try run("/usr/bin/hdiutil",["create","-quiet","-srcfolder",staging.appendingPathComponent("src").path,"-format",imageFormat,"-volname",name,"-o",dmg.deletingPathExtension().path])
         // Hash the ditto restore will verify, not the pre-image staged app. hdiutil
@@ -689,8 +702,9 @@ public struct DisklesslyEngine {
         let docs = (info["CFBundleDocumentTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) }
         let urls = (info["CFBundleURLTypes"] as? [[String:Any]] ?? []).map { $0.mapValues(AnyCodable.init) }
         let request = PublishRequest(name: name, identity: identity, mode: selected, executable: executableName, originalPath: app.path, cdhash: cdhash, postImageTreeHash: treeHash, volumeName: name, appPathInVolume: app.lastPathComponent, documentTypes: docs, urlTypes: urls, imageFormat: imageFormat, encrypt: encrypt)
-        let published = try publish(request, imageFile: dmg)
+        let published = try publish(request, imageFile: dmg, prefetchedManifests: manifests, progress: progress, onBytes: onBytes)
         if EngineInstall.runningExecutable().lastPathComponent == "disklessly" { try installEngine() }
+        if !noStub { progress("stub") }
         let stubWarning = noStub ? nil : try installStub(info: info, manifest: published.manifest, path: app.path, keepOriginal: keepOriginal, cloneFingerprint: cloneFingerprint)
         return finishPublished(published, stubWarning: stubWarning)
         #endif

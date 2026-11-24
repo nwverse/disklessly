@@ -38,6 +38,26 @@ extension DisklesslyEngine {
         return FileOffloadPolicy.refusal(path: url.path, home: homeDirectory, protected: protectedPaths, isDirectory: kind == S_IFDIR, isSymlink: kind == S_IFLNK)
     }
 
+    /// Why `path` cannot be moved to the Trash right now, or nil.
+    /// Keeps offload safety guards while allowing direct deletion of rebuildable app/tool caches under `~/Library/Caches`.
+    public func trashPathRefusal(_ path: String) -> String? {
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        var info = stat()
+        guard lstat(url.path, &info) == 0 else { return "does not exist" }
+        if (try? url.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem) == true { return "is in iCloud Drive, which already offloads it" }
+        let kind = info.st_mode & S_IFMT
+        guard kind == S_IFREG || kind == S_IFDIR || kind == S_IFLNK else { return "is not a regular file or folder" }
+        let extraAllowed = KnownLocations.rebuildableCaches.map(\.relativePath) + [KnownLocations.derivedData]
+        return FileOffloadPolicy.trashRefusal(
+            path: url.path,
+            home: homeDirectory,
+            protected: protectedPaths,
+            isDirectory: kind == S_IFDIR,
+            isSymlink: kind == S_IFLNK,
+            extraAllowedRelativePaths: extraAllowed
+        )
+    }
+
     /// Moves a file or folder into the repo and leaves `Name.disklessly` in its place.
     /// The original is deleted only after the repo object reads back with the same SHA-256.
     public func offloadFile(_ path: String, progress: (String) -> Void = { _ in }, onBytes: (UInt64, UInt64) -> Void = { _, _ in }) throws -> FileOffloadResult {
@@ -59,71 +79,98 @@ extension DisklesslyEngine {
         let modified = (try? source.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? nil
         let permissions = (try? FileManager.default.attributesOfItem(atPath: source.path)[.posixPermissions] as? NSNumber)?.intValue
 
-        // A folder streams into the repo when the backend can. Otherwise it is archived into the cache first.
-        // A file is uploaded as is.
+        // Large files/folders on remote backends chunk into 64 MiB content-addressed pieces so
+        // upload, verification, and download run concurrently across multiple streams.
         let backend = try repo
+        let transferConfig = ChunkedTransferConfig.current()
+        let useChunks = transferConfig.shouldChunk(logicalBytes: logical, isRemote: backend.localRoot() == nil)
         try backend.ensureCollection("files")
         try backend.ensureCollection("files/objects")
         var staged: URL?
         defer { if let staged { try? FileManager.default.removeItem(at: staged) } }
-        var streamed: (sha256: String, stored: UInt64)?
-        let staging = "files/staging/\(UUID().uuidString.lowercased()).part"
-        if isFolder {
-            try backend.ensureCollection("files/staging")
-            progress("upload")
-            onBytes(0, logical)
-            streamed = try streamArchive(source, to: staging, backend: backend, onBytes: { sent in onBytes(sent, logical) })
-        }
+
         let sha: String
         let stored: UInt64
         let object: String
+        let codec: String
         let reused: Bool
-        if let streamed {
-            sha = streamed.sha256
-            stored = streamed.stored
-            object = FilePlaceholder.objectPath(sha256: sha, kind: kind)
-            reused = try publishStreamed(backend, staging: staging, object: object, sha: sha, stored: stored)
-        } else {
-            let upload: URL
-            if isFolder {
-                try FileManager.default.createDirectory(atPath: config.cacheDir, withIntermediateDirectories: true)
-                let free = try VolumeSpace.availableBytes(at: config.cacheDir)
-                let need = AllocatedSize.tree(source)
-                let offloadFloor = SpaceFloor.offloadFloor(config.minFreeBytes)
-                guard SpaceFloor.admits(freeBytes: free, incoming: need, floor: offloadFloor) else {
-                    throw DisklesslyError.noSpace("archiving \(source.lastPathComponent) needs up to \(need) bytes in \(config.cacheDir), which has \(free) free above the \(offloadFloor) byte reserve")
-                }
-                progress("archive")
-                let archive = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("offload-\(UUID().uuidString).tar.zst")
-                staged = archive
-                try FolderArchive.create(folder: source, to: archive)
-                upload = archive
-            } else {
-                upload = source
-            }
-            progress("hash")
-            sha = try SHA256Digest.hexFile(upload)
-            stored = try ChunkedIO.byteCount(upload)
-            if !isFolder, try fingerprint(source, folder: false) != before {
-                throw DisklesslyError.busy("\(source.lastPathComponent) changed while it was being read; nothing was offloaded")
-            }
-            object = FilePlaceholder.objectPath(sha256: sha, kind: kind)
+        if useChunks {
             progress("upload")
-            let result = try WriteOnce.publishFile(backend: backend, path: object, file: upload, sha256: sha)
-            if case .conflict(let message) = result { throw DisklesslyError.integrity("\(message). \(source.lastPathComponent) was not changed.") }
-            reused = result == .reused
-        }
-        progress("verify")
-        guard let remote = try backend.stat(object), remote.size == stored else {
-            throw DisklesslyError.integrity("the repo copy of \(source.lastPathComponent) has the wrong size; the original was not changed")
-        }
-        let readBack = try readBackDigest(backend, object, size: stored)
-        guard readBack == sha else {
-            throw DisklesslyError.integrity("the repo copy of \(source.lastPathComponent) does not match (sha256 \(readBack), expected \(sha)); the original was not changed")
+            onBytes(0, logical)
+            let result: ChunkedTransfer.UploadResult
+            if isFolder {
+                result = try ChunkedTransfer.uploadFolder(source, expectedLogicalBytes: logical, backend: backend, cacheDir: config.cacheDir, minFreeBytes: config.minFreeBytes, config: transferConfig, onBytes: onBytes)
+                codec = "tar+zstd+chunks"
+            } else {
+                result = try ChunkedTransfer.uploadFile(source, backend: backend, cacheDir: config.cacheDir, minFreeBytes: config.minFreeBytes, config: transferConfig, onBytes: onBytes)
+                if try fingerprint(source, folder: false) != before {
+                    throw DisklesslyError.busy("\(source.lastPathComponent) changed while it was being read; nothing was offloaded")
+                }
+                codec = "none+chunks"
+            }
+            sha = result.manifest.sha256
+            stored = result.manifest.totalSize
+            object = result.manifestPath
+            reused = result.reused
+            progress("verify")
+            try ChunkedTransfer.verify(backend: backend, manifestPath: object, expected: result.manifest, cacheDir: config.cacheDir, minFreeBytes: config.minFreeBytes, streams: transferConfig.streams)
+        } else {
+            codec = isFolder ? "tar+zstd" : "none"
+            var streamed: (sha256: String, stored: UInt64)?
+            let staging = "files/staging/\(UUID().uuidString.lowercased()).part"
+            if isFolder {
+                try backend.ensureCollection("files/staging")
+                progress("upload")
+                onBytes(0, logical)
+                streamed = try streamArchive(source, to: staging, backend: backend, onBytes: { sent in onBytes(sent, logical) })
+            }
+            if let streamed {
+                sha = streamed.sha256
+                stored = streamed.stored
+                object = FilePlaceholder.objectPath(sha256: sha, kind: kind)
+                reused = try publishStreamed(backend, staging: staging, object: object, sha: sha, stored: stored)
+            } else {
+                let upload: URL
+                if isFolder {
+                    try FileManager.default.createDirectory(atPath: config.cacheDir, withIntermediateDirectories: true)
+                    let free = try VolumeSpace.availableBytes(at: config.cacheDir)
+                    let need = AllocatedSize.tree(source)
+                    let offloadFloor = SpaceFloor.offloadFloor(config.minFreeBytes)
+                    guard SpaceFloor.admits(freeBytes: free, incoming: need, floor: offloadFloor) else {
+                        throw DisklesslyError.noSpace("archiving \(source.lastPathComponent) needs up to \(need) bytes in \(config.cacheDir), which has \(free) free above the \(offloadFloor) byte reserve")
+                    }
+                    progress("archive")
+                    let archive = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("offload-\(UUID().uuidString).tar.zst")
+                    staged = archive
+                    try FolderArchive.create(folder: source, to: archive)
+                    upload = archive
+                } else {
+                    upload = source
+                }
+                progress("hash")
+                sha = try SHA256Digest.hexFile(upload)
+                stored = try ChunkedIO.byteCount(upload)
+                if !isFolder, try fingerprint(source, folder: false) != before {
+                    throw DisklesslyError.busy("\(source.lastPathComponent) changed while it was being read; nothing was offloaded")
+                }
+                object = FilePlaceholder.objectPath(sha256: sha, kind: kind)
+                progress("upload")
+                let result = try WriteOnce.publishFile(backend: backend, path: object, file: upload, sha256: sha)
+                if case .conflict(let message) = result { throw DisklesslyError.integrity("\(message). \(source.lastPathComponent) was not changed.") }
+                reused = result == .reused
+            }
+            progress("verify")
+            guard let remote = try backend.stat(object), remote.size == stored else {
+                throw DisklesslyError.integrity("the repo copy of \(source.lastPathComponent) has the wrong size; the original was not changed")
+            }
+            let readBack = try readBackDigest(backend, object, size: stored)
+            guard readBack == sha else {
+                throw DisklesslyError.integrity("the repo copy of \(source.lastPathComponent) does not match (sha256 \(readBack), expected \(sha)); the original was not changed")
+            }
         }
         let placeholder = FilePlaceholder(
             id: UUID().uuidString.lowercased(), kind: kind, name: source.lastPathComponent, size: logical, object: object,
-            codec: isFolder ? "tar+zstd" : "none", sha256: sha, storedSize: stored, repoId: RepoIdentity.read(backend),
+            codec: codec, sha256: sha, storedSize: stored, repoId: RepoIdentity.read(backend),
             originalPath: source.path, createdAt: Date(), modifiedAt: modified, posixPermissions: permissions,
             device: LocalDeviceStore.load(stateDir: URL(fileURLWithPath: config.stateDir))?.deviceId)
         // Placeholder first, then the original goes. A crash between the two leaves both,
@@ -178,11 +225,11 @@ extension DisklesslyEngine {
         return FileOffloadResult(placeholder: placeholder, placeholderPath: placeholderURL.path, reused: reused, warnings: warnings)
     }
 
-    /// Moves a file or folder to the Trash after the same checks an offload makes (inside home,
-    /// not a standard folder, not Disklessly's own folders, not open in another app).
+    /// Moves a file or folder to the Trash after the same safety checks as offload
+    /// (plus allowing disposable app/build caches under `~/Library/Caches`).
     public func trashPath(_ path: String) throws {
         let url = URL(fileURLWithPath: path).standardizedFileURL
-        if let why = fileOffloadRefusal(url.path) { throw DisklesslyError.usage("\(url.path) \(why)") }
+        if let why = trashPathRefusal(url.path) { throw DisklesslyError.usage("\(url.path) \(why)") }
         let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
         if isOpen(url.path, folder: isFolder) {
             throw DisklesslyError.busy("\(url.lastPathComponent) is open in another app. Quit it, then delete again.")
@@ -251,7 +298,19 @@ extension DisklesslyEngine {
             try? FileManager.default.removeItem(at: download.appendingPathExtension("partial"))
             try? FileManager.default.removeItem(at: staging)
         }
-        try CacheFetcher.materialize(backend: backend, remote: placeholder.object, destination: download, partial: download.appendingPathExtension("partial"), expectedSize: placeholder.storedSize, expectedSHA256: placeholder.sha256)
+        if placeholder.isChunked {
+            try ChunkedTransfer.download(
+                backend: backend,
+                manifestPath: placeholder.object,
+                destination: download,
+                expectedSize: placeholder.storedSize,
+                expectedSHA256: placeholder.sha256,
+                stagingDir: staging,
+                streams: ChunkedTransferConfig.current().streams
+            )
+        } else {
+            try CacheFetcher.materialize(backend: backend, remote: placeholder.object, destination: download, partial: download.appendingPathExtension("partial"), expectedSize: placeholder.storedSize, expectedSHA256: placeholder.sha256)
+        }
         let ready: URL
         if placeholder.kind == .folder {
             progress("extract")
@@ -279,13 +338,21 @@ extension DisklesslyEngine {
         return target
     }
 
-    /// SHA-256 of the object as the repo now holds it. A file-backed repo is hashed in place; an HTTP
-    /// repo is downloaded once into the cache, since ranged reads there may resend the rest of the object.
+    /// SHA-256 of the object as the repo now holds it. Uses server-side hash when available,
+    /// otherwise hashes local repos in place or downloads HTTP objects once into cache.
     func readBackDigest(_ backend: any StorageBackend, _ object: String, size: UInt64) throws -> String {
         if let root = backend.localRoot() {
             let file = root.appendingPathComponent(object)
             _ = try backend.stat(object)
             return try SHA256Digest.hexFile(file)
+        }
+        if let probed = try backend.statWithHash(object) {
+            guard probed.stat.size == size else {
+                throw DisklesslyError.integrity("the repo copy has size \(probed.stat.size), expected \(size)")
+            }
+            if let sha = probed.sha256 {
+                return sha
+            }
         }
         let free = try VolumeSpace.availableBytes(at: config.cacheDir)
         let offloadFloor = SpaceFloor.offloadFloor(config.minFreeBytes)
@@ -499,6 +566,152 @@ enum FolderArchive {
             throw DisklesslyError.failure("tar could not archive \(folder.lastPathComponent) (exit \(tar.terminationStatus)): \(String(decoding: collected.get(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))")
         }
         return hasher.finalize()
+    }
+
+    /// Streams a folder's tar+zstd archive into `chunkSize` staging files inside `stageDir`, calling
+    /// `onChunk` with each completed file's `(index, url, sha256, size)` and returning total digest/size.
+    static func streamToChunks(
+        folder: URL,
+        chunkSize: UInt64,
+        stageDir: URL,
+        reserveStage: () -> Bool,
+        releaseStage: () -> Void,
+        shouldAbort: () -> Bool,
+        onChunk: (Int, URL, String, UInt64) throws -> Void
+    ) throws -> (sha256: String, totalSize: UInt64) {
+        let tar = Process()
+        tar.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
+        tar.arguments = ["-cf", "-", "-C", folder.deletingLastPathComponent().path, folder.lastPathComponent]
+        let tarOut = Pipe()
+        let errors = Pipe()
+        tar.standardOutput = tarOut
+        tar.standardError = errors
+        try tar.run()
+        let compressed = Pipe()
+        let failure = Failure()
+        let collected = Collected()
+        let workers = DispatchGroup()
+        workers.enter()
+        DispatchQueue.global().async { collected.set(errors.fileHandleForReading.readDataToEndOfFile()); workers.leave() }
+        workers.enter()
+        DispatchQueue.global().async {
+            do { try ZstdStream.compress(from: tarOut.fileHandleForReading, to: compressed.fileHandleForWriting) } catch { failure.set(error); tar.terminate() }
+            try? compressed.fileHandleForWriting.close()
+            workers.leave()
+        }
+
+        var wholeHasher = SHA256Digest.Stream()
+        var totalSize: UInt64 = 0
+        var chunkIndex = 0
+        var currentHandle: FileHandle?
+        var currentURL: URL?
+        var currentSize: UInt64 = 0
+        var currentHasher = SHA256Digest.Stream()
+
+        func cleanupOpenChunk(release: Bool) {
+            let hadSlot = currentHandle != nil || currentURL != nil
+            if let handle = currentHandle { try? handle.close() }
+            if let url = currentURL { try? FileManager.default.removeItem(at: url) }
+            currentHandle = nil
+            currentURL = nil
+            currentSize = 0
+            if release && hadSlot { releaseStage() }
+        }
+
+        func flushCurrentChunk() throws {
+            guard let handle = currentHandle, let url = currentURL else { return }
+            try handle.close()
+            currentHandle = nil
+            let sha = currentHasher.finalize()
+            let size = currentSize
+            let idx = chunkIndex
+            chunkIndex += 1
+            currentURL = nil
+            currentSize = 0
+            currentHasher = SHA256Digest.Stream()
+            try onChunk(idx, url, sha, size)
+        }
+
+        func openChunkIfNeeded() throws -> Bool {
+            if currentHandle != nil { return true }
+            guard reserveStage() else { return false }
+            let url = stageDir.appendingPathComponent("chunk-\(chunkIndex).bin")
+            guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+                releaseStage()
+                throw DisklesslyError.failure("could not create chunk file \(url.path)")
+            }
+            do {
+                currentHandle = try FileHandle(forWritingTo: url)
+                currentURL = url
+                currentSize = 0
+                currentHasher = SHA256Digest.Stream()
+                return true
+            } catch {
+                try? FileManager.default.removeItem(at: url)
+                releaseStage()
+                throw error
+            }
+        }
+
+        var streamErr: Error?
+        var aborted = false
+        do {
+            while true {
+                if shouldAbort() {
+                    aborted = true
+                    tar.terminate()
+                    break
+                }
+                let buffer = compressed.fileHandleForReading.readData(ofLength: 1 << 20)
+                if buffer.isEmpty { break }
+                wholeHasher.update(buffer)
+                totalSize += UInt64(buffer.count)
+
+                var offset = 0
+                while offset < buffer.count {
+                    if shouldAbort() {
+                        aborted = true
+                        tar.terminate()
+                        break
+                    }
+                    guard try openChunkIfNeeded() else {
+                        aborted = true
+                        tar.terminate()
+                        break
+                    }
+                    let room = Int(min(UInt64(buffer.count - offset), chunkSize - currentSize))
+                    let slice = buffer.subdata(in: offset..<(offset + room))
+                    try currentHandle!.write(contentsOf: slice)
+                    currentHasher.update(slice)
+                    currentSize += UInt64(room)
+                    offset += room
+                    if currentSize >= chunkSize {
+                        try flushCurrentChunk()
+                    }
+                }
+                if aborted { break }
+            }
+            if !aborted && currentHandle != nil {
+                try flushCurrentChunk()
+            } else if currentHandle != nil {
+                cleanupOpenChunk(release: true)
+            }
+        } catch {
+            cleanupOpenChunk(release: true)
+            tar.terminate()
+            streamErr = error
+        }
+
+        try? compressed.fileHandleForReading.close()
+        workers.wait()
+        tar.waitUntilExit()
+        if let streamErr { throw streamErr }
+        if let error = failure.error { throw error }
+        if aborted { throw DisklesslyError.failure("chunked upload aborted") }
+        guard tar.terminationStatus == 0 else {
+            throw DisklesslyError.failure("tar could not archive \(folder.lastPathComponent) (exit \(tar.terminationStatus)): \(String(decoding: collected.get(), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines))")
+        }
+        return (wholeHasher.finalize(), totalSize)
     }
 
     /// Extracts into `directory`. tar refuses absolute paths and `..` unless `-P` is given, and it never is.

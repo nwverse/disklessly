@@ -235,6 +235,7 @@ public struct RcloneBackend: StorageBackend {
         var Size: Int64
         var ModTime: String
         var IsDir: Bool
+        var Hashes: [String: String]?
     }
 
     public func list(_ path: String) throws -> [String] {
@@ -282,6 +283,47 @@ public struct RcloneBackend: StorageBackend {
         guard result.status == 0 else { throw fail("lsjson --stat", result) }
         let entry = try JSONDecoder().decode(Entry.self, from: result.stdout)
         return BackendStat(size: UInt64(max(0, entry.Size)), modified: Self.date(entry.ModTime))
+    }
+
+    public func statWithHash(_ path: String) throws -> (stat: BackendStat, sha256: String?)? {
+        if let daemon {
+            let (fs, inside) = try location(path)
+            guard let reply = try rc("operations/stat", ["fs": fs, "remote": inside, "opt": ["noMimeType": true, "showHash": true, "hashTypes": ["sha256"]]], on: daemon),
+                  let item = reply["item"] as? [String: Any] else { return nil }
+            let size = (item["Size"] as? NSNumber)?.int64Value ?? 0
+            let stat = BackendStat(size: UInt64(max(0, size)), modified: Self.date(item["ModTime"] as? String ?? ""))
+            return (stat, Self.extractSHA256(from: item["Hashes"] as? [String: Any]))
+        }
+        let result = try run(["lsjson", "--stat", "--no-mimetype", "--hash", "--hash-type", "sha256", try target(path)])
+        if Self.isMissing(result) { return nil }
+        guard result.status == 0 else { throw fail("lsjson --stat", result) }
+        let entry = try JSONDecoder().decode(Entry.self, from: result.stdout)
+        let stat = BackendStat(size: UInt64(max(0, entry.Size)), modified: Self.date(entry.ModTime))
+        return (stat, Self.extractSHA256(from: entry.Hashes))
+    }
+
+    public static func validSHA256(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              trimmed.count == 64,
+              trimmed.unicodeScalars.allSatisfy({ ($0.value >= 48 && $0.value <= 57) || ($0.value >= 97 && $0.value <= 102) }) else {
+            return nil
+        }
+        return trimmed
+    }
+
+    public static func extractSHA256(from hashes: [String: String]?) -> String? {
+        guard let hashes else { return nil }
+        for (key, value) in hashes {
+            let normalized = key.lowercased().replacingOccurrences(of: "-", with: "")
+            if normalized == "sha256", let valid = validSHA256(value) { return valid }
+        }
+        return nil
+    }
+
+    public static func extractSHA256(from hashes: [String: Any]?) -> String? {
+        guard let hashes else { return nil }
+        let stringMap = hashes.compactMapValues { $0 as? String }
+        return extractSHA256(from: stringMap)
     }
 
     static func date(_ text: String) -> Date {
@@ -355,11 +397,64 @@ public struct RcloneBackend: StorageBackend {
         guard result.status == 0 else { throw fail("copyto", result) }
     }
 
+    public func put(_ path: String, file: URL, onBytes: @escaping (UInt64, UInt64) -> Void) throws {
+        let overrides = Self.uploadOverrides(type: Self.remoteType(remote, config: config))
+        let total = (try? ChunkedIO.byteCount(file)) ?? 0
+        if total > 0 { onBytes(0, total) }
+        if let daemon {
+            let (fs, inside) = try location(path)
+            let groupId = "disklessly-put-\(UUID().uuidString.lowercased())"
+            let stopSem = DispatchSemaphore(value: 0)
+            let doneSem = DispatchSemaphore(value: 0)
+            let poller = Thread {
+                defer { doneSem.signal() }
+                var lastReported: UInt64 = 0
+                while stopSem.wait(timeout: .now() + 0.25) == .timedOut {
+                    guard let (status, reply) = try? daemon.call("core/stats", ["group": groupId]), status == 200 else { continue }
+                    let bytes = (reply["bytes"] as? NSNumber)?.uint64Value ?? 0
+                    let reportedTotal = (reply["totalBytes"] as? NSNumber)?.uint64Value ?? 0
+                    let effectiveTotal = total > 0 ? total : reportedTotal
+                    if effectiveTotal > 0, bytes > lastReported {
+                        lastReported = min(bytes, effectiveTotal)
+                        onBytes(lastReported, effectiveTotal)
+                    }
+                }
+            }
+            poller.name = "disklessly.rclone.put-progress"
+            poller.start()
+            var stopped = false
+            let stopPolling = {
+                if !stopped {
+                    stopped = true
+                    stopSem.signal()
+                    doneSem.wait()
+                    _ = try? daemon.call("core/stats-delete", ["group": groupId])
+                }
+            }
+            defer { stopPolling() }
+            _ = try rc("operations/copyfile", ["srcFs": file.deletingLastPathComponent().path, "srcRemote": file.lastPathComponent,
+                                                "dstFs": Self.withOverrides(fs, overrides), "dstRemote": inside,
+                                                "_group": groupId, "_config": ["IgnoreTimes": true]], on: daemon)
+                ?? { throw DisklesslyError.backend("upload source is missing: \(file.path)") }()
+            stopPolling()
+            if total > 0 { onBytes(total, total) }
+            return
+        }
+        try put(path, file: file)
+        if total > 0 { onBytes(total, total) }
+    }
+
     /// Backend options for uploads. Google Drive uploads one file as a single stream of chunks,
     /// waiting for each chunk before sending the next, so rclone's 8 MiB default leaves most of the
     /// link idle; 64 MiB measured ~60% faster. rclone holds one chunk in memory per transfer.
     static func uploadOverrides(type: String?) -> [String: String] {
-        type == "drive" ? ["chunk_size": "64M"] : [:]
+        switch type {
+        case "drive": return ["chunk_size": "64M"]
+        case "s3": return ["chunk_size": "64M", "upload_concurrency": "4"]
+        case "azureblob": return ["chunk_size": "64M", "upload_concurrency": "4"]
+        case "b2": return ["chunk_size": "64M"]
+        default: return [:]
+        }
     }
 
     /// `remote:path` with rclone connection-string options: `remote,key=value:path`.

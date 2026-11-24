@@ -44,6 +44,14 @@ public struct FilePlaceholder: Codable, Equatable {
         "files/objects/\(sha256.lowercased()).\(kind == .folder ? "tar.zst" : "bin")"
     }
 
+    public static func chunkedObjectPath(sha256: String) -> String {
+        ChunkedObjectManifest.manifestPath(sha256: sha256)
+    }
+
+    public var isChunked: Bool {
+        codec.hasSuffix("+chunks") || object.hasSuffix(".chunks.json")
+    }
+
     /// `/a/Movie.mov` -> `/a/Movie.mov.disklessly`.
     public static func placeholderURL(for original: URL) -> URL {
         original.deletingLastPathComponent().appendingPathComponent(original.lastPathComponent + "." + fileExtension)
@@ -77,9 +85,14 @@ public struct FilePlaceholder: Codable, Equatable {
         guard schema == Self.schemaV1 else { throw DisklesslyError.unsupported("placeholder schema \(schema) is newer than this Disklessly; update it") }
         let hex = CharacterSet(charactersIn: "0123456789abcdef")
         guard sha256.count == 64, sha256.unicodeScalars.allSatisfy(hex.contains) else { throw DisklesslyError.integrity("placeholder has a malformed sha256") }
-        guard object == Self.objectPath(sha256: sha256, kind: kind) else { throw DisklesslyError.integrity("placeholder names an unexpected repo object: \(object)") }
         guard FileOffloadPolicy.isPlainName(name) else { throw DisklesslyError.integrity("placeholder has an unsafe name: \(name)") }
-        guard codec == (kind == .folder ? "tar+zstd" : "none") else { throw DisklesslyError.unsupported("placeholder codec \(codec) is not supported") }
+        if isChunked {
+            guard object == Self.chunkedObjectPath(sha256: sha256) else { throw DisklesslyError.integrity("placeholder names an unexpected repo object: \(object)") }
+            guard codec == (kind == .folder ? "tar+zstd+chunks" : "none+chunks") else { throw DisklesslyError.unsupported("placeholder codec \(codec) is not supported") }
+        } else {
+            guard object == Self.objectPath(sha256: sha256, kind: kind) else { throw DisklesslyError.integrity("placeholder names an unexpected repo object: \(object)") }
+            guard codec == (kind == .folder ? "tar+zstd" : "none") else { throw DisklesslyError.unsupported("placeholder codec \(codec) is not supported") }
+        }
     }
 }
 
@@ -136,6 +149,64 @@ public enum FileOffloadPolicy {
         }
         if protected.contains(where: { inside($0) || (($0 as NSString).standardizingPath).hasPrefix(p + "/") }) {
             return "holds Disklessly's own repo, cache or state"
+        }
+        _ = isDirectory
+        return nil
+    }
+
+    /// Why `path` may not be moved to the Trash from the dashboard/CLI, or nil.
+    /// Keeps all offload safeguards, while allowing direct removal of app caches under
+    /// `~/Library/Caches/<item>` (excluding system/Apple and Disklessly caches) and
+    /// explicit rebuildable tool caches such as DerivedData or pnpm store.
+    public static func trashRefusal(path: String, home: String, protected: [String], isDirectory: Bool, isSymlink: Bool, extraAllowedRelativePaths: [String] = []) -> String? {
+        let p = (path as NSString).standardizingPath
+        let h = (home as NSString).standardizingPath
+        func inside(_ root: String) -> Bool {
+            let r = (root as NSString).standardizingPath
+            return !r.isEmpty && (p == r || p.hasPrefix(r.hasSuffix("/") ? r : r + "/"))
+        }
+        if isSymlink { return "is a symbolic link; delete what it points to instead" }
+        if p.hasSuffix("." + FilePlaceholder.fileExtension) { return "is already a Disklessly placeholder" }
+        guard p.hasPrefix(h + "/") else { return "is outside your home folder" }
+        let rest = p.dropFirst(h.count + 1).split(separator: "/").map(String.init)
+        guard let top = rest.first else { return "is your home folder" }
+        if protected.contains(where: { inside($0) || (($0 as NSString).standardizingPath).hasPrefix(p + "/") }) {
+            return "holds Disklessly's own repo, cache or state"
+        }
+        if top == "Library" {
+            let rel = rest.joined(separator: "/")
+            let isProtectedCache = rest.count >= 3 && rest[1] == "Caches" && (rest[2] == "Disklessly" || rest[2] == "256isenough")
+            if isProtectedCache {
+                return "holds Disklessly's own repo, cache or state"
+            }
+            if rest.count >= 3 && rest[1] == "Caches" {
+                let cacheChild = rest[2]
+                let criticalCaches: Set<String> = ["CloudKit", "FamilyCircle", "GeoServices", "PassKit", "Disklessly", "256isenough"]
+                if cacheChild.hasPrefix("com.apple.") || criticalCaches.contains(cacheChild) {
+                    return "is a system or Disklessly cache"
+                }
+            } else {
+                let allowedExtra = extraAllowedRelativePaths.contains { extra in
+                    let normExtra = extra.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    return !normExtra.isEmpty && (rel == normExtra || rel.hasPrefix(normExtra + "/"))
+                }
+                if !allowedExtra {
+                    return "is inside ~/Library, which apps manage themselves"
+                }
+            }
+        } else if skippedHomeChildren.contains(top) {
+            return "is inside ~/\(top), which apps manage themselves"
+        }
+        if rest.count == 1, ["Desktop", "Documents", "Downloads", "Movies", "Music", "Pictures"].contains(top) {
+            return "is a standard folder; delete what is inside it instead"
+        }
+        for component in rest.dropLast() {
+            if (component as NSString).pathExtension.lowercased() == "app" { return "is inside an app bundle" }
+        }
+        if let last = rest.last {
+            let ext = (last as NSString).pathExtension.lowercased()
+            if ext == "app" { return "is an app; use `disklessly pack` for apps" }
+            if skippedExtensions.contains(ext) { return "is a .\(ext) item that its app or VM manages" }
         }
         _ = isDirectory
         return nil

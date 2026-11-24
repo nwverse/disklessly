@@ -598,6 +598,57 @@ img.avatar { background: transparent; }
 .confirm p { color: var(--muted); font-size: 13px; }
 .dialog-second { display: block; margin-top: 2px; font-size: 0.82em; font-weight: 400; color: var(--faint); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
+.link-picker { width: min(500px, calc(100vw - 32px)); }
+.link-picker-search {
+  width: 100%;
+  margin-top: 12px;
+  padding: 8px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 13px;
+}
+.link-picker-search:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+.link-picker-list {
+  margin-top: 10px;
+  max-height: 320px;
+  overflow-y: auto;
+  display: grid;
+  gap: 6px;
+}
+.link-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.link-picker-item:hover, .link-picker-item:focus-visible {
+  background: var(--hover);
+  border-color: var(--accent);
+  outline: none;
+}
+.link-picker-item:disabled { opacity: 0.6; cursor: wait; }
+.link-picker-icon { width: 28px; height: 28px; border-radius: 6px; flex-shrink: 0; object-fit: contain; }
+.link-picker-meta { flex: 1; min-width: 0; display: grid; gap: 2px; }
+.link-picker-title-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.link-picker-name { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-picker-path { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.link-picker-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--pill);
+  color: var(--muted);
+}
+.link-picker-empty { padding: 18px 8px; text-align: center; color: var(--muted); font-size: 13px; }
 
 /* ---- narrow: one column; table rows become stacked cards ---- */
 @media (max-width: 900px) {

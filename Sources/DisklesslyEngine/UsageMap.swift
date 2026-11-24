@@ -24,6 +24,10 @@ public struct UsageNode: Equatable {
     public var path: String?
     /// Why the page must not offer Offload or Delete on `path`; nil when it may.
     public var refusal: String?
+    /// Why the page must not offer Delete on `path`; defaults to `refusal` when not separately evaluated.
+    public var trashRefusal: String?
+    /// True when this app node represents an already-offloaded stub launcher on disk.
+    public var offloaded: Bool = false
 
     public init(name: String, key: String? = nil, kind: Kind, bytes: UInt64 = 0, children: [UsageNode] = [], action: String? = nil) {
         self.name = name
@@ -43,9 +47,11 @@ public struct UsageNode: Equatable {
         var object: [String: Any] = ["name": name, "kind": kind.rawValue, "bytes": NSNumber(value: bytes)]
         if let key { object["key"] = key }
         if let action { object["action"] = action }
+        if offloaded { object["offloaded"] = true }
         if let path {
             object["path"] = path
             if let refusal { object["refusal"] = refusal }
+            object["canTrash"] = (trashRefusal == nil)
         }
         if !children.isEmpty { object["children"] = children.map { $0.jsonObject() } }
         return object
@@ -60,8 +66,12 @@ public struct UsageInputs {
         public var cacheBytes: UInt64
         public var dataBytes: UInt64
         public var path: String?
-        public init(name: String, bundleBytes: UInt64, cacheBytes: UInt64 = 0, dataBytes: UInt64 = 0, path: String? = nil) {
+        public var offloaded: Bool
+        public var cachePath: String?
+        public var dataPath: String?
+        public init(name: String, bundleBytes: UInt64, cacheBytes: UInt64 = 0, dataBytes: UInt64 = 0, path: String? = nil, offloaded: Bool = false, cachePath: String? = nil, dataPath: String? = nil) {
             self.name = name; self.bundleBytes = bundleBytes; self.cacheBytes = cacheBytes; self.dataBytes = dataBytes; self.path = path
+            self.offloaded = offloaded; self.cachePath = cachePath; self.dataPath = dataPath
         }
     }
     public struct Offloaded {
@@ -114,11 +124,21 @@ public enum UsageMap {
         let appNodes: [UsageNode] = input.apps.map { app in
             var bundle = UsageNode(name: app.name, key: "bundle", kind: .bundle, bytes: app.bundleBytes)
             bundle.path = app.path
+            bundle.offloaded = app.offloaded
             var parts: [UsageNode] = [bundle]
-            if app.cacheBytes > 0 { parts.append(UsageNode(name: app.name, key: "cache", kind: .cache, bytes: app.cacheBytes)) }
-            if app.dataBytes > 0 { parts.append(UsageNode(name: app.name, key: "data", kind: .data, bytes: app.dataBytes)) }
+            if app.cacheBytes > 0 {
+                var cacheNode = UsageNode(name: app.name, key: "cache", kind: .cache, bytes: app.cacheBytes)
+                cacheNode.path = app.cachePath
+                parts.append(cacheNode)
+            }
+            if app.dataBytes > 0 {
+                var dataNode = UsageNode(name: app.name, key: "data", kind: .data, bytes: app.dataBytes)
+                dataNode.path = app.dataPath
+                parts.append(dataNode)
+            }
             var group = UsageNode.group(name: app.name, kind: .apps, parts)
             group.path = app.path
+            group.offloaded = app.offloaded
             return group
         }
         let apps = UsageNode.group(name: "Apps", key: "apps", kind: .apps, merged(appNodes, kind: .apps))
@@ -178,9 +198,16 @@ public enum UsageMap {
 
     /// Fills `refusal` on every box with a path, so the page knows where Offload and Delete are allowed.
     static func annotate(_ node: UsageNode, refusal: (String) -> String?) -> UsageNode {
+        annotate(node, refusal: refusal, trashRefusal: refusal)
+    }
+
+    static func annotate(_ node: UsageNode, refusal: (String) -> String?, trashRefusal: (String) -> String?) -> UsageNode {
         var out = node
-        if let path = node.path { out.refusal = refusal(path) }
-        out.children = node.children.map { annotate($0, refusal: refusal) }
+        if let path = node.path {
+            out.refusal = refusal(path)
+            out.trashRefusal = trashRefusal(path)
+        }
+        out.children = node.children.map { annotate($0, refusal: refusal, trashRefusal: trashRefusal) }
         return out
     }
 
@@ -200,7 +227,7 @@ public enum UsageMap {
     }
 
     /// Scans one directory's direct children in parallel for treemap drill-down, reporting whether a timeout left it partial.
-    public static func scanDirectoryDetailed(_ path: String, kind: UsageNode.Kind = .personal, timeout: TimeInterval = 20, refusal: (String) -> String?) -> (children: [UsageNode], partial: Bool) {
+    public static func scanDirectoryDetailed(_ path: String, kind: UsageNode.Kind = .personal, timeout: TimeInterval = 20, refusal: (String) -> String?, trashRefusal: ((String) -> String?)? = nil) -> (children: [UsageNode], partial: Bool) {
         let dir = URL(fileURLWithPath: path).standardizedFileURL.path
         guard let entries = try? FileManager.default.contentsOfDirectory(atPath: dir) else {
             return ([], false)
@@ -254,6 +281,9 @@ public enum UsageMap {
         group.wait()
         let (nodes, partial) = collector.snapshot()
         let grouped = UsageNode.group(name: URL(fileURLWithPath: dir).lastPathComponent, kind: kind, merged(nodes, kind: kind))
+        if let trashRefusal {
+            return (annotate(grouped, refusal: refusal, trashRefusal: trashRefusal).children, partial)
+        }
         return (annotate(grouped, refusal: refusal).children, partial)
     }
 
@@ -376,15 +406,50 @@ public enum UsageScan {
 
         for (root, entries) in [("/Applications", children("apps")), (home + "/Applications", children("userApps"))] {
             for (name, bytes) in entries where name.hasSuffix(".app") {
+                let appPath = root + "/" + name
                 let display = String(name.dropLast(4))
-                let bundleId = Bundle(path: root + "/" + name)?.bundleIdentifier
-                var cache: UInt64 = 0, data: UInt64 = 0
-                for key in [bundleId, display].compactMap({ $0 }) {
-                    if let v = caches[key], !usedCache.contains(key) { cache += v; usedCache.insert(key) }
-                    if let v = support[key], !usedSupport.contains(key) { data += v; usedSupport.insert(key) }
-                    if let v = containers[key], !usedContainers.contains(key) { data += v; usedContainers.insert(key) }
+                let bundleId = Bundle(path: appPath)?.bundleIdentifier
+                let stubFile = appPath + "/Contents/Resources/stub.json"
+                var isOffloaded = false
+                var stubBundleId: String?
+                if let stubData = FileManager.default.contents(atPath: stubFile) {
+                    isOffloaded = true
+                    if let stubObj = (try? JSONSerialization.jsonObject(with: stubData)) as? [String: Any] {
+                        stubBundleId = stubObj["appId"] as? String
+                    }
                 }
-                input.apps.append(.init(name: display, bundleBytes: bytes, cacheBytes: cache, dataBytes: data, path: root + "/" + name))
+                var cache: UInt64 = 0, data: UInt64 = 0
+                var bestCachePath: String?
+                var bestCacheBytes: UInt64 = 0
+                var bestDataPath: String?
+                var bestDataBytes: UInt64 = 0
+                for key in [stubBundleId, bundleId, display].compactMap({ $0 }) {
+                    if let v = caches[key], !usedCache.contains(key) {
+                        cache += v
+                        usedCache.insert(key)
+                        if v > bestCacheBytes { bestCacheBytes = v; bestCachePath = library + "/Caches/" + key }
+                    }
+                    if let v = support[key], !usedSupport.contains(key) {
+                        data += v
+                        usedSupport.insert(key)
+                        if v > bestDataBytes { bestDataBytes = v; bestDataPath = library + "/Application Support/" + key }
+                    }
+                    if let v = containers[key], !usedContainers.contains(key) {
+                        data += v
+                        usedContainers.insert(key)
+                        if v > bestDataBytes { bestDataBytes = v; bestDataPath = library + "/Containers/" + key }
+                    }
+                }
+                input.apps.append(.init(
+                    name: display,
+                    bundleBytes: bytes,
+                    cacheBytes: cache,
+                    dataBytes: data,
+                    path: appPath,
+                    offloaded: isOffloaded,
+                    cachePath: bestCachePath,
+                    dataPath: bestDataPath
+                ))
             }
         }
 
@@ -462,7 +527,7 @@ public enum UsageScan {
             }
         }
         input.system = systemParts(children: children, total: total)
-        return (UsageMap.annotate(UsageMap.assemble(input), refusal: engine.fileOffloadRefusal), partial)
+        return (UsageMap.annotate(UsageMap.assemble(input), refusal: engine.fileOffloadRefusal, trashRefusal: engine.trashPathRefusal), partial)
     }
 
     // MARK: Linux

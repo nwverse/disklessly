@@ -80,6 +80,7 @@ public final class FailoverBackend: StorageBackend {
     public func list(_ path: String) throws -> [String] { try read { try $0.list(path) } }
     public func entries(_ path: String) throws -> [BackendEntry] { try read { try $0.entries(path) } }
     public func stat(_ path: String) throws -> BackendStat? { try read { try $0.stat(path) } }
+    public func statWithHash(_ path: String) throws -> (stat: BackendStat, sha256: String?)? { try read { try $0.statWithHash(path) } }
     public func get(_ path: String, range: Range<UInt64>?) throws -> Data { try read { try $0.get(path, range: range) } }
     public func getResumable(_ path: String, offset: UInt64) throws -> ResumableBody { try read { try $0.getResumable(path, offset: offset) } }
     public func download(_ path: String, to destination: URL, offset: UInt64) throws -> ResumableFile {
@@ -88,6 +89,7 @@ public final class FailoverBackend: StorageBackend {
 
     public func put(_ path: String, data: Data) throws { try primary.put(path, data: data) }
     public func put(_ path: String, file: URL) throws { try primary.put(path, file: file) }
+    public func put(_ path: String, file: URL, onBytes: @escaping (UInt64, UInt64) -> Void) throws { try primary.put(path, file: file, onBytes: onBytes) }
     public func delete(_ path: String) throws { try primary.delete(path) }
     public func putStream(_ path: String, from producer: (FileHandle) throws -> Void) throws { try primary.putStream(path, from: producer) }
     public func move(_ from: String, to: String) throws { try primary.move(from, to: to) }

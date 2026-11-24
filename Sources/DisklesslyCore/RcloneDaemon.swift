@@ -61,6 +61,7 @@ final class RcloneDaemon {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = 24 * 3600
         configuration.timeoutIntervalForResource = 24 * 3600
+        configuration.httpMaximumConnectionsPerHost = 16
         configuration.connectionProxyDictionary = [:]
         session = URLSession(configuration: configuration)
         try process.run()

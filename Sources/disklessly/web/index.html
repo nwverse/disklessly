@@ -302,6 +302,17 @@
     </div>
   </form>
 </dialog>
+<dialog id="link-picker" class="confirm link-picker" aria-labelledby="link-picker-title" aria-describedby="link-picker-body">
+  <form method="dialog">
+    <h2 id="link-picker-title"></h2>
+    <p id="link-picker-body"></p>
+    <input id="link-picker-search" class="link-picker-search" type="search" autocomplete="off" spellcheck="false">
+    <div id="link-picker-list" class="link-picker-list" role="listbox"></div>
+    <div class="dialog-actions">
+      <button id="link-picker-cancel" type="button" class="btn outline"><span data-t="cancel"></span></button>
+    </div>
+  </form>
+</dialog>
 <script type="module" src="app.js"></script>
 </body>
 </html>

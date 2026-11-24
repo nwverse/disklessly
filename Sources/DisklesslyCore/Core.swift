@@ -209,11 +209,15 @@ public struct ResumableFile: Equatable {
 public protocol StorageBackend {
     func list(_ path: String) throws -> [String]
     func stat(_ path: String) throws -> BackendStat?
+    /// Stat with an optional server-computed lowercase hex SHA-256 when the backend provides hashes natively.
+    func statWithHash(_ path: String) throws -> (stat: BackendStat, sha256: String?)?
     /// Small objects (manifests, JSON). Large images and archives use `download`.
     func get(_ path: String, range: Range<UInt64>?) throws -> Data
     func put(_ path: String, data: Data) throws
     /// Upload a local file without reading it into one `Data`.
     func put(_ path: String, file: URL) throws
+    /// Upload a local file while reporting progress `(doneBytes, totalBytes)`.
+    func put(_ path: String, file: URL, onBytes: @escaping (UInt64, UInt64) -> Void) throws
     func delete(_ path: String) throws
     func getResumable(_ path: String, offset: UInt64) throws -> ResumableBody
     /// Stream `path` onto `destination`, appending when `offset` is past zero and the server honored `Range`.
@@ -232,6 +236,16 @@ public protocol StorageBackend {
 }
 
 extension StorageBackend {
+    public func statWithHash(_ path: String) throws -> (stat: BackendStat, sha256: String?)? {
+        guard let info = try stat(path) else { return nil }
+        return (info, nil)
+    }
+    public func put(_ path: String, file: URL, onBytes: @escaping (UInt64, UInt64) -> Void) throws {
+        let total = (try? ChunkedIO.byteCount(file)) ?? 0
+        if total > 0 { onBytes(0, total) }
+        try put(path, file: file)
+        if total > 0 { onBytes(total, total) }
+    }
     public func putStream(_ path: String, from producer: (FileHandle) throws -> Void) throws {
         throw DisklesslyError.unsupported("this backend cannot stream an upload")
     }

@@ -219,9 +219,13 @@ public enum WriteOnce {
         }
     }
 
-    public static func publishFile(backend: any StorageBackend, path: String, file: URL, sha256: String) throws -> WriteOnceResult {
+    public static func publishFile(backend: any StorageBackend, path: String, file: URL, sha256: String, onBytes: ((UInt64, UInt64) -> Void)? = nil) throws -> WriteOnceResult {
         try publish(backend, path, sha256: sha256.lowercased()) {
-            try backend.put(path, file: file)
+            if let onBytes {
+                try backend.put(path, file: file, onBytes: onBytes)
+            } else {
+                try backend.put(path, file: file)
+            }
         }
     }
 
@@ -319,13 +323,15 @@ public enum WriteOnce {
                 return .placeholder
             }
         }
-        guard try backend.stat(path) != nil else { return .absent }
-        if let root = backend.localRoot() {
-            let url = root.appendingPathComponent(path)
+        if backend.localRoot() != nil {
+            guard try backend.stat(path) != nil else { return .absent }
+            let url = backend.localRoot()!.appendingPathComponent(path)
             return .sha256(try SHA256Digest.hexFile(url))
         }
-        // No local directory (WebDAV): stream the object onto disk and hash it in
-        // chunks instead of holding a multi-gigabyte image in memory.
+        guard let probed = try backend.statWithHash(path) else { return .absent }
+        if let sha = probed.sha256 { return .sha256(sha) }
+        // No local directory and no server hash (e.g. WebDAV): stream the object onto
+        // disk and hash it in chunks instead of holding a multi-gigabyte image in memory.
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("disklessly-probe-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: folder) }
