@@ -216,7 +216,8 @@ extension DisklesslyEngine {
             throw DisklesslyError.integrity(message)
         }
         // Snapshot legacy ids before this image exists, so a brand-new publish is not frozen as legacy.
-        try ensureDevice(now: now)
+        // Reuses the caller's manifest listing so a pack lists `manifests/` once, not three times.
+        try ensureDevice(now: now, prefetchedManifests: prefetchedManifests)
         switch decision {
         case .reuse(let manifest, let disposition):
             try requireImageKey(manifest)
@@ -484,12 +485,16 @@ extension DisklesslyEngine {
 
     /// Creates this Mac's device file, fills gaps from local stubs, then freezes
     /// still-unreferenced images as legacy. Later runs do not recompute that set.
-    func ensureDevice(now: Date = Date()) throws {
+    ///
+    /// `prefetchedManifests` (read by the caller moments earlier) skips both manifest
+    /// listings. The scope then knows the decoded manifests plus the image census; an
+    /// undecodable manifest's id is still known through its image in the census.
+    func ensureDevice(now: Date = Date(), prefetchedManifests: [ImageManifest]? = nil) throws {
         let backend = try repo
         try ensureRepoCollections(backend)
         let local = try LocalDeviceStore.loadOrCreate(stateDir: stateDirectory, suggestedName: currentDeviceFacts().hostname)
-        let manifests = try readManifests(backend)
-        let scope = try stubScope(backend, manifests: manifests)
+        let manifests = try prefetchedManifests ?? readManifests(backend)
+        let scope = try stubScope(backend, manifests: manifests, listManifests: prefetchedManifests == nil)
         let claims = stubClaims(manifests: manifests, scope: scope, now: now)
         _ = try upsertDevice(local: local, manifest: nil, claims: claims, expel: { self.isForeignStubRef($0, scope: scope) }, backend: backend, now: now)
         try snapshotLegacyIfAbsent(backend)
@@ -780,10 +785,10 @@ extension DisklesslyEngine {
     }
 
     /// Reads only: the repo id is never created here (see `RepoIdentity.ensure`).
-    func stubScope(_ backend: any StorageBackend, manifests: [ImageManifest]) throws -> StubScope {
+    func stubScope(_ backend: any StorageBackend, manifests: [ImageManifest], listManifests: Bool = true) throws -> StubScope {
         let repoId = RepoIdentity.read(backend)
         var manifestIds = Set(manifests.map(\.imageId))
-        for name in try listRepo(backend, "manifests") where !RepoFileNames.isConflictCopy(name) {
+        for name in listManifests ? try listRepo(backend, "manifests") : [] where !RepoFileNames.isConflictCopy(name) {
             let logical = RepoFileNames.logicalName(name)
             guard logical.hasSuffix(".json") else { continue }
             manifestIds.insert((logical as NSString).deletingPathExtension)

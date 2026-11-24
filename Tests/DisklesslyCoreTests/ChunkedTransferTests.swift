@@ -287,8 +287,10 @@ final class ChunkedTransferTests: XCTestCase {
             unsetenv("DISKLESSLY_UPLOAD_STREAMS")
         }
 
+        // The app path is only the bundle key here: it is not created on disk, so offload skips
+        // the app pack step (an empty folder is not a valid .app and pack would refuse it) and the
+        // test exercises just the concurrent linked-path offload/restore.
         let fakeApp = root.appendingPathComponent("apps/Dummy.app")
-        try FileManager.default.createDirectory(at: fakeApp, withIntermediateDirectories: true)
         // Bundle has two linked paths, triggering concurrent LinkedBundlesEngine execution.
         let bundle = try engine.linkedBundleStore.link(appPath: fakeApp.path, appName: "Dummy", extraPath: dir1.path)
         _ = try engine.linkedBundleStore.link(appPath: fakeApp.path, appName: "Dummy", extraPath: file2.path)

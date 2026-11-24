@@ -1001,12 +1001,18 @@ public enum RemoteCleanCommand {
     /// Rotated logs: `*.gz`, `*.1`, `*.old`, and dateext rotations (`messages-20261025`) used by RHEL/Oracle/Fedora.
     static let rotatedLogFind = #"find /var/log -type f \( -name '*.gz' -o -name '*.[0-9]' -o -name '*.old' -o -name '*-[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' \) -delete"#
 
-    /// Deletes each child of "$P" unless a live process maps/executes something under it; root-owned
+    /// Deletes each child of "$P" unless a live process maps/executes something under it (`/proc` on
+    /// Linux, `lsof` where there is no `/proc`, e.g. macOS); root-owned
     /// trees fall back to `sudo -n`; read-only trees (Go module cache) are made writable first.
     static let guardedChildDelete = #"""
 if [ -d "$P" ]; then
   S=""; [ -w "$P" ] || S="sudo -n"
-  busy=$( { sudo -n sh -c 'ls -l /proc/[0-9]*/exe; cat /proc/[0-9]*/maps' || sh -c 'ls -l /proc/[0-9]*/exe; cat /proc/[0-9]*/maps'; } 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if (substr($i, 1, 1) == "/") print $i }' | sort -u )
+  if [ -d /proc/self ]; then
+    busy=$( { sudo -n sh -c 'ls -l /proc/[0-9]*/exe; cat /proc/[0-9]*/maps' || sh -c 'ls -l /proc/[0-9]*/exe; cat /proc/[0-9]*/maps'; } 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if (substr($i, 1, 1) == "/") print $i }' | sort -u )
+  else
+    # macOS / BSD have no /proc: lsof lists executables (txt), mapped libraries and open files.
+    busy=$( { sudo -n lsof -n -w -F n || lsof -n -w -F n; } 2>/dev/null | sed -n 's/^n\(\/.*\)$/\1/p' | sort -u )
+  fi
   for c in "$P"/* "$P"/.[!.]* "$P"/..?*; do
     [ -e "$c" ] || [ -L "$c" ] || continue
     r=$(readlink -f "$c" 2>/dev/null || printf '%s' "$c")

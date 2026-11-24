@@ -293,7 +293,11 @@ extension DisklesslyEngine {
         }
         let staging = parent.appendingPathComponent(".\(placeholder.name).disklessly-\(UUID().uuidString)")
         let download = staging.appendingPathExtension("download")
+        // Chunk parts get their own scratch folder: `staging` itself must not exist yet, because a
+        // folder is extracted into it with `createDirectory(withIntermediateDirectories: false)`.
+        let chunkScratch = staging.appendingPathExtension("chunks")
         defer {
+            try? FileManager.default.removeItem(at: chunkScratch)
             try? FileManager.default.removeItem(at: download)
             try? FileManager.default.removeItem(at: download.appendingPathExtension("partial"))
             try? FileManager.default.removeItem(at: staging)
@@ -305,7 +309,7 @@ extension DisklesslyEngine {
                 destination: download,
                 expectedSize: placeholder.storedSize,
                 expectedSHA256: placeholder.sha256,
-                stagingDir: staging,
+                stagingDir: chunkScratch,
                 streams: ChunkedTransferConfig.current().streams
             )
         } else {
