@@ -734,6 +734,10 @@ enum FolderArchive {
         // may still be unwritten. Writing it then must fail with EPIPE, not kill this process (SIGPIPE).
         #if canImport(Darwin)
         _ = fcntl(pipe.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
+        #else
+        // Linux has no per-descriptor flag; GNU tar also stops early. Ignore SIGPIPE process-wide (as the
+        // remote-machine SSH path already does): writes then fail with EPIPE, handled below.
+        _ = signal(SIGPIPE, SIG_IGN)
         #endif
         try tar.run()
         let collected = Collected()

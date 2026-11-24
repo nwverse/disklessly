@@ -164,12 +164,20 @@ final class UIServerTests: XCTestCase {
     }
 
     func testPreferredPortIsUsedAndFallsBackWhenTaken() throws {
-        let probe = LoopbackUIServer { _ in UIResponse.json(["ok": true]) }
-        try probe.start()
-        let free = probe.port
-        probe.stop()
-        let first = LoopbackUIServer(token: "a") { _ in UIResponse.json(["ok": true]) }
-        try first.start(preferredPort: free)
+        // A port seen free can be taken by a parallel test before we bind it again; retry a few times.
+        var free: UInt16 = 0
+        var first: LoopbackUIServer!
+        for _ in 0..<5 {
+            let probe = LoopbackUIServer { _ in UIResponse.json(["ok": true]) }
+            try probe.start()
+            free = probe.port
+            probe.stop()
+            let candidate = LoopbackUIServer(token: "a") { _ in UIResponse.json(["ok": true]) }
+            try candidate.start(preferredPort: free)
+            first = candidate
+            if candidate.port == free { break }
+            candidate.stop()
+        }
         defer { first.stop() }
         XCTAssertEqual(first.port, free)
         let second = LoopbackUIServer(token: "b") { _ in UIResponse.json(["ok": true]) }
