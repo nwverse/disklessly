@@ -6,6 +6,30 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-11-23
+
+- The app is now shipped as a signed, notarized `Disklessly-<version>.dmg`, and the Homebrew cask is
+  published: `brew install --cask nwverse/tap/disklessly`. The macOS CLI tarball is signed and
+  notarized too, so the formula no longer needs the quarantine workaround.
+- `pack` is faster: app images default to LZFSE (`ULFO`; `--image-format ULMO` or
+  `DISKLESSLY_IMAGE_FORMAT=ULMO` restores LZMA), repo manifests are read in parallel and reused across
+  pack, publish, and catalog rewrite, and uploads are verified against the SHA-256 the backend reports
+  (Google Drive) instead of downloading the image again. Backends without a hash still download to verify.
+- Pack progress shows each stage (check, hash, archive, encrypt, upload with bytes, verify, stub), and the
+  dashboard shows a live upload percentage.
+- Large offloaded files and folder archives are split into content-addressed chunks
+  (`files/chunks/`, `files/objects/<sha256>.chunks.json`) and uploaded, verified, and downloaded over
+  several streams.
+- Linked bundles: bind extra folders or files to an app from the dashboard (searchable app picker) so
+  they are offloaded and restored with it and come back automatically when its stub launches.
+- Dashboard treemap: folders load on demand and in parallel, results are cached, expanded subtrees
+  survive refreshes, app icons are drawn in their boxes, and deleting or offloading an item refreshes
+  only the affected folder instead of returning to the top.
+- Rebuildable caches (`~/Library/Caches/<third-party>`, Xcode `DerivedData`) can be moved to the Trash
+  from the map; `Application Support`, Apple caches, and Disklessly's own folders stay protected, and
+  `~/Library` still cannot be offloaded. Right-clicking an app that is already a stub explains that the
+  remaining space is its data and offers to reveal or offload that data.
+
 ## [0.3.1] - 2026-11-21
 
 - Offloading (`pack`, file/folder offload, app data offload, container image offload, and upload

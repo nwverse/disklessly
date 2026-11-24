@@ -48,11 +48,6 @@ class DisklesslyCli < Formula
   def caveats
     on_macos do
       <<~EOS
-        The macOS build in this release is not signed with an Apple Developer ID and is
-        not notarized, so Gatekeeper blocks it the first time it runs. Clear the
-        quarantine flag Homebrew sets:
-          xattr -dr com.apple.quarantine "#{opt_bin}/disklessly" "#{opt_bin}/disklessly-stub"
-
         Stubs exec a stable copy of the engine under
           ~/Library/Application Support/Disklessly/bin/disklessly
         After installing or upgrading, refresh that copy and your stubs:

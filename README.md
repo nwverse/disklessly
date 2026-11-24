@@ -37,25 +37,23 @@ is inside it at `/Applications/Disklessly.app/Contents/MacOS/disklessly`:
 sudo ln -s /Applications/Disklessly.app/Contents/MacOS/disklessly /usr/local/bin/disklessly
 ```
 
-**Homebrew.** The CLI comes from the project tap:
+**Homebrew.** Both the app and the CLI come from the project tap
+([nwverse/homebrew-tap](https://github.com/nwverse/homebrew-tap)):
 
 ```sh
-brew tap nwverse/tap
-brew install disklessly-cli
-# or upgrade an existing install:
-brew update && brew upgrade disklessly-cli
+brew install --cask nwverse/tap/disklessly    # menu-bar app; links disklessly and dkl
+brew install nwverse/tap/disklessly-cli       # or just the CLI
+# upgrade later:
+brew update && brew upgrade --cask nwverse/tap/disklessly    # or: brew upgrade nwverse/tap/disklessly-cli
 ```
 
-That installs `disklessly` and the `dkl` alias from the release tarball. On macOS it
-also installs `disklessly-stub`. The macOS binary is not signed with a Developer ID
-and is not notarized, so Gatekeeper blocks the first run; `brew install` prints the
-`xattr` command that clears the quarantine flag. On Linux the same formula installs
-the matching build (x86_64 or aarch64), which needs glibc 2.34 or newer plus
-`libsqlite3`, `libcurl`, and `libxml2`.
-
-`brew install --cask disklessly` will install the menu-bar app and link the CLI once
-an Apple Developer ID certificate is available. The cask is not published yet. The
-formula and cask templates are in `packaging/homebrew/`.
+The cask installs the signed, notarized **Disklessly.app** and links the CLI inside it
+as `disklessly` and `dkl`. The formula installs `disklessly`, `dkl`, and
+`disklessly-stub` from the release tarball; on macOS those binaries carry the same
+Developer ID signature and notarization as the app. Install one or the other, not
+both. On Linux the formula installs the matching build (x86_64 or aarch64), which
+needs glibc 2.34 or newer plus `libsqlite3`, `libcurl`, and `libxml2`. The formula
+and cask templates are in `packaging/homebrew/`.
 
 **Tarball.** `disklessly-<version>-macos-universal.tar.gz` holds `bin/disklessly`,
 `bin/disklessly-stub`, and `share/disklessly/web`. Keep that layout: the CLI looks
@@ -80,7 +78,12 @@ agents, Xcode and other toolchains), and says when an app is already in the repo
 from another Mac so packing it needs no upload.
 
 `pack` builds the image, verifies it, uploads it, and only then replaces the app
-with a stub. It prints the size, whether the image was reused or uploaded, where
+with a stub. Images are LZFSE-compressed (`ULFO`) by default, which is much faster
+to build than LZMA (`--image-format ULMO` or `DISKLESSLY_IMAGE_FORMAT=ULMO` switch
+back). When the backend reports a SHA-256 for an uploaded object (Google Drive does),
+the upload is verified against it instead of downloading the image again. The
+dashboard shows each stage (check, hash, archive, encrypt, upload with live bytes,
+verify, stub) while it runs. It prints the size, whether the image was reused or uploaded, where
 the stub is, and what happened to the original. The original is deleted after the
 image is confirmed; pass `--keep-original` to keep it next to the stub as
 `<Name>.256orig.app`. If the cloud copy is not confirmed yet, pack keeps the
@@ -121,6 +124,19 @@ the repo, and the recommend list. From each app row you can open, prefetch, pin
 or unpin, evict, and unpack; packing a new app is `disklessly pack`. The page is
 bilingual (Chinese and English) and follows the system light or dark appearance.
 It listens only on `127.0.0.1` and needs the random token in the URL.
+
+The treemap loads deeper folders on demand, in parallel, and keeps what you have
+expanded when it refreshes. Deleting or offloading an item from its right-click
+menu updates only the folder you are looking at instead of jumping back to the top.
+Rebuildable caches such as `~/Library/Caches/<app>` (for example `go-build`) and
+Xcode `DerivedData` can be moved to the Trash from the map; the rest of `~/Library`
+stays protected. For an app that is already a stub, the menu explains that the
+remaining space is the app's data and offers to reveal it in Finder or offload it.
+
+**Linked bundles.** Right-click a folder or file in the map and choose
+**Link to app** to pick an app from a searchable list. Linked items are offloaded
+and brought back together with that app, and come back automatically when you open
+its stub. Large files and folders are uploaded and downloaded in parallel chunks.
 
 The menu-bar item has **Open Dashboard**, **Copy Dashboard URL**, the version, and
 **Quit**. The app has no Dock icon; reopening it shows the dashboard window again.
