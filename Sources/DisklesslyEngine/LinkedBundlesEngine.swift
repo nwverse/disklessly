@@ -17,7 +17,7 @@ extension DisklesslyEngine {
         if FileManager.default.fileExists(atPath: appURL.path),
            !FileManager.default.fileExists(atPath: appURL.appendingPathComponent("Contents/Resources/stub.json").path) {
             progress("pack")
-            try withoutActuallyEscaping(onBytes) { escOnBytes in
+            try withEscapableBytes(onBytes) { escOnBytes in
                 _ = try pack(bundle.appPath, progress: progress, onBytes: { done, total in
                     escOnBytes(done, total)
                 })
@@ -41,7 +41,7 @@ extension DisklesslyEngine {
             return
         }
         let progressLock = NSLock()
-        try withoutActuallyEscaping(onBytes) { escOnBytes in
+        try withEscapableBytes(onBytes) { escOnBytes in
             let tracker = LinkedByteTracker(onBytes: escOnBytes)
             try Self.runConcurrentPaths(pendingPaths, maxConcurrent: 2) { path in
                 _ = try self.offloadFile(path, progress: { phase in
@@ -84,24 +84,29 @@ extension DisklesslyEngine {
         }
     }
 
+    /// Runs `body` for every path, at most `maxConcurrent` at a time, and throws the first error.
+    /// `concurrentPerform` returns only after every worker has finished, so `body` never escapes
+    /// (GCD `async` blocks may outlive `group.wait()`, which trapped `withoutActuallyEscaping`).
     private static func runConcurrentPaths(_ paths: [String], maxConcurrent: Int, _ body: (String) throws -> Void) throws {
-        try withoutActuallyEscaping(body) { work in
-            let group = DispatchGroup()
-            let sem = DispatchSemaphore(value: max(1, maxConcurrent))
-            let state = LinkedErrorBox()
-            for path in paths {
-                if state.error != nil { break }
-                sem.wait()
-                if state.error != nil { sem.signal(); break }
-                group.enter()
-                DispatchQueue.global(qos: .userInitiated).async {
-                    defer { sem.signal(); group.leave() }
-                    if state.error != nil { return }
-                    do { try work(path) } catch { state.set(error) }
-                }
+        guard !paths.isEmpty else { return }
+        let state = LinkedErrorBox()
+        let next = LinkedCounter()
+        DispatchQueue.concurrentPerform(iterations: min(max(1, maxConcurrent), paths.count)) { _ in
+            while state.error == nil, let index = next.take(below: paths.count) {
+                do { try body(paths[index]) } catch { state.set(error) }
             }
-            group.wait()
-            if let err = state.error { throw err }
+        }
+        if let err = state.error { throw err }
+    }
+
+    private final class LinkedCounter: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = 0
+        func take(below limit: Int) -> Int? {
+            lock.lock(); defer { lock.unlock() }
+            guard value < limit else { return nil }
+            value += 1
+            return value - 1
         }
     }
 

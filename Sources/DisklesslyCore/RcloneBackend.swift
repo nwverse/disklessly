@@ -369,7 +369,7 @@ public struct RcloneBackend: StorageBackend {
     public func putStream(_ path: String, from producer: (FileHandle) throws -> Void) throws {
         let overrides = Self.uploadOverrides(type: Self.remoteType(remote, config: config))
         let args = ["rcat", Self.withOverrides(try target(path), overrides)]
-        let result = try withoutActuallyEscaping(producer) { feed in
+        let result = try withEscapableProducer(producer) { feed in
             try RcloneTool.run(binary: binary, config: config, args, streaming: feed)
         }
         guard result.status == 0 else { throw fail("rcat", result) }

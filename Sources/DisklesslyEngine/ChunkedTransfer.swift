@@ -36,7 +36,7 @@ public enum ChunkedTransfer {
         try FileManager.default.createDirectory(at: stageDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: stageDir) }
 
-        return try withoutActuallyEscaping(onBytes) { escOnBytes in
+        return try withEscapableBytes(onBytes) { escOnBytes in
             let session = UploadSession(backend: backend, streams: config.streams, estimatedTotal: totalSize, onBytes: escOnBytes)
             var finished = false
             defer { if !finished { session.abort(DisklesslyError.failure("aborted")); session.waitForWorkers() } }
@@ -122,7 +122,7 @@ public enum ChunkedTransfer {
         try FileManager.default.createDirectory(at: stageDir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: stageDir) }
 
-        return try withoutActuallyEscaping(onBytes) { escOnBytes in
+        return try withEscapableBytes(onBytes) { escOnBytes in
             let session = UploadSession(backend: backend, streams: config.streams, estimatedTotal: max(expectedLogicalBytes, 1), onBytes: escOnBytes)
             var archiveError: Error?
             var wholeResult: (sha256: String, totalSize: UInt64)?
