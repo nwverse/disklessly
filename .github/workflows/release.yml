@@ -121,10 +121,10 @@ jobs:
           ARM_SHA="$(awk -v f="disklessly-$VERSION-linux-aarch64.tar.gz" '$2==f {print $1}' dist/SHA256SUMS)"
           X64_SHA="$(awk -v f="disklessly-$VERSION-linux-x86_64.tar.gz" '$2==f {print $1}' dist/SHA256SUMS)"
           DMG_SHA="$(awk -v f="Disklessly-$VERSION.dmg" '$2==f {print $1}' dist/SHA256SUMS)"
-          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256_MACOS_UNIVERSAL@/$TAR_SHA/" \
+          sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHA256_MACOS_UNIVERSAL@/$TAR_SHA/" \
               -e "s/@SHA256_LINUX_AARCH64@/$ARM_SHA/" -e "s/@SHA256_LINUX_X86_64@/$X64_SHA/" \
               packaging/homebrew/disklessly-cli.rb >dist/disklessly-cli.rb
-          sed -e "s/@VERSION@/$VERSION/" -e "s/@SHA256_DMG@/$DMG_SHA/" packaging/homebrew/disklessly.rb >dist/disklessly.rb
+          sed -e "s/@VERSION@/$VERSION/g" -e "s/@SHA256_DMG@/$DMG_SHA/" packaging/homebrew/disklessly.rb >dist/disklessly.rb
       - name: Draft GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
