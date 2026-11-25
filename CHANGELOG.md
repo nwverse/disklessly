@@ -10,7 +10,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (SIGPIPE). This happened when an upload failed early, for example on a full cloud drive. The app and CLI now
   ignore SIGPIPE, and writes into rclone's stdin fail with an error instead of raising an exception.
 - A full cloud drive (Google Drive `storageQuotaExceeded` and similar) is reported as "the cloud drive is full"
-  instead of "cannot reach the repo".
+  instead of "cannot reach the repo" or "The file couldn't be saved": when an upload fails, the upload's own error
+  is reported rather than the broken pipe the archiver hits after it.
 - Linked bundles whose paths nest (`~/.vphone` and `~/.vphone/machines/…`) offload only the outer folder,
   rather than archiving it while the inner one is being offloaded at the same time.
 

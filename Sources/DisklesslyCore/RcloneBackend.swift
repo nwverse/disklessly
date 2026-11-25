@@ -135,9 +135,16 @@ public enum RcloneTool {
             try? inPipe.fileHandleForWriting.close()
         }
         var feedError: Error?
+        var rcloneQuitFirst = false
         if let streaming {
             do { try streaming(inPipe.fileHandleForWriting) } catch {
                 feedError = error
+                // A feed that fails because rclone already exited (EPIPE) says nothing useful;
+                // rclone's own error (a full drive, bad credentials) is the real cause.
+                // The pipe can break a moment before rclone is reaped; give it a second to finish exiting.
+                let deadline = Date().addingTimeInterval(1)
+                while process.isRunning && Date() < deadline { usleep(20_000) }
+                rcloneQuitFirst = !process.isRunning
                 process.terminate()
             }
             try? inPipe.fileHandleForWriting.close()
@@ -145,7 +152,9 @@ public enum RcloneTool {
         process.waitUntilExit()
         group.wait()
         try? outHandle?.close()
-        if let feedError { throw feedError }
+        if let feedError, !(rcloneQuitFirst && process.terminationReason == .exit && process.terminationStatus != 0) {
+            throw feedError
+        }
         return Result(status: process.terminationStatus, stdout: out, stderr: String(decoding: err, as: UTF8.self))
     }
 

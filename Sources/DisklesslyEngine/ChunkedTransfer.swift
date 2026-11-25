@@ -139,7 +139,9 @@ public enum ChunkedTransfer {
                     }
                 )
             } catch {
-                archiveError = error
+                // An upload that failed first (a full drive, say) aborts the session, and the archive
+                // then fails writing into it. Report the upload's error: it is the cause.
+                if !session.isAborted { archiveError = error }
                 session.abort(error)
             }
 
