@@ -6,6 +6,14 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- The menu-bar app no longer quits silently when a child process or connection closes while it is writing
+  (SIGPIPE). This happened when an upload failed early, for example on a full cloud drive. The app and CLI now
+  ignore SIGPIPE, and writes into rclone's stdin fail with an error instead of raising an exception.
+- A full cloud drive (Google Drive `storageQuotaExceeded` and similar) is reported as "the cloud drive is full"
+  instead of "cannot reach the repo".
+- Linked bundles whose paths nest (`~/.vphone` and `~/.vphone/machines/…`) offload only the outer folder,
+  rather than archiving it while the inner one is being offloaded at the same time.
+
 ## [0.3.3] - 2026-11-24
 
 - Hidden usage ("对账"): the dashboard's Not measured box is broken into other users' folders, local snapshots and

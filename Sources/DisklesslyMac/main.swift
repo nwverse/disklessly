@@ -3,6 +3,12 @@
 #if canImport(AppKit)
 import AppKit
 
+// A write to a pipe or socket whose reader is gone (a child that exited, a closed
+// browser connection) must fail with EPIPE, not kill the app: the default SIGPIPE
+// action ends the process silently, with no crash report. Set before the CLI
+// trampoline so the exec'd `disklessly` inherits it.
+_ = signal(SIGPIPE, SIG_IGN)
+
 // Engine code re-executes `argv[0]` for some jobs, such as the detached
 // `hook watch` that follows a restore-mode launch. Inside the app bundle
 // `argv[0]` is this executable, so CLI arguments are forwarded to the bundled

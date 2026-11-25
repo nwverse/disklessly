@@ -760,6 +760,7 @@ public enum ManagementUI {
             switch error {
             case .backend: return ("offline", message)
             case .integrity: return ("integrity", message)
+            case .noSpace(let detail) where detail.hasPrefix(RcloneBackend.cloudFullPrefix): return ("cloud_full", message)
             case .noSpace: return ("no_space", message)
             case .busy: return ("busy", message)
             case .usage: return ("bad_request", message)

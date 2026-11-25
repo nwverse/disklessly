@@ -34,6 +34,7 @@ extension DisklesslyEngine {
                 pendingPaths.append(path)
             }
         }
+        pendingPaths = Self.outermostPaths(pendingPaths)
         if pendingPaths.count <= 1 {
             if let path = pendingPaths.first {
                 _ = try offloadFile(path, progress: progress, onBytes: onBytes)
@@ -82,6 +83,17 @@ extension DisklesslyEngine {
             progress("unpack")
             _ = try unpack(manifest)
         }
+    }
+
+    /// Drops a path that lies inside another one in the list. Offloading both at once
+    /// would archive the outer folder while the inner one is being swapped for a placeholder.
+    static func outermostPaths(_ paths: [String]) -> [String] {
+        let normalized = paths.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        return paths.indices.filter { i in
+            !normalized.indices.contains { j in
+                j != i && (normalized[i].hasPrefix(normalized[j] + "/") || (normalized[i] == normalized[j] && j < i))
+            }
+        }.map { paths[$0] }
     }
 
     /// Runs `body` for every path, at most `maxConcurrent` at a time, and throws the first error.

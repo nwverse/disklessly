@@ -167,7 +167,7 @@ public final class LinuxSecretStore: SecretStore {
         let done = DispatchSemaphore(value: 0)
         process.terminationHandler = { _ in done.signal() }
         do { try process.run() } catch { return .failed("\(error.localizedDescription)") }
-        if let stdin { input.fileHandleForWriting.write(Data(stdin.utf8)) }
+        if let stdin { try? input.fileHandleForWriting.write(contentsOf: Data(stdin.utf8)) }
         try? input.fileHandleForWriting.close()
         if done.wait(timeout: .now() + timeout) == .timedOut {
             process.terminate()

@@ -7,6 +7,10 @@ import Darwin
 import Glibc
 #endif
 
+// Writes to a closed pipe or socket (an exited child, a closed `disklessly ui` client)
+// fail with EPIPE instead of killing the process.
+_ = signal(SIGPIPE, SIG_IGN)
+
 let macHelpText = """
 disklessly: keep rarely used Mac apps in a repo and open them on demand.
 Usage: disklessly [--json] [--config PATH] [--state-dir PATH] <command> [options]

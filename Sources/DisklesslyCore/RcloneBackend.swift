@@ -130,7 +130,8 @@ public enum RcloneTool {
         group.enter()
         DispatchQueue.global().async { err = errPipe.fileHandleForReading.readDataToEndOfFile(); group.leave() }
         if let input {
-            inPipe.fileHandleForWriting.write(input)
+            // Throwing write: if rclone exits early the write fails with EPIPE instead of raising an exception.
+            try? inPipe.fileHandleForWriting.write(contentsOf: input)
             try? inPipe.fileHandleForWriting.close()
         }
         var feedError: Error?
@@ -215,7 +216,7 @@ public struct RcloneBackend: StorageBackend {
     private func rc(_ method: String, _ parameters: [String: Any], on daemon: RcloneDaemon) throws -> [String: Any]? {
         let (status, reply) = try daemon.call(method, parameters)
         if status == 404 { return nil }
-        guard status == 200 else { throw DisklesslyError.backend("rclone \(method) failed: \(RcloneDaemon.message(reply))") }
+        guard status == 200 else { throw Self.classify("rclone \(method) failed: \(RcloneDaemon.message(reply))") }
         return reply
     }
 
@@ -224,7 +225,20 @@ public struct RcloneBackend: StorageBackend {
     }
 
     private func fail(_ what: String, _ result: RcloneTool.Result) -> DisklesslyError {
-        .backend("rclone \(what) failed (exit \(result.status)): \(RcloneTool.lastLine(result.stderr))")
+        Self.classify("rclone \(what) failed (exit \(result.status)): \(RcloneTool.lastLine(result.stderr))")
+    }
+
+    /// A full cloud drive fails every upload the same way; say so plainly instead of
+    /// passing on the provider's error text.
+    public static let cloudFullPrefix = "the cloud drive is full"
+
+    static func classify(_ message: String) -> DisklesslyError {
+        let lower = message.lowercased()
+        let full = ["storagequotaexceeded", "quota has been exceeded", "quotaexceeded", "insufficient storage", "insufficientstorage", "no space left"]
+        if full.contains(where: lower.contains) {
+            return .noSpace("\(cloudFullPrefix), so nothing can be uploaded until space is freed there or the plan is upgraded (\(message))")
+        }
+        return .backend(message)
     }
 
     /// rclone exits 3 for a missing directory and 4 for a missing file.
