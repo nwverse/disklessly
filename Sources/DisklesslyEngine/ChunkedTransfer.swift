@@ -63,7 +63,7 @@ public enum ChunkedTransfer {
                     do {
                         while chunkSizeRead < config.chunkSize {
                             let remaining = Int(min(UInt64(ioBufferSize), config.chunkSize - chunkSizeRead))
-                            let slice = try autoreleasepool { try input.read(upToCount: remaining) } ?? Data()
+                            let slice = try drainingPool { try input.read(upToCount: remaining) } ?? Data()
                             if slice.isEmpty { break }
                             try handle.write(contentsOf: slice)
                             chunkHasher.update(slice)
