@@ -67,7 +67,7 @@ const copy = {
     quotaLeft: "配额剩余",
     floor: "空闲下限",
     diskFree: "磁盘可用",
-    detach: "分离延迟",
+    detachDelay: "分离延迟",
     durationS: (n) => `${n} 秒`,
     durationM: (n) => `${n} 分钟`,
     nearNote: "低于空闲下限时自动清除未固定的缓存",
@@ -751,7 +751,7 @@ const copy = {
     quotaLeft: "Quota left",
     floor: "Floor",
     diskFree: "free on disk",
-    detach: "Detach delay",
+    detachDelay: "Detach delay",
     durationS: (n) => `${n} s`,
     durationM: (n) => `${n} min`,
     nearNote: "Unpinned cache is cleared automatically below the free floor",
@@ -2024,7 +2024,7 @@ function renderCache(cache) {
   const delayValue = el("dd", "stat-value");
   delayValue.append(duration(cache.detachDelaySeconds));
   const delayLabel = el("dt");
-  delayLabel.append(bi("detach"));
+  delayLabel.append(bi("detachDelay"));
   delay.append(delayLabel, delayValue);
   stats.append(delay);
   body.append(stats);
