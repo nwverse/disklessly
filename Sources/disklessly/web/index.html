@@ -77,8 +77,9 @@
       <ol class="steps">
         <li>
           <strong data-t="heroStep1"></strong>
+          <span class="muted" data-t="heroStep1Body"></span>
           <span id="hero-repo" class="muted"></span>
-          <pre class="command"><code>disklessly init --root /Volumes/apps/Disklessly</code></pre>
+          <a href="#cloud-section" class="link" data-t="heroStep1Link"></a>
         </li>
         <li>
           <strong data-t="heroStep2"></strong>
@@ -88,9 +89,15 @@
         <li>
           <strong data-t="heroStep3"></strong>
           <span class="muted" data-t="heroStep3Body"></span>
-          <pre class="command"><code>disklessly pack "/Applications/Example.app"</code></pre>
         </li>
       </ol>
+      <details class="raw hero-cli">
+        <summary data-t="heroCli"></summary>
+        <span data-t="heroCliRepo"></span>
+        <code>disklessly init --root /Volumes/apps/Disklessly</code>
+        <span data-t="heroCliPack"></span>
+        <code>disklessly pack "/Applications/Example.app"</code>
+      </details>
     </section>
     <section class="card" id="usage-section" aria-labelledby="usage-title">
       <div class="card-head">
