@@ -32,3 +32,12 @@ final class StagingReaperTests: XCTestCase {
         XCTAssertEqual(RcloneBackend.withOverrides("gdrive:Disklessly/a", ["use_trash": "false"]), "gdrive,use_trash=false:Disklessly/a")
     }
 }
+
+final class ContainerSaveFallbackTests: XCTestCase {
+    func testPartialMultiPlatformErrorIsRecognized() {
+        let e = DisklesslyError.failure("container image save --output x.tar docker.io/library/swift:6.0-rhel-ubi9 failed (exit 1): Error: content with digest sha256:c99744cf not found")
+        XCTAssertTrue(DisklesslyEngine.isPartialMultiPlatform(e))
+        XCTAssertFalse(DisklesslyEngine.isPartialMultiPlatform(DisklesslyError.failure("no space left on device")))
+        XCTAssertTrue(DisklesslyEngine.hostPlatform.hasPrefix("linux/"))
+    }
+}

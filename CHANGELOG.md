@@ -6,6 +6,10 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Offloading an Apple `container` image that was pulled for one platform no longer fails with "content with
+  digest … not found": when exporting every platform fails that way, the image is saved for this Mac's
+  platform (`linux/arm64` on Apple silicon). An image used for other platforms is pulled again for them.
+
 ## [0.3.4] - 2026-11-26
 
 - Large folder offloads no longer hold the whole stream in memory. Each streaming read returned an autoreleased

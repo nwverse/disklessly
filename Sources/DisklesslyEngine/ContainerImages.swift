@@ -378,7 +378,16 @@ extension DisklesslyEngine {
         let names = image.references.isEmpty ? [image.id] : image.references
         let saveArgs = state.kind == .apple ? ["image", "save", "--output", staging.path] + names : ["save", "--output", staging.path] + names
         let (cli, args) = engineCommand(state, saveArgs)
-        _ = try tools.run(cli, args, Self.containerTransferTimeout)
+        do {
+            _ = try tools.run(cli, args, Self.containerTransferTimeout)
+        } catch where state.kind == .apple && Self.isPartialMultiPlatform(error) {
+            // A multi-platform image pulled for one platform lacks the others' layers, and
+            // `container image save` exports every platform by default. Save this Mac's platform.
+            try? FileManager.default.removeItem(at: staging)
+            progress("save \(Self.hostPlatform)")
+            let (cli, args) = engineCommand(state, ["image", "save", "--platform", Self.hostPlatform, "--output", staging.path] + names)
+            _ = try tools.run(cli, args, Self.containerTransferTimeout)
+        }
         guard FileManager.default.fileExists(atPath: staging.path) else {
             throw DisklesslyError.failure("\(state.kind.title) did not write \(image.title) to \(staging.path)")
         }
@@ -492,5 +501,23 @@ public final class ContainerScanner {
             object["scannedAt"] = ISO8601DateFormatter().string(from: result.at)
         }
         return object
+    }
+}
+
+extension DisklesslyEngine {
+    /// `linux/arm64` on Apple silicon, `linux/amd64` on Intel: the platform Apple's `container` pulls by default.
+    static var hostPlatform: String {
+        #if arch(arm64)
+        return "linux/arm64"
+        #else
+        return "linux/amd64"
+        #endif
+    }
+
+    /// `container image save` of a multi-platform image whose other platforms were never pulled
+    /// fails with "content with digest sha256:… not found".
+    static func isPartialMultiPlatform(_ error: Error) -> Bool {
+        let text = ((error as? LocalizedError)?.errorDescription ?? String(describing: error)).lowercased()
+        return text.contains("content with digest")
     }
 }
