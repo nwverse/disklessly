@@ -6,6 +6,8 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-11-26
+
 - Large folder offloads no longer hold the whole stream in memory. Each streaming read returned an autoreleased
   buffer that a long loop on a background thread never freed: a 32 GB folder pushed the process to 19 GB and
   filled the disk with swap. Reads in the archive, zstd, chunk and SSH loops now run in an autorelease pool.
