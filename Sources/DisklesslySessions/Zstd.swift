@@ -72,7 +72,7 @@ public enum ZstdStream {
         var buffer = Data()
         buffer.reserveCapacity(min(maxBytes, block))
         while buffer.count < maxBytes {
-            let chunk = try input.read(upToCount: maxBytes - buffer.count) ?? Data()
+            let chunk = try autoreleasepool { try input.read(upToCount: maxBytes - buffer.count) } ?? Data()
             if chunk.isEmpty { break }
             buffer.append(chunk)
         }
@@ -186,7 +186,7 @@ public enum ZstdStream {
             }
         }
         while true {
-            let chunk = try input.read(upToCount: block) ?? Data()
+            let chunk = try autoreleasepool { try input.read(upToCount: block) } ?? Data()
             if chunk.isEmpty { break }
             try drain(ZSTD_e_continue, chunk)
         }
@@ -271,7 +271,7 @@ public enum ZstdStream {
         var out = [UInt8](repeating: 0, count: ZSTD_DStreamOutSize())
         var last = 0
         while true {
-            let chunk = try input.read(upToCount: block) ?? Data()
+            let chunk = try autoreleasepool { try input.read(upToCount: block) } ?? Data()
             if chunk.isEmpty { break }
             try chunk.withUnsafeBytes { src in
                 var inBuffer = ZSTD_inBuffer(src: src.baseAddress, size: src.count, pos: 0)

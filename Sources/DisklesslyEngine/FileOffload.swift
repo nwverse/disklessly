@@ -550,7 +550,7 @@ enum FolderArchive {
         var writeError: Error?
         var written: UInt64 = 0
         while true {
-            let chunk = compressed.fileHandleForReading.readData(ofLength: 1 << 20)
+            let chunk = autoreleasepool { compressed.fileHandleForReading.readData(ofLength: 1 << 20) }
             if chunk.isEmpty { break }
             hasher.update(chunk)
             if writeError == nil {
@@ -666,7 +666,7 @@ enum FolderArchive {
                     tar.terminate()
                     break
                 }
-                let buffer = compressed.fileHandleForReading.readData(ofLength: 1 << 20)
+                let buffer = autoreleasepool { compressed.fileHandleForReading.readData(ofLength: 1 << 20) }
                 if buffer.isEmpty { break }
                 wholeHasher.update(buffer)
                 totalSize += UInt64(buffer.count)

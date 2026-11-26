@@ -216,7 +216,7 @@ public struct SSHTransport: @unchecked Sendable {
         let streamErrBox = ErrorBox()
         let handle = outPipe.fileHandleForReading
         while true {
-            let chunk = handle.availableData
+            let chunk = autoreleasepool { handle.availableData }
             if chunk.isEmpty { break }
             do {
                 try onStdoutChunk(chunk)

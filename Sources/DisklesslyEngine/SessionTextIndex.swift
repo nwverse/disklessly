@@ -93,7 +93,7 @@ public enum SessionTextIndex {
         defer { try? handle.close() }
         var head = Data()
         while head.firstIndex(of: 0x0A) == nil {
-            guard let chunk = try? handle.read(upToCount: 65_536), !chunk.isEmpty else { break }
+            guard let chunk = try? autoreleasepool(invoking: { try handle.read(upToCount: 65_536) }), !chunk.isEmpty else { break }
             head.append(chunk)
         }
         let line = head.firstIndex(of: 0x0A).map { head[..<$0] } ?? head[...]
