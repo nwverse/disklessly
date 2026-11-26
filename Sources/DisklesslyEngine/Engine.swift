@@ -805,6 +805,8 @@ public struct DisklesslyEngine {
     public func gc(now: Date = Date(), includeLegacy: Bool = false) throws -> [String] {
         var lines = try recoverPackJournals()
         lines.append(contentsOf: try recoverUnpackJournals())
+        // Before maintain: deleting frees space, so it still works when a full drive refuses writes.
+        if let backend = try? repo { lines.append(contentsOf: StagingReaper.reap(backend, now: now)) }
         lines.append(contentsOf: try maintain(now: now, includeLegacy: includeLegacy).lines)
         lines.append(contentsOf: reapOrphanMounts(deep: false).actionLines)
         let enforced = try enforceCacheQuota(justUsed: nil, now: now)

@@ -6,6 +6,10 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+- Google Drive deletes are final (`use_trash=false`). They used to land in Drive's trash and keep counting
+  against the quota for 30 days, although Disklessly already keeps its own `trash/` with a grace period.
+- `gc` removes upload parts (`files/staging/*.part`, `staging/*.part`) older than a day. A process killed
+  mid-upload left them behind; on one Drive they had grown to 40 GB. `gc --dry-run` lists them.
 - The menu-bar app no longer quits silently when a child process or connection closes while it is writing
   (SIGPIPE). This happened when an upload failed early, for example on a full cloud drive. The app and CLI now
   ignore SIGPIPE, and writes into rclone's stdin fail with an error instead of raising an exception.

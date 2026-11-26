@@ -478,10 +478,13 @@ do {
         }
         if dryRun {
             let plan = try engine.gcDryRun(includeLegacy: includeLegacy)
+            let staging = engine.staleStagingParts()
             if json {
-                emit(["ok": true, "dryRun": true, "trash": plan.trash, "restore": plan.restoreFromTrash, "purge": plan.purge, "legacy": plan.legacy, "lru": plan.lru, "warnings": plan.warnings])
+                emit(["ok": true, "dryRun": true, "trash": plan.trash, "restore": plan.restoreFromTrash, "purge": plan.purge, "legacy": plan.legacy, "lru": plan.lru, "warnings": plan.warnings,
+                      "staleStaging": staging.map { ["path": $0.path, "bytes": NSNumber(value: $0.bytes)] }])
             } else {
                 print(plan.text(), terminator: "")
+                for part in staging { print("stale upload part  \(part.path)  \(ByteCountFormatter.string(fromByteCount: Int64(part.bytes), countStyle: .file))") }
             }
             break
         }

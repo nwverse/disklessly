@@ -502,13 +502,21 @@ public struct RcloneBackend: StorageBackend {
         return nil
     }
 
+    /// Backend options for deletes. Google Drive moves a deleted file to its trash, where it
+    /// keeps counting against the quota for 30 days; Disklessly has its own trash/ with a grace
+    /// period, so a delete here is meant to be final.
+    static func deleteOverrides(type: String?) -> [String: String] {
+        type == "drive" ? ["use_trash": "false"] : [:]
+    }
+
     public func delete(_ path: String) throws {
+        let overrides = Self.deleteOverrides(type: Self.remoteType(remote, config: config))
         if let daemon {
             let (fs, inside) = try location(path)
-            _ = try rc("operations/deletefile", ["fs": fs, "remote": inside], on: daemon)
+            _ = try rc("operations/deletefile", ["fs": Self.withOverrides(fs, overrides), "remote": inside], on: daemon)
             return
         }
-        let result = try run(["deletefile", "--retries", "1", try target(path)])
+        let result = try run(["deletefile", "--retries", "1", Self.withOverrides(try target(path), overrides)])
         if Self.isMissing(result) { return }
         guard result.status == 0 else { throw fail("deletefile", result) }
     }
