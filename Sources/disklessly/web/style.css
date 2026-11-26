@@ -588,6 +588,8 @@ img.avatar { background: transparent; }
 .hero h2, .expired h2 { font-size: 18px; margin-bottom: 6px; }
 .steps { margin: 14px 0 0; padding-left: 0; list-style: none; display: grid; gap: 12px; }
 .steps li { display: grid; gap: 4px; }
+details.hero-cli { margin: 14px 0 0; }
+details.hero-cli > span { display: block; margin-top: 8px; }
 .command { margin: 4px 0 0; padding: 8px 10px; border-radius: 8px; background: var(--card-2); font: 12px var(--mono); overflow-x: auto; }
 .link { color: var(--accent); }
 

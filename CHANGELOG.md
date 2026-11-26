@@ -9,6 +9,16 @@ the project uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Offloading an Apple `container` image that was pulled for one platform no longer fails with "content with
   digest … not found": when exporting every platform fails that way, the image is saved for this Mac's
   platform (`linux/arm64` on Apple silicon). An image used for other platforms is pulled again for them.
+- Dashboard wording (Chinese): offloading was called 卸载 ("uninstall"), so 已卸载应用 read as "uninstalled
+  apps". It is now 搬到网盘 everywhere, restoring is 拿回来, and the storage location is 网盘 (it was 仓库, 后端
+  or 云端). Storage and cache labels say what they do (正在用, 存放位置, 硬盘至少留出, 先下载好, 常留本机, 收起);
+  names such as repo.json, rclone, SMB and UDID stay only as secondary detail. The English labels drop the same
+  jargon (Storage, Keep free on disk, Download now, Keep on this Mac).
+- The cache card's delay stat read 推出 / "Eject": the copy table defined `detach` twice. It now has its own
+  `detachDelay` text (应用退出后多久收起 / "Put away after quitting").
+- The first-run guide points at the storage card and the Offload buttons; the `disklessly init` and
+  `disklessly pack` commands are folded under 习惯用终端？ / "Prefer Terminal?". An expired page link now says
+  to reopen it from the menu-bar icon before mentioning `disklessly ui`.
 
 ## [0.3.4] - 2026-11-26
 

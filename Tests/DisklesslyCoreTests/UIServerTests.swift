@@ -239,7 +239,7 @@ final class UIServerTests: XCTestCase {
         XCTAssertTrue(html.contains("id=\"license-buy\""), "the License card links to the store")
         XCTAssertTrue(js.contains("购买授权"))
         XCTAssertTrue(js.contains("Buy a license"))
-        XCTAssertTrue(js.contains("值得卸载"))
+        XCTAssertTrue(js.contains("建议搬到网盘"))
         XCTAssertTrue(js.contains("Worth offloading"))
         XCTAssertTrue(js.contains("残留备份"))
         XCTAssertTrue(js.contains("can be removed"))
@@ -248,8 +248,8 @@ final class UIServerTests: XCTestCase {
         XCTAssertTrue(js.contains("清除缓存"))
         XCTAssertTrue(js.contains("运行正常"))
         XCTAssertTrue(js.contains("已缓存"))
-        XCTAssertTrue(js.contains("远端"))
-        XCTAssertTrue(js.contains("已固定"))
+        XCTAssertTrue(js.contains("只在网盘"))
+        XCTAssertTrue(js.contains("常留本机"))
         XCTAssertTrue(js.contains("if (pct >= 95) return \"hot\""))
         XCTAssertTrue(js.contains("if (pct >= 80) return \"warn\""))
         XCTAssertFalse(js.contains("innerHTML"))
@@ -287,7 +287,7 @@ final class UIServerTests: XCTestCase {
         XCTAssertTrue(js.contains("Intl.RelativeTimeFormat"))
         XCTAssertTrue(js.contains("REFRESH_MS = 20000"))
         // Mockup states: loading, empty, error with retry, near quota, health.
-        for text in ["正在读取后端…", "暂无已卸载应用", "无法连接后端", "Backend unreachable", "低于空闲下限时自动清除未固定的缓存", "会话分层", "Session tiers", "空闲下限", "分离延迟", "缓慢", "Degraded", "离线"] {
+        for text in ["正在读取网盘…", "还没有搬到网盘的应用", "连不上网盘", "Can't reach your storage", "硬盘剩余空间少于要留出的大小时，会自动清掉没设为常留本机的缓存", "AI 对话记录", "AI conversations", "硬盘至少留出", "应用退出后多久收起", "缓慢", "Degraded", "离线"] {
             XCTAssertTrue(js.contains(text), text)
         }
         // QA fixes: unpack names the app's own folder, raw server text is folded, pinned evict is never forced.

@@ -84,10 +84,10 @@ final class StreamingIOTests: XCTestCase {
             XCTAssertFalse(local.contains("https://"))
         }
         XCTAssertTrue(combined.contains("已缓存"))
-        XCTAssertTrue(combined.contains("仅远端"))
-        XCTAssertTrue(combined.contains("已固定"))
-        XCTAssertTrue(combined.contains("已还原"))
-        XCTAssertTrue(combined.contains("会话分层"))
+        XCTAssertTrue(combined.contains("只在网盘"))
+        XCTAssertTrue(combined.contains("常留本机"))
+        XCTAssertTrue(combined.contains("已拿回本机"))
+        XCTAssertTrue(combined.contains("AI 对话记录"))
         XCTAssertFalse(combined.lowercased().contains("wupan"))
     }
 }

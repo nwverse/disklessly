@@ -404,7 +404,7 @@ async function main() {
       const { page } = view;
       const section = page.locator("#usage-section");
       await page.locator("#usage-cloud .usage-box").first().waitFor();
-      await expectText(page, "云端 · ");
+      await expectText(page, "网盘 · ");
       const movies = page.locator("#usage-chart .usage-box[data-path='/Users/me/Movies']");
       if ((await movies.locator(".usage-badge").innerText()).trim() !== "2") throw new Error("Movies lacks its cloud badge of 2");
       const tabStops = await page.locator("#usage-chart .usage-box[tabindex='0']").count();
@@ -486,9 +486,9 @@ async function main() {
         await expectText(page, "Healthy · 延迟 42 ms");
         await expectText(page, "空间充足");
         await expectText(page, "Plenty of room");
-        await expectText(page, "已卸载应用");
+        await expectText(page, "已搬到网盘的应用");
         await expectText(page, "Offloaded apps");
-        await expectText(page, "会话分层");
+        await expectText(page, "AI 对话记录");
         if ((await page.getAttribute("html", "lang")) !== "zh-Hans") throw new Error("primary language is not zh-Hans");
         // Endpoint states, one active pill.
         if ((await page.locator(".endpoint.is-active").count()) !== 1) throw new Error("expected one active endpoint");
@@ -499,7 +499,7 @@ async function main() {
         const pinned = page.locator(".app-row", { has: page.locator("h3", { hasText: "Blender Studio" }) });
         const evict = pinned.locator("button", { hasText: "清除缓存" });
         if ((await evict.getAttribute("aria-disabled")) !== "true") throw new Error("pinned app's Evict is not disabled");
-        if (!(await evict.getAttribute("title")).includes("取消固定")) throw new Error("pinned Evict lacks its tooltip");
+        if (!(await evict.getAttribute("title")).includes("不再常留")) throw new Error("pinned Evict lacks its tooltip");
         if (width === 375) {
           const button = pinned.locator("button.btn").nth(1);
           const box = await button.boundingBox();
@@ -521,8 +521,8 @@ async function main() {
     if (await page.locator("#confirm").isVisible()) throw new Error("pinned Evict opened the confirm dialog");
     // Krita is mounted: blocked as well.
     if ((await krita.locator("button", { hasText: "清除缓存" }).getAttribute("aria-disabled")) !== "true") throw new Error("mounted app's Evict is not disabled");
-    await blender.getByRole("button", { name: /取消固定/ }).click();
-    await page.waitForSelector("#toasts >> text=Blender Studio：取消固定完成");
+    await blender.getByRole("button", { name: /不再常留/ }).click();
+    await page.waitForSelector("#toasts >> text=Blender Studio：不再常留本机完成");
     if (fixtureServer.log.at(-1) !== "unpin:Blender Studio") throw new Error(`expected unpin, got ${fixtureServer.log.join(", ")}`);
 
     const logic = page.locator(".app-row", { has: page.locator("h3", { hasText: "Logic Pro" }) });
@@ -533,14 +533,14 @@ async function main() {
     await page.waitForSelector("#toasts >> text=Logic Pro：打开失败");
     const failure = page.locator("#toasts .toast.error").last();
     const visible = await failure.innerText();
-    if (!visible.includes("连不上仓库")) throw new Error(`error code was not localized: ${visible}`);
+    if (!visible.includes("连不上网盘")) throw new Error(`error code was not localized: ${visible}`);
     if (await failure.locator("details code").isVisible()) throw new Error("raw server text is not folded");
     await failure.locator("summary").click();
     if (!(await failure.locator("details code").innerText()).includes("SMB share is not mounted")) throw new Error("raw detail missing");
     await act.shoot("-toast", false);
 
     await logic.getByRole("button", { name: /Logic Pro 的更多操作/ }).click();
-    const unpack = page.getByRole("menuitem", { name: /永久还原到 \/Applications/ });
+    const unpack = page.getByRole("menuitem", { name: /永久拿回到 \/Applications/ });
     await unpack.waitFor();
     await unpack.click();
     const dialog = page.locator("#confirm");
@@ -551,15 +551,15 @@ async function main() {
     await dialog.waitFor({ state: "hidden" });
     if (fixtureServer.log.some((line) => line.startsWith("unpack"))) throw new Error("escape still started unpack");
     await krita.getByRole("button", { name: /Krita 的更多操作/ }).click();
-    await page.getByRole("menuitem", { name: /永久还原到 ~\/Applications/ }).waitFor();
+    await page.getByRole("menuitem", { name: /永久拿回到 ~\/Applications/ }).waitFor();
     await page.keyboard.press("Escape");
     await act.finish();
 
     // Near quota and critical.
     for (const fixture of ["near", "critical"]) {
       const view = await open(`${fixture}-light-1194`, { fixture });
-      await expectText(view.page, fixture === "near" ? "接近配额" : "配额将满");
-      await expectText(view.page, "低于空闲下限时自动清除未固定的缓存");
+      await expectText(view.page, fixture === "near" ? "快到上限" : "快满了");
+      await expectText(view.page, "硬盘剩余空间少于要留出的大小时，会自动清掉没设为常留本机的缓存");
       await view.shoot("", false);
       await view.finish();
     }
@@ -572,8 +572,8 @@ async function main() {
 
     // Offline: backend card red, Error panel with endpoint and timeout, Retry.
     const offline = await open("offline-light-1194", { fixture: "offline" });
-    await expectText(offline.page, "无法连接后端");
-    await expectText(offline.page, "Backend unreachable");
+    await expectText(offline.page, "连不上网盘");
+    await expectText(offline.page, "Can't reach your storage");
     await expectText(offline.page, "超时 5 s");
     const banner = await offline.page.locator("#banner").innerText();
     if (banner.includes("did not answer")) throw new Error("banner shows raw server text inline");
@@ -582,7 +582,7 @@ async function main() {
 
     // Empty repo: onboarding and the empty state.
     const empty = await open("empty-light-1194", { fixture: "empty" });
-    await expectText(empty.page, "暂无已卸载应用");
+    await expectText(empty.page, "还没有搬到网盘的应用");
     await empty.page.locator("#onboarding").waitFor({ state: "visible" });
     if (await empty.page.locator("#devices-section").getAttribute("open") !== null) throw new Error("empty Devices section is expanded");
     await empty.shoot();
@@ -590,7 +590,7 @@ async function main() {
 
     // Loading skeleton while /api/status hangs.
     const loading = await open("loading-light-1194", { fixture: "slow", wait: "domcontentloaded" });
-    await expectText(loading.page, "正在读取后端…");
+    await expectText(loading.page, "正在读取网盘…");
     await loading.shoot("", false);
     await loading.page.close();
 
@@ -610,7 +610,7 @@ async function main() {
     // First status call fails; Retry recovers.
     const error = await open("error-dark-375", { fixture: "error", theme: "dark", viewport: phone });
     await error.page.locator("#banner").waitFor({ state: "visible" });
-    await expectText(error.page, "无法连接后端");
+    await expectText(error.page, "连不上网盘");
     await error.shoot();
     await error.page.locator(".state-error button").click();
     await expectText(error.page, "运行正常");
