@@ -145,7 +145,7 @@ const copy = {
     confirmRestoreBody: "会把应用解压回本机原位置并打开，退出后再放回网盘。期间会占用完整的磁盘空间。",
     confirmRestoreOk: "拿回来并打开",
     confirmUnpackTitle: (name, dir) => `把 ${name} 永久拿回到 ${dir}？`,
-    confirmUnpackBody: (path) => `应用会完整复制回 ${path}，入口替换为真正的应用，此后不再打开时才下载。网盘里的那份保留。`,
+    confirmUnpackBody: (path) => `应用会完整复制回 ${path}，入口替换为真正的应用，之后打开它不再需要从网盘下载。网盘里的那份保留。`,
     confirmUnpackOk: "永久拿回来",
     jobDone: (action, name) => `${name}：${action}完成`,
     jobFailed: (action, name) => `${name}：${action}失败`,
