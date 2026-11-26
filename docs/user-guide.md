@@ -165,7 +165,7 @@ disklessly offload "~/Documents/Old Project"       # 文件夹会打包成 tar +
 disklessly fetch ~/Downloads/movie.mov.disklessly  # 取回
 ```
 
-- 仪表盘的“值得卸载”卡片下面有“大文件和文件夹”列表，每项都有“立即卸载”按钮。
+- 仪表盘的“建议搬到网盘”卡片下面有“大文件和文件夹”列表，每项都有“搬到网盘”按钮。
 - 在访达里右键 → 服务 →“用 Disklessly 卸载”/“用 Disklessly 取回”；双击占位文件也会取回。
   这需要 Disklessly.app 在“应用程序”里并且启动过一次；有些系统要先在“系统设置 → 键盘 → 键盘快捷键 → 服务”里勾选。
 - 只有仓库里的副本读回来、SHA-256 校验一致后，才会删除原文件。正在被其他 app 打开的文件会被拒绝（退出码 9）。

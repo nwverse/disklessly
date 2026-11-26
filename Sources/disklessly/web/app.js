@@ -239,7 +239,7 @@ const copy = {
     trashOk: "移到废纸篓",
     bigUpload: "搬到网盘",
     bigDelete: "删除",
-    confirmFileBody: (size) => `它会被移进网盘（约 ${size}），原位置留下一个同名的 .disklessly 占位文件；文件夹的原路径还会变成一个带云角标的链接。双击占位文件，或在访达里右键选“用 Disklessly 取回”，就能把它拿回来。需要先在其他 app 里关闭它。`,
+    confirmFileBody: (size) => `它会被移进网盘（约 ${size}），原位置留下一个同名的 .disklessly 占位文件；文件夹的原路径还会变成一个带云角标的链接。双击占位文件，或在访达里右键选「服务 › Bring back with Disklessly」，就能把它拿回来。需要先在其他 app 里关闭它。`,
     phasequeued: "排队中",
     phaseresolve: "查找镜像",
     phasedownload: "下载中",
