@@ -213,7 +213,7 @@ extension CloudUsage {
             for path in bundle.paths { linkedOf[URL(fileURLWithPath: path).standardizedFileURL.path] = index }
         }
         var linkedItems: [[CloudUsageInputs.Item]] = Array(repeating: [], count: bundles.count)
-        for (count, record) in OffloadedFileRegistry.live(stateDir: stateDir).enumerated() {
+        for (count, record) in OffloadedFileRegistry.live(stateDir: stateDir, roots: [engine.homeDirectory]).enumerated() {
             let suffix = "." + FilePlaceholder.fileExtension
             let origin = record.placeholderPath.hasSuffix(suffix) ? String(record.placeholderPath.dropLast(suffix.count)) : record.placeholderPath
             var item = CloudUsageInputs.Item(id: record.id, name: record.name, bytes: record.size)

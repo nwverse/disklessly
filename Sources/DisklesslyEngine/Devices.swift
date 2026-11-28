@@ -842,7 +842,7 @@ extension DisklesslyEngine {
     /// Bundle ids of this repo's apps that are offloaded on this Mac right now. The free-tier limit counts these.
     public func offloadedBundleIdCount() throws -> Int { try offloadedBundleIds().count }
     /// Offloaded files and folders whose placeholder is still on this Mac.
-    public func offloadedFileCount() -> Int { OffloadedFileRegistry.live(stateDir: config.stateDir).count }
+    public func offloadedFileCount() -> Int { OffloadedFileRegistry.live(stateDir: config.stateDir, roots: [homeDirectory]).count }
 
     func offloadedBundleIds() throws -> Set<String> {
         Set(try stubClaims(backend: try repo, now: Date()).map(\.bundleId))

@@ -568,12 +568,15 @@ do {
     case "fetch":
         guard !args.isEmpty, !args.contains(where: { $0.hasPrefix("--") }) else { throw DisklesslyError.usage("usage: disklessly fetch PLACEHOLDER...") }
         var restored: [String] = []
+        var warnings: [String] = []
         for path in args {
-            let target = try engine.fetchFile(path)
-            restored.append(target.path)
-            if !json { print("Brought back \(target.path)") }
+            let result = try engine.fetchFileDetailed(path)
+            for warning in result.warnings { fputs("disklessly: \(warning)\n", stderr) }
+            warnings.append(contentsOf: result.warnings)
+            restored.append(result.target.path)
+            if !json { print("Brought back \(result.target.path)") }
         }
-        if json { emit(["ok": true, "restored": restored] as [String: Any]) }
+        if json { emit(["ok": true, "restored": restored, "warnings": warnings] as [String: Any]) }
     case "recommend":
         let parsed = try RecommendArguments.parse(args)
         if parsed.json { json = true }

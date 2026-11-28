@@ -207,6 +207,94 @@ final class FileOffloadTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: cold.path), "the cold folder is removed after restore")
     }
 
+    func testFetchRefusesToDiscardFilesWrittenThroughColdLink() throws {
+        let engine = try engine()
+        try write("Documents/Live/a.txt", bytes: 5_000)
+        let folder = home.appendingPathComponent("Documents/Live")
+        let result = try engine.offloadFile(folder.path)
+        let added = folder.appendingPathComponent("new.txt")
+        try Data("new work".utf8).write(to: added)
+
+        XCTAssertThrowsError(try engine.fetchFile(result.placeholderPath)) { error in
+            XCTAssertTrue((error as? LocalizedError)?.errorDescription?.contains("items added after offload") == true, "\(error)")
+        }
+        XCTAssertTrue(DisklesslyEngine.isColdLink(folder, stateDir: engine.config.stateDir))
+        XCTAssertEqual(try Data(contentsOf: added), Data("new work".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.placeholderPath))
+    }
+
+    func testFetchRefusesFilesAddedThroughColdLinkDuringRestore() throws {
+        var engine = try engine()
+        try write("Documents/Live/a.txt", bytes: 5_000)
+        let folder = home.appendingPathComponent("Documents/Live")
+        let result = try engine.offloadFile(folder.path)
+        let added = folder.appendingPathComponent("during.txt")
+        engine.failureInjector = { point in
+            guard point == "fetch.beforePlace" else { return }
+            try Data("added during restore".utf8).write(to: added)
+        }
+
+        XCTAssertThrowsError(try engine.fetchFile(result.placeholderPath)) { error in
+            XCTAssertTrue((error as? LocalizedError)?.errorDescription?.contains("items added after offload") == true, "\(error)")
+        }
+        XCTAssertTrue(DisklesslyEngine.isColdLink(folder, stateDir: engine.config.stateDir))
+        XCTAssertEqual(try Data(contentsOf: added), Data("added during restore".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.placeholderPath))
+    }
+
+    func testFetchPreservesFolderThatReplacesColdLinkDuringRestore() throws {
+        var engine = try engine()
+        try write("Documents/Live/a.txt", bytes: 5_000)
+        let folder = home.appendingPathComponent("Documents/Live")
+        let result = try engine.offloadFile(folder.path)
+        engine.failureInjector = { point in
+            guard point == "fetch.beforePlace" else { return }
+            XCTAssertEqual(unlink(folder.path), 0)
+            try FileManager.default.createDirectory(at: folder.appendingPathComponent("nested"), withIntermediateDirectories: true)
+            try Data("keep me".utf8).write(to: folder.appendingPathComponent("replacement.txt"))
+            try Data("keep nested work".utf8).write(to: folder.appendingPathComponent("nested/keep.txt"))
+        }
+
+        XCTAssertThrowsError(try engine.fetchFile(result.placeholderPath)) { error in
+            XCTAssertTrue((error as? LocalizedError)?.errorDescription?.contains("already exists") == true, "\(error)")
+        }
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("replacement.txt")), Data("keep me".utf8))
+        XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("nested/keep.txt")), Data("keep nested work".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: result.placeholderPath))
+    }
+
+    func testFetchReportsRegistryFailureAsWarningAfterCompletedRestore() throws {
+        let engine = try engine()
+        let original = try write("Downloads/complete.bin", bytes: 50_000)
+        let result = try engine.offloadFile(original.path)
+        let registry = OffloadedFileRegistry.url(stateDir: engine.config.stateDir)
+        try FileManager.default.removeItem(at: registry)
+        try FileManager.default.createDirectory(at: registry, withIntermediateDirectories: true)
+
+        let fetched = try engine.fetchFileDetailed(result.placeholderPath)
+        XCTAssertTrue(fetched.warnings.contains { $0.contains("restored, but the local list of offloaded files could not be updated") }, "\(fetched.warnings)")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: original.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: result.placeholderPath))
+    }
+
+    func testRenamedPlaceholderStaysLiveByIDAndRegistryPathFollowsIt() throws {
+        let engine = try engine()
+        let original = try write("Downloads/movie.mov", bytes: 50_000)
+        let result = try engine.offloadFile(original.path)
+        let placeholder = URL(fileURLWithPath: result.placeholderPath)
+        let moved = home.appendingPathComponent("Documents/movie-renamed.mov.disklessly")
+        try FileManager.default.createDirectory(at: moved.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try FileManager.default.moveItem(at: placeholder, to: moved)
+
+        XCTAssertEqual(engine.offloadedFileCount(), 1)
+        let record = try XCTUnwrap(OffloadedFileRegistry.load(stateDir: engine.config.stateDir).first)
+        XCTAssertEqual(record.id, result.placeholder.id)
+        XCTAssertEqual(record.placeholderPath, moved.path)
+
+        try FileManager.default.removeItem(at: moved)
+        XCTAssertEqual(engine.offloadedFileCount(), 0)
+    }
+
     func testTrashRefusesLibraryStandardFoldersAndOpenFolders() throws {
         var engine = try engine()
         try write("Library/Application Support/Foo/data.bin", bytes: 10)
@@ -336,6 +424,10 @@ final class FileOffloadTests: XCTestCase {
         XCTAssertThrowsError(try FilePlaceholder.decode(try p.encode()))
         var q = p
         q.name = "ok"
+        XCTAssertNoThrow(try FilePlaceholder.decode(try q.encode()))
+        q.id = "../evil"
+        XCTAssertThrowsError(try FilePlaceholder.decode(try q.encode()))
+        q.id = "x"
         q.object = "images/other.dmg"
         XCTAssertThrowsError(try FilePlaceholder.decode(try q.encode()))
     }

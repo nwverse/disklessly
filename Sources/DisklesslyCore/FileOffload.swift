@@ -83,6 +83,7 @@ public struct FilePlaceholder: Codable, Equatable {
 
     public func validate() throws {
         guard schema == Self.schemaV1 else { throw DisklesslyError.unsupported("placeholder schema \(schema) is newer than this Disklessly; update it") }
+        guard FileOffloadPolicy.isPlainName(id) else { throw DisklesslyError.integrity("placeholder has an unsafe id: \(id)") }
         let hex = CharacterSet(charactersIn: "0123456789abcdef")
         guard sha256.count == 64, sha256.unicodeScalars.allSatisfy(hex.contains) else { throw DisklesslyError.integrity("placeholder has a malformed sha256") }
         guard FileOffloadPolicy.isPlainName(name) else { throw DisklesslyError.integrity("placeholder has an unsafe name: \(name)") }
@@ -253,9 +254,95 @@ public enum OffloadedFileRegistry {
         return records
     }
 
-    /// Records whose placeholder is still on disk. A deleted placeholder no longer counts.
-    public static func live(stateDir: String) -> [OffloadedFileRecord] {
-        load(stateDir: stateDir).filter { FileManager.default.fileExists(atPath: $0.placeholderPath) }
+    /// Records whose placeholder is still on disk. A placeholder's stable id is its
+    /// identity, so a renamed or moved placeholder keeps its record live and its path
+    /// is reconciled. A deleted placeholder no longer counts.
+    public static func live(stateDir: String, roots: [String] = []) -> [OffloadedFileRecord] {
+        let records = load(stateDir: stateDir)
+        guard !records.isEmpty else { return [] }
+
+        let currentPaths = records.map { validPlaceholderPath($0.placeholderPath, id: $0.id) }
+        if currentPaths.allSatisfy({ $0 != nil }) {
+            return records
+        }
+
+        var searchRoots = roots.map { URL(fileURLWithPath: $0).standardizedFileURL.path }
+        for record in records {
+            let parent = URL(fileURLWithPath: record.placeholderPath).deletingLastPathComponent().standardizedFileURL.path
+            let covered = searchRoots.contains { root in
+                parent == root || parent.hasPrefix(root.hasSuffix("/") ? root : root + "/")
+            }
+            if !covered { searchRoots.append(parent) }
+        }
+        let candidates = placeholderPathsByID(roots: searchRoots)
+        var moves: [String: String] = [:]
+        var seenIDs = Set<String>()
+        var live: [OffloadedFileRecord] = []
+        for (index, var record) in records.enumerated() {
+            guard seenIDs.insert(record.id).inserted else { continue }
+            if let path = currentPaths[index] {
+                record.placeholderPath = path
+                live.append(record)
+                continue
+            }
+            guard let moved = candidates[record.id]?.sorted().first(where: { $0 != record.placeholderPath }) else { continue }
+            record.placeholderPath = moved
+            moves[record.id] = moved
+            live.append(record)
+        }
+
+        if !moves.isEmpty {
+            try? update(stateDir: stateDir) { records in
+                for index in records.indices {
+                    if let moved = moves[records[index].id] { records[index].placeholderPath = moved }
+                }
+            }
+        }
+        return live
+    }
+
+    private static func validPlaceholderPath(_ path: String, id: String) -> String? {
+        var info = stat()
+        guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return nil }
+        let url = URL(fileURLWithPath: path).standardizedFileURL
+        guard let placeholder = try? FilePlaceholder.read(url), placeholder.id == id else { return nil }
+        return url.path
+    }
+
+    private static func placeholderPathsByID(roots: [String]) -> [String: [String]] {
+        let fm = FileManager.default
+        var seenRoots: Set<String> = []
+        var seenPaths: Set<String> = []
+        var result: [String: [String]] = [:]
+        for raw in roots {
+            let root = URL(fileURLWithPath: raw).standardizedFileURL
+            let rootValues = try? root.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+            guard seenRoots.insert(root.path).inserted,
+                  rootValues?.isDirectory == true,
+                  rootValues?.isSymbolicLink != true,
+                  let walker = fm.enumerator(
+                    at: root,
+                    includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                    options: [.skipsPackageDescendants],
+                    errorHandler: { _, _ in true }
+                  ) else { continue }
+            while let url = walker.nextObject() as? URL {
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                if values?.isSymbolicLink == true {
+                    if values?.isDirectory == true { walker.skipDescendants() }
+                    continue
+                }
+                if values?.isDirectory == true {
+                    if url.lastPathComponent == ".Trash" { walker.skipDescendants() }
+                    continue
+                }
+                guard url.pathExtension == FilePlaceholder.fileExtension,
+                      seenPaths.insert(url.path).inserted,
+                      let placeholder = try? FilePlaceholder.read(url) else { continue }
+                result[placeholder.id, default: []].append(url.path)
+            }
+        }
+        return result
     }
 
     private static let lock = NSLock()

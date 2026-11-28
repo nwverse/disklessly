@@ -195,7 +195,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 do {
                     switch action {
                     case .offload: notes.append(contentsOf: try engine.offloadFile(path).warnings)
-                    case .fetch: try engine.fetchFile(path)
+                    case .fetch: notes.append(contentsOf: try engine.fetchFileDetailed(path).warnings)
                     }
                 } catch {
                     failures.append("\(name): \((error as? LocalizedError)?.errorDescription ?? error.localizedDescription)")
