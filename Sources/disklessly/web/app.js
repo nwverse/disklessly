@@ -410,9 +410,10 @@ const copy = {
     bigConfirmTitle: (name) => `清理「${name}」？`,
     ctrTitle: "容器镜像",
     ctrScanning: "正在读取容器镜像…",
-    ctrNone: "这台 Mac 上没有 Apple container、Docker Desktop、OrbStack、Colima 或 Dory。",
+    ctrNone: "这台机器上没有找到容器引擎（Apple container、Docker、Podman、OrbStack、Colima 或 Dory）。",
     ctrSummary: (n, size, free) => `${n} 个镜像，共 ${size}；没在用的 ${free} 可以搬到网盘或清理。`,
     ctrEngine: (name, size) => `${name} · 磁盘上共 ${size}`,
+    ctrSizeUnknown: "磁盘大小未知",
     ctrEngine_running: "运行中",
     ctrEngine_stopped: "没在运行，只能看到磁盘大小；启动后才能列出镜像",
     ctrEngine_noCli: "找不到命令行工具，只能看到磁盘大小",
@@ -1099,9 +1100,10 @@ const copy = {
     bigConfirmTitle: (name) => `Clean “${name}”?`,
     ctrTitle: "Container images",
     ctrScanning: "Reading container images…",
-    ctrNone: "No Apple container, Docker Desktop, OrbStack, Colima or Dory on this Mac.",
+    ctrNone: "No container engine was found on this machine (Apple container, Docker, Podman, OrbStack, Colima or Dory).",
     ctrSummary: (n, size, free) => `${n} images, ${size} in all; ${free} nothing uses can be offloaded or cleaned.`,
     ctrEngine: (name, size) => `${name} · ${size} on disk`,
+    ctrSizeUnknown: "disk size unavailable",
     ctrEngine_running: "Running",
     ctrEngine_stopped: "Not running, so only its disk size is known; start it to list images",
     ctrEngine_noCli: "Its command-line tool was not found, so only its disk size is known",
@@ -5755,7 +5757,9 @@ let ctrData = null;
 let ctrTimer = null;
 const ctrBusy = new Map(); // key or record id -> job kind
 
-const engineTitle = (id) => ({ apple: "Apple container", "docker-desktop": "Docker Desktop", orbstack: "OrbStack", colima: "Colima", dory: "Dory" }[id] || id);
+const engineTitle = (id) => ({ apple: "Apple container", docker: "Docker Engine", "docker-rootless": "Docker Engine (rootless)",
+  "docker-host": "Docker Engine (DOCKER_HOST)", "docker-desktop": "Docker Desktop", "podman-rootless": "Podman", podman: "Podman",
+  orbstack: "OrbStack", colima: "Colima", dory: "Dory" }[id] || id);
 const daysSince = (iso) => (iso ? Math.floor((Date.now() - Date.parse(iso)) / 86400000) : null);
 
 function ctrUseText(image) {
@@ -5850,7 +5854,7 @@ function renderContainers() {
     }
     const box = el("div", "dev-group");
     const head = el("h3", "dev-group-title");
-    head.append(t("ctrEngine", engine.title, bytes(engine.dataBytes || 0)));
+    head.append(t("ctrEngine", engine.title, engine.dataBytes != null ? bytes(engine.dataBytes) : t("ctrSizeUnknown")));
     box.append(head, el("p", "muted small", ""));
     box.lastChild.append(engineNote);
     if (rows.length) box.append(...rows);

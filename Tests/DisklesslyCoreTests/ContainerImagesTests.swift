@@ -51,6 +51,13 @@ final class ContainerImagesTests: XCTestCase {
     {"Images":[],"Containers":[],"Volumes":[{"Driver":"local","Links":1,"Name":"pgdata","Size":"1.5GB"},{"Driver":"local","Links":0,"Name":"old","Size":"12.3MB"}],"BuildCache":[]}
     """
 
+    let dockerSystemSummary = """
+    {"Type":"Images","TotalCount":5,"ActiveCount":2,"Size":"1.237GB","Reclaimable":"845.2MB (68%)"}
+    {"Type":"Containers","TotalCount":2,"ActiveCount":1,"Size":"0B","Reclaimable":"0B"}
+    {"Type":"Local Volumes","TotalCount":2,"ActiveCount":1,"Size":"1.264GB","Reclaimable":"12.3MB (1%)"}
+    {"Type":"Build Cache","TotalCount":3,"ActiveCount":0,"Size":"12.3MB","Reclaimable":"12.3MB"}
+    """
+
     // MARK: parsing and in-use
 
     func testAppleImageListParses() throws {
@@ -121,6 +128,13 @@ final class ContainerImagesTests: XCTestCase {
         XCTAssertEqual(ContainerParse.ids(Data("a\nb\n\na\n".utf8)), ["a", "b"])
     }
 
+    func testDockerSystemSizeSumsCategories() {
+        XCTAssertEqual(ContainerParse.dockerSystemSize(Data(dockerSystemSummary.utf8)),
+                       1_237_000_000 + 1_264_000_000 + 12_300_000)
+        XCTAssertNil(ContainerParse.dockerSystemSize(Data("not json".utf8)))
+        XCTAssertNil(ContainerParse.dockerSystemSize(Data(#"{"Type":"Other","Size":"1GB"}"#.utf8)))
+    }
+
     func testAppleBlobWalkFollowsIndexManifestConfigAndLayers() throws {
         let blobs: [String: String] = [
             "idx": #"{"manifests":[{"digest":"sha256:man"},{"digest":"sha256:other-arch"}]}"#,
@@ -140,6 +154,42 @@ final class ContainerImagesTests: XCTestCase {
         let here = ContainerImage(engine: .orbstack, id: record.imageId, references: [], bytes: 1)
         XCTAssertTrue(record.present(in: [here]))
         XCTAssertFalse(record.present(in: [ContainerImage(engine: .colima, id: record.imageId, references: [], bytes: 1)]))
+    }
+
+    func testLinuxEndpointsIncludeRootlessDesktopPodmanAndDockerHost() {
+        let runtime = "/run/user/1000"
+        let endpoints = ContainerEndpoint.all(
+            home: "/home/test",
+            environment: ["XDG_RUNTIME_DIR": runtime, "XDG_DATA_HOME": "/home/test/data",
+                          "DOCKER_HOST": "unix:///tmp/docker-custom.sock"],
+            platform: .linux)
+        let byKind = Dictionary(uniqueKeysWithValues: endpoints.map { ($0.kind, $0) })
+        XCTAssertEqual(byKind[.docker]?.socket, "/var/run/docker.sock")
+        XCTAssertEqual(byKind[.dockerRootless]?.socket, runtime + "/docker.sock")
+        XCTAssertEqual(byKind[.dockerRootless]?.dataPaths, ["/home/test/data/docker"])
+        XCTAssertEqual(byKind[.dockerDesktop]?.socket, "/home/test/.docker/desktop/docker.sock")
+        XCTAssertEqual(byKind[.podmanRootless]?.socket, runtime + "/podman/podman.sock")
+        XCTAssertEqual(byKind[.podmanRootless]?.dataPaths, ["/home/test/data/containers"])
+        XCTAssertEqual(byKind[.podman]?.socket, "/run/podman/podman.sock")
+        XCTAssertEqual(byKind[.dockerHost]?.socket, "/tmp/docker-custom.sock")
+        XCTAssertEqual(byKind[.dockerHost]?.dataPaths, [])
+
+        let duplicate = ContainerEndpoint.all(
+            home: "/home/test",
+            environment: ["XDG_RUNTIME_DIR": runtime, "DOCKER_HOST": "unix://" + runtime + "/docker.sock"],
+            platform: .linux)
+        XCTAssertFalse(duplicate.contains { $0.kind == .dockerHost }, "DOCKER_HOST naming a default socket is not a second engine")
+
+        let remote = ContainerEndpoint.all(home: "/home/test", environment: ["DOCKER_HOST": "tcp://127.0.0.1:2375"],
+                                           platform: .linux)
+        XCTAssertFalse(remote.contains { $0.kind == .dockerHost }, "TCP and SSH endpoints are left to docker")
+    }
+
+    func testNoEngineMessageNamesPlatformAndTriedSockets() {
+        let tried = ["/var/run/docker.sock", "/run/user/1000/docker.sock"]
+        XCTAssertEqual(ContainerReport.noEngineMessage(on: .linux, triedSockets: tried),
+                       "No container engine on this machine; tried sockets: /var/run/docker.sock, /run/user/1000/docker.sock")
+        XCTAssertEqual(ContainerReport.noEngineMessage(on: .macOS, triedSockets: []), "No container engine on this Mac")
     }
 
     func testContainerJobsAreNotAppRoutes() {
@@ -170,7 +220,9 @@ final class ContainerImagesTests: XCTestCase {
         func called(_ match: [String]) -> Bool { lock.lock(); defer { lock.unlock() }; return calls.contains { Self.contains($0, match) } }
     }
 
-    func makeEngine(_ cli: FakeCLI, executables: Set<String>) throws -> DisklesslyEngine {
+    func makeEngine(_ cli: FakeCLI, executables: Set<String>, existing: Set<String> = [],
+                    environment: [String: String] = [:], platform: HostPlatform = .current,
+                    allocated: ((String) -> UInt64?)? = nil) throws -> DisklesslyEngine {
         let repo = root.appendingPathComponent("repo")
         var config = RuntimeConfig(repoPath: repo.path, cacheDir: root.appendingPathComponent("cache").path, stateDir: root.appendingPathComponent("state").path,
                                    mountRoot: root.appendingPathComponent("mnt").path, stubDir: root.appendingPathComponent("apps").path)
@@ -182,11 +234,13 @@ final class ContainerImagesTests: XCTestCase {
         let homePath = home.path
         engine.containerToolsOverride = ContainerTools(
             home: homePath,
+            environment: environment,
+            platform: platform,
             run: { path, args, _ in try cli.run(path, args) },
             isExecutable: { executables.contains($0) },
-            // Only the temp home exists, so a real /Applications/Docker.app does not leak in.
-            exists: { $0.hasPrefix(homePath) && FileManager.default.fileExists(atPath: $0) },
-            allocated: { AllocatedSize.tree(URL(fileURLWithPath: $0)) },
+            // Only the temp home and explicit fixtures exist, so real host sockets do not leak in.
+            exists: { $0.hasPrefix(homePath) ? FileManager.default.fileExists(atPath: $0) : existing.contains($0) },
+            allocated: allocated ?? { AllocatedSize.tree(URL(fileURLWithPath: $0)) },
             read: { FileManager.default.contents(atPath: $0) },
             modified: { (try? FileManager.default.attributesOfItem(atPath: $0))?[.modificationDate] as? Date })
         return engine
@@ -198,10 +252,7 @@ final class ContainerImagesTests: XCTestCase {
         try Data(repeating: 1, count: bytes).write(to: url)
     }
 
-    /// OrbStack socket and data folder in the temp home, docker in /opt/homebrew/bin.
-    func orbstack() throws -> (FakeCLI, DisklesslyEngine) {
-        try write(".orbstack/run/docker.sock", bytes: 0)
-        try write("Library/Group Containers/HUAQ24HBR6.dev.orbstack/data/data.img", bytes: 400_000)
+    func dockerCLI() throws -> FakeCLI {
         let cli = FakeCLI()
         cli.on(["version"], "28.0.1\n")
         cli.on(["image", "ls", "-q", "--no-trunc"], (1...5).map { "sha256:" + String(repeating: "\($0)", count: 64) }.joined(separator: "\n"))
@@ -212,6 +263,14 @@ final class ContainerImagesTests: XCTestCase {
         cli.on(["ps", "-aq", "--no-trunc"], "c1\nc2\n")
         cli.on(["container", "inspect"], dockerContainerInspect)
         cli.on(["system", "df"], dockerSystemDF)
+        return cli
+    }
+
+    /// OrbStack socket and data folder in the temp home, docker in /opt/homebrew/bin.
+    func orbstack() throws -> (FakeCLI, DisklesslyEngine) {
+        try write(".orbstack/run/docker.sock", bytes: 0)
+        try write("Library/Group Containers/HUAQ24HBR6.dev.orbstack/data/data.img", bytes: 400_000)
+        let cli = try dockerCLI()
         let engine = try makeEngine(cli, executables: ["/opt/homebrew/bin/docker"])
         return (cli, engine)
     }
@@ -221,7 +280,7 @@ final class ContainerImagesTests: XCTestCase {
         let report = engine.containerReport(now: now)
         XCTAssertEqual(report.engines.map(\.kind), [.orbstack])
         XCTAssertEqual(report.engines[0].status, .running)
-        XCTAssertGreaterThan(report.engines[0].dataBytes, 0)
+        XCTAssertGreaterThan(report.engines[0].dataBytes ?? 0, 0)
         XCTAssertTrue(cli.called(["-H", "unix://" + home.path + "/.orbstack/run/docker.sock", "version"]))
         XCTAssertEqual(report.images.count, 5)
         XCTAssertEqual(report.images.last.map(\.use.blocksRemoval), true, "in-use images sort last")
@@ -229,6 +288,67 @@ final class ContainerImagesTests: XCTestCase {
         XCTAssertEqual(report.reclaimableBytes, 80_000_000 + 1_200_000_000 + 120_000_000)
         let json = report.jsonObject()
         XCTAssertTrue(JSONSerialization.isValidJSONObject(json))
+    }
+
+    func testLinuxRootlessDockerUsesXdgSocketAndDataPath() throws {
+        let runtime = home.appendingPathComponent("run/user/1000")
+        try write("run/user/1000/docker.sock", bytes: 0)
+        try write("data/docker/image-layer", bytes: 400_000)
+        let cli = try dockerCLI()
+        let engine = try makeEngine(
+            cli,
+            executables: ["/usr/bin/docker"],
+            environment: ["XDG_RUNTIME_DIR": runtime.path, "XDG_DATA_HOME": home.appendingPathComponent("data").path],
+            platform: .linux)
+
+        let report = engine.containerReport(now: now)
+        XCTAssertEqual(report.engines.map(\.kind), [.dockerRootless])
+        XCTAssertEqual(report.engines[0].socket, runtime.appendingPathComponent("docker.sock").path)
+        XCTAssertGreaterThan(report.engines[0].dataBytes ?? 0, 0)
+        XCTAssertTrue(cli.called(["-H", "unix://" + runtime.appendingPathComponent("docker.sock").path, "version"]))
+        XCTAssertTrue(report.triedSockets.contains("/run/podman/podman.sock"))
+    }
+
+    func testDockerHostUnixSocketOutsideDefaultsIsScanned() throws {
+        try write("custom/docker.sock", bytes: 0)
+        let socket = home.appendingPathComponent("custom/docker.sock").path
+        let cli = try dockerCLI()
+        cli.on(["system", "df", "--format", "{{json .}}"], dockerSystemSummary)
+        let engine = try makeEngine(
+            cli,
+            executables: ["/usr/bin/docker"],
+            environment: ["DOCKER_HOST": "unix://" + socket],
+            platform: .linux)
+
+        let report = engine.containerReport(now: now)
+        XCTAssertEqual(report.engines.map(\.kind), [.dockerHost])
+        XCTAssertEqual(report.engines[0].socket, socket)
+        XCTAssertEqual(report.engines[0].dataBytes, 1_237_000_000 + 1_264_000_000 + 12_300_000)
+        XCTAssertTrue(cli.called(["-H", "unix://" + socket, "version"]))
+    }
+
+    func testUnreadableDockerDataFallsBackToSystemDFOrOmitsSize() throws {
+        let cli = try dockerCLI()
+        cli.on(["system", "df", "--format", "{{json .}}"], dockerSystemSummary)
+        let engine = try makeEngine(
+            cli,
+            executables: ["/usr/bin/docker"],
+            existing: ["/var/run/docker.sock", "/var/lib/docker"],
+            platform: .linux,
+            allocated: { $0 == "/var/lib/docker" ? nil : 0 })
+
+        let report = engine.containerReport(now: now)
+        XCTAssertEqual(report.engines.map(\.kind), [.docker])
+        XCTAssertEqual(report.engines[0].dataBytes, 1_237_000_000 + 1_264_000_000 + 12_300_000)
+        XCTAssertEqual(report.engines[0].jsonObject()["dataBytesKnown"] as? Bool, true)
+
+        cli.on(["system", "df", "--format", "{{json .}}"]) { _ in
+            throw DisklesslyError.failure("system df failed")
+        }
+        let unknown = try XCTUnwrap(engine.containerReport(now: now).engines.first)
+        XCTAssertNil(unknown.dataBytes)
+        XCTAssertNil(unknown.jsonObject()["dataBytes"])
+        XCTAssertEqual(unknown.jsonObject()["dataBytesKnown"] as? Bool, false)
     }
 
     func testOffloadWritesVerifiedTarThenRemovesByAllNames() throws {
