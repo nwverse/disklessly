@@ -58,15 +58,15 @@ public struct ShareOpener {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: command.executable)
             process.arguments = command.arguments
-            let output = Pipe()
-            process.standardOutput = output
-            process.standardError = output
-            do { try process.run() } catch {
+            let result: ProcessCaptureResult
+            do { result = try ProcessCapture.run(process, timeout: 120) } catch {
                 throw DisklesslyError.backend("Could not start \(command.rendered): \(error.localizedDescription)")
             }
-            process.waitUntilExit()
-            guard process.terminationStatus == 0 else {
-                throw DisklesslyError.backend("Command failed: \(command.rendered) (exit \(process.terminationStatus))")
+            guard !result.timedOut else {
+                throw DisklesslyError.backend("Command timed out after 120 seconds: \(command.rendered)")
+            }
+            guard result.status == 0 else {
+                throw DisklesslyError.backend("Command failed: \(command.rendered) (exit \(result.status))")
             }
             #else
             throw DisklesslyError.unsupported("mounting SMB/NFS requires macOS (\(command.rendered))")
@@ -121,21 +121,8 @@ public enum ShareMount {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/stat")
         process.arguments = ["-f", "%T", path]
-        let output = Pipe()
-        process.standardOutput = output
-        process.standardError = Pipe()
-        guard (try? process.run()) != nil else { return nil }
-        let deadline = Date().addingTimeInterval(3)
-        while process.isRunning && Date() < deadline {
-            Thread.sleep(forTimeInterval: 0.05)
-        }
-        if process.isRunning {
-            process.terminate()
-            return nil
-        }
-        let data = output.fileHandleForReading.readDataToEndOfFile()
-        let text = String(data: data, encoding: .utf8) ?? ""
-        return filesystemType(statExit: process.terminationStatus, statStdout: text)
+        guard let result = try? ProcessCapture.run(process, timeout: 3), !result.timedOut else { return nil }
+        return filesystemType(statExit: result.status, statStdout: String(decoding: result.stdout, as: UTF8.self))
     }
     #endif
 }

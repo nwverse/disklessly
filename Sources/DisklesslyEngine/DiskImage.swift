@@ -33,11 +33,8 @@ enum LiveDiskImage {
     private static func diskutilImageHelpStatus() -> Int32 {
         #if os(macOS)
         let process = ParsedCommand.process(path: DiskImageTool.diskutil, arguments: ["image", "--help"])
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        do { try process.run() } catch { return 1 }
-        process.waitUntilExit()
-        return process.terminationStatus
+        guard let result = try? ProcessCapture.run(process, timeout: 5), !result.timedOut else { return 1 }
+        return result.status
         #else
         return 1
         #endif
@@ -45,16 +42,10 @@ enum LiveDiskImage {
 
     private static func capture(_ command: DiskImageInvocation) throws -> DiskImageOutput {
         let process = ParsedCommand.process(path: command.executable, arguments: command.arguments)
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        do { try process.run() } catch {
+        let result: ProcessCaptureResult
+        do { result = try ProcessCapture.run(process) } catch {
             throw DisklesslyError.failure("Could not start \(command.rendered): \(error.localizedDescription)")
         }
-        let out = stdout.fileHandleForReading.readDataToEndOfFile()
-        let err = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return DiskImageOutput(status: process.terminationStatus, stdout: out, stderr: err)
+        return DiskImageOutput(status: result.status, stdout: result.stdout, stderr: result.stderr)
     }
 }

@@ -266,11 +266,7 @@ public enum BundleHasher {
     public static func signatureValid(_ root: URL) -> Bool {
         #if os(macOS)
         let process = ParsedCommand.process(path: "/usr/bin/codesign", arguments: ["--verify", "--strict", root.path])
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-        do { try process.run() } catch { return false }
-        process.waitUntilExit()
-        return process.terminationStatus == 0
+        return (try? ProcessCapture.run(process))?.succeeded == true
         #else
         return BundleFacts.readInfo(root) != nil
         #endif
@@ -299,13 +295,8 @@ public enum BundleHasher {
 
     private static func codesignDisplay(_ url: URL) -> String? {
         let process = ParsedCommand.process(path: "/usr/bin/codesign", arguments: ["-dvvv", url.path])
-        let pipe = Pipe()
-        process.standardOutput = Pipe()
-        process.standardError = pipe
-        do { try process.run() } catch { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
+        guard let result = try? ProcessCapture.run(process), !result.timedOut,
+              let text = String(data: result.stderr, encoding: .utf8) else { return nil }
         for line in text.split(separator: "\n") where line.hasPrefix("CDHash=") {
             let value = line.dropFirst("CDHash=".count).split(whereSeparator: { $0 == " " || $0 == "\t" }).first.map(String.init) ?? ""
             if !value.isEmpty { return value }

@@ -791,17 +791,13 @@ enum SessionTierV2 {
         return 0
     }
 
-    private static func tarList(_ archive: URL) throws -> [String] {
+    static func tarList(_ archive: URL) throws -> [String] {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
         process.arguments = ["-tzf", archive.path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        try process.run()
-        process.waitUntilExit()
-        let text = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-        guard process.terminationStatus == 0 else { throw DisklesslyError.failure("tar list failed") }
+        let result = try ProcessCapture.run(process)
+        guard result.status == 0 else { throw DisklesslyError.failure("tar list failed") }
+        let text = String(data: result.stdout, encoding: .utf8) ?? ""
         return text.split(separator: "\n").map(String.init)
     }
 }
