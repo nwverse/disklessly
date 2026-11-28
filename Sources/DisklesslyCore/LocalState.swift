@@ -73,9 +73,7 @@ public enum JSONValue: Codable, Equatable {
         case .null: return NSNull()
         case .bool(let value): return value
         case .number(let value):
-            if value.rounded() == value, value >= Double(Int64.min), value <= Double(Int64.max) {
-                return Int64(value)
-            }
+            if let exact = Int64(exactly: value) { return exact }
             return value
         case .string(let value): return value
         case .array(let value): return value.map { $0.foundation() }
@@ -86,14 +84,14 @@ public enum JSONValue: Codable, Equatable {
     fileprivate static func exactUInt(_ value: JSONValue?) -> UInt64? {
         guard let value else { return nil }
         if let text = value.string, let parsed = UInt64(text) { return parsed }
-        if let number = value.int, number >= 0 { return UInt64(number) }
+        if let number = value.int, number >= 0 { return UInt64(exactly: number) }
         return nil
     }
 
     fileprivate static func exactInt(_ value: JSONValue?) -> Int64? {
         guard let value else { return nil }
         if let text = value.string, let parsed = Int64(text) { return parsed }
-        if let number = value.int { return Int64(number) }
+        if let number = value.int { return Int64(exactly: number) }
         return nil
     }
 
@@ -101,7 +99,7 @@ public enum JSONValue: Codable, Equatable {
     public var bool: Bool? { if case .bool(let value) = self { return value } else { return nil } }
     public var object: [String: JSONValue]? { if case .object(let value) = self { return value } else { return nil } }
     public var int: Int? {
-        if case .number(let value) = self, value.rounded() == value { return Int(value) }
+        if case .number(let value) = self { return Int(exactly: value) }
         return nil
     }
 }
@@ -352,7 +350,11 @@ public struct LocalState: Codable, Equatable {
             if let text = value.string, let date = StateDates.parse(text) { entry.lastUsed = date } else { entry.extra["lastUsed"] = value }
         }
         if let value = object["bytes"] {
-            if case .number(let number) = value, number >= 0 { entry.bytes = UInt64(number) } else { entry.extra["bytes"] = value }
+            if case .number(let number) = value, let bytes = UInt64(exactly: number) {
+                entry.bytes = bytes
+            } else {
+                entry.extra["bytes"] = value
+            }
         }
         if let value = object["verified"] {
             if let stamp = parseStamp(value) { entry.verified = stamp } else { entry.extra["verified"] = value }
@@ -395,7 +397,7 @@ public struct LocalState: Codable, Equatable {
         var start: UInt64 = 0
         if let value = object["owner"] {
             if let owner = value.object {
-                if let number = owner["pid"]?.int { pid = Int32(number) }
+                if let number = owner["pid"]?.int, let narrowed = Int32(exactly: number) { pid = narrowed }
                 else if let raw = owner["pid"] { extra["owner.pid"] = raw }
                 if let number = JSONValue.exactUInt(owner["start"]) { start = number }
                 else if let raw = owner["start"] { extra["owner.start"] = raw }
@@ -472,7 +474,7 @@ public struct LocalState: Codable, Equatable {
             ]),
         ]
         if let post = mirror.postQuitRanForEpoch { object["postQuitRanForEpoch"] = .number(Double(post)) }
-        for (key, value) in mirror.extra where object[key] == nil { object[key] = value }
+        for (key, value) in mirror.extra { object[key] = value }
         return .object(object)
     }
 }

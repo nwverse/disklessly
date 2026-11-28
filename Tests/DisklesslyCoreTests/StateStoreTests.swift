@@ -138,4 +138,64 @@ final class StateStoreTests: XCTestCase {
         XCTAssertEqual(apps?["com.example"]?["pinned"] as? Bool, true)
         XCTAssertEqual(apps?["com.example"]?["imageId"] as? String, "img-1")
     }
+
+    func testMalformedNumericFieldsDoNotTrapAndStayInExtra() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("disklessly-state-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let original = """
+        {
+          "schema": "state/2",
+          "cache": {
+            "valid-large-bytes": {"bytes": 10000000000000000000},
+            "overflow-bytes": {"bytes": 18446744073709551616},
+            "fractional-bytes": {"bytes": 1.5},
+            "bad-dev": {"verified": {"sha256": "x", "fingerprint": {"dev": 10000000000000000000, "ino": "1", "size": "1", "mtimeNs": "1"}}},
+            "bad-ino": {"verified": {"sha256": "x", "fingerprint": {"dev": "1", "ino": 10000000000000000000, "size": "1", "mtimeNs": "1"}}},
+            "bad-size": {"verified": {"sha256": "x", "fingerprint": {"dev": "1", "ino": "1", "size": 10000000000000000000, "mtimeNs": "1"}}},
+            "bad-mtime": {"verified": {"sha256": "x", "fingerprint": {"dev": "1", "ino": "1", "size": "1", "mtimeNs": 9223372036854775808}}}
+          },
+          "restored": {
+            "overflow-epoch": {"epoch": 9223372036854775808},
+            "overflow-post": {"postQuitRanForEpoch": 10000000000000000000},
+            "overflow-pid": {"owner": {"pid": 2147483648, "start": "1"}},
+            "overflow-start": {"owner": {"pid": 1, "start": 10000000000000000000}}
+          }
+        }
+        """
+        let url = root.appendingPathComponent("state.json")
+        try Data(original.utf8).write(to: url)
+        let store = StateStore(root.path)
+
+        func verify(_ state: LocalState) {
+            XCTAssertEqual(state.cache["valid-large-bytes"]?.bytes, 10_000_000_000_000_000_000)
+            XCTAssertNil(state.cache["overflow-bytes"]?.bytes)
+            XCTAssertEqual(state.cache["overflow-bytes"]?.extra["bytes"], .number(Double(UInt64.max)))
+            XCTAssertNil(state.cache["fractional-bytes"]?.bytes)
+            XCTAssertEqual(state.cache["fractional-bytes"]?.extra["bytes"], .number(1.5))
+            for key in ["bad-dev", "bad-ino", "bad-size", "bad-mtime"] {
+                XCTAssertNil(state.cache[key]?.verified, key)
+                XCTAssertNotNil(state.cache[key]?.extra["verified"], key)
+            }
+
+            XCTAssertEqual(state.restored["overflow-epoch"]?.epoch, 0)
+            XCTAssertEqual(state.restored["overflow-epoch"]?.extra["epoch"], .number(9_223_372_036_854_775_808.0))
+            XCTAssertNil(state.restored["overflow-post"]?.postQuitRanForEpoch)
+            XCTAssertEqual(state.restored["overflow-post"]?.extra["postQuitRanForEpoch"], .number(10_000_000_000_000_000_000.0))
+            XCTAssertEqual(state.restored["overflow-pid"]?.owner.pid, 0)
+            XCTAssertEqual(state.restored["overflow-pid"]?.extra["owner.pid"], .number(2_147_483_648))
+            XCTAssertEqual(state.restored["overflow-start"]?.owner.start, 0)
+            XCTAssertEqual(state.restored["overflow-start"]?.extra["owner.start"], .number(10_000_000_000_000_000_000.0))
+        }
+
+        verify(store.load())
+        try store.update { _ in }
+        verify(store.load())
+    }
+
+    func testJSONValueIntegerConversionRejectsFractionsAndOverflow() {
+        XCTAssertEqual(JSONValue.number(42).int, 42)
+        XCTAssertNil(JSONValue.number(1.5).int)
+        XCTAssertNil(JSONValue.number(9_223_372_036_854_775_808.0).int)
+    }
 }
