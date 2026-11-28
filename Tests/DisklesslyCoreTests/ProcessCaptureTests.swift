@@ -17,10 +17,50 @@ final class ProcessCaptureTests: XCTestCase {
         XCTAssertEqual(result.stderr.count, 1_048_576)
     }
 
+    func testNoTimeoutPreservesBothStreams() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "printf unbounded-stdout; printf unbounded-stderr >&2"]
+
+        let result = try ProcessCapture.run(process)
+
+        XCTAssertFalse(result.timedOut)
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout, Data("unbounded-stdout".utf8))
+        XCTAssertEqual(result.stderr, Data("unbounded-stderr".utf8))
+    }
+
     func testTimeoutTerminatesTheChild() throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", "sleep 30"]
+        let started = Date()
+
+        let result = try ProcessCapture.run(process, timeout: 0.25)
+
+        XCTAssertTrue(result.timedOut)
+        XCTAssertLessThan(Date().timeIntervalSince(started), 3)
+        XCTAssertFalse(process.isRunning)
+    }
+
+    func testGrandchildHoldingPipesTimesOutAfterTheChildExits() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "(sleep 5) & echo done"]
+        let started = Date()
+
+        let result = try ProcessCapture.run(process, timeout: 0.5)
+
+        XCTAssertTrue(result.timedOut)
+        XCTAssertEqual(result.status, 0)
+        XCTAssertEqual(result.stdout, Data("done\n".utf8))
+        XCTAssertLessThan(Date().timeIntervalSince(started), 2)
+    }
+
+    func testTimeoutEscalatesWhenTheChildIgnoresSIGTERM() throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "trap '' TERM; while :; do :; done"]
         let started = Date()
 
         let result = try ProcessCapture.run(process, timeout: 0.25)
