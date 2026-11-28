@@ -22,6 +22,20 @@ public struct FileOffloadResult {
     }
 }
 
+public struct FileFetchResult {
+    public var target: URL
+    public var warnings: [String]
+
+    public init(target: URL, warnings: [String]) {
+        self.target = target
+        self.warnings = warnings
+    }
+
+    public func jsonObject() -> [String: Any] {
+        ["ok": true, "restored": target.path, "warnings": warnings]
+    }
+}
+
 extension DisklesslyEngine {
     /// Paths an offload never touches: the repo, cache and state folders.
     var protectedPaths: [String] { [config.repoPath, config.cacheDir, config.stateDir, config.mountRoot].filter { !$0.isEmpty } }
@@ -204,7 +218,7 @@ extension DisklesslyEngine {
         }
         do {
             try OffloadedFileRegistry.update(stateDir: config.stateDir) { records in
-                records.removeAll { $0.placeholderPath == placeholderURL.path }
+                records.removeAll { $0.id == placeholder.id || $0.placeholderPath == placeholderURL.path }
                 records.append(OffloadedFileRecord(id: placeholder.id, placeholderPath: placeholderURL.path, name: placeholder.name, kind: kind, size: logical, object: object, createdAt: placeholder.createdAt))
             }
         } catch {
@@ -246,12 +260,13 @@ extension DisklesslyEngine {
         URL(fileURLWithPath: stateDir).appendingPathComponent("cold")
     }
 
+    static let coldFolderNote = "This folder was offloaded to the Disklessly repo. Open Disklessly and click Bring back (取回) on it.\n"
+
     /// Replaces a folder's path with a link to a new, empty cold folder that says how to bring it back.
     static func leaveColdLink(at source: URL, stateDir: String, id: String) throws {
         let folder = coldRoot(stateDir: stateDir).appendingPathComponent(id)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let note = "This folder was offloaded to the Disklessly repo. Open Disklessly and click Bring back (取回) on it.\n"
-        try Data(note.utf8).write(to: folder.appendingPathComponent("README.txt"))
+        try Data(coldFolderNote.utf8).write(to: folder.appendingPathComponent("README.txt"))
         #if os(macOS)
         StubIcon.badgeColdFolder(folder)
         #endif
@@ -260,13 +275,161 @@ extension DisklesslyEngine {
 
     /// Whether `url` is a link left by `leaveColdLink`. The link may dangle.
     static func isColdLink(_ url: URL, stateDir: String) -> Bool {
-        guard let target = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else { return false }
-        return target.hasPrefix(coldRoot(stateDir: stateDir).path + "/")
+        coldLinkTarget(url, stateDir: stateDir) != nil
+    }
+
+    static func isColdLink(_ url: URL, stateDir: String, id: String) -> Bool {
+        coldLinkTarget(url, stateDir: stateDir)?.lastPathComponent == id
+    }
+
+    private static func coldLinkTarget(_ url: URL, stateDir: String) -> URL? {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFLNK,
+              let raw = try? FileManager.default.destinationOfSymbolicLink(atPath: url.path) else { return nil }
+        let destination: URL
+        if raw.hasPrefix("/") {
+            destination = URL(fileURLWithPath: raw)
+        } else {
+            destination = url.deletingLastPathComponent().appendingPathComponent(raw)
+        }
+        let target = destination.standardizedFileURL
+        let root = coldRoot(stateDir: stateDir).standardizedFileURL
+        guard target.deletingLastPathComponent().path == root.path else { return nil }
+        return target
+    }
+
+    private static func entryMode(_ url: URL) throws -> mode_t? {
+        var info = stat()
+        if lstat(url.path, &info) == 0 { return info.st_mode & S_IFMT }
+        if errno == ENOENT { return nil }
+        throw DisklesslyError.failure("could not inspect \(url.path): \(String(cString: strerror(errno)))")
+    }
+
+    /// Only the note written by `leaveColdLink` is ours. Anything else may have been
+    /// created through the cold link, so it is reported and preserved.
+    private static func addedEntriesInColdFolder(id: String, stateDir: String) throws -> [String] {
+        let folder = coldRoot(stateDir: stateDir).appendingPathComponent(id)
+        guard let mode = try entryMode(folder) else { return [] }
+        guard mode == S_IFDIR else {
+            throw DisklesslyError.usage("the cold recovery path \(folder.path) is not a directory; move it aside, then retry")
+        }
+        var added: [String] = []
+        for name in try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted() {
+            if !isGeneratedColdEntry(name, at: folder.appendingPathComponent(name)) { added.append(name) }
+        }
+        return added
+    }
+
+    private static func isGeneratedColdEntry(_ name: String, at url: URL) -> Bool {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { return false }
+        if name == ".DS_Store" { return true }
+        if name == "Icon\r" {
+            #if os(macOS)
+            guard info.st_size == 0 else { return false }
+            return url.path.withCString { path in
+                let finder = "com.apple.FinderInfo".withCString { getxattr(path, $0, nil, 0, 0, 0) > 0 }
+                let resource = "com.apple.ResourceFork".withCString { getxattr(path, $0, nil, 0, 0, 0) > 0 }
+                return finder || resource
+            }
+            #else
+            return false
+            #endif
+        }
+        guard name == "README.txt" else { return false }
+        return (try? Data(contentsOf: url)) == Data(coldFolderNote.utf8)
+    }
+
+    private static func listEntries(_ names: [String]) -> String {
+        let shown = names.prefix(5).joined(separator: ", ")
+        return names.count > 5 ? "\(shown), and \(names.count - 5) more" : shown
+    }
+
+    private static func coldFolderHasAddedEntriesError(_ target: URL, name: String, entries: [String]) -> DisklesslyError {
+        .usage("cannot bring back \(name): \(target.path) links to a cold folder that contains items added after offload (\(listEntries(entries))). Move them somewhere safe, then retry; nothing was changed")
+    }
+
+    private static func restoreQuarantinedTarget(_ aside: URL, to target: URL) throws {
+        guard try entryMode(target) == nil else {
+            throw DisklesslyError.usage("\(target.path) was recreated during restore; the replacement was kept at \(aside.path)")
+        }
+        do {
+            try FileManager.default.moveItem(at: aside, to: target)
+        } catch {
+            throw DisklesslyError.usage("\(target.path) changed during restore; the replacement could not be put back and was kept at \(aside.path): \(error.localizedDescription)")
+        }
+    }
+
+    /// Atomically moves whatever is at `target` aside, accepts only the exact cold
+    /// symlink this placeholder owns, and puts every other object back unchanged.
+    private static func clearColdLinkForRestore(target: URL, stateDir: String, placeholder: FilePlaceholder) throws {
+        guard try entryMode(target) != nil else { return }
+        let aside = target.deletingLastPathComponent().appendingPathComponent(".\(target.lastPathComponent).disklessly-target-\(UUID().uuidString)")
+        guard rename(target.path, aside.path) == 0 else {
+            if errno == ENOENT { return }
+            throw DisklesslyError.failure("could not move \(target.path) aside for restore: \(String(cString: strerror(errno)))")
+        }
+        guard isColdLink(aside, stateDir: stateDir, id: placeholder.id) else {
+            try restoreQuarantinedTarget(aside, to: target)
+            throw DisklesslyError.usage("\(target.path) already exists; it was preserved and nothing was replaced. Move it away, then retry")
+        }
+
+        let entries: [String]
+        do {
+            entries = try addedEntriesInColdFolder(id: placeholder.id, stateDir: stateDir)
+        } catch {
+            try restoreQuarantinedTarget(aside, to: target)
+            throw error
+        }
+        guard entries.isEmpty else {
+            try restoreQuarantinedTarget(aside, to: target)
+            throw coldFolderHasAddedEntriesError(target, name: placeholder.name, entries: entries)
+        }
+        guard unlink(aside.path) == 0 else {
+            let message = String(cString: strerror(errno))
+            try? restoreQuarantinedTarget(aside, to: target)
+            throw DisklesslyError.failure("could not remove the cold link at \(target.path): \(message)")
+        }
+    }
+
+    /// Removes only the generated note, then removes the folder only when it is empty.
+    /// Nothing is ever deleted recursively.
+    private static func cleanColdFolder(id: String, stateDir: String) -> [String] {
+        let folder = coldRoot(stateDir: stateDir).appendingPathComponent(id)
+        do {
+            guard let mode = try entryMode(folder) else { return [] }
+            guard mode == S_IFDIR else {
+                return ["restored, but the cold recovery path \(folder.path) is not a directory; it was left untouched"]
+            }
+            let names = try FileManager.default.contentsOfDirectory(atPath: folder.path).sorted()
+            let unknown = names.filter { !isGeneratedColdEntry($0, at: folder.appendingPathComponent($0)) }
+            if !unknown.isEmpty {
+                return ["restored, but items added through the cold link were preserved in \(folder.path): \(listEntries(unknown))"]
+            }
+            for name in names {
+                let generated = folder.appendingPathComponent(name)
+                guard unlink(generated.path) == 0 || errno == ENOENT else {
+                    return ["restored, but \(generated.path) could not be removed: \(String(cString: strerror(errno)))"]
+                }
+            }
+            if rmdir(folder.path) != 0, errno != ENOENT {
+                return ["restored, but the cold folder \(folder.path) could not be removed because it is no longer empty; its contents were preserved"]
+            }
+            return []
+        } catch {
+            return ["restored, but the cold folder \(folder.path) could not be cleaned up: \(error.localizedDescription); it was left untouched"]
+        }
     }
 
     /// Brings the file or folder of a placeholder back next to it, then removes the placeholder.
     @discardableResult
     public func fetchFile(_ placeholderPath: String, progress: (String) -> Void = { _ in }) throws -> URL {
+        try fetchFileDetailed(placeholderPath, progress: progress).target
+    }
+
+    /// Detailed fetch result. The extra warnings cover a completed restore whose
+    /// optional bookkeeping or cold-folder cleanup could not be finished.
+    public func fetchFileDetailed(_ placeholderPath: String, progress: (String) -> Void = { _ in }) throws -> FileFetchResult {
         let placeholderURL = URL(fileURLWithPath: placeholderPath).standardizedFileURL
         let placeholder = try FilePlaceholder.read(placeholderURL)
         let parent = placeholderURL.deletingLastPathComponent()
@@ -275,15 +438,18 @@ extension DisklesslyEngine {
         if let repoId = placeholder.repoId, let current = RepoIdentity.read(backend), repoId != current {
             throw DisklesslyError.usage("\(placeholderURL.lastPathComponent) belongs to another repo (\(repoId)); switch to it with `disklessly backend use` first")
         }
-        // Our own link at the target stands for the folder that was offloaded; it is replaced below.
-        let coldLink = placeholder.kind == .folder && Self.isColdLink(target, stateDir: config.stateDir)
-        if !coldLink, FileManager.default.fileExists(atPath: target.path) {
+        if let targetMode = try Self.entryMode(target) {
+            if placeholder.kind == .folder, Self.isColdLink(target, stateDir: config.stateDir, id: placeholder.id) {
+                let added = try Self.addedEntriesInColdFolder(id: placeholder.id, stateDir: config.stateDir)
+                if !added.isEmpty {
+                    throw Self.coldFolderHasAddedEntriesError(target, name: placeholder.name, entries: added)
+                }
+            } else if placeholder.kind == .file, targetMode == S_IFREG, (try? SHA256Digest.hexFile(target)) == placeholder.sha256 {
             // The crash window of an offload: the original is still here. Keep it if it matches.
-            if placeholder.kind == .file, (try? SHA256Digest.hexFile(target)) == placeholder.sha256 {
-                try finishFetch(placeholderURL)
-                return target
+                return FileFetchResult(target: target, warnings: try finishFetch(placeholderURL, id: placeholder.id))
+            } else {
+                throw DisklesslyError.usage("\(target.path) already exists; move it away, then bring \(placeholder.name) back")
             }
-            throw DisklesslyError.usage("\(target.path) already exists; move it away, then bring \(placeholder.name) back")
         }
         progress("download")
         let need = placeholder.storedSize + (placeholder.kind == .folder ? placeholder.size : 0)
@@ -332,14 +498,19 @@ extension DisklesslyEngine {
             if let date = placeholder.modifiedAt { try? FileManager.default.setAttributes([.modificationDate: date], ofItemAtPath: ready.path) }
         }
         progress("place")
-        if coldLink { try FileManager.default.removeItem(at: target) }
+        if let failureInjector { try failureInjector("fetch.beforePlace") }
+        if placeholder.kind == .folder {
+            try Self.clearColdLinkForRestore(target: target, stateDir: config.stateDir, placeholder: placeholder)
+        } else if try Self.entryMode(target) != nil {
+            throw DisklesslyError.usage("\(target.path) appeared while it was being restored; it was kept and nothing was replaced")
+        }
         // moveItem refuses to replace, so a file that appeared meanwhile is kept.
         try FileManager.default.moveItem(at: ready, to: target)
-        try finishFetch(placeholderURL)
+        var warnings = try finishFetch(placeholderURL, id: placeholder.id)
         if placeholder.kind == .folder {
-            try? FileManager.default.removeItem(at: Self.coldRoot(stateDir: config.stateDir).appendingPathComponent(placeholder.id))
+            warnings.append(contentsOf: Self.cleanColdFolder(id: placeholder.id, stateDir: config.stateDir))
         }
-        return target
+        return FileFetchResult(target: target, warnings: warnings)
     }
 
     /// SHA-256 of the object as the repo now holds it. Uses server-side hash when available,
@@ -407,10 +578,21 @@ extension DisklesslyEngine {
         }
     }
 
-    private func finishFetch(_ placeholderURL: URL) throws {
-        try FileManager.default.removeItem(at: placeholderURL)
-        try OffloadedFileRegistry.update(stateDir: config.stateDir) { records in
-            records.removeAll { $0.placeholderPath == placeholderURL.path }
+    private func finishFetch(_ placeholderURL: URL, id: String) throws -> [String] {
+        let current = try FilePlaceholder.read(placeholderURL)
+        guard current.id == id else {
+            throw DisklesslyError.usage("\(placeholderURL.path) changed during fetch; it was kept")
+        }
+        guard unlink(placeholderURL.path) == 0 else {
+            throw DisklesslyError.failure("could not remove \(placeholderURL.path): \(String(cString: strerror(errno)))")
+        }
+        do {
+            try OffloadedFileRegistry.update(stateDir: config.stateDir) { records in
+                records.removeAll { $0.id == id }
+            }
+            return []
+        } catch {
+            return ["restored, but the local list of offloaded files could not be updated: \(error.localizedDescription)"]
         }
     }
 
