@@ -65,7 +65,8 @@ public struct InitArguments: Equatable {
                 }
                 throw DisklesslyError.usage("init does not take a positional argument: \(flag)")
             }
-            guard let value = rest.first, !value.isEmpty, !value.hasPrefix("-") else {
+            guard let value = rest.first, !value.isEmpty,
+                  !(value.hasPrefix("-") && (flag != "--quota" || value.hasPrefix("--"))) else {
                 throw DisklesslyError.usage("\(flag) requires a value")
             }
             rest.removeFirst()

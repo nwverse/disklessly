@@ -20,6 +20,7 @@ final class InitArgumentsTests: XCTestCase {
             (["/tmp/repo"], "init does not take a positional argument: /tmp/repo"),
             (["--root=/Volumes/NAS/Disklessly"], "Unknown option: --root=/Volumes/NAS/Disklessly"),
             (["--quota", "soon"], "invalid size: soon"),
+            (["--quota", "-1"], "invalid size: -1"),
         ]
         for (arguments, message) in rejected {
             XCTAssertThrowsError(try InitArguments.parse(arguments), "\(arguments)") { error in

@@ -549,16 +549,18 @@ public struct RecommendArguments: Equatable {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw DisklesslyError.usage("missing size") }
         var index = trimmed.startIndex
-        var dots = 0
+        var sawDigit = false
+        var sawDot = false
         while index < trimmed.endIndex {
             let character = trimmed[index]
-            if character.isNumber {
+            if character.isASCII && character.isNumber {
+                sawDigit = true
                 index = trimmed.index(after: index)
                 continue
             }
             if character == "." {
-                dots += 1
-                guard dots == 1 else { throw DisklesslyError.usage("invalid size: \(raw)") }
+                guard !sawDot else { throw DisklesslyError.usage("invalid size: \(raw)") }
+                sawDot = true
                 index = trimmed.index(after: index)
                 continue
             }
@@ -566,16 +568,16 @@ public struct RecommendArguments: Equatable {
         }
         let numberPart = trimmed[..<index]
         let unit = trimmed[index...].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !numberPart.isEmpty, let value = Double(numberPart), value >= 0, value.isFinite else {
+        guard sawDigit else {
             throw DisklesslyError.usage("invalid size: \(raw)")
         }
         guard unit.allSatisfy({ $0.isASCII && $0.isLetter }) else {
             throw DisklesslyError.usage("invalid size: \(raw)")
         }
-        let scale: Double
+        let scale: UInt64
         switch unit.lowercased() {
         case "":
-            guard dots == 0 else { throw DisklesslyError.usage("invalid size: \(raw)") }
+            guard !sawDot else { throw DisklesslyError.usage("invalid size: \(raw)") }
             scale = 1
         case "k", "kib": scale = 1024
         case "kb": scale = 1_000
@@ -586,9 +588,52 @@ public struct RecommendArguments: Equatable {
         default:
             throw DisklesslyError.usage("invalid size: \(raw)")
         }
-        let bytes = value * scale
-        guard bytes <= Double(UInt64.max) else { throw DisklesslyError.usage("invalid size: \(raw)") }
-        return UInt64(bytes)
+        if !sawDot {
+            guard let value = UInt64(numberPart) else {
+                throw DisklesslyError.usage("invalid size: \(raw)")
+            }
+            let (bytes, overflow) = value.multipliedReportingOverflow(by: scale)
+            guard !overflow else { throw DisklesslyError.usage("invalid size: \(raw)") }
+            return bytes
+        }
+        let parts = numberPart.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 2 else { throw DisklesslyError.usage("invalid size: \(raw)") }
+        let wholeText = parts[0].drop(while: { $0 == "0" })
+        let whole: UInt64
+        if wholeText.isEmpty {
+            whole = 0
+        } else {
+            guard let parsed = UInt64(wholeText) else { throw DisklesslyError.usage("invalid size: \(raw)") }
+            whole = parsed
+        }
+        var fractionText = parts[1]
+        while fractionText.last == "0" { fractionText.removeLast() }
+        let fraction: UInt64
+        var denominator: UInt64
+        if fractionText.isEmpty {
+            fraction = 0
+            denominator = 1
+        } else {
+            let fractionDigits = fractionText.count > 19 ? fractionText.prefix(19) : fractionText
+            guard let parsed = UInt64(fractionDigits) else {
+                throw DisklesslyError.usage("invalid size: \(raw)")
+            }
+            fraction = parsed
+            denominator = 1
+            for _ in fractionDigits {
+                let (next, overflow) = denominator.multipliedReportingOverflow(by: 10)
+                guard !overflow else { throw DisklesslyError.usage("invalid size: \(raw)") }
+                denominator = next
+            }
+        }
+        let (wholeBytes, wholeOverflow) = whole.multipliedReportingOverflow(by: scale)
+        guard !wholeOverflow else { throw DisklesslyError.usage("invalid size: \(raw)") }
+        let (high, low) = fraction.multipliedFullWidth(by: scale)
+        guard high < denominator else { throw DisklesslyError.usage("invalid size: \(raw)") }
+        let scaledFraction = denominator.dividingFullWidth((high: high, low: low)).quotient
+        let (bytes, overflow) = wholeBytes.addingReportingOverflow(scaledFraction)
+        guard !overflow else { throw DisklesslyError.usage("invalid size: \(raw)") }
+        return bytes
     }
 
     private static func parseCount(_ raw: String, name: String) throws -> Int {

@@ -65,6 +65,9 @@ final class ReleaseLayoutTests: XCTestCase {
             (["init", root.appendingPathComponent("repo").path], "init does not take a positional argument:"),
             (["init", "--root=\(root.appendingPathComponent("repo").path)"], "Unknown option: --root="),
             (["init", "--quota", "200QB"], "invalid size: 200QB"),
+            (["init", "--quota", "18446744073709551616"], "invalid size: 18446744073709551616"),
+            (["init", "--quota", "1.5"], "invalid size: 1.5"),
+            (["init", "--quota", "-1"], "invalid size: -1"),
         ]
         for (arguments, message) in cases {
             let result = try run(binary, arguments)
