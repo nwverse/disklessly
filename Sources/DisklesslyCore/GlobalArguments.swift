@@ -44,17 +44,19 @@ public struct InitArguments: Equatable {
     public var backend: String?
     public var root: String?
     public var cacheDir: String?
+    public var quotaBytes: UInt64?
 
-    public init(backend: String? = nil, root: String? = nil, cacheDir: String? = nil) {
+    public init(backend: String? = nil, root: String? = nil, cacheDir: String? = nil, quotaBytes: UInt64? = nil) {
         self.backend = backend
         self.root = root
         self.cacheDir = cacheDir
+        self.quotaBytes = quotaBytes
     }
 
     public static func parse(_ args: [String]) throws -> InitArguments {
         var parsed = InitArguments()
         var rest = args
-        let known: Set<String> = ["--backend", "--root", "--cache-dir"]
+        let known: Set<String> = ["--backend", "--root", "--cache-dir", "--quota"]
         while let flag = rest.first {
             rest.removeFirst()
             guard known.contains(flag) else {
@@ -70,7 +72,9 @@ public struct InitArguments: Equatable {
             switch flag {
             case "--backend": parsed.backend = value
             case "--root": parsed.root = value
-            default: parsed.cacheDir = value
+            case "--cache-dir": parsed.cacheDir = value
+            case "--quota": parsed.quotaBytes = try RecommendArguments.parseSize(value)
+            default: break
             }
         }
         return parsed
