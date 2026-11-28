@@ -27,6 +27,8 @@ public enum StateDates {
 public enum JSONValue: Codable, Equatable {
     case null
     case bool(Bool)
+    case integer(Int64)
+    case unsigned(UInt64)
     case number(Double)
     case string(String)
     case array([JSONValue])
@@ -37,6 +39,8 @@ public enum JSONValue: Codable, Equatable {
         if container.decodeNil() { self = .null; return }
         if let value = try? container.decode(Bool.self) { self = .bool(value); return }
         if let value = try? container.decode(String.self) { self = .string(value); return }
+        if let value = try? container.decode(Int64.self) { self = .integer(value); return }
+        if let value = try? container.decode(UInt64.self) { self = .unsigned(value); return }
         if let value = try? container.decode(Double.self) { self = .number(value); return }
         if let value = try? container.decode([JSONValue].self) { self = .array(value); return }
         if let value = try? container.decode([String: JSONValue].self) { self = .object(value); return }
@@ -48,6 +52,8 @@ public enum JSONValue: Codable, Equatable {
         switch self {
         case .null: try container.encodeNil()
         case .bool(let value): try container.encode(value)
+        case .integer(let value): try container.encode(value)
+        case .unsigned(let value): try container.encode(value)
         case .number(let value): try container.encode(value)
         case .string(let value): try container.encode(value)
         case .array(let value): try container.encode(value)
@@ -60,7 +66,14 @@ public enum JSONValue: Codable, Equatable {
         if let text = value as? String { return .string(text) }
         if let number = value as? NSNumber {
             if CFGetTypeID(number) == CFBooleanGetTypeID() { return .bool(number.boolValue) }
-            return .number(number.doubleValue)
+            switch String(cString: number.objCType) {
+            case "c", "s", "i", "l", "q":
+                return .integer(number.int64Value)
+            case "C", "S", "I", "L", "Q":
+                return .unsigned(number.uint64Value)
+            default:
+                return .number(number.doubleValue)
+            }
         }
         if let flag = value as? Bool { return .bool(flag) }
         if let list = value as? [Any] { return .array(list.map(from)) }
@@ -72,28 +85,35 @@ public enum JSONValue: Codable, Equatable {
         switch self {
         case .null: return NSNull()
         case .bool(let value): return value
-        case .number(let value):
-            if value.rounded() == value, value >= Double(Int64.min), value <= Double(Int64.max) {
-                return Int64(value)
-            }
-            return value
+        case .integer(let value): return value
+        case .unsigned(let value): return value
+        case .number(let value): return value
         case .string(let value): return value
         case .array(let value): return value.map { $0.foundation() }
         case .object(let value): return value.mapValues { $0.foundation() }
         }
     }
 
+    fileprivate static func numericUInt(_ value: JSONValue?) -> UInt64? {
+        guard let value else { return nil }
+        if case .integer(let number) = value, number >= 0 { return UInt64(number) }
+        if case .unsigned(let number) = value { return number }
+        if case .number(let number) = value { return UInt64(exactly: number) }
+        return nil
+    }
+
     fileprivate static func exactUInt(_ value: JSONValue?) -> UInt64? {
         guard let value else { return nil }
         if let text = value.string, let parsed = UInt64(text) { return parsed }
-        if let number = value.int, number >= 0 { return UInt64(number) }
-        return nil
+        return numericUInt(value)
     }
 
     fileprivate static func exactInt(_ value: JSONValue?) -> Int64? {
         guard let value else { return nil }
         if let text = value.string, let parsed = Int64(text) { return parsed }
-        if let number = value.int { return Int64(number) }
+        if case .integer(let number) = value { return number }
+        if case .unsigned(let number) = value, number <= UInt64(Int64.max) { return Int64(number) }
+        if case .number(let number) = value { return Int64(exactly: number) }
         return nil
     }
 
@@ -101,8 +121,12 @@ public enum JSONValue: Codable, Equatable {
     public var bool: Bool? { if case .bool(let value) = self { return value } else { return nil } }
     public var object: [String: JSONValue]? { if case .object(let value) = self { return value } else { return nil } }
     public var int: Int? {
-        if case .number(let value) = self, value.rounded() == value { return Int(value) }
-        return nil
+        switch self {
+        case .integer(let value): return Int(exactly: value)
+        case .unsigned(let value): return Int(exactly: value)
+        case .number(let value): return Int(exactly: value)
+        default: return nil
+        }
     }
 }
 
@@ -352,7 +376,11 @@ public struct LocalState: Codable, Equatable {
             if let text = value.string, let date = StateDates.parse(text) { entry.lastUsed = date } else { entry.extra["lastUsed"] = value }
         }
         if let value = object["bytes"] {
-            if case .number(let number) = value, number >= 0 { entry.bytes = UInt64(number) } else { entry.extra["bytes"] = value }
+            if let bytes = JSONValue.numericUInt(value) {
+                entry.bytes = bytes
+            } else {
+                entry.extra["bytes"] = value
+            }
         }
         if let value = object["verified"] {
             if let stamp = parseStamp(value) { entry.verified = stamp } else { entry.extra["verified"] = value }
@@ -395,7 +423,7 @@ public struct LocalState: Codable, Equatable {
         var start: UInt64 = 0
         if let value = object["owner"] {
             if let owner = value.object {
-                if let number = owner["pid"]?.int { pid = Int32(number) }
+                if let number = owner["pid"]?.int, let narrowed = Int32(exactly: number) { pid = narrowed }
                 else if let raw = owner["pid"] { extra["owner.pid"] = raw }
                 if let number = JSONValue.exactUInt(owner["start"]) { start = number }
                 else if let raw = owner["start"] { extra["owner.start"] = raw }
@@ -441,7 +469,7 @@ public struct LocalState: Codable, Equatable {
     private func renderCache(_ entry: CacheEntry) -> JSONValue {
         var object: [String: JSONValue] = [:]
         if let lastUsed = entry.lastUsed { object["lastUsed"] = .string(StateDates.string(lastUsed)) }
-        if let bytes = entry.bytes { object["bytes"] = .number(Double(bytes)) }
+        if let bytes = entry.bytes { object["bytes"] = .unsigned(bytes) }
         if let stamp = entry.verified {
             object["verified"] = .object([
                 "sha256": .string(stamp.sha256),
@@ -465,14 +493,14 @@ public struct LocalState: Codable, Equatable {
             "waitReason": .string(mirror.waitReason),
             "dest": .string(mirror.dest),
             "staging": .string(mirror.staging),
-            "epoch": .number(Double(mirror.epoch)),
+            "epoch": .integer(Int64(mirror.epoch)),
             "owner": .object([
-                "pid": .number(Double(mirror.owner.pid)),
-                "start": .number(Double(mirror.owner.start)),
+                "pid": .integer(Int64(mirror.owner.pid)),
+                "start": .unsigned(mirror.owner.start),
             ]),
         ]
-        if let post = mirror.postQuitRanForEpoch { object["postQuitRanForEpoch"] = .number(Double(post)) }
-        for (key, value) in mirror.extra where object[key] == nil { object[key] = value }
+        if let post = mirror.postQuitRanForEpoch { object["postQuitRanForEpoch"] = .integer(Int64(post)) }
+        for (key, value) in mirror.extra { object[key] = value }
         return .object(object)
     }
 }
