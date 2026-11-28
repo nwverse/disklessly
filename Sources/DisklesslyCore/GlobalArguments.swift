@@ -40,6 +40,43 @@ public struct GlobalArguments: Equatable {
     }
 }
 
+public struct InitArguments: Equatable {
+    public var backend: String?
+    public var root: String?
+    public var cacheDir: String?
+
+    public init(backend: String? = nil, root: String? = nil, cacheDir: String? = nil) {
+        self.backend = backend
+        self.root = root
+        self.cacheDir = cacheDir
+    }
+
+    public static func parse(_ args: [String]) throws -> InitArguments {
+        var parsed = InitArguments()
+        var rest = args
+        let known: Set<String> = ["--backend", "--root", "--cache-dir"]
+        while let flag = rest.first {
+            rest.removeFirst()
+            guard known.contains(flag) else {
+                if flag.hasPrefix("-") {
+                    throw DisklesslyError.usage("Unknown option: \(flag)")
+                }
+                throw DisklesslyError.usage("init does not take a positional argument: \(flag)")
+            }
+            guard let value = rest.first, !value.isEmpty, !value.hasPrefix("-") else {
+                throw DisklesslyError.usage("\(flag) requires a value")
+            }
+            rest.removeFirst()
+            switch flag {
+            case "--backend": parsed.backend = value
+            case "--root": parsed.root = value
+            default: parsed.cacheDir = value
+            }
+        }
+        return parsed
+    }
+}
+
 public struct PackArguments: Equatable {
     public var app: String
     public var mode: ImageManifest.Mode?

@@ -322,7 +322,11 @@ do {
         if json { emit(["version":EngineInstall.version,"revision":EngineInstall.revision,"schema":"image/1","commit":EngineInstall.commit,"buildDate":EngineInstall.buildDate,"arch":EngineInstall.arch,"schemas":["stub":"stub/1","state":"state/2","image":"image/1"]] as [String: Any]) }
         else { printVersionLine() }
     case "init":
-        while !args.isEmpty { let a=args.removeFirst(); if a=="--backend", !args.isEmpty { config.backend=args.removeFirst() } else if a=="--root", !args.isEmpty { config.repoPath=args.removeFirst() } else if a=="--cache-dir", !args.isEmpty { config.cacheDir=args.removeFirst() } }
+        if args.contains("--help") || args.contains("-h") { usage() }
+        let parsed = try InitArguments.parse(args)
+        if let backend = parsed.backend { config.backend = backend }
+        if let root = parsed.root { config.repoPath = root }
+        if let cacheDir = parsed.cacheDir { config.cacheDir = cacheDir }
         if HostPlatform.current == .linux && config.backend == "icloud" { throw DisklesslyError.unsupported("iCloud Drive is not available on Linux; use --root DIR or disklessly backend add") }
         try DisklesslyEngine(config:config).initialize()
         say(["ok":true,"repo":config.repoPath,"cacheDir":config.cacheDir,"quotaBytes":NSNumber(value: config.quotaBytes)], CLIText.initialized(config))

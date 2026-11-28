@@ -53,6 +53,27 @@ final class ReleaseLayoutTests: XCTestCase {
         XCTAssertFalse(result.out.contains("Environment overrides"), "no-argument run should not dump the full help")
     }
 
+    func testInitRejectsMalformedArgumentsWithoutCreatingRepository() throws {
+        let binary = try cliBinary()
+        let cases: [([String], String)] = [
+            (["init", "--backend"], "--backend requires a value"),
+            (["init", "--root"], "--root requires a value"),
+            (["init", "--cache-dir"], "--cache-dir requires a value"),
+            (["init", "--root", "--cache-dir", root.appendingPathComponent("cache").path], "--root requires a value"),
+            (["init", "--repo", root.appendingPathComponent("repo").path], "Unknown option: --repo"),
+            (["init", root.appendingPathComponent("repo").path], "init does not take a positional argument:"),
+            (["init", "--root=\(root.appendingPathComponent("repo").path)"], "Unknown option: --root="),
+        ]
+        for (arguments, message) in cases {
+            let result = try run(binary, arguments)
+            XCTAssertEqual(result.reason, .exit, "\(arguments) crashed: \(result.err)")
+            XCTAssertEqual(result.status, 2, "\(arguments): \(result.out)\(result.err)")
+            XCTAssertTrue(result.err.contains(message), "\(arguments): \(result.err)")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("repo").path), "\(arguments) created a repository")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("state/config.json").path), "\(arguments) saved config")
+        }
+    }
+
     func testGcJsonRuns() throws {
         let binary = try cliBinary()
         XCTAssertEqual(try run(binary, ["init", "--json"]).status, 0)
