@@ -38,7 +38,7 @@ final class UnpackTests: XCTestCase {
     }
 
     func testUnpackFaultAtEveryPhaseRecovers() throws {
-        let phases = ["prepared", "extracted", "stubParked", "installed", "stubDeleted"]
+        let phases = ["prepared", "extracted", "stubParked", "installed", "stubDeleted", "closed"]
         let edges = ["afterJournal", "afterMutation"]
         for phase in phases {
             for edge in edges {
@@ -107,11 +107,15 @@ final class UnpackTests: XCTestCase {
         XCTAssertEqual(UnpackRecovery.decide(phase: "extracted", destIsStub: true, destIsApp: false, appNewVerified: true, parkedStubExists: false), .rollback)
         XCTAssertEqual(UnpackRecovery.decide(phase: "stubParked", destIsStub: false, destIsApp: false, appNewVerified: true, parkedStubExists: true), .installAndFinish)
         XCTAssertEqual(UnpackRecovery.decide(phase: "stubParked", destIsStub: false, destIsApp: false, appNewVerified: false, parkedStubExists: true), .restoreStub)
+        XCTAssertEqual(UnpackRecovery.decide(phase: "stubParked", destIsStub: true, destIsApp: false, appNewVerified: true, parkedStubExists: false), .rollback)
         XCTAssertEqual(UnpackRecovery.decide(phase: "installed", destIsStub: false, destIsApp: true, appNewVerified: false, parkedStubExists: true), .deleteParkedStub)
         XCTAssertEqual(UnpackRecovery.decide(phase: "stubDeleted", destIsStub: false, destIsApp: true, appNewVerified: false, parkedStubExists: false), .deleteParkedStub)
+        XCTAssertEqual(UnpackRecovery.decide(phase: "closed", destIsStub: false, destIsApp: true, appNewVerified: false, parkedStubExists: false), .deleteParkedStub)
         XCTAssertEqual(UnpackRecovery.decide(phase: "prepared", destIsStub: false, destIsApp: false, appNewVerified: false, parkedStubExists: false), .needsAttention)
-        XCTAssertEqual(UnpackRecovery.decide(phase: "stubParked", destIsStub: true, destIsApp: false, appNewVerified: true, parkedStubExists: false), .needsAttention)
         XCTAssertEqual(UnpackRecovery.decide(phase: "installed", destIsStub: false, destIsApp: false, appNewVerified: false, parkedStubExists: false), .needsAttention)
+        XCTAssertEqual(UnpackRecovery.decide(phase: "closed", destIsStub: true, destIsApp: false, appNewVerified: false, parkedStubExists: false), .needsAttention)
+        XCTAssertEqual(UnpackRecovery.decide(phase: "closed", destIsStub: false, destIsApp: false, appNewVerified: false, parkedStubExists: false), .needsAttention)
+        XCTAssertEqual(UnpackRecovery.decide(phase: "closed", destIsStub: true, destIsApp: true, appNewVerified: false, parkedStubExists: false), .needsAttention)
         XCTAssertThrowsError(try UnpackArguments.parse(["App", "--delete-remote"])) { error in
             XCTAssertEqual((error as? DisklesslyError)?.exitCode, 2)
         }

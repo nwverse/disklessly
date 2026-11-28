@@ -23,18 +23,23 @@ public struct RestoreLayout: Equatable {
     public var appOld: BundleNode
     public var parkedStub: BundleNode
     public var retained: BundleNode
+    /// `journal.retainedPath` aliases `staging/app.old` because the retention move
+    /// failed. This is deliberately separate from `retained` so two independent
+    /// copies can never be mistaken for the in-place fallback.
+    public var retainedInPlace: Bool
     public var staging: StagingState
     public var extractionOwned: Bool
     public var extractionVerified: Bool
     public var pathsEscape: Bool
     public var unexpected: [String]
 
-    public init(destination: BundleNode, appNew: BundleNode = .absent, appOld: BundleNode = .absent, parkedStub: BundleNode = .absent, retained: BundleNode = .absent, staging: StagingState = .absent, extractionOwned: Bool = false, extractionVerified: Bool = false, pathsEscape: Bool = false, unexpected: [String] = []) {
+    public init(destination: BundleNode, appNew: BundleNode = .absent, appOld: BundleNode = .absent, parkedStub: BundleNode = .absent, retained: BundleNode = .absent, retainedInPlace: Bool = false, staging: StagingState = .absent, extractionOwned: Bool = false, extractionVerified: Bool = false, pathsEscape: Bool = false, unexpected: [String] = []) {
         self.destination = destination
         self.appNew = appNew
         self.appOld = appOld
         self.parkedStub = parkedStub
         self.retained = retained
+        self.retainedInPlace = retainedInPlace
         self.staging = staging
         self.extractionOwned = extractionOwned
         self.extractionVerified = extractionVerified
@@ -363,6 +368,9 @@ public enum RestoreRecovery {
         guard baseOK(layout), isStub(layout.destination, context), isAbsent(layout.parkedStub), isAbsent(layout.appNew) else {
             return .invalid(repairHint(phase: .disposed))
         }
+        if layout.retainedInPlace {
+            return validInPlaceRetention(layout, context) ? .post : .invalid("disposed journal has an invalid in-place retention layout. Nothing further was deleted.")
+        }
         if app(layout.appOld, context) != nil && isAbsent(layout.retained) { return .pre }
         if isAbsent(layout.appOld) && isAbsent(layout.retained) && context.inspection?.changed != true { return .post }
         if isAbsent(layout.appOld), case .app = layout.retained { return .post }
@@ -376,10 +384,18 @@ public enum RestoreRecovery {
         guard baseOK(layout), isStub(layout.destination, context), isAbsent(layout.parkedStub), isAbsent(layout.appNew) else {
             return .invalid(repairHint(phase: .retired))
         }
+        if layout.retainedInPlace {
+            return validInPlaceRetention(layout, context) ? .post : .invalid("retired journal has an invalid in-place retention layout. Nothing further was deleted.")
+        }
         if context.inspection?.changed == true && isAbsent(layout.appOld) && isAbsent(layout.retained) {
             return .invalid("retired journal lost the updated bundle. Nothing further was deleted.")
         }
         if !isAbsent(layout.appOld) { return .invalid("retired journal still has staging/app.old. Re-run recovery of disposed before closing.") }
         return .post
+    }
+
+    private static func validInPlaceRetention(_ layout: RestoreLayout, _ context: RestoreContext) -> Bool {
+        guard app(layout.appOld, context) != nil, app(layout.retained, context) != nil else { return false }
+        return layout.appOld == layout.retained
     }
 }

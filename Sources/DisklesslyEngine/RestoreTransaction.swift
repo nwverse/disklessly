@@ -885,17 +885,11 @@ public final class RestoreCoordinator {
     private func inspect(_ journal: inout RestoreJournal) throws {
         let url = inspectURL(journal)
         let fingerprint = try? TreeFingerprint.of(url)
-        let paranoid = ProcessInfo.processInfo.environment["DISKLESSLY_PARANOID_INSPECT"] == "1"
-        let snapshot: InspectionSnapshot
-        if let fingerprint, fingerprint == journal.installedFingerprint, !paranoid {
-            snapshot = InspectionSnapshot(cdhash: journal.manifestCdhash, treeHash: journal.manifestTreeHash, bundleId: journal.appId, changed: false, inode: DurableIO.inode(url), fingerprint: fingerprint)
-        } else {
-            guard let ident = BundleFacts.identity(url, cdhash: services.cdhash, treeHash: services.treeHash) else {
-                throw DisklesslyError.integrity("cannot inspect bundle at \(url.path)")
-            }
-            let changed = ident.cdhash != journal.manifestCdhash || ident.treeHash != journal.manifestTreeHash || ident.bundleId != journal.appId
-            snapshot = InspectionSnapshot(cdhash: ident.cdhash, treeHash: ident.treeHash, bundleId: ident.bundleId, changed: changed, inode: ident.inode, fingerprint: fingerprint)
+        guard let ident = BundleFacts.identity(url, cdhash: services.cdhash, treeHash: services.treeHash) else {
+            throw DisklesslyError.integrity("cannot inspect bundle at \(url.path)")
         }
+        let changed = ident.cdhash != journal.manifestCdhash || ident.treeHash != journal.manifestTreeHash || ident.bundleId != journal.appId
+        let snapshot = InspectionSnapshot(cdhash: ident.cdhash, treeHash: ident.treeHash, bundleId: ident.bundleId, changed: changed, inode: ident.inode, fingerprint: fingerprint)
         if journal.phase.index < RestorePhase.inspected.index {
             try journalNext(.inspected, &journal) { $0.inspection = snapshot }
         } else {
@@ -966,7 +960,8 @@ public final class RestoreCoordinator {
             try journalNext(.disposed, &journal) { item in item.inspection = inspection }
         }
         if fm.fileExists(atPath: old.path) {
-            if identical && !retain {
+            let contentIdentical = identical && matchesManifest(old, journal)
+            if contentIdentical && !retain {
                 try fm.removeItem(at: old)
             } else {
                 try retainBundle(old, journal: &journal)
@@ -1193,6 +1188,7 @@ public final class RestoreCoordinator {
         let okFile = exists(staging.appendingPathComponent(".extracted-ok"))
         let inner = exists(appNew.appendingPathComponent(".disklessly-extract"))
         let retainedURL = journal.retainedPath.map { URL(fileURLWithPath: $0) }
+        let retainedInPlace = retainedURL.map { canonicalPath($0) == canonicalPath(appOld) } ?? false
         // A full tree hash is required only where the decision compares one:
         // `manifestApp` / the extraction marker read `app.new`, and `inspectionStale`
         // re-reads the destination after `inspected`. The active probe loop (and the
@@ -1208,6 +1204,7 @@ public final class RestoreCoordinator {
             appOld: node(appOld, journal, full: false, memo: &memo),
             parkedStub: node(parked, journal, full: false, memo: &memo),
             retained: retainedURL.map { node($0, journal, full: false, memo: &memo) } ?? .absent,
+            retainedInPlace: retainedInPlace,
             staging: stagingState,
             extractionOwned: extracting || okFile || inner,
             extractionVerified: okFile && manifestMatch(appNew, journal, memo: &memo),
@@ -1291,6 +1288,15 @@ public final class RestoreCoordinator {
     private func manifestMatch(_ url: URL, _ journal: RestoreJournal, memo: inout IdentityMemo) -> Bool {
         guard let ident = memo.identity(url, full: true, services: services) else { return false }
         return ident.bundleId == journal.appId && ident.cdhash == journal.manifestCdhash && ident.treeHash == journal.manifestTreeHash
+    }
+
+    private func matchesManifest(_ url: URL, _ journal: RestoreJournal) -> Bool {
+        guard let ident = BundleFacts.identity(url, cdhash: services.cdhash, treeHash: services.treeHash) else { return false }
+        return ident.bundleId == journal.appId && ident.cdhash == journal.manifestCdhash && ident.treeHash == journal.manifestTreeHash
+    }
+
+    private func canonicalPath(_ url: URL) -> String {
+        url.resolvingSymlinksInPath().standardizedFileURL.path
     }
 
     private func inspectURL(_ journal: RestoreJournal) -> URL {
