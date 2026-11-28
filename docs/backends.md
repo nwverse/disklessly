@@ -26,7 +26,7 @@ There is no disk-image `--noautoopen` flag on these commands. A temp directory s
 disklessly backend add webdav --url https://nas.example/dav/Disklessly --user alice --id dav --password-stdin
 ```
 
-`PROPFIND` lists and stats. `GET` with `Range: bytes=N-` resumes a `.part` in the cache. A `200` response to a ranged GET is the whole object and replaces the partial. After the bytes are on disk, the cache file's sha256 must match the manifest. `PUT` goes to `.<name>.tmp-<uuid>`, then `MOVE` with `Overwrite: F`, then a re-read hash. Basic credentials come from the Keychain. A connection failure is `EX_BACKEND`.
+`PROPFIND` lists and stats. `GET` with `Range: bytes=N-` resumes a `.part` in the cache. A `200` response to a ranged GET is the whole object and replaces the partial. After the bytes are on disk, the cache file's sha256 must match the manifest. `PUT` goes to `.<name>.tmp-<uuid>`, then `MOVE` with `Overwrite: T` for mutable writes and `Overwrite: F` inside `WriteOnceScope`, then a re-read hash. A `412` from an exclusive `MOVE` becomes `WriteOnceConflict`. Basic credentials come from the Keychain. A connection failure is `EX_BACKEND`.
 
 ## OpenList
 
@@ -36,7 +36,7 @@ Supported API: **OpenList 3 and AList 3** (`/api/auth/login`, `/api/fs/list`, `/
 disklessly backend add openlist --url http://nas.local:5244 --root /Disklessly --user alice --id ol --password-stdin
 ```
 
-The password is stored in the Keychain. A successful login stores the token there as well (`openlist-token:…`). A 401 logs in again. `fs/get` returns `raw_url`; the download uses the same ranged GET and sha256 check as WebDAV. The raw URL does not receive the API token. `fs/put` uploads with `File-Path` and `As-Task: false`, then re-reads the object and checks the hash.
+The password is stored in the Keychain. A successful login stores the token there as well (`openlist-token:…`). A 401 logs in again. `fs/get` returns `raw_url`; the download uses the same ranged GET and sha256 check as WebDAV. The raw URL does not receive the API token. `fs/put` uploads with `File-Path` and `As-Task: false`, requires HTTP 200 plus JSON code 200, then re-reads the object and checks the hash. OpenList has no atomic create-only primitive, so write-once uploads fail closed: an existing object is `WriteOnceConflict`, and an absent object is refused before upload rather than racing another writer.
 
 ### One-click OpenList
 

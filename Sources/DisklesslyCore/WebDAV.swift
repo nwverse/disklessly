@@ -255,8 +255,9 @@ public struct WebDAVBackend: StorageBackend {
             let data = body.data
             let upper = range.upperBound > range.lowerBound ? range.upperBound - range.lowerBound : 0
             if body.restart {
-                let lo = min(Int(range.lowerBound), data.count)
-                let hi = min(Int(range.upperBound), data.count)
+                let count = UInt64(data.count)
+                let lo = Int(min(range.lowerBound, count))
+                let hi = Int(min(range.upperBound, count))
                 guard lo <= hi, hi <= data.count else { return Data() }
                 return data.subdata(in: lo..<hi)
             }
@@ -296,9 +297,13 @@ public struct WebDAVBackend: StorageBackend {
         headers["Content-Length"] = String(try ChunkedIO.byteCount(file))
         let created = try callUpload(method: "PUT", url: tempURL, headers: headers, file: file)
         try expect(created, ok: [200, 201, 204])
-        let moved = try call(method: "MOVE", url: tempURL, headers: ["Destination": finalURL.absoluteString, "Overwrite": "F"], body: nil)
+        let exclusive = WriteOnceScope.exclusive
+        let moved = try call(method: "MOVE", url: tempURL, headers: ["Destination": finalURL.absoluteString, "Overwrite": exclusive ? "F" : "T"], body: nil)
         if ![201, 204, 200].contains(moved.status) {
             _ = try? call(method: "DELETE", url: tempURL, headers: [:], body: nil)
+            if exclusive && moved.status == 412 {
+                throw WriteOnceConflict(path: path)
+            }
             throw DisklesslyError.backend("webdav MOVE failed (HTTP \(moved.status))")
         }
         try verify(path, expected: SHA256Digest.hexFile(file))
