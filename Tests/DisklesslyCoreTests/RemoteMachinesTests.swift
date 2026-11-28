@@ -79,6 +79,89 @@ final class RemoteMachinesTests: XCTestCase {
         XCTAssertEqual(SSHCommand.shellQuote("/home/user/my 'folder'"), "'/home/user/my '\\''folder'\\'''")
     }
 
+    func testSanitizeHostSeparatesCollidingNamesWithAStableHash() {
+        let firstName = "root@example.com"
+        let secondName = "root_example.com"
+        let first = SSHCommand.sanitizeHost(firstName)
+        let second = SSHCommand.sanitizeHost(secondName)
+        let hash = String(SHA256Digest.hex(Data(firstName.utf8)).prefix(8))
+        let secondHash = String(SHA256Digest.hex(Data(secondName.utf8)).prefix(8))
+
+        XCTAssertEqual(first, "root_example.com-\(hash)")
+        XCTAssertEqual(second, "root_example.com-\(secondHash)")
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(first, SSHCommand.sanitizeHost(firstName), "stable across runs")
+        XCTAssertEqual(SSHCommand.legacySanitizeHost(firstName), "root_example.com", "old data remains discoverable")
+        XCTAssertEqual(SSHCommand.legacySanitizeHost(firstName), SSHCommand.legacySanitizeHost(secondName))
+        XCTAssertNotEqual(first, SSHCommand.sanitizeHost(first), "a safe alias cannot impersonate another host's key")
+
+        let longA = String(repeating: "a", count: 79) + "x"
+        let longB = String(repeating: "a", count: 79) + "y"
+        XCTAssertNotEqual(SSHCommand.sanitizeHost(longA), SSHCommand.sanitizeHost(longB))
+        XCTAssertLessThanOrEqual(SSHCommand.sanitizeHost(longA).count, 80)
+    }
+
+    func testLegacyHostCachesAreMigratedOnlyForTheirOwningHost() throws {
+        let state = root.appendingPathComponent("state", isDirectory: true)
+        let owner = "root@example.com"
+        let other = "root_example.com"
+        let report = RemoteScanReport(host: owner, hostname: owner, platform: nil, mounts: [], items: [])
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        let legacyScan = RemoteMachineStore.legacyScanCacheURL(stateDir: state.path, host: owner)
+        try fm.createDirectory(at: legacyScan.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try encoder.encode(report).write(to: legacyScan)
+
+        let status = RemoteHostAttemptStatus(host: owner, reachable: true)
+        let legacyStatus = RemoteMachineStore.legacyAttemptStatusURL(stateDir: state.path, host: owner)
+        try fm.createDirectory(at: legacyStatus.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try encoder.encode(status).write(to: legacyStatus)
+
+        XCTAssertEqual(RemoteMachineStore.loadCachedScan(stateDir: state.path, host: owner)?.host, owner)
+        XCTAssertEqual(RemoteMachineStore.loadAttemptStatus(stateDir: state.path, host: owner)?.host, owner)
+        XCTAssertTrue(fm.fileExists(atPath: RemoteMachineStore.scanCacheURL(stateDir: state.path, host: owner).path))
+        XCTAssertTrue(fm.fileExists(atPath: RemoteMachineStore.attemptStatusURL(stateDir: state.path, host: owner).path))
+        XCTAssertNil(RemoteMachineStore.loadCachedScan(stateDir: state.path, host: other))
+        XCTAssertNil(RemoteMachineStore.loadAttemptStatus(stateDir: state.path, host: other))
+    }
+
+    func testRemoteOffloadPathsAndLegacyRecordsAreHostScoped() throws {
+        let owner = "root@example.com"
+        let other = "root_example.com"
+        let emptyHash = String(repeating: "a", count: 64)
+        let legacyOwnerPath = "machines/\(SSHCommand.legacySanitizeHost(owner))/records/owner.json"
+        let legacyOtherPath = "machines/\(SSHCommand.legacySanitizeHost(other))/records/other.json"
+        for (path, record) in [
+            (legacyOwnerPath, RemoteOffloadRecord(id: "owner", host: owner, kind: "file", title: "owner", originalPath: "/owner", repoObject: "machines/legacy/owner.tar.gz", sha256: emptyHash, storedBytes: 1, logicalBytes: 1)),
+            (legacyOtherPath, RemoteOffloadRecord(id: "other", host: other, kind: "file", title: "other", originalPath: "/other", repoObject: "machines/legacy/other.tar.gz", sha256: emptyHash, storedBytes: 1, logicalBytes: 1)),
+        ] {
+            let url = root.appendingPathComponent("repo").appendingPathComponent(path)
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try record.encode().write(to: url)
+        }
+
+        var config = RuntimeConfig(
+            repoPath: root.appendingPathComponent("repo").path,
+            cacheDir: root.appendingPathComponent("cache").path,
+            stateDir: root.appendingPathComponent("state").path,
+            mountRoot: root.appendingPathComponent("mount").path,
+            stubDir: root.appendingPathComponent("stubs").path
+        )
+        config.minFreeBytes = 0
+        let engine = DisklesslyEngine(config: config, secrets: MemorySecretStore())
+        XCTAssertEqual(try engine.listRemoteOffloaded(host: owner).map(\.id), ["owner"])
+        XCTAssertEqual(try engine.listRemoteOffloaded(host: other).map(\.id), ["other"])
+
+        XCTAssertNotEqual(
+            RemoteOffloadRecord.objectPath(host: owner, sha256: emptyHash, kind: "file"),
+            RemoteOffloadRecord.objectPath(host: other, sha256: emptyHash, kind: "file")
+        )
+        XCTAssertNotEqual(
+            RemoteOffloadRecord.recordPath(host: owner, id: "same"),
+            RemoteOffloadRecord.recordPath(host: other, id: "same")
+        )
+    }
+
     // MARK: - 2. Machine Ordering Pure Function (#46 §4)
 
     func testMachineOrderingOfflineCriticalWarningThenConfiguredOrder() {
@@ -398,7 +481,7 @@ final class RemoteMachinesTests: XCTestCase {
         XCTAssertEqual(dryOffload["dryRun"] as? Bool, true)
         XCTAssertTrue(fm.fileExists(atPath: datasetDir.path))
 
-        // 5. Execute Offload (Mode A relay) -> uploads archive to repo `machines/test-box/objects/...`, writes stub, removes original
+        // 5. Execute Offload (Mode A relay) -> uploads archive to the host-scoped repo collection, writes stub, removes original
         let offloadRes = try engine.offloadRemoteItem(host: "test-box", target: datasetDir.path + "/", dryRun: false)
         XCTAssertEqual(offloadRes["ok"] as? Bool, true)
         let stubURL = URL(fileURLWithPath: "\(datasetDir.path).disklessly-remote")
@@ -410,7 +493,7 @@ final class RemoteMachinesTests: XCTestCase {
         let record = try XCTUnwrap(offloadedRecords.first)
         XCTAssertEqual(record.originalPath, datasetDir.path)
         XCTAssertEqual(record.kind, "folder")
-        XCTAssertTrue(record.repoObject.hasPrefix("machines/test-box/objects/"))
+        XCTAssertTrue(record.repoObject.hasPrefix("machines/\(SSHCommand.sanitizeHost("test-box"))/objects/"))
 
         // Verify remote journal was written under ~/.disklessly/journal
         let remoteJournalDir = remoteHome.appendingPathComponent(".disklessly/journal")

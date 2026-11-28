@@ -107,6 +107,58 @@ final class ImageCryptoTests: XCTestCase {
         XCTAssertNotEqual(try Data(contentsOf: a), try Data(contentsOf: b))
     }
 
+    func testSealRejectsAliasedSourceAndDestinationBeforeTruncating() throws {
+        let key = SymmetricKey(size: .bits256)
+        let source = try file("seal-alias.dmg", Data("plain-image".utf8))
+        let original = try Data(contentsOf: source)
+
+        XCTAssertThrowsError(try ImageCrypto.seal(source, to: source, key: key)) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 2)
+        }
+        XCTAssertEqual(try Data(contentsOf: source), original)
+
+        let hardLink = root.appendingPathComponent("seal-alias-link.dmg")
+        try FileManager.default.linkItem(at: source, to: hardLink)
+        XCTAssertThrowsError(try ImageCrypto.seal(source, to: hardLink, key: key)) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 2)
+        }
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        XCTAssertEqual(try Data(contentsOf: hardLink), original)
+
+        let symbolicLink = root.appendingPathComponent("seal-alias-symlink.dmg")
+        try FileManager.default.createSymbolicLink(at: symbolicLink, withDestinationURL: source)
+        XCTAssertThrowsError(try ImageCrypto.seal(source, to: symbolicLink, key: key)) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 2)
+        }
+        XCTAssertEqual(try Data(contentsOf: source), original)
+    }
+
+    func testOpenRejectsAliasedSourceAndDestinationBeforeTruncating() throws {
+        let key = SymmetricKey(size: .bits256)
+        let (_, sealed) = try sealSmall(5000, key: key)
+        let original = try Data(contentsOf: sealed)
+
+        XCTAssertThrowsError(try ImageCrypto.open(sealed, to: sealed) { _ in key }) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 2)
+        }
+        XCTAssertEqual(try Data(contentsOf: sealed), original)
+
+        let hardLink = root.appendingPathComponent("sealed-alias.dkli")
+        try FileManager.default.linkItem(at: sealed, to: hardLink)
+        XCTAssertThrowsError(try ImageCrypto.open(sealed, to: hardLink) { _ in key }) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 2)
+        }
+        XCTAssertEqual(try Data(contentsOf: sealed), original)
+        XCTAssertEqual(try Data(contentsOf: hardLink), original)
+
+        let symbolicLink = root.appendingPathComponent("sealed-alias-symlink.dkli")
+        try FileManager.default.createSymbolicLink(at: symbolicLink, withDestinationURL: sealed)
+        XCTAssertThrowsError(try ImageCrypto.open(sealed, to: symbolicLink) { _ in key }) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 2)
+        }
+        XCTAssertEqual(try Data(contentsOf: sealed), original)
+    }
+
     func testTamperedBodyAndHeaderAreRejected() throws {
         let key = SymmetricKey(size: .bits256)
         let (_, sealed) = try sealSmall(3 * 4096 + 5, key: key)

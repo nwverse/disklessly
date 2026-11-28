@@ -322,10 +322,22 @@ public enum RemoteMachineStore {
             .appendingPathComponent("\(SSHCommand.sanitizeHost(host)).json")
     }
 
+    public static func legacyScanCacheURL(stateDir: String, host: String) -> URL {
+        machinesDir(stateDir: stateDir)
+            .appendingPathComponent("scans", isDirectory: true)
+            .appendingPathComponent("\(SSHCommand.legacySanitizeHost(host)).json")
+    }
+
     public static func attemptStatusURL(stateDir: String, host: String) -> URL {
         machinesDir(stateDir: stateDir)
             .appendingPathComponent("status", isDirectory: true)
             .appendingPathComponent("\(SSHCommand.sanitizeHost(host)).json")
+    }
+
+    public static func legacyAttemptStatusURL(stateDir: String, host: String) -> URL {
+        machinesDir(stateDir: stateDir)
+            .appendingPathComponent("status", isDirectory: true)
+            .appendingPathComponent("\(SSHCommand.legacySanitizeHost(host)).json")
     }
 
     public static func journalDir(stateDir: String) -> URL {
@@ -355,35 +367,94 @@ public enum RemoteMachineStore {
 
     public static func loadCachedScan(stateDir: String, host: String) -> RemoteScanReport? {
         let url = scanCacheURL(stateDir: stateDir, host: host)
+        if let report = decodeCachedScan(at: url), report.host == host { return report }
+        let legacy = legacyScanCacheURL(stateDir: stateDir, host: host)
+        guard legacy != url, let data = try? Data(contentsOf: legacy),
+              let report = decodeCachedScan(data), report.host == host else { return nil }
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? AtomicFile.write(data, to: url)
+        }
+        return report
+    }
+
+    private static func decodeCachedScan(at url: URL) -> RemoteScanReport? {
         guard let data = try? Data(contentsOf: url) else { return nil }
+        return decodeCachedScan(data)
+    }
+
+    private static func decodeCachedScan(_ data: Data) -> RemoteScanReport? {
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
         return try? dec.decode(RemoteScanReport.self, from: data)
     }
 
     public static func saveCachedScan(_ report: RemoteScanReport, stateDir: String) throws {
+        let url = scanCacheURL(stateDir: stateDir, host: report.host)
+        preserveForeignScan(at: url, stateDir: stateDir, incomingHost: report.host)
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys, .prettyPrinted]
         enc.dateEncodingStrategy = .iso8601
         let data = try enc.encode(report)
-        try AtomicFile.write(data, to: scanCacheURL(stateDir: stateDir, host: report.host))
+        try AtomicFile.write(data, to: url)
+    }
+
+    public static func allCachedScans(stateDir: String) -> [RemoteScanReport] {
+        let dir = machinesDir(stateDir: stateDir).appendingPathComponent("scans", isDirectory: true)
+        let files = (try? FileManager.default.contentsOfDirectory(at: dir, includingPropertiesForKeys: nil)) ?? []
+        return files.compactMap { file in
+            guard file.pathExtension == "json" else { return nil }
+            return decodeCachedScan(at: file)
+        }
+    }
+
+    private static func preserveForeignScan(at url: URL, stateDir: String, incomingHost: String) {
+        guard let data = try? Data(contentsOf: url), let report = decodeCachedScan(data),
+              report.host != incomingHost else { return }
+        let owner = scanCacheURL(stateDir: stateDir, host: report.host)
+        guard owner != url, !FileManager.default.fileExists(atPath: owner.path) else { return }
+        try? AtomicFile.write(data, to: owner)
     }
 
     public static func loadAttemptStatus(stateDir: String, host: String) -> RemoteHostAttemptStatus? {
         let url = attemptStatusURL(stateDir: stateDir, host: host)
+        if let status = decodeAttemptStatus(at: url), status.host == host { return status }
+        let legacy = legacyAttemptStatusURL(stateDir: stateDir, host: host)
+        guard legacy != url, let data = try? Data(contentsOf: legacy),
+              let status = decodeAttemptStatus(data), status.host == host else { return nil }
+        if !FileManager.default.fileExists(atPath: url.path) {
+            try? AtomicFile.write(data, to: url)
+        }
+        return status
+    }
+
+    private static func decodeAttemptStatus(at url: URL) -> RemoteHostAttemptStatus? {
         guard let data = try? Data(contentsOf: url) else { return nil }
+        return decodeAttemptStatus(data)
+    }
+
+    private static func decodeAttemptStatus(_ data: Data) -> RemoteHostAttemptStatus? {
         let dec = JSONDecoder()
         dec.dateDecodingStrategy = .iso8601
         return try? dec.decode(RemoteHostAttemptStatus.self, from: data)
     }
 
     public static func saveAttemptStatus(_ status: RemoteHostAttemptStatus, stateDir: String) {
+        let url = attemptStatusURL(stateDir: stateDir, host: status.host)
+        preserveForeignStatus(at: url, stateDir: stateDir, incomingHost: status.host)
         let enc = JSONEncoder()
         enc.outputFormatting = [.sortedKeys, .prettyPrinted]
         enc.dateEncodingStrategy = .iso8601
         if let data = try? enc.encode(status) {
-            try? AtomicFile.write(data, to: attemptStatusURL(stateDir: stateDir, host: status.host))
+            try? AtomicFile.write(data, to: url)
         }
+    }
+
+    private static func preserveForeignStatus(at url: URL, stateDir: String, incomingHost: String) {
+        guard let data = try? Data(contentsOf: url), let status = decodeAttemptStatus(data),
+              status.host != incomingHost else { return }
+        let owner = attemptStatusURL(stateDir: stateDir, host: status.host)
+        guard owner != url, !FileManager.default.fileExists(atPath: owner.path) else { return }
+        try? AtomicFile.write(data, to: owner)
     }
 
     public static func saveJournal(_ journal: RemoteJournal, stateDir: String) throws {
@@ -628,15 +699,9 @@ extension DisklesslyEngine {
         let localFacts = deviceFactsOverride ?? LiveDeviceFacts.current()
         let localLevel = MachineHealthLevel.evaluate(reachable: true, totalBytes: localTotal, availableBytes: localAvail)
         var localCached: RemoteScanReport?
-        let scansDir = RemoteMachineStore.machinesDir(stateDir: config.stateDir).appendingPathComponent("scans", isDirectory: true)
-        if let files = try? FileManager.default.contentsOfDirectory(at: scansDir, includingPropertiesForKeys: nil) {
-            for file in files where file.pathExtension == "json" {
-                let alias = file.deletingPathExtension().lastPathComponent
-                if SSHTransport.isSelfHost(alias), let hit = RemoteMachineStore.loadCachedScan(stateDir: config.stateDir, host: alias) {
-                    if localCached == nil || hit.scannedAt > localCached!.scannedAt {
-                        localCached = hit
-                    }
-                }
+        for hit in RemoteMachineStore.allCachedScans(stateDir: config.stateDir) where SSHTransport.isSelfHost(hit.host) {
+            if localCached == nil || hit.scannedAt > localCached!.scannedAt {
+                localCached = hit
             }
         }
         cards.append(MachineCardSummary(
@@ -1157,15 +1222,22 @@ extension DisklesslyEngine {
     public func listRemoteOffloaded(host: String) throws -> [RemoteOffloadRecord] {
         let validHost = try validateSSHHost(host)
         let backend = try openBackend()
-        let safeHost = SSHCommand.sanitizeHost(validHost)
-        let dir = "machines/\(safeHost)/records"
-        let names = (try? backend.list(dir)) ?? []
+        let safeHosts = [
+            SSHCommand.sanitizeHost(validHost),
+            SSHCommand.legacySanitizeHost(validHost),
+        ]
+        let dirs = Array(Set(safeHosts.map { "machines/\($0)/records" }))
         var records: [RemoteOffloadRecord] = []
-        for name in names where name.hasSuffix(".json") && !RepoFileNames.isPlaceholder(name) && !RepoFileNames.isConflictCopy(name) {
-            let path = "\(dir)/\(name)"
-            if let data = try? backend.get(path, range: nil),
-               let rec = try? RemoteOffloadRecord.decode(data) {
-                records.append(rec)
+        var seen = Set<String>()
+        for dir in dirs {
+            let names = (try? backend.list(dir)) ?? []
+            for name in names where name.hasSuffix(".json") && !RepoFileNames.isPlaceholder(name) && !RepoFileNames.isConflictCopy(name) {
+                let path = "\(dir)/\(name)"
+                if let data = try? backend.get(path, range: nil),
+                   let rec = try? RemoteOffloadRecord.decode(data),
+                   rec.host == validHost, seen.insert(rec.id).inserted {
+                    records.append(rec)
+                }
             }
         }
         return records.sorted { $0.createdAt > $1.createdAt }
@@ -1304,8 +1376,9 @@ extension DisklesslyEngine {
             }
         }
 
-        let recordPath = RemoteOffloadRecord.recordPath(host: validHost, id: record.id)
-        try? backend.delete(recordPath)
+        for recordPath in RemoteOffloadRecord.recordPaths(host: validHost, id: record.id) {
+            try? backend.delete(recordPath)
+        }
 
         journal.phase = .completed
         journal.updatedAt = Date()
@@ -1370,7 +1443,9 @@ extension DisklesslyEngine {
             case .none:
                 journal.phase = .rolledBack
                 if let recId = journal.recordId {
-                    try? backend?.delete(RemoteOffloadRecord.recordPath(host: validHost, id: recId))
+                    for path in RemoteOffloadRecord.recordPaths(host: validHost, id: recId) {
+                        try? backend?.delete(path)
+                    }
                 }
             case .markCompleted:
                 journal.phase = .completed
@@ -1378,7 +1453,9 @@ extension DisklesslyEngine {
                 _ = try sshTransport.run(validHost, "rm -f \(SSHCommand.shellQuote(stubPath))", nil, 15)
                 journal.phase = .rolledBack
                 if let recId = journal.recordId {
-                    try? backend?.delete(RemoteOffloadRecord.recordPath(host: validHost, id: recId))
+                    for path in RemoteOffloadRecord.recordPaths(host: validHost, id: recId) {
+                        try? backend?.delete(path)
+                    }
                 }
             case .rollbackMoveAside(let asidePath, let targetPath, let stubPath):
                 var cmd = "mv \(SSHCommand.shellQuote(asidePath)) \(SSHCommand.shellQuote(targetPath))"
@@ -1386,7 +1463,9 @@ extension DisklesslyEngine {
                 _ = try sshTransport.run(validHost, cmd, nil, 30)
                 journal.phase = .rolledBack
                 if let recId = journal.recordId {
-                    try? backend?.delete(RemoteOffloadRecord.recordPath(host: validHost, id: recId))
+                    for path in RemoteOffloadRecord.recordPaths(host: validHost, id: recId) {
+                        try? backend?.delete(path)
+                    }
                 }
             case .finishRemoveAside(let asidePath):
                 _ = try sshTransport.run(validHost, "rm -rf \(SSHCommand.shellQuote(asidePath))", nil, 60)

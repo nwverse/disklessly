@@ -9,6 +9,31 @@ import Darwin
 import DisklesslyEngine
 
 final class StreamingIOTests: XCTestCase {
+    func testCopyFileTreatsSamePathHardLinkAndSymlinkAsANoOp() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("disklessly-copy-alias-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let source = root.appendingPathComponent("source.bin")
+        let original = Data("original-contents".utf8)
+        try original.write(to: source)
+
+        try ChunkedIO.copyFile(from: source, to: source)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+
+        let hardLink = root.appendingPathComponent("hard-link.bin")
+        try FileManager.default.linkItem(at: source, to: hardLink)
+        try ChunkedIO.copyFile(from: source, to: hardLink)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        XCTAssertEqual(try Data(contentsOf: hardLink), original)
+
+        let symbolicLink = root.appendingPathComponent("symbolic-link.bin")
+        try FileManager.default.createSymbolicLink(at: symbolicLink, withDestinationURL: source)
+        try ChunkedIO.copyFile(from: source, to: symbolicLink)
+        XCTAssertEqual(try Data(contentsOf: source), original)
+        XCTAssertEqual(try Data(contentsOf: symbolicLink), original)
+    }
+
     func testNeedsDownloadOnlyForEvictedUbiquitousItems() {
         XCTAssertFalse(UbiquitousMaterializer.needsDownload(isUbiquitous: false, status: nil))
         XCTAssertFalse(UbiquitousMaterializer.needsDownload(isUbiquitous: true, status: "current"))

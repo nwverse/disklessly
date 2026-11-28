@@ -74,6 +74,7 @@ public enum ChunkedIO {
 
     /// Copy without holding the file in one buffer. On APFS, `clonefile` is tried first.
     public static func copyFile(from source: URL, to destination: URL) throws {
+        if FileIdentity.same(source, destination) { return }
         #if os(macOS)
         let cloned = source.path.withCString { src in
             destination.path.withCString { dst in
@@ -195,10 +196,18 @@ public enum ChunkedIO {
         guard input >= 0 else { throw DisklesslyError.failure("cannot read \(source.path)") }
         defer { _ = close(input) }
         var info = stat()
-        let mode: mode_t = fstat(input, &info) == 0 ? mode_t(info.st_mode & 0o777) : 0o644
-        let output = open(destination.path, O_CREAT | O_TRUNC | O_WRONLY, mode)
+        guard fstat(input, &info) == 0 else { throw DisklesslyError.failure("cannot stat \(source.path)") }
+        let mode = mode_t(info.st_mode & 0o777)
+        // Do not truncate until the output descriptor has been checked against
+        // the source. This also closes the check/open race for aliased paths.
+        let output = open(destination.path, O_CREAT | O_WRONLY, mode)
         guard output >= 0 else { throw DisklesslyError.failure("cannot write \(destination.path)") }
         defer { _ = close(output) }
+        guard let destinationInfo = FileIdentity.stamp(fileDescriptor: output) else {
+            throw DisklesslyError.failure("cannot stat \(destination.path)")
+        }
+        if FileIdentity.same(info, destinationInfo) { return }
+        guard ftruncate(output, 0) == 0 else { throw DisklesslyError.failure("cannot truncate \(destination.path)") }
         var buffer = [UInt8](repeating: 0, count: chunkSize)
         while true {
             let n = buffer.withUnsafeMutableBytes { raw -> Int in

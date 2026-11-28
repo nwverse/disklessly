@@ -730,10 +730,7 @@ do {
         case "add":
             var draft = try BackendCommands.parseAdd(args)
             if draft.readPasswordFromStdin {
-                let data = FileHandle.standardInput.readDataToEndOfFile()
-                let password = String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                guard !password.isEmpty else { throw DisklesslyError.usage("password from stdin was empty") }
-                draft.password = password
+                draft.password = try PasswordInput.readPassword()
             }
             if draft.type == "rclone" { draft.configPath = RcloneTool.configPath(stateDir: config.stateDir) }
             let endpoint = try BackendCatalog.store(draft, secrets: engine.secrets)
