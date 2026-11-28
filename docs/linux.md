@@ -9,7 +9,7 @@ keeps things, and a design note for offloading AppImage files later.
 | Command | Linux | Notes |
 |---|---|---|
 | `files`, `offload PATH...`, `fetch PLACEHOLDER...` | yes | scan large idle files/folders in `$HOME`, offload as verified `.tar.zst`/`.bin` objects, leave `.disklessly` placeholders and cold-folder links |
-| `containers …` | yes | list, offload, restore, clean, and forget Docker container images |
+| `containers …` | yes | list, offload, restore, clean, and forget images from Docker, rootless Docker, Docker Desktop for Linux, and Podman's Docker-compatible socket |
 | `sessions …` | yes | archive, search, restore, reindex, verify, `key init/status`, `--encrypt` |
 | `ui [--open]` | yes | dashboard with sessions, disk usage, devices, license; app panels are hidden |
 | `backend add/list/use`, `cloud …`, `rclone …` | yes | SMB and NFS shares must already be mounted (`--mount DIR`); WebDAV, OpenList, and rclone remotes connect directly |
@@ -35,6 +35,30 @@ XDG base directories, lower-case `disklessly`:
 | Secrets file | `${XDG_CONFIG_HOME:-~/.config}/disklessly/secrets.json` | `DISKLESSLY_SECRET_STORE` |
 
 `init` creates the state, cache, and repo folders only. `init --backend icloud` is refused.
+
+## Container images
+
+`containers` looks for these local Unix sockets:
+
+| Engine | Socket | Data |
+|---|---|---|
+| Docker Engine | `/var/run/docker.sock` | `/var/lib/docker` |
+| rootless Docker | `$XDG_RUNTIME_DIR/docker.sock` | `${XDG_DATA_HOME:-~/.local/share}/docker` |
+| Docker Desktop for Linux | `~/.docker/desktop/docker.sock` | `~/.docker/desktop/vms` |
+| rootless Podman | `$XDG_RUNTIME_DIR/podman/podman.sock` | `${XDG_DATA_HOME:-~/.local/share}/containers` |
+| rootful Podman | `/run/podman/podman.sock` | `/var/lib/containers` |
+
+If `DOCKER_HOST` is `unix:///path/to/socket` and that socket is not already
+listed, it is scanned as `Docker Engine (DOCKER_HOST)`. `tcp://` and `ssh://`
+values are ignored because Disklessly only manages local images. Podman is
+reached through its Docker-compatible API, so the `docker` CLI must be installed.
+Restoring an image saved from a custom endpoint requires the same `DOCKER_HOST`
+to be set.
+
+When a data folder such as `/var/lib/docker` cannot be read (normally because it
+is root-owned), Disklessly asks `docker system df` for the engine's size. If
+that also fails, the size is shown as unavailable instead of `0 B`. If no
+engine is found, the error names the sockets that were tried.
 
 ## Secrets
 

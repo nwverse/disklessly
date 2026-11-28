@@ -4,19 +4,24 @@ import DisklesslyCore
 /// What the container scan and actions touch: the CLIs, and the disk. Tests replace all of it.
 public struct ContainerTools {
     public var home: String
+    public var environment: [String: String]
+    public var platform: HostPlatform
     /// Runs a tool and returns its stdout; throws on a non-zero exit or when `timeout` passes.
     public var run: (_ path: String, _ arguments: [String], _ timeout: TimeInterval) throws -> Data
     public var isExecutable: (String) -> Bool
     public var exists: (String) -> Bool
-    /// Allocated bytes of a file or folder tree.
-    public var allocated: (String) -> UInt64
+    /// Allocated bytes of a file or folder tree; nil when it cannot be read.
+    public var allocated: (String) -> UInt64?
     public var read: (String) -> Data?
     public var modified: (String) -> Date?
 
-    public init(home: String, run: @escaping (String, [String], TimeInterval) throws -> Data, isExecutable: @escaping (String) -> Bool,
-                exists: @escaping (String) -> Bool, allocated: @escaping (String) -> UInt64, read: @escaping (String) -> Data?,
+    public init(home: String, environment: [String: String] = ProcessInfo.processInfo.environment, platform: HostPlatform = .current,
+                run: @escaping (String, [String], TimeInterval) throws -> Data, isExecutable: @escaping (String) -> Bool,
+                exists: @escaping (String) -> Bool, allocated: @escaping (String) -> UInt64?, read: @escaping (String) -> Data?,
                 modified: @escaping (String) -> Date?) {
         self.home = home
+        self.environment = environment
+        self.platform = platform
         self.run = run
         self.isExecutable = isExecutable
         self.exists = exists
@@ -25,15 +30,26 @@ public struct ContainerTools {
         self.modified = modified
     }
 
-    public static func live(home: String = NSHomeDirectory()) -> ContainerTools {
+    public static func live(home: String = NSHomeDirectory(), environment: [String: String] = ProcessInfo.processInfo.environment,
+                            platform: HostPlatform = .current) -> ContainerTools {
         ContainerTools(
             home: home,
+            environment: environment,
+            platform: platform,
             run: { path, arguments, timeout in try ContainerCLI.run(path, arguments, timeout: timeout) },
             isExecutable: { FileManager.default.isExecutableFile(atPath: $0) },
             exists: { FileManager.default.fileExists(atPath: $0) },
-            allocated: { AllocatedSize.tree(URL(fileURLWithPath: $0)) },
+            allocated: { allocatedBytes(at: $0) },
             read: { FileManager.default.contents(atPath: $0) },
             modified: { (try? FileManager.default.attributesOfItem(atPath: $0))?[.modificationDate] as? Date })
+    }
+
+    static func allocatedBytes(at path: String) -> UInt64? {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: path, isDirectory: &isDirectory) else { return nil }
+        if isDirectory.boolValue && !fm.isReadableFile(atPath: path) { return nil }
+        return AllocatedSize.tree(URL(fileURLWithPath: path))
     }
 }
 
@@ -98,13 +114,15 @@ public struct ContainerEngineState: Equatable {
     public var socket: String?
     /// Folders or VM disk files where the engine keeps everything.
     public var dataPaths: [String]
-    public var dataBytes: UInt64
+    /// nil when the paths exist but cannot be read (for example root-owned `/var/lib/docker`).
+    public var dataBytes: UInt64?
     /// Why the image list is missing (engine stopped, CLI failed).
     public var note: String?
 
     public func jsonObject() -> [String: Any] {
         var object: [String: Any] = ["engine": kind.rawValue, "title": kind.title, "status": status.rawValue,
-                                     "dataPaths": dataPaths, "dataBytes": NSNumber(value: dataBytes), "vmDisk": kind.usesVMDisk]
+                                     "dataPaths": dataPaths, "dataBytesKnown": dataBytes != nil, "vmDisk": kind.usesVMDisk]
+        if let dataBytes { object["dataBytes"] = NSNumber(value: dataBytes) }
         if let cli { object["cli"] = cli }
         if let socket { object["socket"] = socket }
         if let note { object["note"] = note }
@@ -119,8 +137,16 @@ public struct ContainerReport {
     public var offloaded: [ContainerImageRecord]
     /// Set when the repo could not be listed.
     public var repoError: String?
+    /// Every socket the scan knew about, including paths that did not exist.
+    public var triedSockets: [String]
 
     public var reclaimableBytes: UInt64 { images.filter { !$0.use.blocksRemoval }.reduce(0) { $0 + $1.bytes } }
+
+    public static func noEngineMessage(on platform: HostPlatform, triedSockets: [String]) -> String {
+        let machine = platform == .linux ? "this machine" : "this Mac"
+        guard !triedSockets.isEmpty else { return "No container engine on \(machine)" }
+        return "No container engine on \(machine); tried sockets: \(triedSockets.joined(separator: ", "))"
+    }
 
     public func jsonObject() -> [String: Any] {
         var object: [String: Any] = [
@@ -131,6 +157,7 @@ public struct ContainerReport {
             "bytes": NSNumber(value: images.reduce(0) { $0 + $1.bytes }),
             "reclaimableBytes": NSNumber(value: reclaimableBytes),
             "recentDays": ContainerImages.recentDays,
+            "triedSockets": triedSockets,
         ]
         if let repoError { object["repoError"] = repoError }
         return object
@@ -140,7 +167,7 @@ public struct ContainerReport {
 public struct ContainerActionResult {
     public var title: String
     public var record: ContainerImageRecord?
-    /// Space the Mac got back, measured on the engine's data folders or VM disk.
+    /// Space the machine got back, measured on the engine's data folders or VM disk.
     public var freedBytes: UInt64
     public var uploaded: Bool
     public var warning: String?
@@ -161,24 +188,73 @@ struct ContainerEndpoint {
     var dataPaths: [String]
     var markers: [String]
 
-    static func all(home: String) -> [ContainerEndpoint] {
-        [
-            ContainerEndpoint(kind: .apple, socket: nil,
-                              dataPaths: [home + "/Library/Application Support/com.apple.container"], markers: []),
-            ContainerEndpoint(kind: .docker, socket: "/var/run/docker.sock",
-                              dataPaths: ["/var/lib/docker"],
-                              markers: ["/var/run/docker.sock"]),
-            ContainerEndpoint(kind: .dockerDesktop, socket: home + "/.docker/run/docker.sock",
-                              dataPaths: [home + "/Library/Containers/com.docker.docker/Data/vms"],
-                              markers: ["/Applications/Docker.app"]),
-            ContainerEndpoint(kind: .orbstack, socket: home + "/.orbstack/run/docker.sock",
-                              dataPaths: [home + "/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data"],
-                              markers: ["/Applications/OrbStack.app"]),
-            ContainerEndpoint(kind: .colima, socket: home + "/.colima/default/docker.sock",
-                              dataPaths: [home + "/.colima/_lima"], markers: [home + "/.colima"]),
-            ContainerEndpoint(kind: .dory, socket: home + "/.dory/dory.sock",
-                              dataPaths: [home + "/.dory"], markers: ["/Applications/Dory.app"]),
-        ]
+    static func all(home: String, environment: [String: String] = ProcessInfo.processInfo.environment,
+                    platform: HostPlatform = .current) -> [ContainerEndpoint] {
+        var endpoints: [ContainerEndpoint]
+        if platform == .linux {
+            endpoints = [
+                ContainerEndpoint(kind: .docker, socket: "/var/run/docker.sock",
+                                  dataPaths: ["/var/lib/docker"], markers: ["/var/run/docker.sock"]),
+            ]
+            let dataHome = xdg(environment, "XDG_DATA_HOME", fallback: home + "/.local/share") ?? home + "/.local/share"
+            if let runtime = xdg(environment, "XDG_RUNTIME_DIR", fallback: nil) {
+                let docker = runtime + "/docker.sock"
+                endpoints.append(ContainerEndpoint(kind: .dockerRootless, socket: docker,
+                                                   dataPaths: [dataHome + "/docker"], markers: [docker]))
+            }
+            endpoints.append(ContainerEndpoint(kind: .dockerDesktop, socket: home + "/.docker/desktop/docker.sock",
+                                               dataPaths: [home + "/.docker/desktop/vms"],
+                                               markers: [home + "/.docker/desktop/docker.sock"]))
+            if let runtime = xdg(environment, "XDG_RUNTIME_DIR", fallback: nil) {
+                let podman = runtime + "/podman/podman.sock"
+                endpoints.append(ContainerEndpoint(kind: .podmanRootless, socket: podman,
+                                                   dataPaths: [dataHome + "/containers"], markers: [podman]))
+            }
+            let podman = "/run/podman/podman.sock"
+            endpoints.append(ContainerEndpoint(kind: .podman, socket: podman,
+                                               dataPaths: ["/var/lib/containers"], markers: [podman]))
+        } else {
+            endpoints = [
+                ContainerEndpoint(kind: .apple, socket: nil,
+                                  dataPaths: [home + "/Library/Application Support/com.apple.container"], markers: []),
+                ContainerEndpoint(kind: .docker, socket: "/var/run/docker.sock",
+                                  dataPaths: ["/var/lib/docker"], markers: ["/var/run/docker.sock"]),
+                ContainerEndpoint(kind: .dockerDesktop, socket: home + "/.docker/run/docker.sock",
+                                  dataPaths: [home + "/Library/Containers/com.docker.docker/Data/vms"],
+                                  markers: ["/Applications/Docker.app"]),
+                ContainerEndpoint(kind: .orbstack, socket: home + "/.orbstack/run/docker.sock",
+                                  dataPaths: [home + "/Library/Group Containers/HUAQ24HBR6.dev.orbstack/data"],
+                                  markers: ["/Applications/OrbStack.app"]),
+                ContainerEndpoint(kind: .colima, socket: home + "/.colima/default/docker.sock",
+                                  dataPaths: [home + "/.colima/_lima"], markers: [home + "/.colima"]),
+                ContainerEndpoint(kind: .dory, socket: home + "/.dory/dory.sock",
+                                  dataPaths: [home + "/.dory"], markers: ["/Applications/Dory.app"]),
+            ]
+        }
+        if let socket = unixSocket(environment["DOCKER_HOST"]),
+           !endpoints.compactMap(\.socket).contains(where: { socketKey($0) == socketKey(socket) }) {
+            endpoints.append(ContainerEndpoint(kind: .dockerHost, socket: socket, dataPaths: [], markers: [socket]))
+        }
+        return endpoints
+    }
+
+    /// Absolute XDG directories only; relative values are ignored by the XDG spec.
+    static func xdg(_ environment: [String: String], _ key: String, fallback: String?) -> String? {
+        guard let value = environment[key], value.hasPrefix("/") else { return fallback }
+        return URL(fileURLWithPath: value).standardizedFileURL.path
+    }
+
+    /// Only local Unix sockets are automatic endpoints. `tcp://` and `ssh://` are left to the
+    /// docker CLI and are deliberately not scanned here.
+    static func unixSocket(_ value: String?) -> String? {
+        guard let value, value.hasPrefix("unix://") else { return nil }
+        let path = String(value.dropFirst("unix://".count))
+        guard path.hasPrefix("/") else { return nil }
+        return URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    static func socketKey(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
     }
 
     static func appleCLI(_ tools: ContainerTools) -> String? {
@@ -204,11 +280,13 @@ extension DisklesslyEngine {
 
     // MARK: reading
 
-    /// Images, containers and volumes of every engine on this Mac. Reads only.
+    /// Images, containers and volumes of every engine on this machine. Reads only.
     public func containerReport(now: Date = Date()) -> ContainerReport {
         let tools = containerTools
-        var report = ContainerReport(engines: [], images: [], volumes: [], offloaded: [])
-        for endpoint in ContainerEndpoint.all(home: tools.home) {
+        let endpoints = ContainerEndpoint.all(home: tools.home, environment: tools.environment, platform: tools.platform)
+        var report = ContainerReport(engines: [], images: [], volumes: [], offloaded: [],
+                                     triedSockets: endpoints.compactMap(\.socket))
+        for endpoint in endpoints {
             guard case let (state, images, volumes)? = scanEngine(endpoint, tools: tools, now: now) else { continue }
             report.engines.append(state)
             report.images += images
@@ -219,7 +297,7 @@ extension DisklesslyEngine {
         return report
     }
 
-    /// Nil when the engine is not on this Mac at all.
+    /// Nil when the engine is not on this machine at all.
     func scanEngine(_ endpoint: ContainerEndpoint, tools: ContainerTools, now: Date) -> (ContainerEngineState, [ContainerImage], [ContainerVolume])? {
         let dataPaths = endpoint.dataPaths.filter(tools.exists)
         let socketHere = endpoint.socket.map(tools.exists) ?? false
@@ -227,7 +305,7 @@ extension DisklesslyEngine {
         let installed = !dataPaths.isEmpty || socketHere || endpoint.markers.contains(where: tools.exists) || (endpoint.kind == .apple && cli != nil)
         guard installed else { return nil }
         var state = ContainerEngineState(kind: endpoint.kind, status: .stopped, cli: cli, socket: endpoint.socket, dataPaths: dataPaths,
-                                         dataBytes: dataPaths.reduce(0) { $0 + tools.allocated($1) })
+                                         dataBytes: allocatedBytes(dataPaths, tools: tools))
         guard let cli else {
             state.status = .noCli
             state.note = endpoint.kind == .apple ? "container CLI not found" : "docker CLI not found"
@@ -238,11 +316,27 @@ extension DisklesslyEngine {
                 ? try scanApple(cli: cli, tools: tools, dataDir: endpoint.dataPaths[0], now: now)
                 : try scanDocker(cli: cli, socket: endpoint.socket ?? "", kind: endpoint.kind, tools: tools, now: now, socketHere: socketHere)
             state.status = .running
+            if state.dataBytes == nil, endpoint.kind != .apple {
+                let host = ["-H", "unix://" + (endpoint.socket ?? "")]
+                if let data = try? tools.run(cli, host + ["system", "df", "--format", "{{json .}}"], 60) {
+                    state.dataBytes = ContainerParse.dockerSystemSize(data)
+                }
+            }
             return (state, images, volumes)
         } catch {
             state.note = error.localizedDescription
             return (state, [], [])
         }
+    }
+
+    private func allocatedBytes(_ paths: [String], tools: ContainerTools) -> UInt64? {
+        guard !paths.isEmpty else { return nil }
+        var total: UInt64 = 0
+        for path in paths {
+            guard let bytes = tools.allocated(path) else { return nil }
+            total += bytes
+        }
+        return total
     }
 
     private func scanApple(cli: String, tools: ContainerTools, dataDir: String, now: Date) throws -> ([ContainerImage], [ContainerVolume]) {
@@ -257,7 +351,7 @@ extension DisklesslyEngine {
             var image = entry.image
             let snapshots = entry.manifestDigests.map { dataDir + "/snapshots/" + hex($0) }.filter(tools.exists)
             let owned = ContainerParse.appleBlobDigests(index: image.id) { tools.read(blobs + $0) }
-            image.bytes = snapshots.reduce(0) { $0 + tools.allocated($1) } + owned.reduce(0) { $0 + tools.allocated(blobs + $1) }
+            image.bytes = snapshots.reduce(0) { $0 + (tools.allocated($1) ?? 0) } + owned.reduce(0) { $0 + (tools.allocated(blobs + $1) ?? 0) }
             // The snapshot is unpacked at pull time; its date is when the image came here.
             image.pulled = (snapshots + [blobs + hex(image.id)]).compactMap(tools.modified).max()
             images.append(image)
@@ -319,9 +413,10 @@ extension DisklesslyEngine {
             throw DisklesslyError.usage("Container image keys look like <engine>/<id>, e.g. apple/sha256:…")
         }
         let id = String(key[key.index(after: slash)...])
-        guard let endpoint = ContainerEndpoint.all(home: tools.home).first(where: { $0.kind == kind }),
+        guard let endpoint = ContainerEndpoint.all(home: tools.home, environment: tools.environment, platform: tools.platform)
+                .first(where: { $0.kind == kind }),
               case let (state, images, _)? = scanEngine(endpoint, tools: tools, now: Date()) else {
-            throw DisklesslyError.unsupported("\(kind.title) is not on this Mac")
+            throw DisklesslyError.unsupported("\(kind.title) is not on this machine")
         }
         guard state.status == .running else { throw DisklesslyError.unsupported("\(kind.title) is not running\(state.note.map { ": \($0)" } ?? "")") }
         guard let image = images.first(where: { ContainerParse.sameId($0.id, id) }) else {
@@ -348,17 +443,18 @@ extension DisklesslyEngine {
         _ = try tools.run(cli, args, 600)
     }
 
-    private func freed(before: UInt64, state: ContainerEngineState, tools: ContainerTools) -> UInt64 {
-        let after = state.dataPaths.reduce(0) { $0 + tools.allocated($1) }
+    private func freed(before: UInt64?, state: ContainerEngineState, tools: ContainerTools) -> UInt64? {
+        guard let before, let after = allocatedBytes(state.dataPaths, tools: tools) else { return nil }
         return before > after ? before - after : 0
     }
 
-    private func spaceWarning(_ image: ContainerImage, freed: UInt64, state: ContainerEngineState) -> String? {
+    private func spaceWarning(_ image: ContainerImage, freed: UInt64?, state: ContainerEngineState) -> String? {
+        guard let freed else { return nil }
         guard freed < image.bytes / 4 else { return nil }
         if state.kind.usesVMDisk {
             return "\(state.kind.title) removed \(image.title), but its VM disk has not shrunk yet; the space comes back once \(state.kind.title) trims the disk (a restart of \(state.kind.title) usually does it)."
         }
-        return "\(image.title) is gone from \(state.kind.title), but the Mac got back less than expected; layers other images share stay."
+        return "\(image.title) is gone from \(state.kind.title), but the machine got back less than expected; layers other images share stay."
     }
 
     /// Saves the image to a tar, writes it to the repo once, checks the repo copy's sha256,
@@ -413,12 +509,12 @@ extension DisklesslyEngine {
         let recordPath = ContainerImages.recordPath(id: record.id)
         if (try? backend.stat(recordPath)) == nil { try backend.put(recordPath, data: try record.encode()) }
         progress("remove")
-        let before = state.dataPaths.reduce(0) { $0 + tools.allocated($1) }
+        let before = allocatedBytes(state.dataPaths, tools: tools)
         try removeImage(image, state: state, tools: tools)
         let gained = freed(before: before, state: state, tools: tools)
         var uploaded = false
         if case .written = written { uploaded = true }
-        return ContainerActionResult(title: image.title, record: record, freedBytes: gained, uploaded: uploaded,
+        return ContainerActionResult(title: image.title, record: record, freedBytes: gained ?? 0, uploaded: uploaded,
                                      warning: spaceWarning(image, freed: gained, state: state))
     }
 
@@ -426,10 +522,10 @@ extension DisklesslyEngine {
     public func cleanContainerImage(_ key: String) throws -> ContainerActionResult {
         let tools = containerTools
         let (state, image) = try liveImage(key, tools: tools)
-        let before = state.dataPaths.reduce(0) { $0 + tools.allocated($1) }
+        let before = allocatedBytes(state.dataPaths, tools: tools)
         try removeImage(image, state: state, tools: tools)
         let gained = freed(before: before, state: state, tools: tools)
-        return ContainerActionResult(title: image.title, record: nil, freedBytes: gained, uploaded: false,
+        return ContainerActionResult(title: image.title, record: nil, freedBytes: gained ?? 0, uploaded: false,
                                      warning: spaceWarning(image, freed: gained, state: state))
     }
 
@@ -437,9 +533,10 @@ extension DisklesslyEngine {
     public func restoreContainerImage(_ id: String, progress: (String) -> Void = { _ in }) throws -> ContainerActionResult {
         let tools = containerTools
         let record = try containerRecord(id)
-        guard let endpoint = ContainerEndpoint.all(home: tools.home).first(where: { $0.kind == record.engine }),
+        guard let endpoint = ContainerEndpoint.all(home: tools.home, environment: tools.environment, platform: tools.platform)
+                .first(where: { $0.kind == record.engine }),
               case let (state, images, _)? = scanEngine(endpoint, tools: tools, now: Date()) else {
-            throw DisklesslyError.unsupported("\(record.engine.title) is not on this Mac")
+            throw DisklesslyError.unsupported("\(record.engine.title) is not on this machine")
         }
         guard state.status == .running else { throw DisklesslyError.unsupported("Start \(record.engine.title) first\(state.note.map { " (\($0))" } ?? "")") }
         if record.present(in: images) {

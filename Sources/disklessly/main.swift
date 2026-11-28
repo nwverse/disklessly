@@ -1009,9 +1009,12 @@ do {
         case "list":
             let report = engine.containerReport()
             if json { emit(report.jsonObject()); break }
-            if report.engines.isEmpty { print("No container engine on this Mac") }
+            if report.engines.isEmpty {
+                print(ContainerReport.noEngineMessage(on: .current, triedSockets: report.triedSockets))
+            }
             for state in report.engines {
-                print("\(state.kind.title)  \(state.status.rawValue)  \(sizeText(state.dataBytes)) on disk\(state.note.map { "  (\($0))" } ?? "")")
+                let disk = state.dataBytes.map { "  \(sizeText($0)) on disk" } ?? "  disk size unavailable"
+                print("\(state.kind.title)  \(state.status.rawValue)\(disk)\(state.note.map { "  (\($0))" } ?? "")")
                 for image in report.images where image.engine == state.kind {
                     let users = image.containers.isEmpty ? "" : "  [\(image.containers.joined(separator: ", "))]"
                     print("  \(image.title)  \(sizeText(image.bytes))  \(image.use.rawValue)\(users)  \(image.key)")

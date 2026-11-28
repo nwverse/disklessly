@@ -1,8 +1,8 @@
 import Foundation
 
-/// Container images and volumes kept by the container engines on this Mac: Apple's
+/// Container images and volumes kept by the container engines on this machine: Apple's
 /// `container` (com.apple.container), and the Docker-compatible ones (Docker Desktop,
-/// OrbStack, Colima, Dory). An image nothing uses can go to the repo as the tar its own
+/// rootless Docker, Podman, OrbStack, Colima, Dory). An image nothing uses can go to the repo as the tar its own
 /// CLI saves (`docker save` / `container image save`) and come back with `load`.
 ///
 /// Repo layout, write-once like dev assets: `containers/images/<id>.tar` plus a JSON record
@@ -23,7 +23,11 @@ public enum ContainerImages {
 public enum ContainerEngineKind: String, Codable, CaseIterable {
     case apple
     case docker
+    case dockerRootless = "docker-rootless"
+    case dockerHost = "docker-host"
     case dockerDesktop = "docker-desktop"
+    case podmanRootless = "podman-rootless"
+    case podman
     case orbstack
     case colima
     case dory
@@ -32,7 +36,10 @@ public enum ContainerEngineKind: String, Codable, CaseIterable {
         switch self {
         case .apple: return "Apple container"
         case .docker: return "Docker Engine"
+        case .dockerRootless: return "Docker Engine (rootless)"
+        case .dockerHost: return "Docker Engine (DOCKER_HOST)"
         case .dockerDesktop: return "Docker Desktop"
+        case .podmanRootless, .podman: return "Podman"
         case .orbstack: return "OrbStack"
         case .colima: return "Colima"
         case .dory: return "Dory"
@@ -40,8 +47,13 @@ public enum ContainerEngineKind: String, Codable, CaseIterable {
     }
 
     /// Engines that keep images inside one VM disk file: deleting an image inside the VM
-    /// gives space back to the Mac only once the VM trims its disk.
-    public var usesVMDisk: Bool { self != .apple && self != .docker }
+    /// gives space back to the host only once the VM trims its disk.
+    public var usesVMDisk: Bool {
+        switch self {
+        case .apple, .docker, .dockerRootless, .dockerHost, .podmanRootless, .podman: return false
+        case .dockerDesktop, .orbstack, .colima, .dory: return true
+        }
+    }
 }
 
 /// Why an image counts as in use, or why it is a candidate.
@@ -249,6 +261,22 @@ public enum ContainerParse {
         return UInt64(value * scale)
     }
 
+    /// `docker system df --format '{{json .}}'`: one object per line, one line per category.
+    /// Sums the sizes of every category Docker reports.
+    public static func dockerSystemSize(_ data: Data) -> UInt64? {
+        let categories: Set<String> = ["Images", "Containers", "Local Volumes", "Build Cache"]
+        var total: UInt64 = 0
+        var found = false
+        for line in String(decoding: data, as: UTF8.self).split(whereSeparator: \.isNewline) {
+            guard let object = (try? JSONSerialization.jsonObject(with: Data(line.utf8))) as? [String: Any],
+                  let type = object["Type"] as? String, categories.contains(type),
+                  let size = (object["Size"] as? String).flatMap(dockerSize) else { continue }
+            total += size
+            found = true
+        }
+        return found ? total : nil
+    }
+
     // MARK: Docker
 
     /// `docker image inspect <ids...>` (a JSON array).
@@ -308,7 +336,7 @@ public enum ContainerParse {
 
     public struct AppleImage: Equatable {
         public var image: ContainerImage
-        /// Manifest digests of the variants this Mac has (`snapshots/<hex>` names).
+        /// Manifest digests of the variants this host has (`snapshots/<hex>` names).
         public var manifestDigests: [String]
     }
 
@@ -382,7 +410,7 @@ public struct ContainerImageRecord: Codable, Equatable {
     public var sha256: String
     /// Size of the tar in the repo.
     public var size: UInt64
-    /// What the image took on this Mac.
+    /// What the image took on this host.
     public var localBytes: UInt64
     public var offloadedAt: Date
     public var host: String
