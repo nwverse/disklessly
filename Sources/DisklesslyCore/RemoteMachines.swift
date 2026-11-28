@@ -244,7 +244,28 @@ public enum SSHCommand {
     }
 
     /// Safe repository path component for a host alias (`[A-Za-z0-9._-]`, max 80 chars).
+    /// A stable hash of the original is always appended so distinct SSH targets
+    /// cannot share one storage key.
     public static func sanitizeHost(_ host: String) -> String {
+        let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+        var out = ""
+        for scalar in host.unicodeScalars {
+            if allowed.contains(scalar) {
+                out.unicodeScalars.append(scalar)
+            } else {
+                out.append("_")
+            }
+        }
+        while out.hasPrefix(".") { out.removeFirst() }
+        if out.isEmpty { out = "host" }
+        if out.count > 71 { out = String(out.prefix(71)) }
+        let hash = String(SHA256Digest.hex(Data(host.utf8)).prefix(8))
+        return "\(out)-\(hash)"
+    }
+
+    /// The storage component written by releases before host normalization was
+    /// collision-safe. Used only to locate and migrate existing data.
+    public static func legacySanitizeHost(_ host: String) -> String {
         let allowed = CharacterSet(charactersIn: "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
         var out = ""
         for scalar in host.unicodeScalars {
@@ -1455,6 +1476,15 @@ public struct RemoteOffloadRecord: Codable, Equatable, Sendable {
     public static func recordPath(host: String, id: String) -> String {
         let safeHost = SSHCommand.sanitizeHost(host)
         return "machines/\(safeHost)/records/\(id).json"
+    }
+
+    /// Both the collision-safe path and the pre-fix path. Offload lookup scans
+    /// both so old records stay restorable; deletes remove either copy.
+    public static func recordPaths(host: String, id: String) -> [String] {
+        Array(Set([
+            recordPath(host: host, id: id),
+            "machines/\(SSHCommand.legacySanitizeHost(host))/records/\(id).json",
+        ])).sorted()
     }
 
     public func encode() throws -> Data {

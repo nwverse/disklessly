@@ -587,7 +587,9 @@ public struct RecommendArguments: Equatable {
             throw DisklesslyError.usage("invalid size: \(raw)")
         }
         let bytes = value * scale
-        guard bytes <= Double(UInt64.max) else { throw DisklesslyError.usage("invalid size: \(raw)") }
+        // Double(UInt64.max) rounds up to 2^64, so values at the top of the
+        // range would pass that check and then trap in UInt64(bytes).
+        guard bytes < 18_446_744_073_709_551_616.0 else { throw DisklesslyError.usage("invalid size: \(raw)") }
         return UInt64(bytes)
     }
 

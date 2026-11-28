@@ -3,7 +3,7 @@ import Foundation
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
-import DisklesslyCore
+@testable import DisklesslyCore
 import DisklesslyEngine
 
 final class ScriptedHTTP: HTTPTransport {
@@ -94,6 +94,67 @@ final class BackendTests: XCTestCase {
         let web = try BackendCommands.parseAdd(["webdav", "--url", "https://dav.example/repo", "--user", "alice", "--id", "dav"])
         XCTAssertEqual(web.user, "alice")
         XCTAssertNil(web.password)
+    }
+
+    func testPasswordInputUsesOneTerminalLineAndKeepsRedirectedEOF() throws {
+        var terminalReads = 0
+        let terminal = try PasswordInput.select(
+            isTerminal: true,
+            terminalLine: {
+                terminalReads += 1
+                return "hunter2"
+            },
+            redirectedData: {
+                XCTFail("a terminal must not wait for EOF")
+                return Data()
+            }
+        )
+        XCTAssertEqual(terminal, "hunter2")
+        XCTAssertEqual(terminalReads, 1)
+
+        let redirected = try PasswordInput.select(
+            isTerminal: false,
+            terminalLine: {
+                XCTFail("redirected input must not use the terminal line reader")
+                return nil
+            },
+            redirectedData: { Data("pipeline-secret\n".utf8) }
+        )
+        XCTAssertEqual(redirected, "pipeline-secret")
+        XCTAssertThrowsError(try PasswordInput.select(
+            isTerminal: true,
+            terminalLine: { " \n" },
+            redirectedData: { Data() }
+        )) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 2)
+        }
+    }
+
+    func testEvictLocalChecksRemoteBeforeDeletingTheCache() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+
+        let missingRemote = root.appendingPathComponent("missing-remote.dmg")
+        try Data("last local copy".utf8).write(to: missingRemote)
+        XCTAssertThrowsError(try CacheEviction.evictLocal(cacheFile: missingRemote, remoteStillPresent: { false })) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 1)
+        }
+        XCTAssertEqual(try Data(contentsOf: missingRemote), Data("last local copy".utf8))
+
+        let offlineRemote = root.appendingPathComponent("offline-remote.dmg")
+        try Data("offline local copy".utf8).write(to: offlineRemote)
+        XCTAssertThrowsError(try CacheEviction.evictLocal(cacheFile: offlineRemote, remoteStillPresent: {
+            throw DisklesslyError.backend("offline")
+        })) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 4)
+        }
+        XCTAssertEqual(try Data(contentsOf: offlineRemote), Data("offline local copy".utf8))
+
+        let safe = root.appendingPathComponent("safe.dmg")
+        try Data("remote is complete".utf8).write(to: safe)
+        try CacheEviction.evictLocal(cacheFile: safe, remoteStillPresent: { true })
+        XCTAssertFalse(FileManager.default.fileExists(atPath: safe.path))
     }
 
     func testMountedShareUsesTempDirAndRefusesRootDelete() throws {

@@ -114,6 +114,12 @@ final class RecommendTests: XCTestCase {
         XCTAssertThrowsError(try RecommendArguments.parse(["--limit", "-1"]))
         XCTAssertThrowsError(try RecommendArguments.parseSize("100 megabytes"))
         XCTAssertThrowsError(try RecommendArguments.parseSize("soon"))
+        for invalid in ["18446744073709551615", "18446744073709551616", "18446744073709551615GiB"] {
+            XCTAssertThrowsError(try RecommendArguments.parseSize(invalid), invalid) { error in
+                XCTAssertEqual((error as? DisklesslyError)?.exitCode, 2)
+            }
+        }
+        XCTAssertEqual(try RecommendArguments.parseSize("0"), 0)
         let query = try RecommendArguments.parse(query: ["min-size": "50MiB", "limit": "2", "minIdleDays": "0"])
         XCTAssertEqual(query.minSizeBytes, 50 * 1024 * 1024)
         XCTAssertEqual(query.limit, 2)

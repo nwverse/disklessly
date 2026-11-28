@@ -121,6 +121,7 @@ public enum ImageCrypto {
     public static func seal(_ source: URL, to destination: URL, key: SymmetricKey, segmentShift: UInt8 = defaultSegmentShift) throws -> Sealed {
         guard allowedShifts.contains(segmentShift) else { throw DisklesslyError.usage("invalid segment shift \(segmentShift)") }
         guard key.bitCount == 256 else { throw DisklesslyError.usage("image keys are 256-bit") }
+        try rejectAliasedOutput(source: source, destination: destination)
         let id = keyId(for: key)
         var prefix = [UInt8](repeating: 0, count: noncePrefixBytes)
         var rng = SystemRandomNumberGenerator()
@@ -138,7 +139,7 @@ public enum ImageCrypto {
         var info = stat()
         guard fstat(input, &info) == 0 else { throw DisklesslyError.failure("cannot stat \(source.path)") }
         let size = UInt64(max(0, info.st_size))
-        let output = try createOutput(destination)
+        let output = try createOutput(destination, avoiding: info)
         defer { _ = close(output) }
 
         let segment = 1 << Int(segmentShift)
@@ -178,6 +179,7 @@ public enum ImageCrypto {
     /// On any failure `destination` is removed.
     @discardableResult
     public static func open(_ source: URL, to destination: URL, key lookup: (String) throws -> SymmetricKey?) throws -> Opened {
+        try rejectAliasedOutput(source: source, destination: destination)
         let input = Darwinish.open(source.path, O_RDONLY)
         guard input >= 0 else { throw DisklesslyError.failure("cannot read \(source.path)") }
         defer { _ = close(input) }
@@ -199,7 +201,7 @@ public enum ImageCrypto {
         guard keyId(for: key) == header.keyId else {
             throw DisklesslyError.integrity("the image key loaded for \(header.keyId) has a different id")
         }
-        let output = try createOutput(destination)
+        let output = try createOutput(destination, avoiding: info)
         var finished = false
         defer {
             _ = close(output)
@@ -248,10 +250,27 @@ public enum ImageCrypto {
         digest.map { String(format: "%02x", $0) }.joined()
     }
 
-    private static func createOutput(_ url: URL) throws -> Int32 {
+    private static func rejectAliasedOutput(source: URL, destination: URL) throws {
+        guard FileIdentity.same(source, destination) else { return }
+        throw DisklesslyError.usage("source and destination are the same file: \(source.path)")
+    }
+
+    private static func createOutput(_ url: URL, avoiding sourceInfo: stat) throws -> Int32 {
         try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-        let fd = Darwinish.open(url.path, O_CREAT | O_TRUNC | O_WRONLY, 0o644)
+        let fd = Darwinish.open(url.path, O_CREAT | O_WRONLY, 0o644)
         guard fd >= 0 else { throw DisklesslyError.failure("cannot write \(url.path)") }
+        guard let destinationInfo = FileIdentity.stamp(fileDescriptor: fd) else {
+            _ = close(fd)
+            throw DisklesslyError.failure("cannot stat \(url.path)")
+        }
+        guard !FileIdentity.same(sourceInfo, destinationInfo) else {
+            _ = close(fd)
+            throw DisklesslyError.usage("source and destination are the same file: \(url.path)")
+        }
+        guard ftruncate(fd, 0) == 0 else {
+            _ = close(fd)
+            throw DisklesslyError.failure("cannot truncate \(url.path)")
+        }
         return fd
     }
 

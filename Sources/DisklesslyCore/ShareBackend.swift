@@ -179,13 +179,13 @@ public struct MountedShareBackend: StorageBackend {
 }
 
 public enum CacheEviction {
-    /// Removes a local cache file and checks that the remote object is still there.
+    /// Checks that the remote object is still there, then removes the local cache file.
     public static func evictLocal(cacheFile: URL, remoteStillPresent: () throws -> Bool) throws {
-        if FileManager.default.fileExists(atPath: cacheFile.path) {
-            try FileManager.default.removeItem(at: cacheFile)
-        }
         guard try remoteStillPresent() else {
             throw DisklesslyError.failure("eviction removed the remote object")
+        }
+        if FileManager.default.fileExists(atPath: cacheFile.path) {
+            try FileManager.default.removeItem(at: cacheFile)
         }
     }
 }
