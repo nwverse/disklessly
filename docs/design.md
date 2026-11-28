@@ -419,6 +419,10 @@ logs/disklessly.log
 ```
 JSON file (not SQLite) is chosen: small (≤ few hundred apps), human-debuggable, Linux-testable, no dependency.
 The implemented file uses schema `state/2`. A missing schema or `state/1` migrates on the first update: the previous bytes are copied to `state.json.v1.bak` when that backup is absent, then the file is rewritten. Corrupt JSON is not overwritten. `load` returns an empty state, and `update` throws integrity (exit 5) after renaming the file to `state.json.corrupt-<timestamp>`.
+Numeric JSON values are decoded as `Int64` or `UInt64` when the token is an integer in range, so
+cache byte counts, epochs, owner ids, and fingerprints retain full 64-bit precision. Fractional
+values and integers outside `Int64`/`UInt64` remain `Double`; when they cannot be used by a typed
+state field they are retained in `extra`, but those out-of-range literals use `Double` rendering.
 ```json
 {
   "schema": "state/2", "deviceId": "6F1C…",

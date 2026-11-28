@@ -179,13 +179,13 @@ final class StateStoreTests: XCTestCase {
             }
 
             XCTAssertEqual(state.restored["overflow-epoch"]?.epoch, 0)
-            XCTAssertEqual(state.restored["overflow-epoch"]?.extra["epoch"], .number(9_223_372_036_854_775_808.0))
+            XCTAssertEqual(state.restored["overflow-epoch"]?.extra["epoch"], .unsigned(9_223_372_036_854_775_808))
             XCTAssertNil(state.restored["overflow-post"]?.postQuitRanForEpoch)
-            XCTAssertEqual(state.restored["overflow-post"]?.extra["postQuitRanForEpoch"], .number(10_000_000_000_000_000_000.0))
+            XCTAssertEqual(state.restored["overflow-post"]?.extra["postQuitRanForEpoch"], .unsigned(10_000_000_000_000_000_000))
             XCTAssertEqual(state.restored["overflow-pid"]?.owner.pid, 0)
-            XCTAssertEqual(state.restored["overflow-pid"]?.extra["owner.pid"], .number(2_147_483_648))
+            XCTAssertEqual(state.restored["overflow-pid"]?.extra["owner.pid"], .integer(2_147_483_648))
             XCTAssertEqual(state.restored["overflow-start"]?.owner.start, 0)
-            XCTAssertEqual(state.restored["overflow-start"]?.extra["owner.start"], .number(10_000_000_000_000_000_000.0))
+            XCTAssertEqual(state.restored["overflow-start"]?.extra["owner.start"], .unsigned(10_000_000_000_000_000_000))
         }
 
         verify(store.load())
@@ -193,9 +193,80 @@ final class StateStoreTests: XCTestCase {
         verify(store.load())
     }
 
+    func testStateJSONPreservesIntegersAboveDoublePrecision() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("disklessly-state-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let original = """
+        {
+          "schema": "state/2",
+          "cache": {
+            "below": {"bytes": 9007199254740991},
+            "at": {"bytes": 9007199254740992},
+            "above": {"bytes": 9007199254740993},
+            "max": {"bytes": 18446744073709551615},
+            "negative": {"bytes": -1},
+            "fractional": {"bytes": 1.5},
+            "too-large": {"bytes": 18446744073709551616},
+            "fingerprint": {"verified": {"sha256": "x", "fingerprint": {
+              "dev": 9007199254740993,
+              "ino": 18446744073709551615,
+              "size": 9007199254740993,
+              "mtimeNs": 9007199254740993
+            }}}
+          },
+          "restored": {
+            "exact": {
+              "epoch": 9007199254740993,
+              "postQuitRanForEpoch": 9007199254740992,
+              "owner": {"pid": 42, "start": 18446744073709551615}
+            }
+          }
+        }
+        """
+        let url = root.appendingPathComponent("state.json")
+        try Data(original.utf8).write(to: url)
+        let store = StateStore(root.path)
+
+        func verify(_ state: LocalState) {
+            XCTAssertEqual(state.cache["below"]?.bytes, 9_007_199_254_740_991)
+            XCTAssertEqual(state.cache["at"]?.bytes, 9_007_199_254_740_992)
+            XCTAssertEqual(state.cache["above"]?.bytes, 9_007_199_254_740_993)
+            XCTAssertEqual(state.cache["max"]?.bytes, UInt64.max)
+            XCTAssertNil(state.cache["negative"]?.bytes)
+            XCTAssertEqual(state.cache["negative"]?.extra["bytes"], .integer(-1))
+            XCTAssertNil(state.cache["fractional"]?.bytes)
+            XCTAssertEqual(state.cache["fractional"]?.extra["bytes"], .number(1.5))
+            XCTAssertNil(state.cache["too-large"]?.bytes)
+            XCTAssertEqual(state.cache["too-large"]?.extra["bytes"], .number(Double(UInt64.max)))
+
+            let fingerprint = state.cache["fingerprint"]?.verified?.fingerprint
+            XCTAssertEqual(fingerprint?.dev, 9_007_199_254_740_993)
+            XCTAssertEqual(fingerprint?.ino, UInt64.max)
+            XCTAssertEqual(fingerprint?.size, 9_007_199_254_740_993)
+            XCTAssertEqual(fingerprint?.mtimeNs, 9_007_199_254_740_993)
+
+            XCTAssertEqual(state.restored["exact"]?.epoch, 9_007_199_254_740_993)
+            XCTAssertEqual(state.restored["exact"]?.postQuitRanForEpoch, 9_007_199_254_740_992)
+            XCTAssertEqual(state.restored["exact"]?.owner.pid, 42)
+            XCTAssertEqual(state.restored["exact"]?.owner.start, UInt64.max)
+        }
+
+        verify(store.load())
+        try store.update { _ in }
+        let written = try String(contentsOf: url, encoding: .utf8)
+        for exact in ["9007199254740993", "18446744073709551615"] {
+            XCTAssertTrue(written.contains(exact), "rewritten state lost \(exact): \(written)")
+        }
+        verify(store.load())
+    }
+
     func testJSONValueIntegerConversionRejectsFractionsAndOverflow() {
         XCTAssertEqual(JSONValue.number(42).int, 42)
         XCTAssertNil(JSONValue.number(1.5).int)
         XCTAssertNil(JSONValue.number(9_223_372_036_854_775_808.0).int)
+        XCTAssertEqual(JSONValue.integer(9_007_199_254_740_993).int, 9_007_199_254_740_993)
+        XCTAssertEqual(JSONValue.unsigned(UInt64.max).int, nil)
+        XCTAssertEqual(JSONValue.unsigned(42).int, 42)
     }
 }

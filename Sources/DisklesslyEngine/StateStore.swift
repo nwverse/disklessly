@@ -19,7 +19,7 @@ public struct StateStore {
     public func load() -> LocalState {
         let url = file
         guard let data = try? Data(contentsOf: url), !data.isEmpty else { return LocalState() }
-        guard let object = try? JSONSerialization.jsonObject(with: data), let value = Optional(JSONValue.from(object)), value.object != nil else {
+        guard let value = try? JSONDecoder().decode(JSONValue.self, from: data), value.object != nil else {
             return LocalState()
         }
         return LocalState.parse(value)
@@ -115,7 +115,7 @@ public struct StateStore {
 
     public func write(_ object: [String: Any]) throws {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-        let parsed = LocalState.parse(JSONValue.from(try JSONSerialization.jsonObject(with: data)))
+        let parsed = LocalState.parse(try JSONDecoder().decode(JSONValue.self, from: data))
         try update { state in
             state = parsed
         }
@@ -164,8 +164,8 @@ public struct StateStore {
     private func inspect() -> StateFileKind {
         guard FileManager.default.fileExists(atPath: file.path) else { return .missing }
         guard let data = try? Data(contentsOf: file), !data.isEmpty else { return .corrupt }
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .corrupt }
-        let schema = object["schema"] as? String
+        guard let value = try? JSONDecoder().decode(JSONValue.self, from: data), let object = value.object else { return .corrupt }
+        let schema = object["schema"]?.string
         if schema == nil || schema == "state/1" { return .legacy }
         return .current
     }
