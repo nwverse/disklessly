@@ -1,4 +1,5 @@
 import XCTest
+import Dispatch
 @testable import DisklesslyCore
 @testable import DisklesslyEngine
 
@@ -97,6 +98,97 @@ final class LifecycleTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
     }
 
+    func testEvictWaitsForLaunchStyleAppLock() throws {
+        let engine = try makeEngine()
+        let m = manifest("launching")
+        let file = try cache(engine, "launching")
+        let lockURL = URL(fileURLWithPath: engine.config.stateDir).appendingPathComponent("locks/app/\(m.bundleId).lock")
+        try FileManager.default.createDirectory(at: lockURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        var launchLock = FileLock(path: lockURL.path)
+        XCTAssertTrue(try launchLock.tryLock())
+
+        let finished = expectation(description: "evict finishes")
+        let started = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            started.signal()
+            _ = try? engine.evict(m, force: true)
+            finished.fulfill()
+        }
+        XCTAssertEqual(started.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(XCTWaiter.wait(for: [finished], timeout: 0.2), .timedOut)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "evict must not unlink a launch-prefetched image")
+
+        launchLock.unlock()
+        wait(for: [finished], timeout: 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testEvictRefusesWhileMountLeaseIsHeld() throws {
+        let engine = try makeEngine()
+        let m = manifest("leased-evict")
+        let file = try cache(engine, "leased-evict")
+        var lease = try XCTUnwrap(MountLease.tryAcquire(stateDir: engine.config.stateDir, name: m.imageId))
+        XCTAssertThrowsError(try engine.evict(m, force: true))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+
+        lease.release()
+        try engine.evict(m, force: true)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
+    func testPrefetchKeepsAppLockUntilItReturns() throws {
+        var engine = try makeEngine()
+        let bytes = Data("prefetched-image".utf8)
+        let image = ImageManifest.Image(
+            file: "images/prefetching.dmg",
+            format: "ULMO",
+            sha256: SHA256Digest.hex(bytes),
+            size: UInt64(bytes.count),
+            volumeName: "prefetching",
+            appPathInVolume: "prefetching.app"
+        )
+        let m = ImageManifest(
+            bundleId: "com.example.prefetching",
+            name: "prefetching",
+            version: "1",
+            image: image,
+            app: .init(originalPath: "/Applications/prefetching.app", executable: "prefetching", documentTypes: [], urlTypes: []),
+            mode: .mount,
+            imageId: "prefetching"
+        )
+        let file = URL(fileURLWithPath: engine.config.cacheDir).appendingPathComponent("images/prefetching.dmg")
+        try bytes.write(to: file)
+
+        let hashing = DispatchSemaphore(value: 0)
+        let resumeHash = DispatchSemaphore(value: 0)
+        engine.hasherOverride = { url in
+            hashing.signal()
+            resumeHash.wait()
+            return try SHA256Digest.hexFile(url)
+        }
+
+        let prefetched = expectation(description: "prefetch returns")
+        DispatchQueue.global().async {
+            _ = try? engine.prefetch(m)
+            prefetched.fulfill()
+        }
+        XCTAssertEqual(hashing.wait(timeout: .now() + 2), .success)
+
+        let evicted = expectation(description: "evict returns")
+        DispatchQueue.global().async {
+            _ = try? engine.evict(m, force: true)
+            evicted.fulfill()
+        }
+        XCTAssertEqual(XCTWaiter.wait(for: [evicted], timeout: 0.2), .timedOut)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: file.path))
+
+        resumeHash.signal()
+        resumeHash.signal()
+        wait(for: [prefetched], timeout: 2)
+        wait(for: [evicted], timeout: 2)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: file.path))
+    }
+
     func testQuotaEvictionNeverTouchesPinned() throws {
         var engine = try makeEngine()
         engine.config.quotaBytes = 1
@@ -112,6 +204,43 @@ final class LifecycleTests: XCTestCase {
         _ = try engine.enforceCacheQuota(justUsed: nil, now: Date())
         XCTAssertTrue(FileManager.default.fileExists(atPath: kept.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: dropped.path))
+    }
+
+    func testQuotaRechecksMountedAndRunningAfterPlanning() throws {
+        var engine = try makeEngine()
+        engine.config.quotaBytes = 1
+        let m = manifest("target")
+        let target = try cache(engine, "target")
+        try StateStore(engine.config.stateDir).setAppState(bundleId: m.bundleId, imageId: m.imageId, state: "cached")
+        let stateDir = engine.config.stateDir
+        engine.cacheQuotaAfterPlanForTesting = {
+            let mounted = try? self.mount("target")
+            try? StateStore(stateDir).setAppState(
+                bundleId: m.bundleId,
+                imageId: m.imageId,
+                state: "running",
+                mountPoint: mounted
+            )
+        }
+
+        let result = try engine.enforceCacheQuota(justUsed: nil, now: Date())
+        XCTAssertTrue(result.plan.victims.contains(m.imageId))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
+        XCTAssertFalse(result.lines.contains { $0.contains("evicted cache \(m.imageId)") })
+    }
+
+    func testQuotaSkipsVictimWithHeldMountLease() throws {
+        var engine = try makeEngine()
+        engine.config.quotaBytes = 1
+        let m = manifest("leased-quota")
+        let target = try cache(engine, "leased-quota")
+        try StateStore(engine.config.stateDir).setAppState(bundleId: m.bundleId, imageId: m.imageId, state: "cached")
+        var lease = try XCTUnwrap(MountLease.tryAcquire(stateDir: engine.config.stateDir, name: m.imageId))
+
+        let result = try engine.enforceCacheQuota(justUsed: nil, now: Date())
+        XCTAssertTrue(FileManager.default.fileExists(atPath: target.path))
+        XCTAssertFalse(result.lines.contains { $0.contains("evicted cache \(m.imageId)") })
+        lease.release()
     }
 
     // MARK: detach

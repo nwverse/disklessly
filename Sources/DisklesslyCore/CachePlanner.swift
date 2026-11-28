@@ -24,6 +24,19 @@ public struct CacheItem: Equatable {
     }
 }
 
+extension CacheItem {
+    /// Why quota eviction must leave this image alone right now. The planner and
+    /// the post-lock recheck share this predicate so they cannot drift apart.
+    public func evictionSkipReason(now: Date) -> String? {
+        if pinned { return "pinned" }
+        if mounted { return "mounted" }
+        if inUse { return "inUse" }
+        if let until = protectedUntil, until > now { return "protectedUntil" }
+        if needsResolution { return "needsResolution" }
+        return nil
+    }
+}
+
 public struct EvictionPlan: Equatable {
     public var victims: [String]
     public var freed: UInt64
@@ -51,11 +64,7 @@ public enum CachePlanner {
         var remaining = used
         var skipped: [String: String] = [:]
         for item in items {
-            if item.pinned { skipped[item.imageId] = "pinned" }
-            else if item.mounted { skipped[item.imageId] = "mounted" }
-            else if item.inUse { skipped[item.imageId] = "inUse" }
-            else if let until = item.protectedUntil, until > now { skipped[item.imageId] = "protectedUntil" }
-            else if item.needsResolution { skipped[item.imageId] = "needsResolution" }
+            if let reason = item.evictionSkipReason(now: now) { skipped[item.imageId] = reason }
         }
         for left in leftovers {
             victims.append(left.path)

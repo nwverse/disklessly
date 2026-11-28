@@ -322,7 +322,7 @@ extension DisklesslyEngine {
         guard let tree = manifest.app.treeHash, let cdhash = manifest.app.cdhash else {
             throw DisklesslyError.integrity("unpack manifest is missing app.cdhash or app.treeHash")
         }
-        let image = try prefetch(manifest)
+        let image = try prefetchLocked(manifest)
         let mount = URL(fileURLWithPath: config.mountRoot).appendingPathComponent("unpack-\(UUID().uuidString)")
         // Keeps the orphan reaper off this mount while it is in use.
         var lease = MountLease.tryAcquire(stateDir: config.stateDir, name: mount.lastPathComponent)

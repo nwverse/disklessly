@@ -320,6 +320,9 @@ public struct DisklesslyEngine {
     /// Test hook. Forces the two-rename path that Linux and volumes without
     /// `RENAME_SWAP` use.
     var packSwapUnsupported = false
+    /// Test hook. Runs after quota planning and before the first victim is
+    /// rechecked under its app lock.
+    var cacheQuotaAfterPlanForTesting: (() -> Void)?
     public init(config: RuntimeConfig, services: RestoreServices? = nil, faults: FaultController? = nil, secrets: (any SecretStore)? = nil, shareOpener: ShareOpener = .system) {
         self.config=config
         let faults=faults ?? FaultController()
@@ -772,13 +775,15 @@ public struct DisklesslyEngine {
         return matches.count == 1 ? matches[0] : nil
     }
     public func setPinned(_ manifest: ImageManifest, pinned: Bool) throws {
-        try StateStore(config.stateDir).update { state in
-            var item = state.apps[manifest.bundleId] ?? AppState()
-            item.imageId = manifest.imageId
-            item.pinned = pinned
-            state.apps[manifest.bundleId] = item
+        try restore.withLock(manifest.bundleId) {
+            try StateStore(config.stateDir).update { state in
+                var item = state.apps[manifest.bundleId] ?? AppState()
+                item.imageId = manifest.imageId
+                item.pinned = pinned
+                state.apps[manifest.bundleId] = item
+            }
+            if pinned { _ = try prefetchLocked(manifest) }
         }
-        if pinned { _ = try prefetch(manifest) }
     }
     /// True when `path` is a live mount point. Launch leaves an empty folder behind
     /// after detach, so a folder that merely exists does not mean "mounted".
@@ -797,10 +802,19 @@ public struct DisklesslyEngine {
     /// design §4: refuses a pinned app unless `force`, and a mounted or in-use
     /// image even with `force` (EX_BUSY). See `evictRefusal`.
     public func evict(_ manifest: ImageManifest, force: Bool = false) throws {
-        if let refusal = evictRefusal(manifest, force: force) { throw refusal.error }
-        let path=URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
-        guard FileManager.default.fileExists(atPath: path.path) else { return }
-        try FileManager.default.removeItem(at: path)
+        try restore.withLock(manifest.bundleId) {
+            let path = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(manifest.imageId).dmg")
+            guard FileManager.default.fileExists(atPath: path.path) else { return }
+            // The app lock serializes launch/prefetch; the mount lease covers a
+            // live owner that handed the app lock to its watcher after attach.
+            guard var lease = MountLease.tryAcquire(stateDir: config.stateDir, name: manifest.imageId) else {
+                throw DisklesslyError.busy("\(manifest.name) is mounted or in use; quit it and try again")
+            }
+            defer { lease.release() }
+            if let refusal = evictRefusal(manifest, force: force) { throw refusal.error }
+            guard FileManager.default.fileExists(atPath: path.path) else { return }
+            try FileManager.default.removeItem(at: path)
+        }
     }
     public func gc(now: Date = Date(), includeLegacy: Bool = false) throws -> [String] {
         var lines = try recoverPackJournals()
@@ -821,16 +835,58 @@ public struct DisklesslyEngine {
         var fingers: [String: FileFingerprint]
     }
 
+    private struct CacheLiveFacts {
+        var state: LocalState
+        #if os(macOS)
+        var usage: LiveMaterialProbe.Usage
+        var imageListing: Data?
+        #endif
+    }
+
+    private func cacheLiveFacts(now: Date, includeImageListing: Bool = true) -> CacheLiveFacts {
+        let state = StateStore(config.stateDir).load()
+        #if os(macOS)
+        let usage = LiveMaterialProbe.usageMap(config: config, now: now)
+        let imageListing = includeImageListing ? Data(ProcessRunner.capture("/usr/bin/hdiutil", ["info", "-plist"]).utf8) : nil
+        return CacheLiveFacts(state: state, usage: usage, imageListing: imageListing)
+        #else
+        return CacheLiveFacts(state: state)
+        #endif
+    }
+
+    private func cacheItem(imageId: String, bytes: UInt64, facts: CacheLiveFacts, justUsed: Bool) -> CacheItem {
+        let owners = facts.state.apps.filter { $0.value.imageId == imageId }
+        let pinned = owners.values.contains { $0.pinned }
+        let needsResolution = owners.values.contains { $0.needsResolution != nil }
+        let mount = URL(fileURLWithPath: config.mountRoot).appendingPathComponent(imageId)
+        var mounted = Self.isActiveMountPoint(mount.path) || mountOps.isMounted(mount.path)
+        var inUse = owners.values.contains { ($0.state == "running" || $0.state == "detaching") }
+        var protectedUntil: Date?
+        #if os(macOS)
+        if facts.usage.inUse.contains(imageId) { inUse = true }
+        protectedUntil = facts.usage.until[imageId]
+        let image = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images/\(imageId).dmg")
+        if let listing = facts.imageListing, DiskImageTool.plistListsMountPoint(listing, image.path) { mounted = true }
+        #endif
+        return CacheItem(
+            imageId: imageId,
+            bytes: bytes,
+            lastUsed: facts.state.cache[imageId]?.lastUsed ?? owners.values.compactMap(\.lastUsed).max(),
+            pinned: pinned,
+            mounted: mounted,
+            inUse: inUse,
+            protectedUntil: protectedUntil,
+            needsResolution: needsResolution,
+            justUsed: justUsed
+        )
+    }
+
     /// Read the cache. Does not write state or delete files.
     func scanCache(justUsed: String?, now: Date) -> CacheScan {
         let fm = FileManager.default
         let images = URL(fileURLWithPath: config.cacheDir).appendingPathComponent("images")
         let names = (try? fm.contentsOfDirectory(atPath: images.path)) ?? []
-        let loaded = StateStore(config.stateDir).load()
-        #if os(macOS)
-        let usage = LiveMaterialProbe.usageMap(config: config, now: now)
-        let imageListing = Data(ProcessRunner.capture("/usr/bin/hdiutil", ["info", "-plist"]).utf8)
-        #endif
+        let facts = cacheLiveFacts(now: now)
         var items: [CacheItem] = []
         var recorded: [String: UInt64] = [:]
         var fingers: [String: FileFingerprint] = [:]
@@ -840,18 +896,7 @@ public struct DisklesslyEngine {
             let bytes = allocatedBlocks(url)
             recorded[id] = bytes
             if let finger = try? FileFingerprint.of(url: url) { fingers[id] = finger }
-            let owners = loaded.apps.filter { $0.value.imageId == id }
-            let pinned = owners.values.contains { $0.pinned }
-            let needs = owners.values.contains { $0.needsResolution != nil }
-            var mounted = Self.isActiveMountPoint(URL(fileURLWithPath: config.mountRoot).appendingPathComponent(id).path)
-            var inUse = owners.values.contains { ($0.state == "running" || $0.state == "detaching") }
-            var protected: Date? = nil
-            #if os(macOS)
-            if usage.inUse.contains(id) { inUse = true }
-            protected = usage.until[id]
-            if DiskImageTool.plistListsMountPoint(imageListing, url.path) { mounted = true }
-            #endif
-            items.append(CacheItem(imageId: id, bytes: bytes, lastUsed: loaded.cache[id]?.lastUsed ?? owners.values.compactMap(\.lastUsed).max(), pinned: pinned, mounted: mounted, inUse: inUse, protectedUntil: protected, needsResolution: needs, justUsed: id == justUsed))
+            items.append(cacheItem(imageId: id, bytes: bytes, facts: facts, justUsed: id == justUsed))
         }
         return CacheScan(items: items, leftovers: cacheLeftovers(now: now), recorded: recorded, fingers: fingers)
     }
@@ -875,7 +920,7 @@ public struct DisklesslyEngine {
         if plan.shortBy > 0 {
             FileHandle.standardError.write(Data("disklessly: cache still exceeds quota by \(plan.shortBy) bytes\n".utf8))
         }
-        let loaded = StateStore(config.stateDir).load()
+        cacheQuotaAfterPlanForTesting?()
         var lines: [String] = []
         for victim in plan.victims {
             if victim.contains("/") {
@@ -883,18 +928,32 @@ public struct DisklesslyEngine {
                 if fm.fileExists(atPath: url.path) { try? fm.removeItem(at: url) }
                 continue
             }
-            guard let bundleId = loaded.apps.first(where: { $0.value.imageId == victim })?.key else {
-                try deleteCacheImage(victim, bytes: scan.recorded[victim] ?? 0, lines: &lines)
-                continue
-            }
+            let owners = StateStore(config.stateDir).load().apps.filter { $0.value.imageId == victim }.map(\.key).sorted()
             let directory = URL(fileURLWithPath: config.stateDir).appendingPathComponent("locks/app")
             try fm.createDirectory(at: directory, withIntermediateDirectories: true)
-            var lock = FileLock(path: directory.appendingPathComponent(bundleId + ".lock").path)
-            guard try lock.tryLock() else { continue }
-            defer { lock.unlock() }
-            let fresh = StateStore(config.stateDir).load()
-            if fresh.apps[bundleId]?.pinned == true { continue }
-            if fresh.apps[bundleId]?.needsResolution != nil { continue }
+            var locks: [FileLock] = []
+            var lockedAll = true
+            for bundleId in owners {
+                var lock = FileLock(path: directory.appendingPathComponent(bundleId + ".lock").path)
+                guard (try? lock.tryLock()) == true else {
+                    lockedAll = false
+                    break
+                }
+                locks.append(lock)
+            }
+            guard lockedAll else {
+                for index in locks.indices { locks[index].unlock() }
+                continue
+            }
+            defer { for index in locks.indices { locks[index].unlock() } }
+            guard var lease = MountLease.tryAcquire(stateDir: config.stateDir, name: victim) else { continue }
+            defer { lease.release() }
+            let now = Date()
+            // launch/attach is serialized by the app lock and mount lease; the
+            // hdiutil listing from the initial scan would be stale anyway.
+            let freshFacts = cacheLiveFacts(now: now, includeImageListing: false)
+            let fresh = cacheItem(imageId: victim, bytes: scan.recorded[victim] ?? 0, facts: freshFacts, justUsed: victim == justUsed)
+            if fresh.evictionSkipReason(now: now) != nil { continue }
             let url = images.appendingPathComponent(victim + ".dmg")
             guard let before = scan.fingers[victim] else { continue }
             guard let again = try? FileFingerprint.of(url: url), again == before else { continue }
@@ -1032,7 +1091,17 @@ public struct DisklesslyEngine {
         }
     }
 
-    public func prefetch(_ manifest:ImageManifest) throws -> URL {
+    public func prefetch(_ manifest: ImageManifest) throws -> URL {
+        try restore.withLock(manifest.bundleId) {
+            var lease = MountLease.tryAcquire(stateDir: config.stateDir, name: manifest.imageId)
+            defer { lease?.release() }
+            return try prefetchLocked(manifest)
+        }
+    }
+
+    /// For callers already holding the app lock, including launch's combined
+    /// prefetch-through-attach critical section.
+    func prefetchLocked(_ manifest: ImageManifest) throws -> URL {
         let backend = try repo
         let paths = CachePaths(cacheDir: config.cacheDir, mountRoot: config.mountRoot)
         let cache = paths.image(manifest.imageId)
@@ -1096,33 +1165,44 @@ public struct DisklesslyEngine {
         if HostPlatform.current.offloadsApps, EngineInstall.runningExecutable().lastPathComponent == "disklessly" {
             try installEngine()
         }
-        // The app's data comes back first; if it cannot, the app is not opened at all.
-        try restore.withLock(manifest.bundleId) { try appDataBeforeLaunch(manifest) }
         let since = Date()
         if manifest.mode == .restore {
+            // The app's data comes back first; if it cannot, the app is not opened at all.
+            try restore.withLock(manifest.bundleId) { try appDataBeforeLaunch(manifest) }
+            // Restore launch attaches the prefetched image after its own app lock,
+            // so keep the cache image leased across both steps.
+            var lease = MountLease.acquire(stateDir: config.stateDir, name: manifest.imageId, waitSeconds: 0.5)
+            defer { lease?.release() }
             _ = try prefetch(manifest)
             try restore.launch(manifest, documents: documents, urls: urls, arguments: arguments, wait: wait)
             _ = try enforceCacheQuota(justUsed: manifest.imageId)
             if wait { appDataAfterQuit(appId: manifest.bundleId, since: since) }
             return
         }
-        let image=try prefetch(manifest)
         #if !os(macOS)
+        try restore.withLock(manifest.bundleId) {
+            try appDataBeforeLaunch(manifest)
+            _ = try prefetchLocked(manifest)
+        }
         throw DisklesslyError.unsupported("launch requires macOS hdiutil and Launch Services")
         #else
-        let rawMount=URL(fileURLWithPath:config.mountRoot).appendingPathComponent(manifest.imageId)
-        try FileManager.default.createDirectory(at:rawMount,withIntermediateDirectories:true)
-        let mount=rawMount.resolvingSymlinksInPath().standardizedFileURL
-        let app=mount.appendingPathComponent(manifest.image.appPathInVolume)
-        let state=StateStore(config.stateDir)
+        let rawMount = URL(fileURLWithPath: config.mountRoot).appendingPathComponent(manifest.imageId)
+        try FileManager.default.createDirectory(at: rawMount, withIntermediateDirectories: true)
+        let mount = rawMount.resolvingSymlinksInPath().standardizedFileURL
+        let app = mount.appendingPathComponent(manifest.image.appPathInVolume)
+        let state = StateStore(config.stateDir)
         var handOff = false
         // Held from attach until supervision ends so the reaper never takes a live mount.
         var lease: MountLease?
         defer { lease?.release() }
         try restore.withLock(manifest.bundleId) {
+            // The app's data comes back first; if it cannot, the app is not opened at all.
+            try appDataBeforeLaunch(manifest)
             // Taken before the reuse check too: an existing mount must not be reaped
-            // in the window before the app process shows up in the usage probe.
+            // in the window before the app process shows up in the usage probe. It
+            // also keeps quota and explicit evict away from the prefetched image.
             lease = MountLease.acquire(stateDir: config.stateDir, name: manifest.imageId, waitSeconds: 0.5)
+            let image = try prefetchLocked(manifest)
             let recorded = state.load().apps[manifest.bundleId]?.mountPoint
             let info = ProcessRunner.capture("/usr/bin/hdiutil", ["info", "-plist"])
             let listed = recorded.map { DiskImageTool.plistListsMountPoint(Data(info.utf8), $0) } ?? false
