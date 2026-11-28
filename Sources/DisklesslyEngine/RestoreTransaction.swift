@@ -202,13 +202,8 @@ enum ProcessRunner {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = args
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do { try process.run() } catch { return "" }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return String(data: data, encoding: .utf8) ?? ""
+        guard let result = try? ProcessCapture.run(process), !result.timedOut else { return "" }
+        return String(data: result.stdout, encoding: .utf8) ?? ""
     }
 
     static func runHook(_ url: URL, _ env: [String: String]) throws -> Int32 {

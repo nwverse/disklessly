@@ -45,13 +45,8 @@ public enum DiskAdvisor {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/csrutil")
         process.arguments = ["status"]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = Pipe()
-        do { try process.run() } catch { return false }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return process.terminationStatus == 0 && sipFilesystemOff(csrutilOutput: String(decoding: data, as: UTF8.self))
+        guard let result = try? ProcessCapture.run(process), result.succeeded else { return false }
+        return sipFilesystemOff(csrutilOutput: String(decoding: result.stdout, as: UTF8.self))
     }
 
     /// The asset folders of one group, as absolute paths directly inside `assetsFolder`.
