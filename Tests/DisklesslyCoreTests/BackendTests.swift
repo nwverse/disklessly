@@ -163,7 +163,7 @@ final class BackendTests: XCTestCase {
         try backend.put("images/a.dmg", data: bytes)
         XCTAssertEqual(script.calls[1].method, "PUT")
         XCTAssertTrue(script.calls[1].url.contains("/.a.dmg.tmp-"))
-        XCTAssertEqual(script.calls[2].headers["Overwrite"], "F")
+        XCTAssertEqual(script.calls[2].headers["Overwrite"], "T")
         XCTAssertFalse(script.calls[2].headers.values.contains { $0.contains(secret) })
 
         script.steps = [("GET", HTTPResponse(status: 206, body: Data("xyz".utf8)))]
@@ -181,6 +181,49 @@ final class BackendTests: XCTestCase {
         XCTAssertThrowsError(try backend.delete("")) { error in XCTAssertEqual((error as? DisklesslyError)?.exitCode, 2) }
         let offline = WebDAVBackend(baseURL: URL(string: "http://127.0.0.1:9/dav/")!, user: nil, password: nil, transport: OfflineHTTP())
         XCTAssertThrowsError(try offline.stat("images/a.dmg")) { error in XCTAssertEqual((error as? DisklesslyError)?.exitCode, 4) }
+    }
+
+    func testWebDAVMutablePutOverwritesAndExclusive412IsConflict() throws {
+        let script = ScriptedHTTP()
+        let backend = WebDAVBackend(baseURL: URL(string: "http://127.0.0.1:9/dav/")!, user: nil, password: nil, transport: script)
+        let old = Data("old catalog".utf8)
+        let new = Data("new catalog".utf8)
+
+        script.steps = [
+            ("PUT", HTTPResponse(status: 201)),
+            ("MOVE", HTTPResponse(status: 204)),
+            ("GET", HTTPResponse(status: 200, body: old)),
+            ("PUT", HTTPResponse(status: 201)),
+            ("MOVE", HTTPResponse(status: 204)),
+            ("GET", HTTPResponse(status: 200, body: new)),
+            ("GET", HTTPResponse(status: 200, body: new)),
+        ]
+        try backend.put("catalog/manifest.json", data: old)
+        try backend.put("catalog/manifest.json", data: new)
+        XCTAssertEqual(script.calls[1].headers["Overwrite"], "T")
+        XCTAssertEqual(script.calls[4].headers["Overwrite"], "T")
+        XCTAssertEqual(try backend.get("catalog/manifest.json", range: nil), new)
+
+        let beforeExclusive = script.calls.count
+        script.steps = [
+            ("PUT", HTTPResponse(status: 201)),
+            ("MOVE", HTTPResponse(status: 412)),
+            ("DELETE", HTTPResponse(status: 204)),
+        ]
+        XCTAssertThrowsError(try WriteOnceScope.run { try backend.put("catalog/manifest.json", data: Data("third".utf8)) }) { error in
+            XCTAssertEqual(error as? WriteOnceConflict, WriteOnceConflict(path: "catalog/manifest.json"))
+        }
+        let exclusiveCalls = Array(script.calls.dropFirst(beforeExclusive))
+        XCTAssertEqual(exclusiveCalls.map(\.method), ["PUT", "MOVE", "DELETE"])
+        XCTAssertEqual(exclusiveCalls[1].headers["Overwrite"], "F")
+    }
+
+    func testWebDAVRestartRangeClampsUInt64Bounds() throws {
+        let script = ScriptedHTTP()
+        script.steps = [("GET", HTTPResponse(status: 200, body: Data("abc".utf8)))]
+        let backend = WebDAVBackend(baseURL: URL(string: "http://127.0.0.1:9/dav/")!, user: nil, password: nil, transport: script)
+        XCTAssertEqual(try backend.get("a", range: 1..<UInt64.max), Data("bc".utf8))
+        XCTAssertEqual(script.calls.first?.headers["Range"], "bytes=1-")
     }
 
     func testResumableFetchVerifiesHashAgainstFixtureServer() throws {

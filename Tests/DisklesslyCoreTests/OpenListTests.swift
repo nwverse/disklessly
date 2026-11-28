@@ -80,6 +80,122 @@ final class OpenListTests: XCTestCase {
         }
     }
 
+    func testUploadJSONErrorFailsBeforeVerificationAndPreservesObject() throws {
+        let transport = StatefulOpenListHTTP()
+        transport.object = Data("OLD-REMOTE-CONTENT".utf8)
+        transport.uploadResponse = transport.json(code: 500, message: "quota exceeded")
+        let backend = try openListBackend(transport)
+
+        XCTAssertThrowsError(try backend.put("folder/object.bin", data: Data("NEW-UPLOAD-CONTENT".utf8))) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 4)
+            XCTAssertTrue(error.localizedDescription.contains("quota exceeded"))
+        }
+        XCTAssertEqual(transport.object, Data("OLD-REMOTE-CONTENT".utf8))
+        XCTAssertEqual(transport.putCount, 1)
+        XCTAssertEqual(transport.metadataGetCount, 0)
+        XCTAssertEqual(transport.removeCount, 0)
+    }
+
+    func testUploadHashMismatchDoesNotDeletePreviousObject() throws {
+        let transport = StatefulOpenListHTTP()
+        transport.object = Data("OLD-REMOTE-CONTENT".utf8)
+        transport.acceptUpload = false
+        let backend = try openListBackend(transport)
+
+        XCTAssertThrowsError(try backend.put("folder/object.bin", data: Data("NEW-UPLOAD-CONTENT".utf8))) { error in
+            XCTAssertEqual((error as? DisklesslyError)?.exitCode, 5)
+        }
+        XCTAssertEqual(transport.object, Data("OLD-REMOTE-CONTENT".utf8))
+        XCTAssertEqual(transport.removeCount, 0)
+    }
+
+    func testRestartRangeClampsUInt64Bounds() throws {
+        let transport = StatefulOpenListHTTP()
+        transport.object = Data("abc".utf8)
+        let backend = try openListBackend(transport)
+
+        XCTAssertEqual(try backend.get("object", range: 1..<UInt64.max), Data("bc".utf8))
+        XCTAssertEqual(transport.calls.first { $0.method == "GET" }?.headers["Range"], "bytes=1-")
+    }
+
+    func testWriteOnceRefusesExistingObjectWithoutUpload() throws {
+        let transport = StatefulOpenListHTTP()
+        let backend = try openListBackend(transport)
+        try backend.put("objects/x", data: Data("old".utf8))
+        let uploadsBefore = transport.putCount
+
+        XCTAssertThrowsError(try WriteOnceScope.run { try backend.put("objects/x", data: Data("new".utf8)) }) { error in
+            XCTAssertEqual(error as? WriteOnceConflict, WriteOnceConflict(path: "objects/x"))
+        }
+        XCTAssertEqual(transport.object, Data("old".utf8))
+        XCTAssertEqual(transport.putCount, uploadsBefore)
+    }
+
+    func testWriteOnceFailsClosedWhenObjectIsAbsent() throws {
+        let transport = StatefulOpenListHTTP()
+        let backend = try openListBackend(transport)
+
+        XCTAssertThrowsError(try WriteOnceScope.run { try backend.put("objects/x", data: Data("new".utf8)) }) { error in
+            guard let error = error as? DisklesslyError,
+                  case .unsupported(let message) = error else {
+                return XCTFail("expected unsupported, got \(error)")
+            }
+            XCTAssertTrue(message.contains("atomically"))
+        }
+        XCTAssertNil(transport.object)
+        XCTAssertEqual(transport.putCount, 0)
+    }
+
+    func testConcurrentWriteOnceClientsFailClosedBeforeUpload() throws {
+        let transport = StatefulOpenListHTTP()
+        let first = try openListBackend(transport)
+        let second = try openListBackend(transport)
+        let gate = DispatchGroup()
+        let start = DispatchSemaphore(value: 0)
+        let resultLock = NSLock()
+        var outcomes: [Result<WriteOnceResult, Error>] = []
+
+        for backend in [first, second] {
+            gate.enter()
+            DispatchQueue.global().async {
+                start.wait()
+                let outcome = Result { try WriteOnce.publish(backend: backend, path: "objects/x", data: Data("new".utf8)) }
+                resultLock.lock()
+                outcomes.append(outcome)
+                resultLock.unlock()
+                gate.leave()
+            }
+        }
+        start.signal()
+        start.signal()
+        gate.wait()
+
+        XCTAssertEqual(outcomes.count, 2)
+        for outcome in outcomes {
+            guard case .failure(let error) = outcome,
+                  let error = error as? DisklesslyError,
+                  case .unsupported = error else {
+                return XCTFail("expected both clients to fail closed, got \(outcomes)")
+            }
+        }
+        XCTAssertNil(transport.object)
+        XCTAssertEqual(transport.putCount, 0)
+    }
+
+    private func openListBackend(_ transport: StatefulOpenListHTTP) throws -> OpenListBackend {
+        let store = MemorySecretStore()
+        try store.save(service: BackendCatalog.keychainService, account: "openlist-token:openlist:ol", secret: "fixture-token")
+        return OpenListBackend(
+            baseURL: URL(string: "https://openlist.invalid/")!,
+            root: "/repo",
+            user: "alice",
+            password: secret,
+            transport: transport,
+            secrets: store,
+            secretAccount: "openlist:ol"
+        )
+    }
+
     private func readLine(_ handle: FileHandle) throws -> String {
         var buffer = Data()
         let deadline = Date().addingTimeInterval(5)
@@ -93,5 +209,62 @@ final class OpenListTests: XCTestCase {
             throw DisklesslyError.failure("fixture did not print a port")
         }
         return String(port)
+    }
+}
+
+private final class StatefulOpenListHTTP: HTTPTransport {
+    struct Call {
+        var method: String
+        var url: String
+        var headers: [String: String]
+        var body: Data?
+    }
+
+    let rawURL = "https://objects.invalid/object"
+    var object: Data?
+    var uploadResponse: HTTPResponse?
+    var acceptUpload = true
+    private(set) var calls: [Call] = []
+    private(set) var putCount = 0
+    private(set) var metadataGetCount = 0
+    private(set) var removeCount = 0
+    private let lock = NSLock()
+
+    func send(method: String, url: URL, headers: [String: String], body: Data?) throws -> HTTPResponse {
+        lock.lock()
+        defer { lock.unlock() }
+        calls.append(Call(method: method, url: url.absoluteString, headers: headers, body: body))
+        let path = url.path
+        if method == "PUT" && path == "/api/fs/put" {
+            putCount += 1
+            if let uploadResponse { return uploadResponse }
+            if acceptUpload { object = body ?? Data() }
+            return json(code: 200, message: "success")
+        }
+        if method == "POST" && path == "/api/fs/get" {
+            metadataGetCount += 1
+            guard let object else { return json(code: 500, message: "not found") }
+            return json(code: 200, message: "success", data: ["size": NSNumber(value: object.count), "raw_url": rawURL])
+        }
+        if method == "POST" && path == "/api/fs/remove" {
+            removeCount += 1
+            object = nil
+            return json(code: 200, message: "success")
+        }
+        if method == "GET" && url.absoluteString == rawURL {
+            guard let object else { return HTTPResponse(status: 404) }
+            return HTTPResponse(status: 200, body: object)
+        }
+        if method == "POST" && path == "/api/auth/login" {
+            return json(code: 200, message: "success", data: ["token": "fixture-token"])
+        }
+        return HTTPResponse(status: 404)
+    }
+
+    func json(code: Int, message: String, data: Any? = nil) -> HTTPResponse {
+        var payload: [String: Any] = ["code": code, "message": message]
+        if let data { payload["data"] = data }
+        let body = (try? JSONSerialization.data(withJSONObject: payload)) ?? Data()
+        return HTTPResponse(status: 200, headers: ["Content-Type": "application/json"], body: body)
     }
 }

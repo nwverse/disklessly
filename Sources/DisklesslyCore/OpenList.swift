@@ -67,8 +67,9 @@ public struct OpenListBackend: StorageBackend {
         if let range {
             let body = try getResumable(path, offset: range.lowerBound)
             if body.restart {
-                let lo = min(Int(range.lowerBound), body.data.count)
-                let hi = min(Int(range.upperBound), body.data.count)
+                let count = UInt64(body.data.count)
+                let lo = Int(min(range.lowerBound, count))
+                let hi = Int(min(range.upperBound, count))
                 guard lo <= hi else { return Data() }
                 return body.data.subdata(in: lo..<hi)
             }
@@ -97,18 +98,35 @@ public struct OpenListBackend: StorageBackend {
     }
 
     public func put(_ path: String, file: URL) throws {
+        guard !WriteOnceScope.exclusive else {
+            if try stat(path) != nil {
+                throw WriteOnceConflict(path: path)
+            }
+            throw DisklesslyError.unsupported("openlist cannot create \(path) atomically; refusing a write-once upload")
+        }
         let remote = try remotePath(path)
         var allowed = CharacterSet.urlPathAllowed
         allowed.remove(charactersIn: "/")
         let encoded = remote.addingPercentEncoding(withAllowedCharacters: allowed) ?? remote
-        let response = try sendUpload(url: try api("/api/fs/put"), headers: [
+        let uploadHeaders = [
             "File-Path": encoded,
             "As-Task": "false",
             "Content-Type": "application/octet-stream",
             "Content-Length": String(try ChunkedIO.byteCount(file)),
-        ], file: file, authorized: true)
-        guard response.status == 200 else {
-            throw DisklesslyError.backend("openlist upload failed (HTTP \(response.status))")
+        ]
+        let response = try sendUpload(url: try api("/api/fs/put"), headers: uploadHeaders, file: file, authorized: true)
+        let envelope = try decodeAPIResponse(response, requireCode: true)
+        if envelope.code == 401 {
+            try login()
+            let retry = try sendUpload(url: try api("/api/fs/put"), headers: uploadHeaders, file: file, authorized: true)
+            let retried = try decodeAPIResponse(retry, requireCode: true)
+            guard retry.status == 200 && retried.code == 200 else {
+                throw apiFailure(path: "/api/fs/put", status: retry.status, response: retried)
+            }
+        } else {
+            guard response.status == 200 && envelope.code == 200 else {
+                throw apiFailure(path: "/api/fs/put", status: response.status, response: envelope)
+            }
         }
         try verify(path, expected: SHA256Digest.hexFile(file))
     }
@@ -198,7 +216,6 @@ public struct OpenListBackend: StorageBackend {
         defer { try? FileManager.default.removeItem(at: staging) }
         _ = try download(path, to: staging, offset: 0)
         guard try SHA256Digest.hexFile(staging) == expected else {
-            try? delete(path)
             throw DisklesslyError.integrity("openlist upload hash does not match the bytes that were sent")
         }
     }
@@ -206,12 +223,13 @@ public struct OpenListBackend: StorageBackend {
     private func rpc(path: String, body: [String: Any]) throws -> [String: Any] {
         let response = try call(path: path, body: body, allowMissing: false)
         guard response.code == 200 else {
-            throw DisklesslyError.backend("openlist \(path) failed (code \(response.code))")
+            throw apiFailure(path: path, status: response.status, response: response)
         }
         return response.object
     }
 
     private struct APIResponse {
+        var status: Int
         var code: Int
         var object: [String: Any]
     }
@@ -224,22 +242,40 @@ public struct OpenListBackend: StorageBackend {
             try login()
             response = try send(method: "POST", url: url, headers: ["Content-Type": "application/json"], body: data, authorized: true)
         }
+        let api = try decodeAPIResponse(response, requireCode: false)
+        if api.code == 401 {
+            try login()
+            let retry = try send(method: "POST", url: url, headers: ["Content-Type": "application/json"], body: data, authorized: true)
+            return try decodeAPIResponse(retry, requireCode: false)
+        }
+        if !allowMissing && response.status != 200 && api.code != 200 {
+            throw apiFailure(path: path, status: response.status, response: api)
+        }
+        return api
+    }
+
+    private func decodeAPIResponse(_ response: HTTPResponse, requireCode: Bool) throws -> APIResponse {
         guard let object = try JSONSerialization.jsonObject(with: response.body) as? [String: Any] else {
             throw DisklesslyError.backend("openlist returned a non-object body (HTTP \(response.status))")
         }
-        let code = (object["code"] as? NSNumber)?.intValue ?? response.status
-        if code == 401 {
-            try login()
-            let retry = try send(method: "POST", url: url, headers: ["Content-Type": "application/json"], body: data, authorized: true)
-            guard let again = try JSONSerialization.jsonObject(with: retry.body) as? [String: Any] else {
-                throw DisklesslyError.backend("openlist returned a non-object body")
-            }
-            return APIResponse(code: (again["code"] as? NSNumber)?.intValue ?? retry.status, object: again)
+        let code: Int
+        if let value = object["code"] as? NSNumber {
+            code = value.intValue
+        } else if requireCode {
+            throw DisklesslyError.backend("openlist returned no JSON code (HTTP \(response.status))")
+        } else {
+            code = response.status
         }
-        if !allowMissing && response.status != 200 && code != 200 {
-            throw DisklesslyError.backend("openlist \(path) failed (HTTP \(response.status))")
+        return APIResponse(status: response.status, code: code, object: object)
+    }
+
+    private func apiFailure(path: String, status: Int, response: APIResponse) -> DisklesslyError {
+        let message = (response.object["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let detail = message.flatMap { $0.isEmpty ? nil : ": \($0)" } ?? ""
+        if status == 200 {
+            return DisklesslyError.backend("openlist \(path) failed (code \(response.code))\(detail)")
         }
-        return APIResponse(code: code, object: object)
+        return DisklesslyError.backend("openlist \(path) failed (HTTP \(status), code \(response.code))\(detail)")
     }
 
     private func login() throws {
