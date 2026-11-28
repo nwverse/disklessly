@@ -483,6 +483,89 @@ final class RestoreTransactionTests: XCTestCase {
         }
     }
 
+    func testInPlaceSameSizeEditPreservingStatIsRetained() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        try world.launch(wait: false)
+        var journal = try XCTUnwrap(world.journals().first)
+        journal.owner = ProcessOwner.current()
+        try JournalStore.save(journal, stateDir: world.engine.config.stateDir)
+        world.trace.alive = []
+
+        let executable = world.dest.appendingPathComponent("Contents/MacOS/Foo")
+        let originalBytes = try Data(contentsOf: executable)
+        let replacement = Data("real-binary-v2".utf8)
+        XCTAssertEqual(replacement.count, originalBytes.count)
+        let beforeFingerprint = try TreeFingerprint.of(world.dest)
+        let beforeTree = try BundleHasher.treeHash(of: world.dest)
+        try overwriteInPlacePreservingStat(executable, with: replacement)
+        XCTAssertEqual(try TreeFingerprint.of(world.dest), beforeFingerprint)
+        XCTAssertNotEqual(try BundleHasher.treeHash(of: world.dest), beforeTree)
+
+        world.arm("appMoved", "afterMutation")
+        XCTAssertThrowsError(try world.recover()) { error in
+            XCTAssertTrue(error is InjectedFault, "\(error)")
+        }
+        let moved = try XCTUnwrap(world.journals().first)
+        XCTAssertEqual(moved.phase, .appMoved)
+        XCTAssertEqual(moved.inspection?.changed, true)
+        world.disarm()
+
+        let done = try world.recover()
+        switch done {
+        case .idle, .terminal: break
+        default: XCTFail("expected restore-out to finish, got \(done) \(world.debugDump())")
+        }
+        XCTAssertEqual(world.outcomeName, "restoredOutRetained")
+        let record = try XCTUnwrap(world.needsResolution)
+        let retained = try XCTUnwrap(record["retainedPath"] as? String)
+        let retainedExecutable = URL(fileURLWithPath: retained).appendingPathComponent("Contents/MacOS/Foo")
+        XCTAssertEqual(try Data(contentsOf: retainedExecutable), replacement)
+        XCTAssertTrue(world.journals().isEmpty)
+        XCTAssertEqual(world.bundleID(at: world.dest), world.stubBundleID)
+    }
+
+    func testFailedRetentionMoveReplaysInPlaceFallbackRetirement() throws {
+        let world = try RestoreWorld()
+        defer { world.cleanup() }
+        try world.launch(wait: false)
+        var journal = try XCTUnwrap(world.journals().first)
+        journal.owner = ProcessOwner.current()
+        try JournalStore.save(journal, stateDir: world.engine.config.stateDir)
+        world.trace.alive = []
+        try Data("real-binary-v2".utf8).write(to: world.dest.appendingPathComponent("Contents/MacOS/Foo"))
+
+        let retainedRoot = URL(fileURLWithPath: world.engine.config.stateDir).appendingPathComponent("retained")
+        try Data("not a directory".utf8).write(to: retainedRoot)
+        world.arm("retired", "afterJournal")
+        XCTAssertThrowsError(try world.recover()) { error in
+            XCTAssertTrue(error is InjectedFault, "\(error)")
+        }
+
+        let interrupted = try XCTUnwrap(world.journals().first)
+        let staging = URL(fileURLWithPath: interrupted.staging)
+        let old = staging.appendingPathComponent("app.old")
+        XCTAssertEqual(interrupted.phase, .retired)
+        XCTAssertEqual(interrupted.retainedPath, old.path)
+        XCTAssertEqual(interrupted.resolution?.retainedPath, old.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: old.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.path))
+
+        world.disarm()
+        let done = try world.recover()
+        switch done {
+        case .idle, .terminal: break
+        default: XCTFail("expected retired replay to close, got \(done) \(world.debugDump())")
+        }
+        XCTAssertTrue(world.journals().isEmpty)
+        XCTAssertEqual(world.bundleID(at: world.dest), world.stubBundleID)
+        XCTAssertEqual(world.outcomeName, "restoredOutRetained")
+        let record = try XCTUnwrap(world.needsResolution)
+        XCTAssertEqual(record["retainedPath"] as? String, old.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: old.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.path))
+    }
+
     func testMissingArchiveRetainsEvenAnIdenticalBundle() throws {
         let world = try RestoreWorld()
         defer { world.cleanup() }
@@ -688,7 +771,7 @@ final class RestoreTransactionTests: XCTestCase {
         XCTAssertEqual(summed, SHA256Digest.hex(big))
     }
 
-    func testLiveRestoreProbeDoesNotRehashTheTree() throws {
+    func testLiveRestoreProbeHashesOnlyForContentChecks() throws {
         let world = try RestoreWorld()
         defer { world.cleanup() }
         var hashes = 0
@@ -717,7 +800,7 @@ final class RestoreTransactionTests: XCTestCase {
         case .idle, .terminal: break
         default: XCTFail("expected restore-out to finish, got \(done) \(world.debugDump())")
         }
-        XCTAssertEqual(hashes, 1, "an unchanged tree fingerprint skips the content hash on quit")
+        XCTAssertEqual(hashes, 3, "inspection and the pre-delete check must hash even unchanged stat metadata")
         XCTAssertEqual(world.outcomeName, "restoredOut")
     }
 
@@ -916,6 +999,59 @@ final class RestoreTransactionTests: XCTestCase {
             Thread.sleep(forTimeInterval: 0.05)
         }
         return condition()
+    }
+
+    private func overwriteInPlacePreservingStat(_ url: URL, with data: Data) throws {
+        var before = stat()
+        guard lstat(url.path, &before) == 0 else {
+            throw DisklesslyError.failure("cannot stat \(url.path)")
+        }
+        XCTAssertEqual(Int64(data.count), Int64(before.st_size))
+        let fd = open(url.path, O_WRONLY | O_TRUNC)
+        guard fd >= 0 else {
+            throw DisklesslyError.failure("cannot open \(url.path) in place")
+        }
+        defer { close(fd) }
+        try data.withUnsafeBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            var written = 0
+            while written < raw.count {
+                let count = write(fd, base.advanced(by: written), raw.count - written)
+                guard count > 0 else {
+                    throw DisklesslyError.failure("short write to \(url.path)")
+                }
+                written += count
+            }
+        }
+
+        #if os(Linux)
+        let times = [before.st_atim, before.st_mtim]
+        let beforeMtime = Int64(before.st_mtim.tv_sec) * 1_000_000_000 + Int64(before.st_mtim.tv_nsec)
+        #else
+        let times = [before.st_atimespec, before.st_mtimespec]
+        let beforeMtime = Int64(before.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(before.st_mtimespec.tv_nsec)
+        #endif
+        let rc = times.withUnsafeBufferPointer { buffer in
+            url.path.withCString { path in
+                utimensat(AT_FDCWD, path, buffer.baseAddress, 0)
+            }
+        }
+        guard rc == 0 else {
+            throw DisklesslyError.failure("cannot restore timestamps on \(url.path)")
+        }
+
+        var after = stat()
+        guard lstat(url.path, &after) == 0 else {
+            throw DisklesslyError.failure("cannot restat \(url.path)")
+        }
+        #if os(Linux)
+        let afterMtime = Int64(after.st_mtim.tv_sec) * 1_000_000_000 + Int64(after.st_mtim.tv_nsec)
+        #else
+        let afterMtime = Int64(after.st_mtimespec.tv_sec) * 1_000_000_000 + Int64(after.st_mtimespec.tv_nsec)
+        #endif
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(after.st_size, before.st_size)
+        XCTAssertEqual(afterMtime, beforeMtime)
     }
 }
 

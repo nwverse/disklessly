@@ -161,6 +161,43 @@ final class RestoreRecoveryTests: XCTestCase {
         guard case .reject = decide(.retired, withOld, inspection: inspection, retired: true) else { XCTFail("old copy still staged"); return }
     }
 
+    func testInPlaceRetentionFallbackReplaysDisposedAndRetired() {
+        let changed = InspectionSnapshot(cdhash: "new", treeHash: "new-tree", bundleId: bundle, changed: true)
+        let retainedApp = appNode(cd: "new", treeHash: "new-tree")
+        let inPlace = RestoreLayout(
+            destination: stubNode(),
+            appOld: retainedApp,
+            retained: retainedApp,
+            retainedInPlace: true,
+            staging: .owned
+        )
+        XCTAssertEqual(decide(.disposed, inPlace, streak: 2, inspection: changed), .writeRetirement)
+        XCTAssertEqual(decide(.retired, inPlace, inspection: changed, retired: false), .writeRetirement)
+        XCTAssertEqual(decide(.retired, inPlace, inspection: changed, retired: true), .closeTransaction)
+
+        let unmodelled = RestoreLayout(destination: stubNode(), appOld: retainedApp, retained: retainedApp, staging: .owned)
+        guard case .reject = decide(.disposed, unmodelled, streak: 2, inspection: changed) else {
+            XCTFail("two roles at the same value must not be accepted without the path-alias flag")
+            return
+        }
+        guard case .reject = decide(.retired, unmodelled, inspection: changed, retired: true) else {
+            XCTFail("retired terminal layout must reject an unmodelled alias")
+            return
+        }
+
+        let differentRetained = RestoreLayout(
+            destination: stubNode(),
+            appOld: retainedApp,
+            retained: appNode(cd: "other", treeHash: "other-tree"),
+            retainedInPlace: true,
+            staging: .owned
+        )
+        guard case .reject = decide(.disposed, differentRetained, streak: 2, inspection: changed) else {
+            XCTFail("the in-place flag must not accept two different retained copies")
+            return
+        }
+    }
+
     func testMissingJournalMirrorVariants() {
         let stubDest = RestoreLayout(destination: stubNode(), staging: .absent)
         XCTAssertEqual(decide(.closed, stubDest, missing: true), .retireMirrorWithoutJournal)

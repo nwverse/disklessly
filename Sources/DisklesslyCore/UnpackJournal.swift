@@ -94,6 +94,7 @@ public enum UnpackRecovery {
         case "prepared", "extracted":
             return destIsStub ? .rollback : .needsAttention
         case "stubParked":
+            if destIsStub { return .rollback }
             if !destIsStub && !destIsApp && appNewVerified { return .installAndFinish }
             if !destIsStub && !destIsApp && !appNewVerified && parkedStubExists { return .restoreStub }
             return .needsAttention
@@ -104,6 +105,9 @@ public enum UnpackRecovery {
             // so the crash window cannot leave the app only inside staging.
             if !destIsStub && !destIsApp && appNewVerified { return .installAndFinish }
             if !destIsStub && !destIsApp && parkedStubExists { return .restoreStub }
+            return .needsAttention
+        case "closed":
+            if destIsApp && !destIsStub { return .deleteParkedStub }
             return .needsAttention
         default:
             return .needsAttention
