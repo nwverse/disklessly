@@ -67,9 +67,11 @@ Disklessly.app；如果你在终端里用命令行，也要授予你的终端。
 ```sh
 disklessly init                                  # 默认仓库：iCloud Drive/Disklessly
 disklessly init --root /Volumes/NAS/Disklessly  # 或任意文件夹
+disklessly init --root /Volumes/NAS/Disklessly --quota 64G  # 同时设置缓存配额
 ```
 
-`init` 会打印仓库、缓存、替身的位置和缓存配额（默认 20 GiB）。默认位置：
+`init --quota` 接受字节数或 `K`/`M`/`G`/`KiB`/`MiB`/`GiB` 等大小；省略时缓存配额为
+20 GiB。`init` 会打印仓库、缓存、替身的位置和缓存配额。默认位置：
 
 | 内容 | 位置 |
 | --- | --- |

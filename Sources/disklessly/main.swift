@@ -16,7 +16,7 @@ disklessly: keep rarely used Mac apps in a repo and open them on demand.
 Usage: disklessly [--json] [--config PATH] [--state-dir PATH] <command> [options]
 
 Get started
-  init [--backend local|icloud] [--root DIR] [--cache-dir DIR]
+  init [--backend local|icloud] [--root DIR] [--cache-dir DIR] [--quota SIZE]
   recommend [--all] [--min-size SIZE] [--limit N] [--min-idle-days N]
   pack APP.app [--mode mount|restore] [--image-format ULMO|ULFO] [--no-stub] [--keep-original] [--stub-dir DIR]
                                   [--encrypt|--no-encrypt]
@@ -128,7 +128,7 @@ Dashboard
   ui [--open]                     sessions, disk usage, devices and license on 127.0.0.1
 
 Repos and machines
-  init [--root DIR] [--cache-dir DIR]
+  init [--root DIR] [--cache-dir DIR] [--quota SIZE]
   backend add smb|nfs|webdav|openlist|rclone ... | backend list | backend use ID|default
   cloud [list] | cloud connect gdrive|dropbox|onedrive|box|pcloud [--name N] [--root DIR] [--use]
   cloud disconnect NAME | rclone ARGS...   (rclone with Disklessly's own config)
@@ -322,7 +322,12 @@ do {
         if json { emit(["version":EngineInstall.version,"revision":EngineInstall.revision,"schema":"image/1","commit":EngineInstall.commit,"buildDate":EngineInstall.buildDate,"arch":EngineInstall.arch,"schemas":["stub":"stub/1","state":"state/2","image":"image/1"]] as [String: Any]) }
         else { printVersionLine() }
     case "init":
-        while !args.isEmpty { let a=args.removeFirst(); if a=="--backend", !args.isEmpty { config.backend=args.removeFirst() } else if a=="--root", !args.isEmpty { config.repoPath=args.removeFirst() } else if a=="--cache-dir", !args.isEmpty { config.cacheDir=args.removeFirst() } }
+        if args.contains("--help") || args.contains("-h") { usage() }
+        let parsed = try InitArguments.parse(args)
+        if let backend = parsed.backend { config.backend = backend }
+        if let root = parsed.root { config.repoPath = root }
+        if let cacheDir = parsed.cacheDir { config.cacheDir = cacheDir }
+        if let quotaBytes = parsed.quotaBytes { config.quotaBytes = quotaBytes }
         if HostPlatform.current == .linux && config.backend == "icloud" { throw DisklesslyError.unsupported("iCloud Drive is not available on Linux; use --root DIR or disklessly backend add") }
         try DisklesslyEngine(config:config).initialize()
         say(["ok":true,"repo":config.repoPath,"cacheDir":config.cacheDir,"quotaBytes":NSNumber(value: config.quotaBytes)], CLIText.initialized(config))

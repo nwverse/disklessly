@@ -107,13 +107,32 @@ final class RecommendTests: XCTestCase {
         XCTAssertEqual(parsed.limit, 5)
         XCTAssertEqual(parsed.minIdleDays, 30)
         XCTAssertEqual(try RecommendArguments.parseSize("100MiB"), 100 * 1024 * 1024)
-        XCTAssertEqual(try RecommendArguments.parseSize("1.5GiB"), UInt64(1.5 * 1024 * 1024 * 1024))
+        XCTAssertEqual(try RecommendArguments.parseSize("1.5GiB"), 1_610_612_736)
+        XCTAssertEqual(try RecommendArguments.parseSize("0.1GiB"), 107_374_182)
+        XCTAssertEqual(try RecommendArguments.parseSize("1.0000000000000000001GiB"), 1_073_741_824)
+        XCTAssertEqual(try RecommendArguments.parseSize("1.00000000000000000001GiB"), 1_073_741_824)
         XCTAssertEqual(try RecommendArguments.parseSize("2048"), 2048)
+        XCTAssertEqual(try RecommendArguments.parseSize("9007199254740991"), 9_007_199_254_740_991)
+        XCTAssertEqual(try RecommendArguments.parseSize("9007199254740992"), 9_007_199_254_740_992)
+        XCTAssertEqual(try RecommendArguments.parseSize("9007199254740993"), 9_007_199_254_740_993)
+        XCTAssertEqual(try RecommendArguments.parseSize("18446744073709551615"), UInt64.max)
         XCTAssertEqual(RecommendArguments().minSizeBytes, RecommendLimits.defaultMinSizeBytes)
         XCTAssertThrowsError(try RecommendArguments.parse(["--min-size"]))
         XCTAssertThrowsError(try RecommendArguments.parse(["--limit", "-1"]))
-        XCTAssertThrowsError(try RecommendArguments.parseSize("100 megabytes"))
-        XCTAssertThrowsError(try RecommendArguments.parseSize("soon"))
+        for invalid in [
+            "18446744073709551616",
+            "18446744073709551615GiB",
+            "1.5",
+            "-1",
+            "1QB",
+            "1.2.3GiB",
+            "100 megabytes",
+            "soon",
+        ] {
+            XCTAssertThrowsError(try RecommendArguments.parseSize(invalid), invalid) { error in
+                XCTAssertEqual(error as? DisklesslyError, .usage("invalid size: \(invalid)"))
+            }
+        }
         let query = try RecommendArguments.parse(query: ["min-size": "50MiB", "limit": "2", "minIdleDays": "0"])
         XCTAssertEqual(query.minSizeBytes, 50 * 1024 * 1024)
         XCTAssertEqual(query.limit, 2)
